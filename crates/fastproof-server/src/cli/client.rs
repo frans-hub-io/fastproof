@@ -255,6 +255,26 @@ impl Client {
         Ok(self.send::<Items<Upload>>(rb).await?.items)
     }
 
+    /// Polls until no upload of the launch is queued or processing, or `timeout` passes;
+    /// returns how many still are.
+    pub async fn wait_launch_uploads(
+        &self,
+        project: &str,
+        launch: Uuid,
+        timeout: Duration,
+    ) -> anyhow::Result<usize> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        let mut delay = Duration::from_millis(200);
+        loop {
+            let open = super::pending_uploads(&self.uploads(project, launch).await?);
+            if open == 0 || tokio::time::Instant::now() >= deadline {
+                return Ok(open);
+            }
+            tokio::time::sleep(delay).await;
+            delay = (delay * 2).min(Duration::from_secs(3));
+        }
+    }
+
     /// Polls until the given uploads are done or failed, or `timeout` passes.
     pub async fn wait_uploads(
         &self,

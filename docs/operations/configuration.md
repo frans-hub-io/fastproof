@@ -44,7 +44,8 @@ PostgreSQL 14 to 18 is supported; 18 is recommended. PostgreSQL 14 reached end o
 | `FASTPROOF_S3_CA_FILE` | none | Custom CA for the S3 endpoint |
 | `FASTPROOF_S3_PATH_STYLE` | `true` | Path-style addressing (`https://s3.example.com/bucket/key`) |
 
-Attachments are content-addressed by SHA-256 and stored once per project.
+Attachments are content-addressed by SHA-256 and stored once per project. There is no key prefix setting:
+FastProof uses the whole bucket, so give every installation its own bucket.
 
 ## Ingest
 
@@ -151,7 +152,8 @@ Limits of `POST /api/v1/projects/{key}/launches/{id}/logs` (see [Live logs](../g
 | `FASTPROOF_LOG_MAX_REQUEST_BYTES` | `8388608` (8 MiB) | Largest request body, 1024 to 268435456 |
 | `FASTPROOF_LOG_MAX_BYTES_PER_LAUNCH` | `268435456` (256 MiB) | Log bytes accepted per launch; later requests get `413` |
 
-A line over the size limit is rejected on its own; the rest of the request is stored.
+A message over the line limit is cut at a character boundary and ends with ` …[truncated]`; the line is
+stored. A request over the line-count, request or per-launch limit gets `413` naming the limit.
 
 ## Access
 
@@ -253,8 +255,23 @@ Secrets never appear in logs; tokens and passwords in URLs and headers are redac
 
 ## CLI
 
-The same binary is the CLI (`fastproof upload`, `watch`, `launch start`, `launch finish`, `gate`, `testplan`,
-`bench`, `migrate`, `version`). The CLI reads:
+The same binary is the CLI. `fastproof` without a command prints the help; `fastproof <command> --help`
+lists every option.
+
+| Command | What it does |
+|---|---|
+| `serve` | Run the server (configured by the variables on this page) |
+| `migrate` | Apply database migrations and exit |
+| `upload <path>` | Upload a report file, an archive or a results directory into a launch. A launch without an external id is created for this upload and finished after processing (`--no-finish` keeps it open); a launch with an external id is shared and stays open (`--finish` finishes it). `--wait` waits for processing and prints a summary |
+| `watch <dir>` | Upload new result files from a directory while tests run (`--finish` finishes the launch when stopped) |
+| `launch start` | Start a launch, or join the one with the same external id, and print its id |
+| `launch finish` | Wait for queued and processing uploads of the launch (`--timeout`, default 600 s; `--no-wait` skips it and reports how many are pending), finish it and print its counts |
+| `gate` | Print the quality gate of a launch; exit `0` passed, `1` failed, `2` error or still pending (`--wait 10m` waits while it is pending) |
+| `testplan` | Print an Allure `testplan.json` of chosen tests, for example the failed ones of a launch (`--from-launch <id> --status failed,broken`), so Allure adapters and the FastProof reporters run only those |
+| `bench` | Generate launches, results and log lines against a server and measure throughput and end-to-end lag (see [Scaling](scaling.md)) |
+| `version` | Print the version |
+
+The CLI reads:
 
 | Variable | Meaning |
 |---|---|

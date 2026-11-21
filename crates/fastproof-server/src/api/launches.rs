@@ -138,6 +138,16 @@ pub async fn create(
         .store
         .start_launch(&project, &body, &auth.principal.name)
         .await?;
+    if created {
+        s.audit(
+            &auth,
+            "launch.create",
+            Some(&project.key),
+            serde_json::json!({"launchId": launch.id, "number": launch.number, "name": launch.name,
+                "externalId": launch.external_id, "debug": launch.debug}),
+        )
+        .await;
+    }
     Ok((
         if created {
             StatusCode::CREATED

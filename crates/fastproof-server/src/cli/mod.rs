@@ -199,6 +199,13 @@ pub struct FinishArgs {
     /// `finished` or `interrupted`.
     #[arg(long, default_value = "finished")]
     pub status: String,
+    /// How long to wait for queued and processing uploads of the launch before finishing, in
+    /// seconds (the summary then counts them).
+    #[arg(long, default_value_t = 600)]
+    pub timeout: u64,
+    /// Finish at once, without waiting for queued uploads.
+    #[arg(long)]
+    pub no_wait: bool,
 }
 
 #[derive(Args, Debug)]
@@ -216,9 +223,14 @@ pub struct UploadArgs {
     /// How long `--wait` waits, in seconds.
     #[arg(long, default_value_t = 600)]
     pub timeout: u64,
-    /// Finish the launch after the upload (implies --wait).
-    #[arg(long)]
+    /// Finish the launch after the upload (implies --wait). This is the default for a launch
+    /// without an external id (no --launch, FASTPROOF_LAUNCH or CI); launches with one are
+    /// shared by several commands and stay open unless this is given.
+    #[arg(long, conflicts_with = "no_finish")]
     pub finish: bool,
+    /// Keep the launch open even when this command created it for itself.
+    #[arg(long)]
+    pub no_finish: bool,
 }
 
 #[derive(Args, Debug)]
@@ -306,10 +318,28 @@ pub async fn run(cli: Cli) -> anyhow::Result<i32> {
                     f.launch.resolve(&client).await?.id
                 }
             };
-            let l = client
-                .finish_launch(&f.launch.conn.project, id, &f.status)
-                .await?;
+            let project = &f.launch.conn.project;
+            let mut pending = 0;
+            if !f.no_wait {
+                pending = client
+                    .wait_launch_uploads(project, id, Duration::from_secs(f.timeout))
+                    .await?;
+            }
+            let l = client.finish_launch(project, id, &f.status).await?;
             print_launch(&l);
+            if pending > 0 {
+                eprintln!(
+                    "{pending} uploads were still queued or processing after {}s; the counts change when they are done",
+                    f.timeout
+                );
+            } else if f.no_wait {
+                let open = pending_uploads(&client.uploads(project, id).await?);
+                if open > 0 {
+                    eprintln!(
+                        "{open} uploads are still queued or processing; the counts change when they are done"
+                    );
+                }
+            }
             Ok(0)
         }
         Command::Upload(u) => upload(u).await,
@@ -335,6 +365,14 @@ pub async fn run(cli: Cli) -> anyhow::Result<i32> {
     }
 }
 
+/// Uploads not processed yet.
+pub fn pending_uploads(uploads: &[fastproof_store::Upload]) -> usize {
+    uploads
+        .iter()
+        .filter(|u| u.status == "queued" || u.status == "processing")
+        .count()
+}
+
 pub fn print_launch(l: &Launch) {
     let c = &l.counts;
     println!(
@@ -349,7 +387,12 @@ async fn upload(u: UploadArgs) -> anyhow::Result<i32> {
     let meta = tokio::fs::metadata(&u.path)
         .await
         .with_context(|| format!("{} not found", u.path.display()))?;
-    let launch = u.launch.resolve(&client).await?;
+    let start = u.launch.start()?;
+    // A launch without an external id belongs to this command alone, so it is finished here;
+    // one with an external id is shared (CI jobs, shards, `launch start`) and stays open.
+    let shared = start.external_id.is_some();
+    let finish = u.finish || (!shared && !u.no_finish);
+    let launch = client.start_launch(&project, &start).await?;
     eprintln!("launch #{} {} ({})", launch.number, launch.name, launch.id);
     let (body, file_name) = if meta.is_dir() {
         (archive::stream_dir(u.path.clone()), None)
@@ -365,8 +408,12 @@ async fn upload(u: UploadArgs) -> anyhow::Result<i32> {
         .upload(&project, launch.id, &u.format, file_name.as_deref(), body)
         .await?;
     eprintln!("upload {} queued ({} bytes)", up.id, up.size_bytes);
-    if !(u.wait || u.finish) {
+    if !(u.wait || finish) {
         println!("{}", up.id);
+        eprintln!(
+            "launch #{} stays open; finish it with `fastproof launch finish` (or pass --finish)",
+            launch.number
+        );
         return Ok(0);
     }
     let done = client
@@ -402,7 +449,7 @@ async fn upload(u: UploadArgs) -> anyhow::Result<i32> {
             eprintln!("  warning: {w}");
         }
     }
-    let l = if u.finish {
+    let l = if finish {
         client
             .finish_launch(&project, launch.id, "finished")
             .await?
@@ -410,6 +457,12 @@ async fn upload(u: UploadArgs) -> anyhow::Result<i32> {
         client.launch(&project, launch.id).await?
     };
     print_launch(&l);
+    if !finish {
+        eprintln!(
+            "launch #{} stays open; finish it with `fastproof launch finish` (or pass --finish)",
+            launch.number
+        );
+    }
     Ok(code)
 }
 

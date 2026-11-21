@@ -51,6 +51,11 @@ def test_flaky():
 @pytest.mark.fastproof_id("ID-7")
 def test_with_id():
     pass
+
+
+@pytest.mark.parametrize("browser", ["chrome", "firefox"])
+def test_param(browser):
+    pass
 """
 
 
@@ -71,7 +76,7 @@ def env(pytester, monkeypatch, tmp_path):
 
 def assert_run(res):
     o = res.parseoutcomes()
-    assert (o.get("passed"), o.get("failed"), o.get("rerun")) == (3, 1, 1), o
+    assert (o.get("passed"), o.get("failed"), o.get("rerun")) == (5, 1, 1), o
 
 
 def by_name(fake):
@@ -110,6 +115,16 @@ def test_live_path_running_logs_attempts_attachments(pytester, env):
         assert p["steps"][0]["name"] == "outer" and p["steps"][0]["steps"][0]["name"] == "inner"
         assert r["test_fail"][0]["status"] == "failed"
         assert r["test_with_id"][0]["testCaseId"] == "ID-7"
+        # The running line already carries the final identity (explicit id, parameters).
+        for name, attempts in r.items():
+            for a in attempts:
+                first = fake.running_lines[a["id"]]
+                assert first.get("testCaseId") == a.get("testCaseId"), name
+                assert first.get("parameters") == a.get("parameters"), name
+                assert first["fullName"] == a["fullName"], name
+        assert fake.running_lines[r["test_param[firefox]"][0]["id"]]["parameters"] == [
+            {"name": "browser", "value": "firefox"}
+        ]
         logs = [ln for ln in fake.logs if ln["resultId"] == p["id"]]
         assert [ln["seq"] for ln in logs] == list(range(len(logs)))
         assert any(ln["stream"] == "step" and ln.get("step") == "outer › inner" for ln in logs)
@@ -154,15 +169,17 @@ def test_server_down_spools_and_flushes_later(pytester, env, tmp_path):
     spool = tmp_path / "spool"
     sessions = [p for p in spool.iterdir() if not p.name.startswith(".")]
     assert len(sessions) == 1
-    assert len((sessions[0] / "results.ndjson").read_text().splitlines()) == 5
+    assert len((sessions[0] / "results.ndjson").read_text().splitlines()) == 7
     with FakeServer(token=TOKEN, port=port) as fake:
+        # The spool knows its project: FASTPROOF_PROJECT is not needed to flush it.
+        flush_env = {k: v for k, v in os.environ.items() if k != "FASTPROOF_PROJECT"}
         out = subprocess.run(
             [sys.executable, "-m", "pytest_fastproof", "flush", "--spool", str(spool)],
-            capture_output=True, text=True, env=dict(os.environ), timeout=60,
+            capture_output=True, text=True, env=flush_env, timeout=60,
         )
         assert out.returncode == 0, out.stderr
-        assert "sent 5 results" in out.stdout
-        assert len(fake.finals()) == 5
+        assert "sent 7 results" in out.stdout
+        assert len(fake.finals()) == 7
         assert {a["name"] for a in by_name(fake)["test_pass"][0]["attachments"]} == {"same.bin", "note.txt"}
         assert next(iter(fake.launches.values()))["finished"] == "finished"
     assert not [p for p in spool.iterdir() if not p.name.startswith(".")]
@@ -173,7 +190,7 @@ def test_testplan_deselects(pytester, env):
     plan.write_text(json.dumps({"version": "1.0", "tests": [{"selector": "test_sample.py::test_pass"}, {"id": "ID-7"}]}))
     env.setenv("FASTPROOF_ENABLED", "false")
     res = pytester.runpytest_inprocess("-p", "no:cacheprovider", "--fastproof-testplan=testplan.json")
-    res.assert_outcomes(passed=2, deselected=2)
+    res.assert_outcomes(passed=2, deselected=4)
 
 
 def test_disabled_without_url(pytester, env):
@@ -188,10 +205,21 @@ def test_xdist_one_launch_no_duplicates(pytester, env):
         assert_run(res)
         assert len(fake.launches) == 1
         finals = fake.finals()
-        assert len(finals) == 5
-        assert len({r["id"] for r in finals}) == 5
+        assert len(finals) == 7
+        assert len({r["id"] for r in finals}) == 7
         r = by_name(fake)
         assert [a["status"] for a in r["test_flaky"]] == ["failed", "passed"]
         assert {lb["value"] for x in finals for lb in x["labels"] if lb["name"] == "thread"} <= {"gw0", "gw1"}
         assert any(ln["resultId"] == r["test_pass"][0]["id"] for ln in fake.logs)
         assert "correct-horse-battery" not in json.dumps(finals) + json.dumps(fake.logs)
+
+
+def test_hint_when_results_also_go_to_alluredir(pytester, env):
+    pytester.makeconftest(
+        "def pytest_addoption(parser):\n"
+        "    parser.addoption('--alluredir', dest='allure_report_dir', default=None)\n"
+    )
+    with FakeServer(token=TOKEN, logs=True, running=True) as fake:
+        env.setenv("FASTPROOF_URL", fake.url)
+        res = pytester.runpytest_inprocess("-p", "no:cacheprovider", "--alluredir", "allure-results", "-k", "test_pass")
+        res.stdout.fnmatch_lines(["*also written to --alluredir*FASTPROOF_ENABLED=false*"])

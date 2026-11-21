@@ -30,6 +30,18 @@ new reporters follow it.
 - Run only what a `testplan.json` (Allure format) selects.
 - No telemetry and no calls anywhere except the configured FastProof server.
 
+## Installing before the first release
+
+The packages are not published on npm and PyPI yet. Install them from this folder:
+
+```bash
+pip install ./reporters/pytest
+
+cd reporters/playwright && npm ci && npm run build && npm pack
+# then, in the test project:
+npm install --save-dev /path/to/fastproof/reporters/playwright/franshub-fastproof-playwright-0.1.0.tgz
+```
+
 ## Playwright
 
 ```bash
@@ -69,7 +81,8 @@ test('pays', async ({ page, request, fastproofTrace }) => {
   `traceHeaders(testInfo)` for `request.newContext()`.
 - Test plans: `testPlanGrep()` for title selectors; the auto fixture in `/fixture` skips tests outside the plan
   for every selector form and for ids (`fastproof.id`, `allure_id` annotations).
-- `npx fastproof-playwright flush [--spool DIR]` sends what an earlier run spooled; `list` shows it.
+- `npx fastproof-playwright flush [--spool DIR]` sends what an earlier run spooled (each session to the project
+  it was recorded for; `FASTPROOF_PROJECT` limits it to one); `list` shows it.
 
 ## pytest
 
@@ -106,7 +119,11 @@ def test_pay(fastproof_trace):
 - xdist: only the controller sends results (from the serialized phase reports, so nothing is sent twice);
   workers stream their logs to the same launch by external id; a crashed worker's test is reported `broken`
   instead of disappearing.
-- `python -m pytest_fastproof flush [--spool DIR]` sends what an earlier run spooled; `list` shows it.
+- `python -m pytest_fastproof flush [--spool DIR]` sends what an earlier run spooled (each session to the
+  project it was recorded for; `FASTPROOF_PROJECT` limits it to one); `list` shows it.
+- Use either the plugin or `fastproof upload` for a run: with `FASTPROOF_URL` set, uploading the
+  `--alluredir` output too makes a second launch (the plugin prints a reminder; `FASTPROOF_ENABLED=false`
+  turns it off for such runs).
 
 ## Compared with ReportPortal agents and Allure adapters
 

@@ -15,7 +15,11 @@ from .spool import flush_spool, list_sessions
 def main(argv: Optional[List[str]] = None) -> int:
     p = argparse.ArgumentParser(prog="pytest-fastproof", description="FastProof spool tools")
     sub = p.add_subparsers(dest="cmd", required=True)
-    f = sub.add_parser("flush", help="send spooled results (FASTPROOF_URL, FASTPROOF_TOKEN, FASTPROOF_PROJECT)")
+    f = sub.add_parser(
+        "flush",
+        help="send spooled results (FASTPROOF_URL, FASTPROOF_TOKEN; FASTPROOF_PROJECT limits it to one project,"
+        " otherwise each session goes to the project it was recorded for)",
+    )
     f.add_argument("--spool", help="spool directory (default .fastproof/spool or FASTPROOF_SPOOL_DIR)")
     f.add_argument("--timeout", type=float, default=600.0)
     ls = sub.add_parser("list", help="list spooled sessions")
@@ -28,11 +32,21 @@ def main(argv: Optional[List[str]] = None) -> int:
             state = "ended" if m.get("ended") else "interrupted"
             print(f"{s['id']}\t{m.get('project')}\t{m.get('launch', {}).get('externalId')}\t{state}")
         return 0
-    if not cfg.url or not cfg.project:
-        print("FASTPROOF_URL and FASTPROOF_PROJECT are required", file=sys.stderr)
+    if not cfg.url:
+        print("FASTPROOF_URL is required", file=sys.stderr)
         return 2
-    api = Api(cfg.url, cfg.token, cfg.project, cfg.request_timeout)
-    r = flush_spool(api, cfg.spool_dir, deadline=time.time() + a.timeout, project=cfg.project)
+    if cfg.project:
+        projects = [cfg.project]
+    else:
+        projects = sorted({str(s["meta"].get("project")) for s in list_sessions(cfg.spool_dir) if s["meta"].get("project")})
+    deadline = time.time() + a.timeout
+    r = {"sessions": 0, "results": 0, "failed": 0, "remaining": 0, "errors": []}
+    for project in projects:
+        api = Api(cfg.url, cfg.token, project, cfg.request_timeout)
+        one = flush_spool(api, cfg.spool_dir, deadline=deadline, project=project)
+        for k in ("sessions", "results", "failed", "remaining"):
+            r[k] += one[k]
+        r["errors"].extend(one["errors"])
     print(f"sent {r['results']} results from {r['sessions']} sessions; {r['remaining']} left, {r['failed']} rejected")
     for e in r["errors"][:5]:
         print(f"  {e}", file=sys.stderr)

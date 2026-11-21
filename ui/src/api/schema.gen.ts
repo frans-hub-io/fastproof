@@ -36,6 +36,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/me": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["platform_me"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects": {
         parameters: {
             query?: never;
@@ -650,6 +666,75 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/tokens": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Managed tokens the caller may read (`tokens:read`). 404 when managed tokens are not configured. */
+        get: operations["platform_tokens_list"];
+        put?: never;
+        /** @description Creates a managed token (`tokens:write`). A token can grant only permissions its creator holds where it grants them; a token created by a managed token expires no later than its creator and is revoked with it. */
+        post: operations["platform_tokens_create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/tokens/options": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Lifetimes, projects and roles the caller may grant (`tokens:write`). */
+        get: operations["platform_tokens_options"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/tokens/self": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description The managed token of the request. */
+        get: operations["platform_tokens_self"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/tokens/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["platform_tokens_get"];
+        put?: never;
+        post?: never;
+        /** @description Revokes a token (and the tokens it created). A token may always revoke itself. */
+        delete: operations["platform_tokens_revoke"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -781,6 +866,11 @@ export interface components {
             total: number;
             /** Format: int64 */
             unknown: number;
+        };
+        /** @description Answer of `POST /api/v1/tokens`: the token metadata and its value, shown only here. */
+        CreatedToken: components["schemas"]["Token"] & {
+            /** @description The value (`fp_…`): store it now. */
+            token: string;
         };
         /** @description Daily aggregates of a test case (launches that were rolled up). */
         DailyEntry: {
@@ -1040,6 +1130,27 @@ export interface components {
          * @enum {string}
          */
         GateStatus: "passed" | "failed" | "pending";
+        /** @description A role and where the caller may grant it. */
+        GrantableRole: {
+            /** @description Grantable with `scopes: ["*"]`. */
+            allScopes: boolean;
+            builtin: boolean;
+            description?: string | null;
+            /** @description Grantable globally. */
+            global: boolean;
+            name: string;
+            permissions: string[];
+            /** @description Projects where it is grantable. */
+            scopes: string[];
+        };
+        /** @description Permissions of the caller: in project P they are `global ∪ allScopes ∪ scopes[P]`. */
+        Grants: {
+            allScopes: string[];
+            global: string[];
+            scopes: {
+                [key: string]: string[];
+            };
+        };
         /** @description One result of a test case in a launch. */
         HistoryEntry: {
             branch?: string | null;
@@ -1285,6 +1396,24 @@ export interface components {
         LogStreamBatch: {
             lines: components["schemas"]["LogLine"][];
         };
+        /** @description The caller (`GET /api/v1/me`). */
+        Me: {
+            /** @description `session`, `bearer`, `staticToken` or `managedToken`. */
+            authMethod: string;
+            /** @description OIDC users only. */
+            groups?: string[];
+            /** @description `user`, `token` (static) or `apiToken` (managed). */
+            kind: string;
+            /** @description User or token name. */
+            name: string;
+            permissions: components["schemas"]["Grants"];
+            roles: string[];
+            /**
+             * Format: uuid
+             * @description Managed tokens only.
+             */
+            tokenId?: string | null;
+        };
         /**
          * @description A metric a gate rule checks.
          * @enum {string}
@@ -1378,6 +1507,24 @@ export interface components {
             statuses?: string[] | null;
             /** @description Test cases added to the plan. */
             testCaseIds?: string[] | null;
+        };
+        /** @description Body of `POST /api/v1/tokens`. Give `scopes` or `global: true`. */
+        NewToken: {
+            /** @description Free text, at most 1024 bytes. */
+            description?: string | null;
+            /**
+             * Format: int32
+             * @description Lifetime in days: 1 to 365. Every token expires; without this field it is 90 days.
+             */
+            expiresInDays?: number | null;
+            /** @description Grant the role everywhere. */
+            global?: boolean | null;
+            /** @description `[A-Za-z0-9._@-]`, 1 to 128 characters, unique among active tokens. */
+            name: string;
+            /** @description A role: `viewer`, `uploader`, `editor`, `admin` or a custom one. */
+            role: string;
+            /** @description Project keys, or `["*"]` for every project including later ones. */
+            scopes?: string[] | null;
         };
         /** @description A notification channel. */
         Notification: {
@@ -1508,6 +1655,11 @@ export interface components {
             items: {
                 /** Format: int32 */
                 attemptCount: number;
+                /**
+                 * @description Client ids of the attempts sent through the results API (the `id` reporters send, also
+                 *     the `resultId` of their log lines), in result lists of a launch.
+                 */
+                clientIds?: string[];
                 defect?: components["schemas"]["Defect"] | null;
                 /** Format: int64 */
                 durationMs?: number | null;
@@ -1765,12 +1917,19 @@ export interface components {
             /** Format: int64 */
             launchNumber: number;
             links: components["schemas"]["LinkView"][];
+            /** @description Why the series is muted, when it is. */
+            muteReason?: string | null;
             parameters: components["schemas"]["ParameterView"][];
         };
         /** @description One result per series per launch. */
         ResultSummary: {
             /** Format: int32 */
             attemptCount: number;
+            /**
+             * @description Client ids of the attempts sent through the results API (the `id` reporters send, also
+             *     the `resultId` of their log lines), in result lists of a launch.
+             */
+            clientIds?: string[];
             defect?: components["schemas"]["Defect"] | null;
             /** Format: int64 */
             durationMs?: number | null;
@@ -2084,6 +2243,55 @@ export interface components {
             /** @description Full name as the Allure adapter reports it. */
             selector: string;
         };
+        /** @description A managed token; the value is never shown after creation. */
+        Token: {
+            /** Format: date-time */
+            createdAt: string;
+            createdBy: string;
+            description?: string | null;
+            /** Format: date-time */
+            expiresAt: string;
+            global: boolean;
+            /** Format: uuid */
+            id: string;
+            /**
+             * Format: date-time
+             * @description Recorded at most once a minute.
+             */
+            lastUsedAt?: string | null;
+            name: string;
+            /**
+             * Format: uuid
+             * @description The managed token that created this one: it expires no later and is revoked with it.
+             */
+            parentId?: string | null;
+            /** Format: date-time */
+            revokedAt?: string | null;
+            role: string;
+            /** @description Project keys; `["*"]` for every project; empty for a global token. */
+            scopes: string[];
+            /** @description `active`, `expired` or `revoked`. */
+            status: string;
+        };
+        /** @description Answer of `GET /api/v1/tokens`, newest first (not paged). */
+        TokenList: {
+            tokens: components["schemas"]["Token"][];
+        };
+        /** @description Answer of `GET /api/v1/tokens/options`. */
+        TokenOptions: {
+            /**
+             * Format: int32
+             * @description Lifetime when `expiresInDays` is not given (90).
+             */
+            defaultDays: number;
+            /**
+             * Format: int32
+             * @description Longest lifetime, days (365).
+             */
+            maxDays: number;
+            roles: components["schemas"]["GrantableRole"][];
+            scopes: string[];
+        };
         /** @description A node of the launch tree. */
         TreeNode: {
             children: components["schemas"]["TreeNode"][];
@@ -2262,6 +2470,33 @@ export interface operations {
                 };
             };
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    platform_me: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Me"];
+                };
+            };
+            401: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -4528,6 +4763,7 @@ export interface operations {
             };
             cookie?: never;
         };
+        /** @description The areas to change. Each top-level area present in the body (`flaky`, `retention`, `rollup`, `gates`, `notifications`, `issueTrackers`, `fastmock`, `vcs`) replaces the stored one as a whole; areas left out are kept; `null` resets an area to its default (removes it). The answer is the whole stored document. */
         requestBody: {
             content: {
                 "application/json": components["schemas"]["ProjectSettings"];
@@ -4764,6 +5000,245 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    platform_tokens_list: {
+        parameters: {
+            query?: {
+                /** @description Only tokens of this project (needs `tokens:read` there). */
+                scope?: string;
+                /** @description `active`, `expired` or `revoked`. */
+                status?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TokenList"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    platform_tokens_create: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NewToken"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreatedToken"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    platform_tokens_options: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TokenOptions"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    platform_tokens_self: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Token"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    platform_tokens_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Token"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    platform_tokens_revoke: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Token"];
                 };
             };
             403: {

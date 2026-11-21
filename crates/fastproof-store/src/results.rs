@@ -88,6 +88,7 @@ pub(crate) fn summary_row(r: &PgRow) -> Result<ResultSummary, sqlx::Error> {
         message: r
             .try_get::<Option<String>, _>("message")?
             .map(|m| truncate_chars(&m, MESSAGE_CHARS)),
+        client_ids: Vec::new(),
     })
 }
 
@@ -339,6 +340,26 @@ impl Store {
         } else {
             None
         };
+        if !items.is_empty() {
+            let ids: Vec<Uuid> = items.iter().map(|r| r.id).collect();
+            let keys: Vec<(Uuid, String)> = sqlx::query_as(
+                "select result_id, substr(client_key, 3) from attempts \
+                 where launch_id = $1 and launch_created_at = $2 and result_id = any($3) \
+                   and client_key like 'r:%' order by result_id, seq limit 20000",
+            )
+            .bind(launch.id)
+            .bind(launch.created_at)
+            .bind(&ids)
+            .fetch_all(&self.pool)
+            .await?;
+            let mut by: HashMap<Uuid, Vec<String>> = HashMap::new();
+            for (r, k) in keys {
+                by.entry(r).or_default().push(k);
+            }
+            for r in &mut items {
+                r.client_ids = by.remove(&r.id).unwrap_or_default();
+            }
+        }
         Ok(Page { items, next })
     }
 
@@ -508,8 +529,18 @@ impl Store {
             .bind(summary.launch_id)
             .fetch_one(&self.pool)
             .await?;
+        let mute_reason: Option<String> = if summary.muted {
+            sqlx::query_scalar("select reason from series_mutes where series_id = $1")
+                .bind(summary.series_id)
+                .fetch_optional(&self.pool)
+                .await?
+                .filter(|r: &String| !r.is_empty())
+        } else {
+            None
+        };
         Ok(Some(ResultDetail {
             launch_number,
+            mute_reason,
             description: latest_detail.description.html.clone(),
             description_text: latest_detail.description.text.clone(),
             parameters: parameter_views(&latest_detail.parameters),

@@ -730,6 +730,7 @@ function buildResults(def: LaunchDef): StoredResult[] {
         : null,
       muteUntil: muted ? iso(NOW + 9 * DAY) : null,
       message: error?.message ?? (flaky ? null : null),
+      clientIds: Array.from({ length: attemptCount }, (_, i) => clientIdOf(id, i)),
     };
     const owner = id;
     const attempts = (): Attempt[] => {
@@ -806,6 +807,11 @@ export function testKind(resultId: string): 'ui' | 'api' | null {
 
 export function launchDef(id: string): LaunchDef | undefined {
   return launches.get(id);
+}
+
+/** The id a reporter gives attempt `retry` (zero-based) of a result; log lines carry it. */
+export function clientIdOf(resultId: string, retry: number): string {
+  return `pw-mock-${resultId.slice(0, 8)}-${String(retry)}`;
 }
 
 export function launchResults(id: string): ResultSummary[] {

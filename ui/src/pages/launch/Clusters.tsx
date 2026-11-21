@@ -15,6 +15,7 @@ import { TriageDrawer } from '../../components/TriageDrawer';
 import { resultTarget, type TriageTarget } from '../../lib/triage';
 import { groupFailures } from '../../lib/errorGroups';
 import { formatDate } from '../../lib/format';
+import { stripAnsi } from '../../lib/ansi';
 import { TransitionBadge } from './TransitionBadge';
 
 function ClusterResults({ project, launch, cluster, types, canTriage, onTriage }: { project: string; launch: Launch; cluster: Cluster; types: Map<string, DefectType>; canTriage: boolean; onTriage: (t: TriageTarget) => void }) {
@@ -140,7 +141,7 @@ export function Clusters({ project, launch }: { project: string; launch: Launch 
                           {c.count}
                         </Badge>
                         <Text size="sm" className="fp-mono" lineClamp={2} style={{ wordBreak: 'break-word', minWidth: 0 }}>
-                          {c.message || '(no message)'}
+                          {c.message ? stripAnsi(c.message) : '(no message)'}
                         </Text>
                       </Group>
                       <Group gap="xs" wrap="wrap">
@@ -171,7 +172,7 @@ export function Clusters({ project, launch }: { project: string; launch: Launch 
                             size="xs"
                             variant="light"
                             leftSection={<IconTag size={14} />}
-                            onClick={() => setTarget({ label: `${String(c.count)} result${c.count === 1 ? '' : 's'} with: ${c.message ?? '(no message)'}`, count: c.count, launchId: launch.id, fingerprint: c.fingerprint, defect: c.defect })}
+                            onClick={() => setTarget({ label: `${String(c.count)} result${c.count === 1 ? '' : 's'} with: ${c.message ? stripAnsi(c.message) : '(no message)'}`, count: c.count, launchId: launch.id, fingerprint: c.fingerprint, defect: c.defect })}
                             data-testid="triage-cluster"
                           >
                             Triage all {c.count}

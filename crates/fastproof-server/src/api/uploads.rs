@@ -36,10 +36,19 @@ pub struct UploadList {
 
 /// The `payload_too_large` error naming the limit.
 pub fn too_large(limit: &str, max: u64) -> ApiError {
+    let unit = if limit.contains("bytes") {
+        "bytes"
+    } else if limit.contains("lines") {
+        "lines"
+    } else if limit.contains("results") {
+        "results"
+    } else {
+        "items"
+    };
     ApiError::new(
         StatusCode::PAYLOAD_TOO_LARGE,
         "payload_too_large",
-        format!("the body exceeds {limit} ({max} bytes)"),
+        format!("the body exceeds {limit} (max {max} {unit})"),
     )
     .with_details(serde_json::json!({"limit": limit, "max": max}))
 }
@@ -213,11 +222,24 @@ pub async fn create(
                 "the ingest queue is not available; retry later",
             ));
         }
+        audit_upload(&s, &auth, &project.key, &upload).await;
         return Ok((StatusCode::ACCEPTED, Json(upload)));
     }
     let upload = s.store.enqueue_upload(&new_upload).await?;
     s.wake.notify_one();
+    audit_upload(&s, &auth, &project.key, &upload).await;
     Ok((StatusCode::ACCEPTED, Json(upload)))
+}
+
+async fn audit_upload(s: &AppState, auth: &Auth, project: &str, u: &Upload) {
+    s.audit(
+        auth,
+        "upload.create",
+        Some(project),
+        serde_json::json!({"uploadId": u.id, "launchId": u.launch_id, "format": u.format,
+            "sizeBytes": u.size_bytes}),
+    )
+    .await;
 }
 
 #[utoipa::path(get, path = "/api/v1/projects/{key}/launches/{id}/uploads", tag = "uploads", operation_id = "uploads_list",

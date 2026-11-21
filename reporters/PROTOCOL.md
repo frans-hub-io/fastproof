@@ -81,7 +81,14 @@ Response `202 {accepted, duplicates, rejected: [{index, message}]}`. Each line i
   mark the result flaky. Playwright: `result.retry`. pytest: each `pytest_runtest_logstart` /
   `pytest_runtest_logfinish` pair is one attempt, which covers pytest-rerunfailures (it calls them per rerun).
 - **Running results**: when a test begins, the reporter sends the same client id with `status: "running"`
-  and only the fields known at that point; the final result later updates it. Feature detection: if the server
+  and the fields known at that point; the final result later updates it. Send the identity the final line
+  will have (`fullName`, `parameters`, `testCaseId`) whenever it is known at the start, so the running row is
+  the right one from the first moment. The client id wins: when the final line carries another identity (an
+  added `testCaseId` or `parameters`, another `fullName` or `name`), the server moves the attempt to the
+  result of the final identity, recomputes both results and removes the running result when it has no
+  attempts left. Several running lines of different tests never merge their outcomes.
+- **Counts**: `accepted` counts lines applied, a running line completed by its final line in the same
+  request included; `duplicates` counts lines whose client id is already stored as a final result. Feature detection: if the server
   rejects a running line (stage B answers `rejected` with "unknown variant `running`"), the reporter stops
   sending them; final results are unaffected. Running lines are never spooled.
 - **Final result**: `status` (`passed|failed|broken|skipped|unknown`), `start`/`stop` (ms since epoch; always
@@ -104,12 +111,18 @@ Content-Type: application/x-ndjson
 ```
 
 - `resultId` is the attempt's client id, `attempt` its number, `seq` increases from 0 per `(resultId, attempt)`
-  (the idempotency key), `ts` is milliseconds since the epoch, `level` is `trace|debug|info|warn|error`,
-  `stream` is `stdout|stderr|log|step`, `step` is the step path joined with ` › `.
-- Up to 1000 lines per request, 64 KiB per message (longer ones are cut), at most 20000 lines queued; the
-  oldest are dropped first when the server is slow.
+  (the idempotency key), `ts` is milliseconds since the epoch (an RFC 3339 string is accepted too; the server
+  returns milliseconds), `level` is `trace|debug|info|warn|error` (the server also reads `warning` as `warn`
+  and `fatal`/`critical` as `error`, and rejects other values), `stream` is `stdout|stderr|log|step`, `step`
+  is the step path joined with ` › `.
+- Server limits (defaults): 5000 lines and 8 MiB per request, 64 KiB per message, 256 MiB of log bytes per
+  launch. The server cuts a longer message at a character boundary and ends it with ` …[truncated]`; the line
+  is kept. A request over a limit gets `413` naming the limit and its unit. The reporters cut messages to 64 KiB
+  themselves, send at most 1000 lines per request and queue at most 20000 lines; the oldest are dropped first
+  when the server is slow.
 - Sources: Playwright `onStdOut`/`onStdErr` and `onStepBegin`/`onStepEnd` of `test.step` (plus failed
-  `expect`); pytest a `logging.Handler` on the root logger (level `fastproof_log_level`, default INFO) and
+  `expect`); pytest a `logging.Handler` on the root logger (level `fastproof_log_level` or
+  `FASTPROOF_LOG_LEVEL`, default INFO; pytest's own `log_level`, when set, also limits what reaches it) and
   `pytest_fastproof.step()`. Captured stdout of pytest arrives per phase in the final result, not live.
 - **Feature detection**: `404`, `405` or `501` mean the server has no logs endpoint; the reporter stops
   streaming. pytest also probes with an empty request after the launch resolves. When logs are not stored live,
@@ -180,7 +193,9 @@ Response `201 {id, sha256, size}`. Then the attachment is referenced by `id` in 
   after each batch, finish the launch if `finish` is set, delete the session. Interrupted sends resume.
 - Who sends: the next run of either reporter (in the background, same project), the end of the same run when
   the server is back, `npx fastproof-playwright flush [--spool DIR]` or `python -m pytest_fastproof flush
-  [--spool DIR]`. Both read the same format, so either tool can send any session.
+  [--spool DIR]`. Both read the same format, so either tool can send any session. The `flush` commands need
+  `FASTPROOF_URL` and a token; each session goes to the project in its `meta.json`, and `FASTPROOF_PROJECT`
+  limits a flush to one project.
 
 ## 8. Trace context per attempt
 

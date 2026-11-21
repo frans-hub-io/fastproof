@@ -21,6 +21,7 @@ import { QueryState } from '../components/QueryState';
 import { LaunchStatusBadge, StatusBadge, StatusBar, StatusDot } from '../components/Status';
 import { ciLabel, commitUrl, repoLabel } from '../lib/ci';
 import { formatBytes, formatDateTime, formatDuration, formatRelative, isHttpUrl, percent, shortSha } from '../lib/format';
+import { stripAnsi } from '../lib/ansi';
 import { useListKeys } from '../lib/keys';
 import { rememberLaunch } from '../lib/recent';
 import { STATUS_LABEL, statusVar, uploadStatusColor } from '../lib/status';
@@ -285,7 +286,7 @@ function ResultRow({ project, r, index, selected, onHover, types }: { project: s
           </Group>
           {r.message && (r.status === 'failed' || r.status === 'broken') && (
             <Text size="xs" className="fp-mono fh-truncate" c="var(--mantine-color-error)">
-              {r.message.split('\n')[0]}
+              {stripAnsi(r.message).split('\n')[0]}
             </Text>
           )}
         </Stack>
@@ -472,7 +473,7 @@ function Tree({ project, launch, onPick, selectedKey }: { project: string; launc
 
 function LaunchLogs({ project, launch }: { project: string; launch: Launch }) {
   const q = useResults(project, launch.id, {});
-  const results = useMemo(() => flatItems(q.data).map((r) => ({ id: r.id, name: r.name })), [q.data]);
+  const results = useMemo(() => flatItems(q.data).map((r) => ({ id: r.id, name: r.name, clientIds: r.clientIds })), [q.data]);
   return <LogConsole project={project} launchId={launch.id} live={launch.status === 'running'} results={results} fileName={`${launch.name}-${String(launch.number)}-logs.txt`} />;
 }
 

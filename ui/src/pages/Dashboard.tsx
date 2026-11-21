@@ -12,6 +12,8 @@ import { QueryState } from '../components/QueryState';
 import { GROUP_COLOR, GROUP_LABEL } from '../lib/defects';
 import { formatDuration } from '../lib/format';
 import { useLaunchList } from '../lib/launches';
+import { sameNameHints } from '../lib/names';
+import { SameName } from '../components/SameName';
 
 const DAY = 86_400_000;
 
@@ -83,6 +85,8 @@ function Content({ project, d }: { project: string; d: Dashboard }) {
   const failures = defects.reduce((s, x) => s + x.n, 0);
   const investigate = defects.find((x) => x.g === 'toInvestigate')?.n ?? 0;
   const maxFail = Math.max(1, ...d.mostFailing.map((m) => m.failures));
+  const flakyHints = sameNameHints(d.flakyTop, (f) => f.name, (f) => [f.testCaseId, f.seriesKey]);
+  const failingHints = sameNameHints(d.mostFailing, (m) => m.name, (m) => [m.testCaseId]);
 
   return (
     <Stack gap="md">
@@ -172,9 +176,10 @@ function Content({ project, d }: { project: string; d: Dashboard }) {
           ) : (
             <Stack gap={8}>
               {d.flakyTop.map((f) => (
-                <Group key={f.testCaseId} gap="sm" wrap="nowrap">
+                <Group key={f.seriesKey} gap="sm" wrap="nowrap">
                   <Anchor component={Link} to={`/p/${project}/test-cases/${encodeURIComponent(f.testCaseId)}`} size="sm" className="fh-truncate" style={{ flex: 1, minWidth: 0 }}>
                     {f.name}
+                    <SameName hint={flakyHints.get(f)} />
                   </Anchor>
                   <Tooltip label={`Score ${String(Math.round(f.score * 100))}%`}>
                     <Progress value={f.score * 100} color="var(--fp-status-flaky)" w={90} size="sm" radius="xl" style={{ flex: 'none' }} aria-label={`Flakiness ${String(Math.round(f.score * 100))}%`} />
@@ -201,6 +206,7 @@ function Content({ project, d }: { project: string; d: Dashboard }) {
                 <Group key={m.testCaseId} gap="sm" wrap="nowrap">
                   <Anchor component={Link} to={`/p/${project}/test-cases/${encodeURIComponent(m.testCaseId)}`} size="sm" className="fh-truncate" style={{ flex: 1, minWidth: 0 }}>
                     {m.name}
+                    <SameName hint={failingHints.get(m)} />
                   </Anchor>
                   <Progress value={(m.failures / maxFail) * 100} color="var(--fp-status-failed)" w={90} size="sm" radius="xl" style={{ flex: 'none' }} aria-hidden />
                   <Text size="xs" c="dimmed" w={36} ta="right" style={{ flex: 'none' }}>

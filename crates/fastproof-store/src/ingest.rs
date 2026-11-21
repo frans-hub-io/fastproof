@@ -40,6 +40,9 @@ pub struct PersistOutcome {
     pub accepted: u64,
     /// Attempts skipped because their client key was already stored.
     pub duplicates: u64,
+    /// `running` lines replaced by a later line with the same client key in the same batch
+    /// (applied, then superseded; not duplicates).
+    pub superseded: u64,
     /// Client keys of the attempts written.
     pub accepted_keys: HashSet<String>,
     /// Results created or recomputed.
@@ -232,6 +235,202 @@ impl Store {
     }
 }
 
+/// Removes ANSI escape sequences (colours, cursor moves, OSC titles and links) from text.
+/// Error messages and traces are shown, searched, fingerprinted and compared without them;
+/// captured output (stdout, stderr, logs) keeps them for the console.
+pub fn strip_ansi(s: &str) -> std::borrow::Cow<'_, str> {
+    if !s.contains('\u{1b}') && !s.contains('\u{9b}') {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\u{1b}' => match chars.peek() {
+                Some('[') => {
+                    chars.next();
+                    skip_csi(&mut chars);
+                }
+                Some(']') => {
+                    chars.next();
+                    while let Some(n) = chars.next() {
+                        if n == '\u{7}' {
+                            break;
+                        }
+                        if n == '\u{1b}' {
+                            if chars.peek() == Some(&'\\') {
+                                chars.next();
+                            }
+                            break;
+                        }
+                    }
+                }
+                Some(n) if ('@'..='_').contains(n) || ('('..=')').contains(n) => {
+                    let n = *n;
+                    chars.next();
+                    if n == '(' || n == ')' {
+                        chars.next();
+                    }
+                }
+                _ => {}
+            },
+            '\u{9b}' => skip_csi(&mut chars),
+            c => out.push(c),
+        }
+    }
+    std::borrow::Cow::Owned(out)
+}
+
+fn skip_csi(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
+    for n in chars.by_ref() {
+        if ('@'..='~').contains(&n) {
+            break;
+        }
+    }
+}
+
+fn strip_opt(v: &mut Option<String>) {
+    if let Some(t) = v
+        && let std::borrow::Cow::Owned(clean) = strip_ansi(t)
+    {
+        *t = clean;
+    }
+}
+
+fn clean_steps(steps: &mut [Step]) {
+    for s in steps {
+        strip_opt(&mut s.status_details.message);
+        strip_opt(&mut s.status_details.trace);
+        clean_steps(&mut s.steps);
+    }
+}
+
+/// Strips ANSI escapes from the error texts of a result and its steps.
+fn clean_error_text(r: &mut ParsedResult) {
+    let d = &mut r.status_details;
+    strip_opt(&mut d.message);
+    strip_opt(&mut d.trace);
+    strip_opt(&mut d.expected);
+    strip_opt(&mut d.actual);
+    clean_steps(&mut r.steps);
+}
+
+/// After running attempts moved to another series: deletes the results of `vacated` series
+/// (series id to result id) that have no attempts left in the launch, with their series and
+/// test cases when nothing else uses them, and refreshes the outcome of the others from their
+/// latest remaining attempt. Returns `(series, result, still has attempts)`.
+async fn refresh_vacated(
+    conn: &mut sqlx::PgConnection,
+    launch: &LaunchRef,
+    vacated: &HashMap<Uuid, Uuid>,
+) -> anyhow::Result<Vec<(Uuid, Uuid, bool)>> {
+    if vacated.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut series: Vec<Uuid> = vacated.keys().copied().collect();
+    series.sort();
+    let remaining: HashSet<Uuid> = sqlx::query_scalar::<_, Uuid>(
+        "select distinct series_id from attempts \
+         where launch_id = $1 and launch_created_at = $2 and series_id = any($3)",
+    )
+    .bind(launch.id)
+    .bind(launch.created_at)
+    .bind(&series)
+    .fetch_all(&mut *conn)
+    .await?
+    .into_iter()
+    .collect();
+    let mut out = Vec::with_capacity(series.len());
+    let mut gone_results = Vec::new();
+    let mut gone_series = Vec::new();
+    let mut kept_results = Vec::new();
+    for s in &series {
+        let r = vacated[s];
+        let remains = remaining.contains(s);
+        out.push((*s, r, remains));
+        if remains {
+            kept_results.push(r);
+        } else {
+            gone_results.push(r);
+            gone_series.push(*s);
+        }
+    }
+    if !kept_results.is_empty() {
+        sqlx::query(
+            "update results r set status = la.status, started_at = la.started_at, stopped_at = la.stopped_at, \
+               duration_ms = la.duration_ms, message = la.message, updated_at = now() \
+             from (select distinct on (a.result_id) a.result_id, a.status, a.started_at, a.stopped_at, \
+                 a.duration_ms, a.message from attempts a \
+               where a.result_id = any($1) and a.launch_created_at = $2 \
+               order by a.result_id, (a.started_at is not null) desc, a.started_at desc nulls last, a.seq desc) la \
+             where r.id = la.result_id and r.launch_created_at = $2",
+        )
+        .bind(&kept_results)
+        .bind(launch.created_at)
+        .execute(&mut *conn)
+        .await?;
+    }
+    if gone_results.is_empty() {
+        return Ok(out);
+    }
+    sqlx::query("delete from results where id = any($1) and launch_created_at = $2")
+        .bind(&gone_results)
+        .bind(launch.created_at)
+        .execute(&mut *conn)
+        .await?;
+    // Lock before checking, so a result another launch adds meanwhile is seen (or that launch
+    // waits and creates the series again).
+    let locked: Vec<(Uuid, Uuid)> = sqlx::query_as(
+        "select id, test_case_id from series where id = any($1) order by id for update",
+    )
+    .bind(&gone_series)
+    .fetch_all(&mut *conn)
+    .await?;
+    if locked.is_empty() {
+        return Ok(out);
+    }
+    let dropped: Vec<Uuid> = sqlx::query_scalar(
+        "delete from series s where s.id = any($1) \
+           and not exists (select 1 from results r where r.series_id = s.id) \
+           and not exists (select 1 from attempts a where a.series_id = s.id and a.launch_id = $2) \
+         returning s.id",
+    )
+    .bind(&gone_series)
+    .bind(launch.id)
+    .fetch_all(&mut *conn)
+    .await?;
+    if dropped.is_empty() {
+        return Ok(out);
+    }
+    for table in ["series_stats", "series_daily", "series_mutes"] {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "delete from {table} where series_id = any($1)"
+        )))
+        .bind(&dropped)
+        .execute(&mut *conn)
+        .await?;
+    }
+    let mut cases: Vec<Uuid> = locked
+        .iter()
+        .filter(|(s, _)| dropped.contains(s))
+        .map(|(_, t)| *t)
+        .collect();
+    cases.sort();
+    cases.dedup();
+    sqlx::query("select id from test_cases where id = any($1) order by id for update")
+        .bind(&cases)
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query(
+        "delete from test_cases t where t.id = any($1) \
+           and not exists (select 1 from series s where s.test_case_id = t.id)",
+    )
+    .bind(&cases)
+    .execute(&mut *conn)
+    .await?;
+    Ok(out)
+}
+
 /// As [`Store::persist_attempts`], inside the caller's transaction (the Kafka writer commits its
 /// consumer offset in the same transaction). Nothing is written when no attempt is new; the
 /// caller decides whether to commit.
@@ -252,16 +451,19 @@ pub async fn persist_attempts_in(
 
     let mut seen: HashMap<String, usize> = HashMap::new();
     let mut prepared: Vec<Prepared> = Vec::with_capacity(attempts.len());
-    for a in attempts {
+    for mut a in attempts {
+        clean_error_text(&mut a.result);
         if let Some(&i) = seen.get(&a.client_key) {
-            // A running result completed within the same batch: keep the newer copy.
-            if prepared[i].r.stage == Stage::Running
-                && a.result.identity.series_key == prepared[i].series_key
-            {
+            // A running result completed (or updated) within the same batch: the client id wins,
+            // so the newer copy replaces it whatever identity it carries.
+            if prepared[i].r.stage == Stage::Running {
                 prepared[i].tc_hash = a.result.identity.test_case_hash.clone();
+                prepared[i].series_key = a.result.identity.series_key.clone();
                 prepared[i].r = a.result;
+                out.superseded += 1;
+            } else {
+                out.duplicates += 1;
             }
-            out.duplicates += 1;
             continue;
         }
         seen.insert(a.client_key.clone(), prepared.len());
@@ -378,7 +580,7 @@ pub async fn persist_attempts_in(
     let series_by_key: HashMap<String, (Uuid, Uuid)> =
         rows.into_iter().map(|(i, k, tc)| (k, (i, tc))).collect();
     let series_ids: Vec<Uuid> = series_by_key.values().map(|v| v.0).collect();
-    let tc_of_series: HashMap<Uuid, Uuid> = series_by_key.values().copied().collect();
+    let mut tc_of_series: HashMap<Uuid, Uuid> = series_by_key.values().copied().collect();
 
     // Results that exist for these series.
     let existing: Vec<(Uuid, Uuid)> = sqlx::query_as(
@@ -393,6 +595,22 @@ pub async fn persist_attempts_in(
     for s in &series_ids {
         result_of.entry(*s).or_insert_with(Uuid::now_v7);
     }
+
+    // Attempts stored as `running` under another identity: the client id wins, so they move to
+    // the series of the line that completes them and their old results are recomputed.
+    let keys: Vec<String> = prepared.iter().map(|p| p.client_key.clone()).collect();
+    let open_before: HashMap<String, (Uuid, Uuid)> = sqlx::query_as::<_, (String, Uuid, Uuid)>(
+        "select client_key, series_id, result_id from attempts \
+         where launch_id = $1 and launch_created_at = $2 and client_key = any($3) and status = 'running'",
+    )
+    .bind(launch.id)
+    .bind(launch.created_at)
+    .bind(&keys)
+    .fetch_all(&mut *conn)
+    .await?
+    .into_iter()
+    .map(|(k, s, r)| (k, (s, r)))
+    .collect();
 
     // Attempts.
     let n = prepared.len();
@@ -471,6 +689,7 @@ pub async fn persist_attempts_in(
                $18::text[], $19::jsonb[], $20::bytea[], $21::bytea[]) \
                as t(i, r, s, k, q, st, rs, sa, so, d, m, tr, su, ti, de, sz, lz) \
              on conflict (launch_id, client_key, launch_created_at) do update set status = excluded.status, \
+               result_id = excluded.result_id, series_id = excluded.series_id, \
                raw_status = excluded.raw_status, started_at = excluded.started_at, stopped_at = excluded.stopped_at, \
                duration_ms = excluded.duration_ms, message = excluded.message, trace = excluded.trace, \
                source_uuid = excluded.source_uuid, trace_id = excluded.trace_id, detail = excluded.detail, \
@@ -516,12 +735,46 @@ pub async fn persist_attempts_in(
     }
 
     // Recompute the results of the affected series from all their attempts.
-    let affected: HashSet<Uuid> = prepared
+    let mut affected: HashSet<Uuid> = prepared
         .iter()
         .zip(a_series.iter())
         .filter(|(p, _)| accepted.contains(&p.client_key))
         .map(|(_, s)| *s)
         .collect();
+    // Series that running attempts moved out of.
+    let mut vacated: HashMap<Uuid, Uuid> = HashMap::new();
+    for (p, s) in prepared.iter().zip(a_series.iter()) {
+        if let Some((old_series, old_result)) = open_before.get(&p.client_key)
+            && accepted.contains(&p.client_key)
+            && old_series != s
+        {
+            vacated.insert(*old_series, *old_result);
+        }
+    }
+    let vacated_rows = refresh_vacated(&mut *conn, launch, &vacated).await?;
+    let mut removed_events = Vec::new();
+    for (series_id, result_id, remains) in &vacated_rows {
+        if *remains {
+            affected.insert(*series_id);
+            result_of.insert(*series_id, *result_id);
+        } else {
+            removed_events.push(serde_json::json!({"id": result_id, "launchId": launch.id,
+                "seriesId": series_id, "removed": true}));
+        }
+    }
+    let kept: Vec<Uuid> = vacated_rows
+        .iter()
+        .filter(|v| v.2 && !tc_of_series.contains_key(&v.0))
+        .map(|v| v.0)
+        .collect();
+    if !kept.is_empty() {
+        let rows: Vec<(Uuid, Uuid)> =
+            sqlx::query_as("select id, test_case_id from series where id = any($1)")
+                .bind(&kept)
+                .fetch_all(&mut *conn)
+                .await?;
+        tc_of_series.extend(rows);
+    }
     let affected_v: Vec<Uuid> = affected.iter().copied().collect();
     let mut all: Vec<AttemptKeyRow> = sqlx::query_as(
         "select series_id, id, status, started_at, seq from attempts \
@@ -718,6 +971,15 @@ pub async fn persist_attempts_in(
         events,
     )
     .await?;
+    if !removed_events.is_empty() {
+        crate::events::emit_many(
+            &mut *conn,
+            "result.removed",
+            Some(&launch.project_key),
+            removed_events,
+        )
+        .await?;
+    }
     let stored: Vec<serde_json::Value> = prepared
         .iter()
         .zip(a_series.iter())
@@ -736,4 +998,27 @@ pub async fn persist_attempts_in(
     .await?;
     crate::events::notify_launch(&mut *conn, &launch.project_key, launch.id).await?;
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strip_ansi;
+
+    #[test]
+    fn strips_escape_sequences() {
+        assert_eq!(
+            strip_ansi("Error: \u{1b}[2mexpect(\u{1b}[22m\u{1b}[31mlocator\u{1b}[39m)"),
+            "Error: expect(locator)"
+        );
+        assert_eq!(
+            strip_ansi("\u{1b}]8;;https://example.com\u{7}link\u{1b}]8;;\u{1b}\\ end"),
+            "link end"
+        );
+        assert_eq!(strip_ansi("a\u{9b}1mb\u{1b}(Bc\u{1b}Md"), "abcd");
+        assert_eq!(strip_ansi("trailing \u{1b}["), "trailing ");
+        assert!(matches!(
+            strip_ansi("plain é text"),
+            std::borrow::Cow::Borrowed(_)
+        ));
+    }
 }

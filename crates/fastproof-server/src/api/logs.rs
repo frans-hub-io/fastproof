@@ -59,16 +59,33 @@ pub struct LogIngestSummary {
     pub rejected: Vec<Rejected>,
 }
 
-fn validate(l: &LogLine, max_line: usize) -> Result<(), String> {
+/// Appended to a message cut to the line limit.
+pub const TRUNCATED_MARKER: &str = " …[truncated]";
+
+/// Cuts a message longer than `max` bytes at a character boundary and marks the cut, so the
+/// whole line stays within `max` bytes.
+pub fn truncate_message(message: &mut String, max: usize) {
+    if message.len() <= max {
+        return;
+    }
+    let mut end = max.saturating_sub(TRUNCATED_MARKER.len());
+    while end > 0 && !message.is_char_boundary(end) {
+        end -= 1;
+    }
+    message.truncate(end);
+    if max >= TRUNCATED_MARKER.len() {
+        message.push_str(TRUNCATED_MARKER);
+    }
+}
+
+fn validate(l: &mut LogLine, max_line: usize) -> Result<(), String> {
     let id = l.result_id.trim();
     if id.is_empty() || id.len() > MAX_RESULT_ID_BYTES {
         return Err(format!(
             "resultId must have 1 to {MAX_RESULT_ID_BYTES} bytes"
         ));
     }
-    if l.message.len() > max_line {
-        return Err(format!("message exceeds {max_line} bytes"));
-    }
+    truncate_message(&mut l.message, max_line);
     if l.step.as_ref().is_some_and(|s| s.len() > MAX_STEP_BYTES) {
         return Err(format!("step exceeds {MAX_STEP_BYTES} bytes"));
     }
@@ -136,7 +153,7 @@ pub async fn ingest(
                     limits.max_lines_per_request as u64,
                 ));
             }
-            match v.and_then(|l| validate(&l, limits.max_line_bytes).map(|_| l)) {
+            match v.and_then(|mut l| validate(&mut l, limits.max_line_bytes).map(|_| l)) {
                 Ok(l) => lines.push(l),
                 Err(message) => summary.rejected.push(Rejected { index, message }),
             }

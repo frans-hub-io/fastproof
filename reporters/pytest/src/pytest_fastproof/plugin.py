@@ -83,6 +83,22 @@ class LogHandler(logging.Handler):
             self.handleError(record)
 
 
+def item_identity(item: Any, mask: Any) -> Dict[str, Any]:
+    """Parameters and explicit test case id of an item: the parts of the identity a running line must
+    carry so the final line updates the same result."""
+    test_case_id = None
+    for mk in item.iter_markers():
+        if mk.name == "fastproof_id" and mk.args:
+            test_case_id = str(mk.args[0])
+        elif mk.name == "allure_label" and mk.kwargs.get("label_type") in ("as_id", "ALLURE_ID") and mk.args:
+            test_case_id = test_case_id or str(mk.args[0])
+    params = []
+    callspec = getattr(item, "callspec", None)
+    for k, v in (getattr(callspec, "params", None) or {}).items():
+        params.append({"name": str(k), "value": mask(cut(v if isinstance(v, str) else repr(v), 1000))})
+    return {"parameters": params, "testCaseId": test_case_id}
+
+
 class Executor:
     """Per test process: the current attempt, its trace context, attachments, steps and logs."""
 
@@ -187,13 +203,11 @@ class Executor:
         if len(parts) > 2:
             labels.append({"name": "subSuite", "value": "::".join(parts[1:-1])})
         links: List[Dict[str, Any]] = []
-        test_case_id = None
+        ident = item_identity(item, mask)
         tags = []
         for mk in item.iter_markers():
-            if mk.name == "fastproof_id" and mk.args:
-                test_case_id = str(mk.args[0])
-            elif mk.name == "allure_label" and mk.kwargs.get("label_type") in ("as_id", "ALLURE_ID") and mk.args:
-                test_case_id = test_case_id or str(mk.args[0])
+            if mk.name == "fastproof_id" or (mk.name == "allure_label" and mk.kwargs.get("label_type") in ("as_id", "ALLURE_ID")):
+                continue
             elif mk.name == "fastproof_label" and len(mk.args) >= 2:
                 labels.append({"name": str(mk.args[0]), "value": mask(str(mk.args[1]))})
             elif mk.name == "fastproof_link" and mk.args:
@@ -204,10 +218,6 @@ class Executor:
             elif mk.name not in BUILTIN_MARKERS and mk.name not in tags:
                 tags.append(mk.name)
         labels.extend({"name": "tag", "value": t} for t in tags)
-        params = []
-        callspec = getattr(item, "callspec", None)
-        for k, v in (getattr(callspec, "params", None) or {}).items():
-            params.append({"name": str(k), "value": mask(cut(v if isinstance(v, str) else repr(v), 1000))})
         fspath, line, _ = item.location
         meta: Dict[str, Any] = {
             "v": 1,
@@ -217,8 +227,8 @@ class Executor:
             "fullName": mask(strip_params(nodeid)),
             "labels": labels,
             "links": links,
-            "parameters": params,
-            "testCaseId": test_case_id,
+            "parameters": ident["parameters"],
+            "testCaseId": ident["testCaseId"],
             "source": {"file": fspath, "line": (line or 0) + 1},
             "traceparent": att.trace.traceparent,
         }
@@ -296,6 +306,7 @@ class Reporter:
         self.counts: Dict[str, int] = {}
         self.open: Dict[str, OpenAttempt] = {}
         self.sections: Dict[str, int] = {}
+        self.items: Dict[str, Any] = {}
         self.summary: Optional[Dict[str, Any]] = None
         self.failed_any = False
 
@@ -317,6 +328,13 @@ class Reporter:
         }
         if location:
             r["source"] = {"file": location[0], "line": (location[1] or 0) + 1}
+        item = self.items.get(nodeid)
+        if item is not None:
+            # The final line carries the same identity, so it completes this result in place.
+            ident = item_identity(item, m.mask)
+            r["parameters"] = ident["parameters"]
+            if ident["testCaseId"]:
+                r["testCaseId"] = ident["testCaseId"]
         self.client.open_running(r)
 
     def logreport(self, rep: Any) -> None:
@@ -540,6 +558,11 @@ class FastProofPlugin:
         if self.executor is not None:
             self.executor.install_handler()
             _executor = self.executor
+        if not is_worker and config.getoption("allure_report_dir", default=None):
+            self.message = (
+                "results are sent to FastProof live and also written to --alluredir: do not upload that directory"
+                " with `fastproof upload` as well (that makes a second launch), or set FASTPROOF_ENABLED=false"
+            )
 
     def _guard(self, fn, *args) -> None:
         try:
@@ -564,6 +587,10 @@ class FastProofPlugin:
         if drop:
             config.hook.pytest_deselected(items=drop)
             items[:] = keep
+
+    def pytest_collection_finish(self, session: pytest.Session) -> None:
+        if self.reporter is not None:
+            self.reporter.items = {it.nodeid: it for it in session.items}
 
     @pytest.hookimpl(tryfirst=True)
     def pytest_runtest_logstart(self, nodeid: str, location: Any) -> None:

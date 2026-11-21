@@ -113,3 +113,199 @@ pub async fn jobs(State(s): State<AppState>, auth: Auth) -> ApiResult<Json<JobLi
         items: s.store.scheduled_jobs().await?,
     }))
 }
+
+// Documentation of the platform routes (`/api/v1/me`, `/api/v1/tokens`), served by
+// `franshub_auth::routes`. The types below mirror their JSON and are used only in the document.
+
+/// Permissions of the caller: in project P they are `global ∪ allScopes ∪ scopes[P]`.
+#[derive(Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Grants {
+    pub global: Vec<String>,
+    pub scopes: std::collections::BTreeMap<String, Vec<String>>,
+    pub all_scopes: Vec<String>,
+}
+
+/// The caller (`GET /api/v1/me`).
+#[derive(Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Me {
+    /// User or token name.
+    pub name: String,
+    /// `user`, `token` (static) or `apiToken` (managed).
+    pub kind: String,
+    /// `session`, `bearer`, `staticToken` or `managedToken`.
+    pub auth_method: String,
+    pub roles: Vec<String>,
+    /// OIDC users only.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<String>,
+    /// Managed tokens only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_id: Option<uuid::Uuid>,
+    pub permissions: Grants,
+}
+
+/// Body of `POST /api/v1/tokens`. Give `scopes` or `global: true`.
+#[derive(Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct NewToken {
+    /// `[A-Za-z0-9._@-]`, 1 to 128 characters, unique among active tokens.
+    pub name: String,
+    /// A role: `viewer`, `uploader`, `editor`, `admin` or a custom one.
+    pub role: String,
+    /// Project keys, or `["*"]` for every project including later ones.
+    pub scopes: Option<Vec<String>>,
+    /// Grant the role everywhere.
+    pub global: Option<bool>,
+    /// Lifetime in days: 1 to 365. Every token expires; without this field it is 90 days.
+    pub expires_in_days: Option<u32>,
+    /// Free text, at most 1024 bytes.
+    pub description: Option<String>,
+}
+
+/// A managed token; the value is never shown after creation.
+#[derive(Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Token {
+    pub id: uuid::Uuid,
+    pub name: String,
+    pub role: String,
+    /// Project keys; `["*"]` for every project; empty for a global token.
+    pub scopes: Vec<String>,
+    pub global: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub created_by: String,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    /// Recorded at most once a minute.
+    pub last_used_at: Option<DateTime<Utc>>,
+    pub revoked_at: Option<DateTime<Utc>>,
+    /// `active`, `expired` or `revoked`.
+    pub status: String,
+    /// The managed token that created this one: it expires no later and is revoked with it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<uuid::Uuid>,
+}
+
+/// Answer of `POST /api/v1/tokens`: the token metadata and its value, shown only here.
+#[derive(Serialize, ToSchema)]
+pub struct CreatedToken {
+    /// The value (`fp_…`): store it now.
+    pub token: String,
+    #[serde(flatten)]
+    pub info: Token,
+}
+
+/// Answer of `GET /api/v1/tokens`, newest first (not paged).
+#[derive(Serialize, ToSchema)]
+pub struct TokenList {
+    pub tokens: Vec<Token>,
+}
+
+/// A role and where the caller may grant it.
+#[derive(Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GrantableRole {
+    pub name: String,
+    pub builtin: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub permissions: Vec<String>,
+    /// Grantable globally.
+    pub global: bool,
+    /// Projects where it is grantable.
+    pub scopes: Vec<String>,
+    /// Grantable with `scopes: ["*"]`.
+    pub all_scopes: bool,
+}
+
+/// Answer of `GET /api/v1/tokens/options`.
+#[derive(Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenOptions {
+    /// Longest lifetime, days (365).
+    pub max_days: u32,
+    /// Lifetime when `expiresInDays` is not given (90).
+    pub default_days: u32,
+    pub scopes: Vec<String>,
+    pub roles: Vec<GrantableRole>,
+}
+
+/// Query of `GET /api/v1/tokens`.
+#[derive(Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+#[allow(dead_code)]
+pub struct TokensQueryDoc {
+    /// Only tokens of this project (needs `tokens:read` there).
+    pub scope: Option<String>,
+    /// `active`, `expired` or `revoked`.
+    pub status: Option<String>,
+}
+
+#[utoipa::path(get, path = "/api/v1/me", tag = "admin", operation_id = "platform_me",
+    responses((status = 200, body = Me), (status = 401, body = ErrorBody)))]
+#[allow(dead_code)]
+fn me_doc() {}
+
+#[utoipa::path(get, path = "/api/v1/tokens", tag = "admin", operation_id = "platform_tokens_list",
+    description = "Managed tokens the caller may read (`tokens:read`). 404 when managed tokens are not configured.",
+    params(TokensQueryDoc),
+    responses((status = 200, body = TokenList), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),
+        (status = 404, body = ErrorBody)))]
+#[allow(dead_code)]
+fn tokens_list_doc() {}
+
+#[utoipa::path(post, path = "/api/v1/tokens", tag = "admin", operation_id = "platform_tokens_create",
+    description = "Creates a managed token (`tokens:write`). A token can grant only permissions its creator holds where \
+        it grants them; a token created by a managed token expires no later than its creator and is revoked with it.",
+    request_body = NewToken,
+    responses((status = 201, body = CreatedToken), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),
+        (status = 404, body = ErrorBody), (status = 409, body = ErrorBody)))]
+#[allow(dead_code)]
+fn tokens_create_doc() {}
+
+#[utoipa::path(get, path = "/api/v1/tokens/options", tag = "admin", operation_id = "platform_tokens_options",
+    description = "Lifetimes, projects and roles the caller may grant (`tokens:write`).",
+    responses((status = 200, body = TokenOptions), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
+#[allow(dead_code)]
+fn tokens_options_doc() {}
+
+#[utoipa::path(get, path = "/api/v1/tokens/self", tag = "admin", operation_id = "platform_tokens_self",
+    description = "The managed token of the request.",
+    responses((status = 200, body = Token), (status = 404, body = ErrorBody)))]
+#[allow(dead_code)]
+fn tokens_self_doc() {}
+
+#[utoipa::path(get, path = "/api/v1/tokens/{id}", tag = "admin", operation_id = "platform_tokens_get",
+    params(("id" = uuid::Uuid, Path)),
+    responses((status = 200, body = Token), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
+#[allow(dead_code)]
+fn tokens_get_doc() {}
+
+#[utoipa::path(delete, path = "/api/v1/tokens/{id}", tag = "admin", operation_id = "platform_tokens_revoke",
+    description = "Revokes a token (and the tokens it created). A token may always revoke itself.",
+    params(("id" = uuid::Uuid, Path)),
+    responses((status = 200, body = Token), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
+#[allow(dead_code)]
+fn tokens_revoke_doc() {}
+
+/// The platform routes in the OpenAPI document.
+#[derive(utoipa::OpenApi)]
+#[openapi(paths(
+    me_doc,
+    tokens_list_doc,
+    tokens_create_doc,
+    tokens_options_doc,
+    tokens_self_doc,
+    tokens_get_doc,
+    tokens_revoke_doc
+))]
+pub struct PlatformDoc;
+
+/// Adds the platform routes to the API document.
+pub fn document_platform(doc: &mut utoipa::openapi::OpenApi) {
+    use utoipa::OpenApi;
+    doc.merge(PlatformDoc::openapi());
+}

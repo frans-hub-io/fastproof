@@ -9,6 +9,7 @@ import { ApiError, errorMessage } from '../api/client';
 import { appendEntries, fetchLogs, lineKey, LOG_CAP, useLogStream, type LogEntry } from '../api/logs';
 import type { LogFilters, LogLevel } from '../api/types-next';
 import { parseAnsi, stripAnsi, type AnsiStyle } from '../lib/ansi';
+import { resultNames } from '../lib/names';
 
 const PAGE = 5000;
 const COPY_MAX = 100_000;
@@ -101,8 +102,9 @@ export interface LogConsoleProps {
   /** Fixed result (result page); without it the console shows the whole launch with a result filter. */
   resultId?: string;
   attempt?: number;
-  /** Result names for the result column and filter. */
-  results?: { id: string; name: string }[];
+  /** Result names for the result column and filter; `clientIds` are the ids reporters give the result's
+   * attempts, which log lines carry as their `resultId`. */
+  results?: { id: string; name: string; clientIds?: string[] }[];
   fileName?: string;
   height?: string;
 }
@@ -116,7 +118,7 @@ export function LogConsole({ project, launchId, live, resultId, attempt, results
     () => ({ resultId: resultId ?? pickedResult ?? undefined, attempt, level: (level || undefined) as LogLevel | undefined, q: q || undefined }),
     [resultId, pickedResult, attempt, level, q],
   );
-  const names = useMemo(() => new Map(results.map((r) => [r.id, r.name] as const)), [results]);
+  const names = useMemo(() => resultNames(results), [results]);
   const showResult = !resultId;
 
   const stored = useInfiniteQuery({

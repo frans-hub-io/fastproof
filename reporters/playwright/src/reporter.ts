@@ -61,6 +61,7 @@ export class FastProofReporter implements Reporter {
   private readonly runId: string;
   private rootDir = process.cwd();
   private readonly out: (m: string) => void;
+  private ended = false;
 
   constructor(options: FastProofOptions = {}, out?: (m: string) => void) {
     this.cfg = resolveConfig(options);
@@ -289,7 +290,9 @@ export class FastProofReporter implements Reporter {
   }
 
   async onEnd(result: FullResult): Promise<void> {
-    if (!this.client) return;
+    // Playwright may end a run more than once (e.g. a merged or re-entered reporter): report once.
+    if (!this.client || this.ended) return;
+    this.ended = true;
     try {
       const s = await this.client.close(result.status === 'interrupted' ? 'interrupted' : 'finished');
       const where = s.launchNumber !== undefined ? `launch #${s.launchNumber}` : 'launch';

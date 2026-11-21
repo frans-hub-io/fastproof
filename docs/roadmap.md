@@ -47,7 +47,8 @@ See [Scaling and big data](operations/scaling.md).
 
 An optional bundle, switched on in the Helm chart, for deeper analysis on top of the sinks; the core stays
 light without it: failure clustering and "similar failures" across projects over the ClickHouse or OpenSearch
-store.
+store. The MCP endpoint (`POST /mcp`) is not part of it: it ships with the server today, see
+[MCP for GitHub Copilot](guide/mcp-copilot.md).
 
 ## Always
 

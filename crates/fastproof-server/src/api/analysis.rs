@@ -555,7 +555,11 @@ pub async fn get_settings(
     Ok(Json(doc))
 }
 
-#[utoipa::path(put, path = "/api/v1/projects/{key}/settings", tag = "analysis", operation_id = "analysis_put_settings", request_body = ProjectSettings,
+#[utoipa::path(put, path = "/api/v1/projects/{key}/settings", tag = "analysis", operation_id = "analysis_put_settings",
+    request_body(content = ProjectSettings, description = "The areas to change. Each top-level area present in the body \
+        (`flaky`, `retention`, `rollup`, `gates`, `notifications`, `issueTrackers`, `fastmock`, `vcs`) replaces the stored \
+        one as a whole; areas left out are kept; `null` resets an area to its default (removes it). The answer is the \
+        whole stored document."),
     params(("key" = String, Path)),
     responses((status = 200, body = ProjectSettings), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),
         (status = 404, body = ErrorBody)))]
@@ -563,9 +567,14 @@ pub async fn put_settings(
     State(s): State<AppState>,
     auth: Auth,
     P(key): P<String>,
-    ApiJson(body): ApiJson<ProjectSettings>,
+    ApiJson(patch): ApiJson<serde_json::Value>,
 ) -> ApiResult<Json<ProjectSettings>> {
     let p = s.project_for(&auth, &key, &s.perms.settings_write).await?;
+    let areas: Vec<String> = patch
+        .as_object()
+        .map(|m| m.keys().cloned().collect())
+        .unwrap_or_default();
+    let body = merge_settings(s.store.project_settings(p.id).await?, patch)?;
     body.validate().map_err(ApiError::bad_request)?;
     validate_integration_settings(&body)?;
     let new_doc = serde_json::to_value(&body).map_err(|e| ApiError::bad_request(e.to_string()))?;
@@ -588,12 +597,36 @@ pub async fn put_settings(
         &auth,
         "project.settings",
         Some(&p.key),
-        serde_json::json!({"flaky": body.flaky, "retention": body.retention, "rollup": body.rollup,
+        serde_json::json!({"areas": areas, "flaky": body.flaky, "retention": body.retention, "rollup": body.rollup,
             "gates": body.gates.len(), "notifications": body.notifications.len(),
             "issueTrackers": body.issue_trackers.len(), "fastmock": body.fastmock.is_some()}),
     )
     .await;
     Ok(Json(s.store.project_settings(p.id).await?))
+}
+
+/// The settings document after a `PUT`: each top-level area present in `patch` replaces the
+/// stored one, areas left out are kept, and `null` resets an area. Validation runs on the result.
+fn merge_settings(
+    current: ProjectSettings,
+    patch: serde_json::Value,
+) -> ApiResult<ProjectSettings> {
+    let serde_json::Value::Object(patch) = patch else {
+        return Err(ApiError::bad_request("settings must be a JSON object"));
+    };
+    let mut doc = match serde_json::to_value(&current).map_err(anyhow::Error::from)? {
+        serde_json::Value::Object(m) => m,
+        _ => serde_json::Map::new(),
+    };
+    for (k, v) in patch {
+        if v.is_null() {
+            doc.remove(&k);
+        } else {
+            doc.insert(k, v);
+        }
+    }
+    serde_json::from_value(serde_json::Value::Object(doc))
+        .map_err(|e| ApiError::bad_request(format!("invalid settings: {e}")))
 }
 
 /// Validation of the integration parts of a settings document (gates, notifications, vcs,

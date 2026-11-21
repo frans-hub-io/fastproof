@@ -18,6 +18,7 @@ class FakeServer:
         self.token = token
         self.logs_enabled = logs
         self.running_enabled = running
+        self.running_lines: Dict[str, Dict[str, Any]] = {}
         self.launches: Dict[str, Dict[str, Any]] = {}
         self.results: Dict[str, Dict[str, Any]] = {}
         self.order: List[str] = []
@@ -106,6 +107,8 @@ class FakeServer:
             if known and known["status"] != "running":
                 summary["duplicates"] += 1
                 continue
+            if r["status"] == "running":
+                self.running_lines[r["id"]] = dict(r)
             self.order.append(f"{r['id']}:{r['status']}")
             r["history"] = (known or {}).get("history", []) + [r["status"]]
             self.results[r["id"]] = r

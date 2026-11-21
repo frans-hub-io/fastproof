@@ -60,56 +60,66 @@ fn joined_lines(v: &Value, key: &str) -> String {
     }
 }
 
-fn attachments(v: &Value, dir: &str) -> Vec<AttachmentRef> {
-    let mut out: Vec<AttachmentRef> = arr(v, "attachments")
-        .iter()
-        .filter_map(|a| {
-            let path = text_field(a, "path")?;
-            let name = text_field(a, "name")
-                .unwrap_or_else(|| path.rsplit('/').next().unwrap_or(&path).to_string());
-            let mut r = AttachmentRef::new(name, path.clone(), text_field(a, "contentType"));
-            r.resolved_path = Some(crate::allure::join(dir, &path));
-            Some(r)
-        })
-        .collect();
+fn attachments(
+    v: &Value,
+    dir: &str,
+    file: &str,
+    ctx: &mut Ctx<'_>,
+) -> Result<Vec<AttachmentRef>, IngestError> {
+    let mut budget = ctx.steps(file);
+    let mut out: Vec<AttachmentRef> = Vec::new();
+    for a in arr(v, "attachments") {
+        let Some(path) = text_field(a, "path") else {
+            continue;
+        };
+        budget.attachment()?;
+        let name = text_field(a, "name")
+            .unwrap_or_else(|| path.rsplit('/').next().unwrap_or(&path).to_string());
+        let mut r = AttachmentRef::new(name, path.clone(), text_field(a, "contentType"));
+        r.resolved_path = Some(crate::allure::join(dir, &path));
+        out.push(r);
+    }
     if let Some(s) = text_field(v, "screenshot")
         && !s.starts_with("data:")
         && s.len() < 4096
         && !out.iter().any(|a| a.source == s)
     {
+        budget.attachment()?;
         let mut r = AttachmentRef::new("screenshot", s.clone(), Some("image/png".into()));
         r.resolved_path = Some(crate::allure::join(dir, &s));
         out.push(r);
     }
-    out
+    ctx.add_refs(budget.attachments(), file)?;
+    Ok(out)
 }
 
 pub(crate) fn parse(v: &Value, file: &str, ctx: &mut Ctx<'_>) -> Result<CtrfDoc, IngestError> {
-    let results_v = v.get("results").cloned().unwrap_or(Value::Null);
-    let tool = results_v.get("tool").cloned().unwrap_or(Value::Null);
-    let tool_name = text_field(&tool, "name").unwrap_or_default();
-    let env = results_v.get("environment").cloned().unwrap_or(Value::Null);
+    let null = Value::Null;
+    let results_v = v.get("results").unwrap_or(&null);
+    let tool = results_v.get("tool").unwrap_or(&null);
+    let tool_name = text_field(tool, "name").unwrap_or_default();
+    let env = results_v.get("environment").unwrap_or(&null);
     let mut meta = LaunchMeta::default();
-    if let Value::Object(m) = &env {
+    if let Value::Object(m) = env {
         for (k, val) in m {
             if let Some(s) = as_string(val) {
                 meta.environment.push(KeyValue::new(k.clone(), s));
             }
         }
         meta.vcs.repository =
-            text_field(&env, "repositoryUrl").or_else(|| text_field(&env, "repositoryName"));
-        meta.vcs.branch = text_field(&env, "branchName");
-        meta.vcs.commit = text_field(&env, "commit");
-        meta.ci.pipeline = text_field(&env, "buildName");
-        meta.ci.url = text_field(&env, "buildUrl");
-        meta.ci.build_order = i64_field(&env, "buildNumber");
-        meta.environment_key = text_field(&env, "testEnvironment");
-        meta.name = text_field(&env, "appName");
+            text_field(env, "repositoryUrl").or_else(|| text_field(env, "repositoryName"));
+        meta.vcs.branch = text_field(env, "branchName");
+        meta.vcs.commit = text_field(env, "commit");
+        meta.ci.pipeline = text_field(env, "buildName");
+        meta.ci.url = text_field(env, "buildUrl");
+        meta.ci.build_order = i64_field(env, "buildNumber");
+        meta.environment_key = text_field(env, "testEnvironment");
+        meta.name = text_field(env, "appName");
     }
     if !tool_name.is_empty() {
         meta.set_attribute("tool", tool_name.clone());
     }
-    if let Some(ver) = text_field(&tool, "version") {
+    if let Some(ver) = text_field(tool, "version") {
         meta.set_attribute("tool.version", ver);
     }
     for key in ["specVersion", "reportId", "runId", "generatedBy"] {
@@ -117,9 +127,9 @@ pub(crate) fn parse(v: &Value, file: &str, ctx: &mut Ctx<'_>) -> Result<CtrfDoc,
             meta.set_attribute(&format!("ctrf.{key}"), s);
         }
     }
-    let summary = results_v.get("summary").cloned().unwrap_or(Value::Null);
-    meta.start = i64_field(&summary, "start").filter(|s| *s > 0);
-    meta.stop = i64_field(&summary, "stop").filter(|s| *s > 0);
+    let summary = results_v.get("summary").unwrap_or(&null);
+    meta.start = i64_field(summary, "start").filter(|s| *s > 0);
+    meta.stop = i64_field(summary, "stop").filter(|s| *s > 0);
 
     let dir = file
         .rsplit_once('/')
@@ -128,11 +138,14 @@ pub(crate) fn parse(v: &Value, file: &str, ctx: &mut Ctx<'_>) -> Result<CtrfDoc,
     let prefixes = ctx.options.path_prefixes();
     let max = ctx.limits.max_log_bytes;
     let mut results = Vec::new();
-    for t in arr(&results_v, "tests") {
+    for t in arr(results_v, "tests") {
         if !t.is_object() {
             continue;
         }
-        let name = text_field(t, "name").unwrap_or_else(|| "Unknown test".into());
+        let name = match text_field(t, "name") {
+            Some(n) => ctx.name(n, "name", file),
+            None => "Unknown test".into(),
+        };
         let file_path = text_field(t, "filePath").map(|p| normalize_path(&p, &prefixes));
         let mut suite = suite_path(t);
         // Playwright's CTRF reporter puts the project first; it is an environment dimension.
@@ -151,7 +164,7 @@ pub(crate) fn parse(v: &Value, file: &str, ctx: &mut Ctx<'_>) -> Result<CtrfDoc,
         }
         segments.extend(suite.iter().map(|s| normalize_text(s)));
         segments.push(normalize_text(&name));
-        let full_name = segments.join(" \u{203a} ");
+        let full_name = ctx.name(segments.join(" \u{203a} "), "full name", file);
         let mut parameters: Vec<Parameter> = Vec::new();
         if let Some(Value::Object(m)) = t.get("parameters") {
             for (k, val) in m {
@@ -179,6 +192,9 @@ pub(crate) fn parse(v: &Value, file: &str, ctx: &mut Ctx<'_>) -> Result<CtrfDoc,
         for s in &suite {
             labels.push(Label::new("suite", s.clone()));
         }
+        ctx.check_labels(labels.len(), file)?;
+        let retry_attempts = arr(t, "retryAttempts");
+        ctx.check_attempts(retry_attempts.len() + 1, file)?;
         let allure_id = labels
             .iter()
             .find(|l| {
@@ -220,6 +236,7 @@ pub(crate) fn parse(v: &Value, file: &str, ctx: &mut Ctx<'_>) -> Result<CtrfDoc,
                 file.to_string(),
             ));
         }
+        // Steps belong to the final attempt; they stay out of the copies made for retries.
         let base = ParsedResult {
             identity,
             name: name.clone(),
@@ -227,7 +244,6 @@ pub(crate) fn parse(v: &Value, file: &str, ctx: &mut Ctx<'_>) -> Result<CtrfDoc,
             stage: Stage::Finished,
             parameters,
             labels,
-            steps,
             format: SourceFormat::Ctrf,
             source_file: Some(file.to_string()),
             ..ParsedResult::default()
@@ -244,9 +260,10 @@ pub(crate) fn parse(v: &Value, file: &str, ctx: &mut Ctx<'_>) -> Result<CtrfDoc,
                 ..StatusDetails::default()
             }
         };
-        let retry_attempts = arr(t, "retryAttempts");
         let attempts_total = retry_attempts.len() + 1;
+        let copy_bytes = crate::ctx::result_bytes(&base);
         for (i, ra) in retry_attempts.iter().enumerate() {
+            ctx.charge_copy(copy_bytes, file)?;
             let mut r = base.clone();
             r.status = text_field(ra, "status")
                 .map(|s| ctrf_status(&s))
@@ -259,14 +276,14 @@ pub(crate) fn parse(v: &Value, file: &str, ctx: &mut Ctx<'_>) -> Result<CtrfDoc,
             // CTRF numbers attempts from 1; the model counts retries from 0.
             r.attempt = Some(i as u32);
             r.source_uuid = text_field(ra, "attemptId");
-            r.attachments = attachments(ra, &dir);
+            r.attachments = attachments(ra, &dir, file, ctx)?;
             r.stdout = bound_opt(&joined_lines(ra, "stdout"), max);
             r.stderr = bound_opt(&joined_lines(ra, "stderr"), max);
-            r.steps = Vec::new();
             ctx.finish(&mut r);
             results.push(r);
         }
         let mut r = base;
+        r.steps = steps;
         r.status = text_field(t, "status")
             .map(|s| ctrf_status(&s))
             .unwrap_or_default();
@@ -280,7 +297,7 @@ pub(crate) fn parse(v: &Value, file: &str, ctx: &mut Ctx<'_>) -> Result<CtrfDoc,
         r.source_uuid = text_field(t, "attemptId")
             .or_else(|| text_field(t, "id"))
             .or_else(|| text_field(t, "executionId"));
-        r.attachments = attachments(t, &dir);
+        r.attachments = attachments(t, &dir, file, ctx)?;
         r.stdout = bound_opt(&joined_lines(t, "stdout"), max);
         r.stderr = bound_opt(&joined_lines(t, "stderr"), max);
         r.trace_id = text_field(t, "traceId")

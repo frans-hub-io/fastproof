@@ -33,6 +33,7 @@ use serde::{Deserialize, Serialize};
 pub use allure::attach_fixtures;
 pub use ctx::Warning;
 pub use error::IngestError;
+pub use json::{JsonBounds, JsonError, parse_json_bounded, scan_json};
 pub use limits::Limits;
 pub use report::{
     MAX_ATTACHMENTS_PER_RESULT, MAX_CLIENT_ID_BYTES, ReportOptions, report_to_parsed,
@@ -237,19 +238,8 @@ struct Collected {
     ctrf: Vec<(String, ctrf::CtrfDoc)>,
     playwright: Vec<(String, playwright::PlaywrightDoc)>,
     report_files: HashSet<String>,
-}
-
-impl Collected {
-    fn result_count(&self) -> u64 {
-        (self.allure_results.len()
-            + self.junit.iter().map(|d| d.1.results.len()).sum::<usize>()
-            + self.ctrf.iter().map(|d| d.1.results.len()).sum::<usize>()
-            + self
-                .playwright
-                .iter()
-                .map(|d| d.1.results.len())
-                .sum::<usize>()) as u64
-    }
+    /// Results collected so far, kept up to date instead of recounted per entry.
+    result_count: u64,
 }
 
 fn read_doc(r: &mut dyn Read, limits: &Limits, path: &str) -> Result<Vec<u8>, IngestError> {
@@ -318,6 +308,7 @@ fn parse_entry(
                 FileClass::AllureResult => {
                     if let Some(res) = allure::parse_result(&v, path, ctx)? {
                         col.allure_results.push(res);
+                        col.result_count += 1;
                     }
                 }
                 FileClass::AllureContainer => {
@@ -326,7 +317,7 @@ fn parse_entry(
                     }
                 }
                 FileClass::AllureGlobals => {
-                    let g = allure::parse_globals(&v, path, ctx);
+                    let g = allure::parse_globals(&v, path, ctx)?;
                     col.globals.errors.extend(g.errors);
                     col.globals.attachments.extend(g.attachments);
                 }
@@ -362,10 +353,12 @@ fn parse_entry(
             if ctrf::is_ctrf(&v) {
                 col.report_files.insert(path.to_string());
                 let d = ctrf::parse(&v, path, ctx)?;
+                col.result_count += d.results.len() as u64;
                 col.ctrf.push((path.to_string(), d));
             } else if playwright::is_playwright(&v) {
                 col.report_files.insert(path.to_string());
                 let d = playwright::parse(&v, path, ctx)?;
+                col.result_count += d.results.len() as u64;
                 col.playwright.push((path.to_string(), d));
             }
         }
@@ -380,13 +373,16 @@ fn parse_entry(
             }
             col.report_files.insert(path.to_string());
             match junit::parse(text, path, ctx)? {
-                Ok(doc) => col.junit.push((path.to_string(), doc)),
+                Ok(doc) => {
+                    col.result_count += doc.results.len() as u64;
+                    col.junit.push((path.to_string(), doc));
+                }
                 Err(e) => ctx.warn(Some(path), e),
             }
         }
         FileClass::Ignored(_) | FileClass::Other => {}
     }
-    if col.result_count() > limits.max_results {
+    if col.result_count > limits.max_results {
         return Err(IngestError::limit_at(
             "max_results",
             limits.max_results,
@@ -396,7 +392,14 @@ fn parse_entry(
     Ok(())
 }
 
-fn merge_meta(into: &mut LaunchMeta, from: LaunchMeta) {
+/// Keys already present in a merged [`LaunchMeta`], so merging many documents stays linear.
+#[derive(Default)]
+struct MetaKeys {
+    environment: HashSet<String>,
+    attributes: HashSet<String>,
+}
+
+fn merge_meta(into: &mut LaunchMeta, keys: &mut MetaKeys, from: LaunchMeta) {
     if into.name.is_none() {
         into.name = from.name;
     }
@@ -409,13 +412,19 @@ fn merge_meta(into: &mut LaunchMeta, from: LaunchMeta) {
     if into.environment_key.is_none() {
         into.environment_key = from.environment_key;
     }
+    if keys.environment.len() != into.environment.len() {
+        keys.environment = into.environment.iter().map(|e| e.key.clone()).collect();
+    }
+    if keys.attributes.len() != into.attributes.len() {
+        keys.attributes = into.attributes.iter().map(|e| e.key.clone()).collect();
+    }
     for kv in from.environment {
-        if !into.environment.iter().any(|e| e.key == kv.key) {
+        if keys.environment.insert(kv.key.clone()) {
             into.environment.push(kv);
         }
     }
     for kv in from.attributes {
-        if into.attribute(&kv.key).is_none() {
+        if keys.attributes.insert(kv.key.clone()) {
             into.attributes.push(kv);
         }
     }
@@ -577,7 +586,9 @@ pub fn ingest_path(
         ctrf,
         playwright,
         report_files,
+        result_count: _,
     } = col;
+    let mut meta_keys = MetaKeys::default();
     if format == Some(SourceFormat::AllureResults) {
         results = allure_results;
         containers = allure_containers;
@@ -602,6 +613,7 @@ pub fn ingest_path(
             }
             merge_meta(
                 &mut meta,
+                &mut meta_keys,
                 LaunchMeta {
                     attributes: d.attributes,
                     start: d.start,
@@ -619,7 +631,7 @@ pub fn ingest_path(
     }
     if format == Some(SourceFormat::Ctrf) {
         for (_, d) in ctrf {
-            merge_meta(&mut meta, d.meta);
+            merge_meta(&mut meta, &mut meta_keys, d.meta);
             results.extend(d.results);
         }
     } else {
@@ -632,7 +644,7 @@ pub fn ingest_path(
     let keep_inline = format == Some(SourceFormat::PlaywrightJson);
     if keep_inline {
         for (_, d) in playwright {
-            merge_meta(&mut meta, d.meta);
+            merge_meta(&mut meta, &mut meta_keys, d.meta);
             globals.errors.extend(d.errors);
             results.extend(d.results);
         }
@@ -680,9 +692,10 @@ pub fn ingest_path(
         },
     );
     let referenced: HashSet<String> = wanted.keys().cloned().collect();
+    let ignored_paths: HashSet<&str> = ignored.iter().map(|i| i.path.as_str()).collect();
     if options.store_unreferenced {
         for f in &files {
-            if !report_files.contains(&f.path) && !ignored.iter().any(|i| i.path == f.path) {
+            if !report_files.contains(&f.path) && !ignored_paths.contains(f.path.as_str()) {
                 wanted.entry(f.path.clone()).or_insert(None);
             }
         }
@@ -776,7 +789,7 @@ pub fn ingest_path(
         .filter(|f| {
             !report_files.contains(&f.path)
                 && !referenced.contains(&f.path)
-                && !ignored.iter().any(|i| i.path == f.path)
+                && !ignored_paths.contains(f.path.as_str())
         })
         .cloned()
         .collect();

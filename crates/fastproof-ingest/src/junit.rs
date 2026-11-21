@@ -4,7 +4,7 @@
 //! unknown entity references are kept literally, so nothing expands and nothing external is
 //! fetched.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
 use fastproof_model::normalize::{normalize_path, normalize_text, split_junit_name};
@@ -129,6 +129,7 @@ struct Parser<'c, 'a> {
     suite_seq: usize,
     suite_ids: Vec<usize>,
     suite_props: Vec<(String, String)>,
+    attribute_keys: HashSet<String>,
 }
 
 const MAX_SUITE_PROPERTIES: usize = 16;
@@ -309,7 +310,7 @@ impl<'c, 'a> Parser<'c, 'a> {
                 let pname = get("name").unwrap_or_default();
                 let value = get("value");
                 if empty {
-                    self.add_property(pname, value.unwrap_or_default());
+                    self.add_property(pname, value.unwrap_or_default())?;
                 } else {
                     self.property = Some((pname, value, String::new()));
                     sink = Sink::PropertyText;
@@ -326,9 +327,7 @@ impl<'c, 'a> Parser<'c, 'a> {
                     ..Outcome::default()
                 };
                 if empty {
-                    if let Some(c) = self.case.as_mut() {
-                        c.outcomes.push(o);
-                    }
+                    self.push_outcome(o)?;
                 } else {
                     self.outcome = Some(o);
                     sink = Sink::OutcomeText;
@@ -363,15 +362,34 @@ impl<'c, 'a> Parser<'c, 'a> {
         Ok(())
     }
 
-    fn add_property(&mut self, name: String, value: String) {
+    fn add_property(&mut self, name: String, value: String) -> Result<(), IngestError> {
         if name.is_empty() {
-            return;
+            return Ok(());
         }
         if let Some(c) = self.case.as_mut() {
             c.properties.push((name, value));
+            self.ctx.check_labels(c.properties.len(), &self.file)?;
         } else if self.suite_props.len() <= MAX_SUITE_PROPERTIES {
             self.suite_props.push((name, value));
         }
+        Ok(())
+    }
+
+    /// Keeps an outcome element of the current case. A case has at most one attempt per
+    /// failure/error/flaky/rerun element plus a skipped element, so more than
+    /// `max_attempts_per_result + 1` elements are over the attempt limit.
+    fn push_outcome(&mut self, o: Outcome) -> Result<(), IngestError> {
+        if let Some(c) = self.case.as_mut() {
+            c.outcomes.push(o);
+            if c.outcomes.len() as u64 > self.ctx.limits.max_attempts_per_result.saturating_add(1) {
+                return Err(IngestError::limit_at(
+                    "max_attempts_per_result",
+                    self.ctx.limits.max_attempts_per_result,
+                    self.file.clone(),
+                ));
+            }
+        }
+        Ok(())
     }
 
     fn end(&mut self) -> Result<(), IngestError> {
@@ -391,7 +409,7 @@ impl<'c, 'a> Parser<'c, 'a> {
                 let props = std::mem::take(&mut self.suite_props);
                 if props.len() <= MAX_SUITE_PROPERTIES {
                     for (k, v) in props {
-                        if !self.doc.attributes.iter().any(|kv| kv.key == k) {
+                        if self.attribute_keys.insert(k.clone()) {
                             self.doc.attributes.push(KeyValue::new(k, v));
                         }
                     }
@@ -399,7 +417,7 @@ impl<'c, 'a> Parser<'c, 'a> {
             }
             "property" => {
                 if let Some((n, v, text)) = self.property.take() {
-                    self.add_property(n, v.unwrap_or_else(|| text.trim().to_string()));
+                    self.add_property(n, v.unwrap_or_else(|| text.trim().to_string()))?;
                 }
             }
             n if OutcomeKind::from_name(n).is_some()
@@ -408,8 +426,8 @@ impl<'c, 'a> Parser<'c, 'a> {
                     .as_ref()
                     .is_some_and(|o| o.kind == OutcomeKind::from_name(n)) =>
             {
-                if let (Some(o), Some(c)) = (self.outcome.take(), self.case.as_mut()) {
-                    c.outcomes.push(o);
+                if let Some(o) = self.outcome.take() {
+                    self.push_outcome(o)?;
                 }
             }
             _ => {}
@@ -418,9 +436,13 @@ impl<'c, 'a> Parser<'c, 'a> {
     }
 
     fn finish_case(&mut self) -> Result<(), IngestError> {
-        let Some(case) = self.case.take() else {
+        let Some(mut case) = self.case.take() else {
             return Ok(());
         };
+        case.name = self.ctx.name(case.name, "testcase name", &self.file);
+        case.classname = self
+            .ctx
+            .name(case.classname, "testcase classname", &self.file);
         self.outcome = None;
         let suite = self.suites.last().cloned().unwrap_or_default();
         let suite_id = self.suite_ids.last().copied().unwrap_or(0);
@@ -446,6 +468,7 @@ impl<'c, 'a> Parser<'c, 'a> {
         } else {
             format!("{}#{}", classname, normalize_text(&base))
         };
+        let full_name = self.ctx.name(full_name, "full name", &self.file);
         let parameters: Vec<Parameter> = split.iter().map(|(n, v)| Parameter::new(n, v)).collect();
         let mut labels: Vec<Label> = Vec::new();
         let mut links: Vec<Link> = Vec::new();
@@ -472,6 +495,7 @@ impl<'c, 'a> Parser<'c, 'a> {
         if !playwright && let Some(h) = &suite.hostname {
             labels.push(Label::new("host", h.clone()));
         }
+        self.ctx.check_labels(labels.len(), &self.file)?;
         let file = case.file.clone().or(suite.file.clone()).or_else(|| {
             (playwright || looks_like_file(&case.classname)).then(|| case.classname.clone())
         });
@@ -560,6 +584,7 @@ impl<'c, 'a> Parser<'c, 'a> {
             last.2 = true;
         }
         let count = attempts.len();
+        self.ctx.check_attempts(count, &self.file)?;
         let base_result = ParsedResult {
             identity,
             name: case.name.trim().to_string(),
@@ -578,6 +603,8 @@ impl<'c, 'a> Parser<'c, 'a> {
             .rsplit_once('/')
             .map(|(d, _)| d.to_string())
             .unwrap_or_default();
+        // Every attempt after the first is a copy of the shared parts.
+        let copy_bytes = crate::ctx::result_bytes(&base_result);
         for (i, (status, outcome, is_final)) in attempts.into_iter().enumerate() {
             if self.doc.results.len() as u64 >= self.ctx.limits.max_results {
                 return Err(IngestError::limit_at(
@@ -585,6 +612,9 @@ impl<'c, 'a> Parser<'c, 'a> {
                     self.ctx.limits.max_results,
                     self.file.clone(),
                 ));
+            }
+            if i > 0 {
+                self.ctx.charge_copy(copy_bytes, &self.file)?;
             }
             let mut r = base_result.clone();
             r.status = status;
@@ -639,6 +669,7 @@ impl<'c, 'a> Parser<'c, 'a> {
                 }
             }
             let mut atts: Vec<AttachmentRef> = Vec::new();
+            let mut sources: HashSet<String> = HashSet::new();
             for text in [&case.system_out, &case.system_err]
                 .into_iter()
                 .filter(|_| is_final)
@@ -650,9 +681,17 @@ impl<'c, 'a> Parser<'c, 'a> {
             {
                 for m in attachment_marker().captures_iter(text) {
                     let path = m[1].trim().to_string();
-                    if atts.iter().any(|a| a.source == path) {
+                    if !sources.insert(path.clone()) {
                         continue;
                     }
+                    if atts.len() as u64 >= self.ctx.limits.max_attachments_per_result {
+                        return Err(IngestError::limit_at(
+                            "max_attachments_per_result",
+                            self.ctx.limits.max_attachments_per_result,
+                            self.file.clone(),
+                        ));
+                    }
+                    self.ctx.count_ref(&self.file)?;
                     let name = path.rsplit('/').next().unwrap_or(&path).to_string();
                     let mut a = AttachmentRef::new(
                         name.clone(),
@@ -753,6 +792,7 @@ pub(crate) fn parse(
         suite_seq: 0,
         suite_ids: Vec::new(),
         suite_props: Vec::new(),
+        attribute_keys: HashSet::new(),
     };
     loop {
         let ev = match reader.read_event() {

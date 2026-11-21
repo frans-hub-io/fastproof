@@ -62,17 +62,19 @@ fn parameters(v: &Value) -> Vec<Parameter> {
         .collect()
 }
 
-fn attachments(v: &Value) -> Vec<AttachmentRef> {
-    arr(v, "attachments")
-        .iter()
-        .filter_map(|a| {
-            let source = text_field(a, "source")?;
-            let name = text_field(a, "name").unwrap_or_else(|| source.clone());
-            let mut r = AttachmentRef::new(name, source, text_field(a, "type"));
-            r.size = i64_field(a, "size").and_then(|s| u64::try_from(s).ok());
-            Some(r)
-        })
-        .collect()
+fn attachments(v: &Value, budget: &mut StepBudget) -> Result<Vec<AttachmentRef>, IngestError> {
+    let mut out = Vec::new();
+    for a in arr(v, "attachments") {
+        let Some(source) = text_field(a, "source") else {
+            continue;
+        };
+        budget.attachment()?;
+        let name = text_field(a, "name").unwrap_or_else(|| source.clone());
+        let mut r = AttachmentRef::new(name, source, text_field(a, "type"));
+        r.size = i64_field(a, "size").and_then(|s| u64::try_from(s).ok());
+        out.push(r);
+    }
+    Ok(out)
 }
 
 fn steps(
@@ -106,7 +108,7 @@ fn step(
         stop: i64_field(s, "stop"),
         duration_ms: None,
         parameters: parameters(s),
-        attachments: attachments(s),
+        attachments: attachments(s, budget)?,
         steps: steps(s, StepKind::Step, budget, ctx)?,
         kind,
     })
@@ -139,6 +141,7 @@ pub(crate) fn parse_result(
             ))
         })
         .collect();
+    ctx.check_labels(labels.len(), file)?;
     let links: Vec<Link> = arr(v, "links")
         .iter()
         .filter_map(|l| {
@@ -150,10 +153,16 @@ pub(crate) fn parse_result(
         })
         .collect();
     let params = parameters(v);
-    let full_name = str_field(v, "fullName").unwrap_or_default();
-    let name = text_field(v, "name")
-        .or_else(|| (!full_name.is_empty()).then(|| full_name.clone()))
-        .unwrap_or_else(|| "Unknown test".to_string());
+    let full_name = ctx.name(
+        str_field(v, "fullName").unwrap_or_default(),
+        "fullName",
+        file,
+    );
+    let name = match text_field(v, "name") {
+        Some(n) => ctx.name(n, "name", file),
+        None if !full_name.is_empty() => full_name.clone(),
+        None => "Unknown test".to_string(),
+    };
     let allure_id = labels
         .iter()
         .find(|l| {
@@ -236,7 +245,7 @@ pub(crate) fn parse_result(
         labels,
         links,
         steps: steps(v, StepKind::Step, &mut budget, ctx)?,
-        attachments: attachments(v),
+        attachments: attachments(v, &mut budget)?,
         fixtures: Default::default(),
         stdout: None,
         stderr: None,
@@ -245,6 +254,7 @@ pub(crate) fn parse_result(
         format: SourceFormat::AllureResults,
         source_file: Some(file.to_string()),
     };
+    ctx.add_refs(budget.attachments(), file)?;
     let dir = parent_dir(file).to_string();
     result.visit_attachments_mut(&mut |a| a.resolved_path = Some(join(&dir, &a.source)));
     ctx.finish(&mut result);
@@ -296,6 +306,7 @@ pub(crate) fn parse_container(
     };
     let befores = fixtures("befores", &mut budget)?;
     let afters = fixtures("afters", &mut budget)?;
+    ctx.add_refs(budget.attachments(), file)?;
     let dir = parent_dir(file).to_string();
     let mut c = Container {
         uuid,
@@ -316,7 +327,11 @@ pub(crate) fn parse_container(
     Ok(Some(c))
 }
 
-pub(crate) fn parse_globals(v: &Value, file: &str, ctx: &mut Ctx<'_>) -> Globals {
+pub(crate) fn parse_globals(
+    v: &Value,
+    file: &str,
+    ctx: &mut Ctx<'_>,
+) -> Result<Globals, IngestError> {
     let max = ctx.limits.max_log_bytes;
     let errors = arr(v, "errors")
         .iter()
@@ -327,14 +342,16 @@ pub(crate) fn parse_globals(v: &Value, file: &str, ctx: &mut Ctx<'_>) -> Globals
         })
         .collect();
     let dir = parent_dir(file).to_string();
-    let mut attachments = attachments(v);
+    let mut budget = ctx.steps(file);
+    let mut attachments = attachments(v, &mut budget)?;
+    ctx.add_refs(budget.attachments(), file)?;
     for a in &mut attachments {
         a.resolved_path = Some(join(&dir, &a.source));
     }
-    Globals {
+    Ok(Globals {
         errors,
         attachments,
-    }
+    })
 }
 
 pub(crate) fn parse_executor(v: &Value) -> Executor {
@@ -545,6 +562,8 @@ pub(crate) fn attach_fixtures_with(
         }
     }
     let mut touched = HashSet::new();
+    // Step counts kept up to date instead of recounting a result for every container.
+    let mut step_counts: Vec<u64> = results.iter().map(|r| r.step_count() as u64).collect();
     for c in containers {
         if c.befores.is_empty() && c.afters.is_empty() {
             continue;
@@ -571,7 +590,7 @@ pub(crate) fn attach_fixtures_with(
             };
             for &i in idx {
                 let r = &mut results[i];
-                if r.step_count() as u64 + steps > max_steps_per_result {
+                if step_counts[i] + steps > max_steps_per_result {
                     return Err(IngestError::limit_at(
                         "max_steps_per_result",
                         max_steps_per_result,
@@ -581,6 +600,7 @@ pub(crate) fn attach_fixtures_with(
                 charge(bytes, &format!("fixtures of container {}", c.uuid))?;
                 r.fixtures.befores.extend(c.befores.iter().cloned());
                 r.fixtures.afters.extend(c.afters.iter().cloned());
+                step_counts[i] += steps;
                 touched.insert(i);
             }
         }

@@ -204,14 +204,14 @@ export function stageCHandlers({ role, error, audit }: Helpers) {
 
     http.put(`${API}/projects/:key/settings`, async ({ params, request }) => {
       if (!writer()) return forbid('settings:write');
-      const body = (await request.json()) as ProjectSettings;
-      if (body.flaky.historyDepth < 2 || body.flaky.historyDepth > 100) return error(400, 'invalid_body', 'flaky.historyDepth must be 2..100', { field: 'flaky.historyDepth' });
-      if (body.retention.rawDays < 1 || body.retention.rawDays > 3650) return error(400, 'invalid_body', 'retention.rawDays must be 1..3650', { field: 'retention.rawDays' });
+      const body = (await request.json()) as Partial<ProjectSettings>;
+      if (body.flaky && (body.flaky.historyDepth < 2 || body.flaky.historyDepth > 100)) return error(400, 'invalid_body', 'flaky.historyDepth must be 2..100', { field: 'flaky.historyDepth' });
+      if (body.retention && (body.retention.rawDays < 1 || body.retention.rawDays > 3650)) return error(400, 'invalid_body', 'retention.rawDays must be 1..3650', { field: 'retention.rawDays' });
       const secrets = new Set(secretsOf(String(params.key)).map((s) => s.name));
-      for (const ref of [body.vcs?.tokenSecretRef, body.fastmock?.tokenSecretRef, ...body.notifications.map((n) => n.secretRef)]) {
+      for (const ref of [body.vcs?.tokenSecretRef, body.fastmock?.tokenSecretRef, ...(body.notifications ?? []).map((n) => n.secretRef)]) {
         if (ref && !secrets.has(ref)) return error(400, 'invalid_body', `unknown secret ${ref}`, { field: 'secretRef' });
       }
-      for (const t of body.issueTrackers) {
+      for (const t of body.issueTrackers ?? []) {
         if (!t.urlTemplate.includes('{key}')) return error(400, 'invalid_body', 'urlTemplate must contain {key}', { field: 'issueTrackers.urlTemplate' });
       }
       audit('settings.update', String(params.key), { sections: Object.keys(body) });

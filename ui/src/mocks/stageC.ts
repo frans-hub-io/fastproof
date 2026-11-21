@@ -21,7 +21,7 @@ import type {
   TriageRequest,
 } from '../api/types-next';
 import { LOG_LEVELS } from '../api/types-next';
-import { launchDef, launchResults, launchView, NOW, projectLaunches, resultDetail, testKind } from './fixtures';
+import { clientIdOf, launchDef, launchResults, launchView, NOW, projectLaunches, resultDetail, testKind } from './fixtures';
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
@@ -136,6 +136,7 @@ interface TriageState {
   defect?: DefectInfo | null;
   muted?: boolean;
   muteUntil?: string | null;
+  muteReason?: string | null;
 }
 
 const state = {
@@ -209,8 +210,19 @@ export function settingsOf(project: string): ProjectSettings {
   return s;
 }
 
-export function putSettings(project: string, s: ProjectSettings): ProjectSettings {
-  state.settings.set(project, structuredClone(s));
+/** Like the server: each top-level area in the body replaces the stored one, absent areas are kept and
+ * `null` resets an area to its default. */
+export function putSettings(project: string, body: Partial<Record<keyof ProjectSettings, unknown>>): ProjectSettings {
+  const cur = settingsOf(project) as unknown as Record<string, unknown>;
+  const defaults = initialSettings() as unknown as Record<string, unknown>;
+  const next: Record<string, unknown> = { ...cur };
+  for (const [k, v] of Object.entries(body)) {
+    if (v !== null) next[k] = structuredClone(v);
+    else if (k === 'flaky' || k === 'retention' || k === 'rollup') next[k] = structuredClone(defaults[k]);
+    else if (k === 'gates' || k === 'notifications' || k === 'issueTrackers') next[k] = [];
+    else next[k] = null;
+  }
+  state.settings.set(project, next as unknown as ProjectSettings);
   return settingsOf(project);
 }
 
@@ -282,7 +294,10 @@ export function analyze<T extends ResultSummary>(project: string, r: T): T {
 }
 
 export function analyzeDetail(project: string, r: ResultDetail): ResultDetail {
-  return analyze(project, r);
+  const a = analyze(project, r);
+  const t = state.triage.get(r.id);
+  const reason = t && 'muteReason' in t ? (t.muteReason ?? null) : r.muted ? 'Cart badge race, fix in progress' : null;
+  return { ...a, muteReason: a.muted ? reason : null };
 }
 
 export function triage(project: string, body: TriageRequest): number {
@@ -306,10 +321,12 @@ export function triage(project: string, body: TriageRequest): number {
     if (body.mute) {
       next.muted = true;
       next.muteUntil = body.mute.until ?? null;
+      next.muteReason = body.mute.reason;
     }
     if (body.unmute) {
       next.muted = false;
       next.muteUntil = null;
+      next.muteReason = null;
     }
     state.triage.set(r.id, next);
   }
@@ -765,18 +782,20 @@ export function storedLogs(launchId: string, resultId: string | null, attempt: n
   const key = `${launchId}:${resultId ?? '*'}:${String(attempt ?? '*')}`;
   const cached = storedCache.get(key);
   if (cached) return cached;
-  const results = launchResults(launchId).filter((r) => !resultId || r.id === resultId);
+  // Like the server: a result id stands for all its attempts' client ids, a client id for one attempt.
+  const results = launchResults(launchId).filter((r) => !resultId || r.id === resultId || (r.clientIds ?? []).includes(resultId));
   const big = bigLogResult();
   let out: LogLineWire[] = [];
   for (const r of results) {
     if (r.status === 'skipped') continue;
-    const attempts = attempt !== null ? [attempt + 1] : Array.from({ length: r.attemptCount }, (_, i) => i + 1);
+    const one = resultId && resultId !== r.id ? (r.clientIds ?? []).indexOf(resultId) : -1;
+    const attempts = one >= 0 ? [one + 1] : attempt !== null ? [attempt + 1] : Array.from({ length: r.attemptCount }, (_, i) => i + 1);
     const d = resultDetail(r.id);
     for (const a of attempts) {
       const at = d?.attempts.find((x) => x.no === a);
       const start = at?.startedAt ? Date.parse(at.startedAt) : NOW;
       const count = r.id === big && a === r.attemptCount ? BIG_LOG_LINES : 24 + (hash(`${r.id}:${String(a)}`) % 80);
-      out = out.concat(linesOf(r.id, a - 1, count, start));
+      out = out.concat(linesOf(clientIdOf(r.id, a - 1), a - 1, count, start));
     }
   }
   if (!resultId) out.sort((a, b) => a.ts - b.ts || a.seq - b.seq);
@@ -797,8 +816,8 @@ let liveSeq = 0;
 /** A batch of live lines for the running launch. */
 export function liveBatch(launchId: string, resultId: string | null, tick: number): LogLineWire[] {
   const results = launchResults(launchId).slice(-12);
-  const pool = resultId ? results.filter((r) => r.id === resultId) : results;
-  const ids = pool.length ? pool.map((r) => r.id) : resultId ? [resultId] : ['running-result'];
+  const pool = resultId ? results.filter((r) => r.id === resultId || (r.clientIds ?? []).includes(resultId)) : results;
+  const ids = pool.length ? pool.map((r) => clientIdOf(r.id, 0)) : resultId ? [resultId] : ['running-result'];
   const n = 4 + (tick % 9) * 3;
   const out: LogLineWire[] = [];
   for (let i = 0; i < n; i++) {

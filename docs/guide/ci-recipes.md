@@ -20,8 +20,33 @@ Two ways to report:
   visible live in the UI. Allure temporary files are ignored. Stop it when the tests end; it sends what is left
   and exits.
 
-For shards, start the launch once, let every shard upload into it, and finish it at the end
-(`fastproof launch start` and `fastproof launch finish`). Run `fastproof <command> --help` for all options.
+A launch with an external id (`FASTPROOF_LAUNCH`, `--launch`, or the id the CLI derives from the CI
+variables) is shared: every job and shard with the same id reports into it, and it stays open until
+`fastproof launch finish` (or `fastproof upload --finish`). A launch without an external id belongs to the one
+`fastproof upload` that created it: the command waits for processing and finishes it (`--no-finish` keeps it
+open). In CI the id is always derived, so start the launch once, let every shard upload into it, and finish it
+at the end (`fastproof launch start` and `fastproof launch finish`). `launch finish` first waits for uploads
+that are still queued or processing (`--timeout`, default 600 s; `--no-wait` finishes at once and says how
+many are still pending), so its summary counts every shard. Run `fastproof <command> --help` for all options.
+
+!!! warning "Report each run once"
+    With the [pytest or Playwright reporter](reporters.md) installed and `FASTPROOF_URL` set, the tests are
+    already reported live. Uploading their files as well (`fastproof upload allure-results`) makes a second
+    launch with the same tests and doubles history and flaky statistics. Use one or the other, or set
+    `FASTPROOF_ENABLED=false` for the reporter in jobs that upload files.
+
+## Quality gate
+
+To fail the pipeline on a bad run, check the [quality gate](quality-gates.md) after the launch is finished:
+
+```sh
+fastproof launch finish
+fastproof gate --wait 10m
+```
+
+`fastproof gate` prints the verdict of every gate and exits `0` when the gate passed, `1` when it failed and
+`2` on errors or when it is still pending after `--wait`. It finds the launch by `FASTPROOF_LAUNCH` (or the CI
+id) like the other commands, or by `--id`. Add it to the final job of the recipes below.
 
 !!! note "Getting the CLI"
     The CLI is a static Linux binary in the image `docker.io/franshub/fastproof`. Add it to your test image
@@ -57,6 +82,7 @@ report:
   when: always
   script:
     - fastproof launch finish
+    - fastproof gate --wait 10m
 ```
 
 `registry.example.com/qa/playwright-with-fastproof` is your test image with the CLI copied in:
@@ -125,6 +151,7 @@ jobs:
           docker rm "$id"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - run: fastproof launch finish
+      - run: fastproof gate --wait 10m
 ```
 
 The checkout action is pinned by commit SHA (v7.0.1); pin every action that way. Pull requests from forks have no access to secrets, so the
@@ -164,6 +191,7 @@ pipeline {
   post {
     always {
       sh 'fastproof launch finish'
+      sh 'fastproof gate --wait 10m'
     }
   }
 }
@@ -178,7 +206,7 @@ pipeline {
 | Any Allure adapter (Java, Python, JavaScript, .NET, Go, ...) | the `allure-results` directory |
 | Maven Surefire / Gradle | `target/surefire-reports/` or `build/test-results/test/` (JUnit XML) |
 | pytest | `--junitxml=junit.xml`, or `--alluredir=allure-results` with `allure-pytest` |
-| Playwright | `--reporter=json` output, `--reporter=junit`, or `allure-playwright` |
+| Playwright | `--reporter=json` output, `allure-playwright` or a CTRF reporter; `--reporter=junit` loses retries (see [Report formats](formats.md#junit-xml)) |
 | Vitest, gotestsum and others | their JUnit XML file |
 | CTRF reporters | `ctrf/ctrf-report.json` |
 

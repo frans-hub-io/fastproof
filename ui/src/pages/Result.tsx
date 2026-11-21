@@ -14,6 +14,7 @@ import { TriageDrawer } from '../components/TriageDrawer';
 import { resultTarget, type TriageTarget } from '../lib/triage';
 import { TransitionBadge } from './launch/TransitionBadge';
 import { AnsiText } from '../components/Ansi';
+import { stripAnsi } from '../lib/ansi';
 import { CopyValue } from '../components/CopyButton';
 import { ErrorBlock } from '../components/ErrorBlock';
 import { PageHeader } from '../components/PageHeader';
@@ -97,6 +98,11 @@ function DefectCard({ project, r, types }: { project: string; r: ResultDetail; t
                 {r.muteUntil ? `muted until ${formatDateTime(r.muteUntil)}` : 'muted'}
               </Badge>
             )}
+            {r.muted && r.muteReason && (
+              <Text size="xs" c="dimmed" style={{ wordBreak: 'break-word' }} data-testid="mute-reason">
+                {r.muteReason}
+              </Text>
+            )}
             {d?.source === 'rule' && d.by && (
               <Text size="xs" c="dimmed">
                 set by {d.by.replace(/^rule:/, 'rule ')}
@@ -168,7 +174,7 @@ function SimilarFailures({ project, r, types }: { project: string; r: ResultDeta
                     </Group>
                     <Progress value={s.score * 100} size={3} color={s.score >= 0.99 ? 'fhPurple' : 'gray'} aria-hidden />
                     <Text size="xs" className="fp-mono" c="dimmed" lineClamp={2} style={{ wordBreak: 'break-word' }}>
-                      {s.message}
+                      {s.message ? stripAnsi(s.message) : s.message}
                     </Text>
                     {s.defect && (
                       <Group gap={4}>
@@ -525,9 +531,11 @@ export default function ResultPage() {
                   {r.flakyInRun && <StatusBadge status="flaky" size="md" />}
                   <TransitionBadge transition={r.transition} />
                   {r.muted && (
-                    <Badge variant="outline" color="gray">
-                      muted
-                    </Badge>
+                    <Tooltip label={[r.muteUntil ? `Until ${formatDateTime(r.muteUntil)}` : 'Until unmuted', r.muteReason].filter(Boolean).join(' · ')}>
+                      <Badge variant="outline" color="gray">
+                        muted
+                      </Badge>
+                    </Tooltip>
                   )}
                 </>
               }

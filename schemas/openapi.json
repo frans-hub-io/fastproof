@@ -111,6 +111,34 @@
         }
       }
     },
+    "/api/v1/me": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "operationId": "platform_me",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Me"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects": {
       "get": {
         "tags": [
@@ -3483,6 +3511,7 @@
           }
         ],
         "requestBody": {
+          "description": "The areas to change. Each top-level area present in the body (`flaky`, `retention`, `rollup`, `gates`, `notifications`, `issueTrackers`, `fastmock`, `vcs`) replaces the stored one as a whole; areas left out are kept; `null` resets an area to its default (removes it). The answer is the whole stored document.",
           "content": {
             "application/json": {
               "schema": {
@@ -3832,6 +3861,299 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tokens": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "description": "Managed tokens the caller may read (`tokens:read`). 404 when managed tokens are not configured.",
+        "operationId": "platform_tokens_list",
+        "parameters": [
+          {
+            "name": "scope",
+            "in": "query",
+            "description": "Only tokens of this project (needs `tokens:read` there).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "description": "`active`, `expired` or `revoked`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenList"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "description": "Creates a managed token (`tokens:write`). A token can grant only permissions its creator holds where it grants them; a token created by a managed token expires no later than its creator and is revoked with it.",
+        "operationId": "platform_tokens_create",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewToken"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatedToken"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tokens/options": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "description": "Lifetimes, projects and roles the caller may grant (`tokens:write`).",
+        "operationId": "platform_tokens_options",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenOptions"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tokens/self": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "description": "The managed token of the request.",
+        "operationId": "platform_tokens_self",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Token"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tokens/{id}": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "operationId": "platform_tokens_get",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Token"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "admin"
+        ],
+        "description": "Revokes a token (and the tokens it created). A token may always revoke itself.",
+        "operationId": "platform_tokens_revoke",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Token"
                 }
               }
             }
@@ -4284,6 +4606,26 @@
             "format": "int64"
           }
         }
+      },
+      "CreatedToken": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Token"
+          },
+          {
+            "type": "object",
+            "required": [
+              "token"
+            ],
+            "properties": {
+              "token": {
+                "type": "string",
+                "description": "The value (`fp_…`): store it now."
+              }
+            }
+          }
+        ],
+        "description": "Answer of `POST /api/v1/tokens`: the token metadata and its value, shown only here."
       },
       "DailyEntry": {
         "type": "object",
@@ -5033,6 +5375,88 @@
           "failed",
           "pending"
         ]
+      },
+      "GrantableRole": {
+        "type": "object",
+        "description": "A role and where the caller may grant it.",
+        "required": [
+          "name",
+          "builtin",
+          "permissions",
+          "global",
+          "scopes",
+          "allScopes"
+        ],
+        "properties": {
+          "allScopes": {
+            "type": "boolean",
+            "description": "Grantable with `scopes: [\"*\"]`."
+          },
+          "builtin": {
+            "type": "boolean"
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "global": {
+            "type": "boolean",
+            "description": "Grantable globally."
+          },
+          "name": {
+            "type": "string"
+          },
+          "permissions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Projects where it is grantable."
+          }
+        }
+      },
+      "Grants": {
+        "type": "object",
+        "description": "Permissions of the caller: in project P they are `global ∪ allScopes ∪ scopes[P]`.",
+        "required": [
+          "global",
+          "scopes",
+          "allScopes"
+        ],
+        "properties": {
+          "allScopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "global": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "scopes": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        }
       },
       "HistoryEntry": {
         "type": "object",
@@ -5808,6 +6232,55 @@
           }
         }
       },
+      "Me": {
+        "type": "object",
+        "description": "The caller (`GET /api/v1/me`).",
+        "required": [
+          "name",
+          "kind",
+          "authMethod",
+          "roles",
+          "permissions"
+        ],
+        "properties": {
+          "authMethod": {
+            "type": "string",
+            "description": "`session`, `bearer`, `staticToken` or `managedToken`."
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "OIDC users only."
+          },
+          "kind": {
+            "type": "string",
+            "description": "`user`, `token` (static) or `apiToken` (managed)."
+          },
+          "name": {
+            "type": "string",
+            "description": "User or token name."
+          },
+          "permissions": {
+            "$ref": "#/components/schemas/Grants"
+          },
+          "roles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "tokenId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Managed tokens only."
+          }
+        }
+      },
       "Metric": {
         "type": "string",
         "description": "A metric a gate rule checks.",
@@ -6094,6 +6567,57 @@
           }
         },
         "additionalProperties": false
+      },
+      "NewToken": {
+        "type": "object",
+        "description": "Body of `POST /api/v1/tokens`. Give `scopes` or `global: true`.",
+        "required": [
+          "name",
+          "role"
+        ],
+        "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Free text, at most 1024 bytes."
+          },
+          "expiresInDays": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Lifetime in days: 1 to 365. Every token expires; without this field it is 90 days.",
+            "minimum": 0
+          },
+          "global": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Grant the role everywhere."
+          },
+          "name": {
+            "type": "string",
+            "description": "`[A-Za-z0-9._@-]`, 1 to 128 characters, unique among active tokens."
+          },
+          "role": {
+            "type": "string",
+            "description": "A role: `viewer`, `uploader`, `editor`, `admin` or a custom one."
+          },
+          "scopes": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Project keys, or `[\"*\"]` for every project including later ones."
+          }
+        }
       },
       "Notification": {
         "type": "object",
@@ -6508,6 +7032,13 @@
                 "attemptCount": {
                   "type": "integer",
                   "format": "int32"
+                },
+                "clientIds": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Client ids of the attempts sent through the results API (the `id` reporters send, also\nthe `resultId` of their log lines), in result lists of a launch."
                 },
                 "defect": {
                   "oneOf": [
@@ -7231,6 +7762,13 @@
                   "$ref": "#/components/schemas/LinkView"
                 }
               },
+              "muteReason": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Why the series is muted, when it is."
+              },
               "parameters": {
                 "type": "array",
                 "items": {
@@ -7264,6 +7802,13 @@
           "attemptCount": {
             "type": "integer",
             "format": "int32"
+          },
+          "clientIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Client ids of the attempts sent through the results API (the `id` reporters send, also\nthe `resultId` of their log lines), in result lists of a launch."
           },
           "defect": {
             "oneOf": [
@@ -8142,6 +8687,138 @@
           "selector": {
             "type": "string",
             "description": "Full name as the Allure adapter reports it."
+          }
+        }
+      },
+      "Token": {
+        "type": "object",
+        "description": "A managed token; the value is never shown after creation.",
+        "required": [
+          "id",
+          "name",
+          "role",
+          "scopes",
+          "global",
+          "createdBy",
+          "createdAt",
+          "expiresAt",
+          "status"
+        ],
+        "properties": {
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "createdBy": {
+            "type": "string"
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "global": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "lastUsedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Recorded at most once a minute."
+          },
+          "name": {
+            "type": "string"
+          },
+          "parentId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "The managed token that created this one: it expires no later and is revoked with it."
+          },
+          "revokedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "role": {
+            "type": "string"
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Project keys; `[\"*\"]` for every project; empty for a global token."
+          },
+          "status": {
+            "type": "string",
+            "description": "`active`, `expired` or `revoked`."
+          }
+        }
+      },
+      "TokenList": {
+        "type": "object",
+        "description": "Answer of `GET /api/v1/tokens`, newest first (not paged).",
+        "required": [
+          "tokens"
+        ],
+        "properties": {
+          "tokens": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Token"
+            }
+          }
+        }
+      },
+      "TokenOptions": {
+        "type": "object",
+        "description": "Answer of `GET /api/v1/tokens/options`.",
+        "required": [
+          "maxDays",
+          "defaultDays",
+          "scopes",
+          "roles"
+        ],
+        "properties": {
+          "defaultDays": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Lifetime when `expiresInDays` is not given (90).",
+            "minimum": 0
+          },
+          "maxDays": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Longest lifetime, days (365).",
+            "minimum": 0
+          },
+          "roles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GrantableRole"
+            }
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         }
       },

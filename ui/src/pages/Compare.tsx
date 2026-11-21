@@ -13,6 +13,7 @@ import { PageHeader } from '../components/PageHeader';
 import { Loading, QueryState } from '../components/QueryState';
 import { StatusBadge } from '../components/Status';
 import { formatDuration } from '../lib/format';
+import { stripAnsi } from '../lib/ansi';
 import { useLaunchList } from '../lib/launches';
 
 type Section = Exclude<keyof LaunchComparison, 'durationChanges' | 'truncated'>;
@@ -55,7 +56,7 @@ function ResultRows({ project, items }: { project: string; items: ResultSummary[
               </Text>
               {r.message && (r.status === 'failed' || r.status === 'broken') && (
                 <Text size="xs" className="fp-mono fh-truncate" c="var(--mantine-color-error)">
-                  {r.message.split('\n')[0]}
+                  {stripAnsi(r.message).split('\n')[0]}
                 </Text>
               )}
             </Stack>

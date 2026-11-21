@@ -113,6 +113,10 @@ test('live console streams, pauses on scroll, shows gaps and filters by level', 
   const before = await lineCount(page);
   await pushLogs(page, 3);
   await expect.poll(() => lineCount(page), { timeout: 30_000 }).toBeGreaterThan(before);
+  // Lines carry the reporter's attempt id; the console shows the test name instead.
+  const who = page.locator('.fp-console-result').first();
+  await expect(who).toBeVisible();
+  await expect(who).not.toHaveText(/^pw-mock-/);
 
   const list = page.locator('.fp-console');
   await list.scrollIntoViewIfNeeded();

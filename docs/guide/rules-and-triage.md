@@ -27,7 +27,9 @@ it: `user`, `ai` (an agent through [MCP](mcp-copilot.md)), `rule`, or `fastproof
 ## Clusters
 
 Failures are grouped by a **fingerprint**: the error message with numbers, hex ids, UUIDs, timestamps,
-temporary paths and line numbers removed, plus the top stack frames outside test frameworks. The launch page shows the clusters, largest first, and a decision on
+temporary paths and line numbers removed, plus the top stack frames outside test frameworks. ANSI colour
+codes are stripped from messages and traces at ingest, so the same failure reported by Playwright JSON (which
+colours its messages) and by JUnit or a reporter gets the same fingerprint. The launch page shows the clusters, largest first, and a decision on
 a cluster applies to every result in it:
 
 ```http

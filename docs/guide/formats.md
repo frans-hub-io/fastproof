@@ -40,7 +40,7 @@ There is no single JUnit XML specification; FastProof reads the common structure
 | Producer | What is read |
 |---|---|
 | Maven Surefire / Failsafe, Gradle | `flakyFailure`/`flakyError` (passed on rerun, becomes a flaky result with attempts) and `rerunFailure`/`rerunError` (failed every time) |
-| Playwright JUnit reporter | Surefire-style flaky and rerun elements, annotations as properties, `[[ATTACHMENT\|path]]` references |
+| Playwright JUnit reporter | annotations as properties, `[[ATTACHMENT\|path]]` references (Surefire-style flaky and rerun elements too, but Playwright 1.65 does not write them) |
 | pytest (`xunit1`, `xunit2`, `legacy`) | `skipped type="pytest.skip"`/`"pytest.xfail"`, setup and teardown errors, `file` and `line` |
 | Vitest | file-based `classname`, unhandled errors as a synthetic test case |
 | gotestsum | one suite per package, `--rerun-fails` duplicates as attempts |
@@ -48,6 +48,12 @@ There is no single JUnit XML specification; FastProof reads the common structure
 
 The canonical name is `classname#name`; parameters in names such as `test[chrome]` or `method(Type)[1]` are
 split out as parameters. XML is parsed without DTDs or external entities and with depth and attribute limits.
+
+!!! note "Playwright retries and JUnit"
+    Playwright's JUnit reporter writes one `<testcase>` per test and no `flakyFailure` or `rerunFailure`
+    elements (checked with Playwright 1.65), so a test that passed on retry looks passed, and the attachments of
+    all its runs land on one attempt. To keep Playwright retries as attempts, upload the JSON report, a CTRF or
+    `allure-playwright` report, or use the [FastProof reporter](reporters.md).
 
 ## CTRF
 
@@ -62,7 +68,9 @@ so upload them in the same archive as the report.
 The output of `--reporter=json`: `suites → specs → tests → results`. Each Playwright retry becomes an attempt;
 status `flaky` and `expectedStatus` are honoured; nested steps, stdout, stderr and attachments (screenshots,
 videos, traces, `*-expected.png`/`*-actual.png`/`*-diff.png`) are read. The Playwright project becomes part of
-the environment key, so the same test in Chromium and WebKit has two series.
+the environment key, so the same test in Chromium and WebKit has two series. Playwright colours its error
+messages with ANSI escape codes; FastProof removes them from messages and traces (see
+[below](#error-text-and-ansi-codes)).
 
 For sharded runs, upload each shard's JSON into the same launch, or merge blob reports first with
 `npx playwright merge-reports --reporter json`. Blob reports themselves are not read.
@@ -85,6 +93,19 @@ JSON Schema:
 
 JUnit XML stays an import-only compatibility format; new integrations should write FastProof JSON or
 allure-results.
+
+In live reporting a result can first be sent with `status: "running"` and completed later by a line with the
+same client `id`. The client id wins: if the final line has another identity than the running one (for
+example it adds `testCaseId` or `parameters`), the attempt moves to the result of the final identity and the
+running result is removed when it is left empty. A running line completed in the same request counts as
+`accepted`, not as a duplicate. See [Live logs](live-logs.md) and the reporter protocol.
+
+## Error text and ANSI codes
+
+Error messages, traces, expected and actual values and step errors are stored without ANSI escape codes
+(colours, cursor moves, terminal links), whatever the format or the API they came through. Lists, search,
+failure fingerprints, clusters and similar failures therefore see plain text. Captured output (stdout, stderr
+and live logs) keeps the codes, and the UI renders them as colours.
 
 ## What is not read yet
 

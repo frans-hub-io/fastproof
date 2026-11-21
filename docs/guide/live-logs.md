@@ -2,7 +2,10 @@
 
 FastProof shows test output while tests run: open a launch, pick a running test and its log grows in the
 browser. Results can be opened before they finish (`status: "running"`) and are completed later by the same
-client id, so the launch page shows what is running right now.
+client id, so the launch page shows what is running right now. The client id wins: when the final line
+carries more identity than the running one (a `testCaseId`, `parameters`, another `fullName`), the attempt
+moves to the result of the final identity and an emptied running result is removed (see
+[PROTOCOL §3](https://github.com/frans-hub-io/fastproof/blob/main/reporters/PROTOCOL.md)).
 
 The [reporters](reporters.md) stream logs for you. This page describes what they send, for anyone writing
 their own integration.
@@ -27,17 +30,18 @@ A JSON array of the same objects is accepted too.
 | `resultId` | The client id of the result, the same one used when the result is reported |
 | `attempt` | Attempt number, starting at 0; retries get their own log |
 | `seq` | Sequence number within the attempt; lines are shown in this order |
-| `ts` | Time of the line: milliseconds since the Unix epoch, or an RFC 3339 string |
-| `level` | `trace`, `debug`, `info`, `warn` or `error` (`warning`, `fatal` and `critical` are accepted too) |
+| `ts` | Time of the line: milliseconds since the Unix epoch (`1795341600120`) or an RFC 3339 string (`"2026-11-21T10:00:00.120Z"`); returned as milliseconds |
+| `level` | `trace`, `debug`, `info`, `warn` or `error`. `warning` is read as `warn`, `fatal` and `critical` as `error` (stored and shown as `error`); any other value rejects the line |
 | `stream` | `stdout`, `stderr`, `log` or `step` |
 | `message` | The line |
 | `step` | Optional step name (at most 1 KiB) |
 
 The answer is `202` with `{"accepted": 2, "duplicates": 0, "rejected": []}`. Lines are idempotent by
 `(resultId, attempt, seq)`: resending a batch after a timeout does not duplicate anything, and lines already
-stored are counted as `duplicates`. A line that breaks a rule (for example a message over the size limit) is
-listed in `rejected` with its index and the reason; the other lines are stored. Mask secrets before sending:
-the reporters do it at the source.
+stored are counted as `duplicates`. A line that breaks a rule (for example an unknown level or a `resultId`
+over 256 bytes) is listed in `rejected` with its index and the reason; the other lines are stored. A message
+over the line limit is not rejected: the server cuts it at a character boundary and ends it with
+` …[truncated]`. Mask secrets before sending: the reporters do it at the source.
 
 | Limit | Default | Server setting |
 |---|---|---|
@@ -47,7 +51,9 @@ the reporters do it at the source.
 | Log bytes per launch | 256 MiB | `FASTPROOF_LOG_MAX_BYTES_PER_LAUNCH` |
 | `resultId` | 256 bytes | fixed |
 
-A request over the request, line-count or per-launch limit is refused with `413` and the name of the limit.
+A request over the request, line-count or per-launch limit is refused with `413`; the message names the
+limit and its unit, for example `the body exceeds max_lines_per_request (max 5000 lines)`. See also
+[Limits](../operations/limits.md).
 
 ## Following logs
 

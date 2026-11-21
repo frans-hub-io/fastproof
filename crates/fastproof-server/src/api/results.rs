@@ -117,14 +117,14 @@ impl ResultBatch<'_> {
             .store
             .link_attachments(&prep.used, self.launch.id)
             .await?;
-        let n = attempts.len() as u64;
         let out = self
             .s
             .store
             .persist_attempts(&self.launch, None, attempts)
             .await?;
-        self.summary.accepted += out.accepted;
-        self.summary.duplicates += n - out.accepted;
+        // A running line completed in the same batch was applied too: it is not a duplicate.
+        self.summary.accepted += out.accepted + out.superseded;
+        self.summary.duplicates += out.duplicates;
         metrics::counter!("fastproof_results_ingested_total", "source" => "api")
             .increment(out.accepted);
         Ok(())

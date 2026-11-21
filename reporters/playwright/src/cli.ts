@@ -7,7 +7,8 @@ const USAGE = `usage: fastproof-playwright flush [--spool DIR] [--timeout SECOND
        fastproof-playwright list [--spool DIR]
 
 Sends results that earlier runs left in the spool (server down, flush timeout).
-Reads FASTPROOF_URL, FASTPROOF_TOKEN (or FASTPROOF_TOKEN_FILE) and FASTPROOF_PROJECT.`;
+Reads FASTPROOF_URL and FASTPROOF_TOKEN (or FASTPROOF_TOKEN_FILE). FASTPROOF_PROJECT limits the flush to one
+project; without it each session goes to the project it was recorded for.`;
 
 async function main(argv: string[]): Promise<number> {
   const [cmd, ...rest] = argv;
@@ -26,13 +27,25 @@ async function main(argv: string[]): Promise<number> {
       process.stdout.write(`${s.id}\t${s.meta.project}\t${s.meta.launch.externalId}\t${s.meta.ended ? 'ended' : 'interrupted'}\n`);
     return 0;
   }
-  if (!cfg.url || !cfg.project) {
-    process.stderr.write('FASTPROOF_URL and FASTPROOF_PROJECT are required\n');
+  if (!cfg.url) {
+    process.stderr.write('FASTPROOF_URL is required\n');
     return 2;
   }
-  const api = new Api(cfg.url, cfg.token, cfg.project, cfg.requestTimeoutMs);
+  const projects = cfg.project
+    ? [cfg.project]
+    : [...new Set(listSessions(cfg.spoolDir).map((s) => s.meta.project).filter((p): p is string => !!p))].sort();
   const timeout = Number(opts.timeout ?? '600');
-  const r = await flushSpool(api, cfg.spoolDir, { deadline: Date.now() + timeout * 1000, project: cfg.project });
+  const deadline = Date.now() + timeout * 1000;
+  const r = { sessions: 0, results: 0, failed: 0, remaining: 0, errors: [] as string[] };
+  for (const project of projects) {
+    const api = new Api(cfg.url, cfg.token, project, cfg.requestTimeoutMs);
+    const one = await flushSpool(api, cfg.spoolDir, { deadline, project });
+    r.sessions += one.sessions;
+    r.results += one.results;
+    r.failed += one.failed;
+    r.remaining += one.remaining;
+    r.errors.push(...one.errors);
+  }
   process.stdout.write(`sent ${r.results} results from ${r.sessions} sessions; ${r.remaining} left, ${r.failed} rejected\n`);
   for (const e of r.errors.slice(0, 5)) process.stderr.write(`  ${e}\n`);
   return r.remaining ? 1 : 0;

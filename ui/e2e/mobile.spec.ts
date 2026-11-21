@@ -33,3 +33,12 @@ test('phone width: every page fits and the navigation drawer works', async ({ pa
   await expect(page.getByTestId('token-row').first()).toBeVisible();
   await noHorizontalScroll(page);
 });
+
+test('phone width: notification deliveries show their event', async ({ page }) => {
+  await page.goto('/p/web-shop/notifications');
+  const row = page.getByTestId('delivery-row').first();
+  await expect(row).toBeVisible();
+  const event = row.locator('td').nth(2);
+  await expect(event).not.toHaveText(/^\s*(—)?\s*$/);
+  await noHorizontalScroll(page);
+});

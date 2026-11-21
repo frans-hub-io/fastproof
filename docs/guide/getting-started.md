@@ -115,8 +115,11 @@ docker run --rm --network host \
   docker.io/franshub/fastproof:0.1.0-dev1 upload allure-results
 ```
 
-The CLI creates a launch (or joins the one named by `FASTPROOF_LAUNCH`), uploads the directory as one archive
-and finishes the launch. Uploads are processed asynchronously; the UI shows the launch while it fills up.
+The CLI creates a launch, uploads the directory as one archive, waits until the server has processed it,
+finishes the launch and prints a summary. With an external id (`FASTPROOF_LAUNCH`, `--launch`, or the id
+derived in CI) the launch is shared by several commands instead: the upload joins it, returns as soon as the
+upload is queued, and the launch stays open until `fastproof launch finish` (see
+[CI recipes](ci-recipes.md)). `--finish` and `--no-finish` override the default.
 
 Any report format works the same way: a `junit.xml` file, a CTRF `ctrf-report.json`, a Playwright
 `results.json` or a directory of them. See [Report formats](formats.md).
@@ -141,6 +144,24 @@ Or add it to your CI image:
 ```dockerfile
 COPY --from=docker.io/franshub/fastproof:0.1.0-dev1 /usr/local/bin/fastproof /usr/local/bin/fastproof
 ```
+
+## Run the server without a container
+
+The same binary runs the server with `fastproof serve` (`fastproof` without a command prints the help; the
+container image adds `serve` itself). Point the attachment and spool directories at places the user can write
+to, because the defaults are system paths (`/var/lib/fastproof/blobs`, `/tmp/fastproof`):
+
+```sh
+export FASTPROOF_DATABASE_URL=postgres://fastproof:fastproof@localhost:5432/fastproof
+export FASTPROOF_ADMIN_TOKENS_FILE="$PWD/admin-tokens"
+export FASTPROOF_BLOB_DIR="$PWD/data/blobs"
+export FASTPROOF_SPOOL_DIR="$PWD/data/spool"
+export FASTPROOF_LISTEN=127.0.0.1:8080 FASTPROOF_OPS_LISTEN=127.0.0.1:9090
+export FASTPROOF_LOG_FORMAT=text
+./fastproof serve
+```
+
+All settings are on [Configuration](../operations/configuration.md).
 
 ## Next steps
 

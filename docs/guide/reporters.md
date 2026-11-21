@@ -11,6 +11,21 @@ never fail your test run when the server is unreachable.
 
 More frameworks follow; until then, upload the files of the framework's own reporter with `fastproof upload`.
 
+!!! note "Installing before the first release"
+    The packages are not on npm and PyPI yet. Install them from a checkout of the FastProof repository:
+
+    ```sh
+    # pytest
+    pip install ./reporters/pytest
+
+    # Playwright: build a package file once, then install it in your test project
+    cd reporters/playwright && npm ci && npm run build && npm pack
+    npm install --save-dev /path/to/fastproof/reporters/playwright/franshub-fastproof-playwright-0.1.0.tgz
+    ```
+
+    The commands below (`npm install @franshub/fastproof-playwright`, `pip install pytest-fastproof`) work once
+    the packages are published.
+
 ## What they do
 
 - **Live results:** a test shows up as `running` when it starts and gets its status when it ends.
@@ -54,6 +69,13 @@ off.
 
 Give the token through your CI system's secret store, never in the repository.
 
+!!! warning "Report each run once"
+    With a reporter installed and `FASTPROOF_URL` exported, the run is already reported live. Uploading the
+    files the same run wrote (`fastproof upload allure-results`, a JUnit or Playwright JSON report) creates a
+    second launch with the same tests, which doubles history and flaky statistics. Use either the reporter or
+    `fastproof upload`, or turn the reporter off for that run with `FASTPROOF_ENABLED=false`. The pytest plugin
+    prints a reminder when it runs together with `--alluredir`.
+
 ## Playwright
 
 ```sh
@@ -84,6 +106,9 @@ Send what earlier runs left in the spool:
 npx fastproof-playwright flush --spool .fastproof/spool
 ```
 
+`flush` needs `FASTPROOF_URL` and a token. Each spooled session goes to the project it was recorded for;
+`FASTPROOF_PROJECT` limits the flush to one project.
+
 ## pytest
 
 ```sh
@@ -99,12 +124,17 @@ The plugin registers itself; settings are also `--fastproof-*` options (`--fastp
 `--fastproof-project`, `--fastproof-launch`, `--fastproof-offline`, `--fastproof-disable` and others; see
 `pytest --help`). pytest-xdist works: workers stream logs, and the controller sends results once. Live
 streaming covers `logging` records and steps; captured stdout and stderr arrive per test phase (or live with
-`-s`). Records from `INFO` up are streamed; change it with `fastproof_log_level` in the ini file or
-`FASTPROOF_LOG_LEVEL` (for example `DEBUG`). The plugin lowers the root logger to that level when it is
-higher.
+`-s`). Records from `INFO` up are streamed (the default of `fastproof_log_level`); change it with
+`fastproof_log_level` in the ini file or `FASTPROOF_LOG_LEVEL` (for example `DEBUG`). The plugin lowers the
+root logger to that level when it is higher. pytest's own `log_level` is a separate setting: when you set it,
+pytest applies it to the root logger during each test, so records below it do not reach the plugin either.
 
 Send what earlier runs left in the spool:
 
 ```sh
 python -m pytest_fastproof flush
 ```
+
+As with Playwright, `flush` needs `FASTPROOF_URL` and a token; each session goes to the project it was recorded
+for, and `FASTPROOF_PROJECT` limits the flush to one project. Both tools read the same spool format, so either
+one can send the other's sessions (`--spool DIR`).

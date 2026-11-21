@@ -265,6 +265,10 @@ pub struct ResultSummary {
     /// Error message of the final attempt (first 500 characters).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    /// Client ids of the attempts sent through the results API (the `id` reporters send, also
+    /// the `resultId` of their log lines), in result lists of a launch.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub client_ids: Vec<String>,
 }
 
 /// An attachment as referenced by a result or step.
@@ -371,6 +375,9 @@ pub struct ResultDetail {
     pub parameters: Vec<ParameterView>,
     pub links: Vec<LinkView>,
     pub launch_number: i64,
+    /// Why the series is muted, when it is.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mute_reason: Option<String>,
     pub attempts: Vec<AttemptView>,
     pub history: Vec<SeriesPoint>,
 }

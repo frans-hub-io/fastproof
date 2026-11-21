@@ -9,6 +9,8 @@ import { PageHeader } from '../components/PageHeader';
 import { QueryState } from '../components/QueryState';
 import { formatDateTime, formatRelative } from '../lib/format';
 import { useLaunchList } from '../lib/launches';
+import { sameNameHints } from '../lib/names';
+import { SameName } from '../components/SameName';
 import { STATUS_LABEL, statusVar } from '../lib/status';
 
 function Strip({ statuses }: { statuses: FlakyTest['lastStatuses'] }) {
@@ -35,6 +37,7 @@ export default function FlakyPage() {
   const branches = useMemo(() => [...new Set(launches.map((l) => l.vcs?.branch).filter((b): b is string => !!b))], [launches]);
   const envs = useMemo(() => [...new Set(launches.map((l) => l.environment?.key).filter((e): e is string => !!e))], [launches]);
   const items = useMemo(() => [...(q.data ?? [])].sort((a, b) => b.score - a.score), [q.data]);
+  const hints = useMemo(() => sameNameHints(items, (f) => f.name, (f) => [f.testCaseId, f.seriesKey]), [items]);
 
   const set = (k: string, v: string) =>
     setSp(
@@ -83,6 +86,7 @@ export default function FlakyPage() {
                           <Stack gap={0} style={{ minWidth: 0 }}>
                             <Anchor component={Link} to={`/p/${key}/test-cases/${encodeURIComponent(f.testCaseId)}`} size="sm" fw={600} className="fh-truncate">
                               {f.name}
+                              <SameName hint={hints.get(f)} />
                             </Anchor>
                           </Stack>
                         </Table.Td>

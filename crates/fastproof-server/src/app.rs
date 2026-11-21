@@ -106,6 +106,7 @@ pub fn api_router() -> (Router<AppState>, utoipa::openapi::OpenApi) {
         .merge(uploads)
         .split_for_parts();
     api::type_project_settings(&mut doc);
+    api::admin::document_platform(&mut doc);
     (router, doc)
 }
 

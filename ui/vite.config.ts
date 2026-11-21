@@ -71,5 +71,12 @@ export default defineConfig({
     include: ['src/**/*.test.{ts,tsx}'],
     css: false,
     testTimeout: 20000,
+    // jsdom's undici asserts when a fetch the page aborted on unmount (live log stream) ends at
+    // the same moment under the mock server; only that race is ignored.
+    onUnhandledError(error) {
+      const { message, stack } = error as { message?: unknown; stack?: unknown };
+      const text = `${typeof message === 'string' ? message : ''} ${typeof stack === 'string' ? stack : ''}`;
+      if (text.includes('assert(!this.aborted)') && text.includes('undici')) return false;
+    },
   },
 });

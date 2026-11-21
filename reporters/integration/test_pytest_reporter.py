@@ -2,6 +2,8 @@ import json
 import subprocess
 import sys
 
+import pytest
+
 from conftest import REPORTERS, by_name, free_port, single_launch, wait_for
 
 SAMPLES = REPORTERS / "pytest" / "samples"
@@ -48,7 +50,12 @@ def check_launch(server, key, threads):
     note = [a for a in att["attachments"] if a["name"] == "note-****.txt"][0]
     assert server.content(key, note["id"]) == b"body with ****"
     assert "stdout line with ****" in att["stdout"]
-    assert "--- log ---" in att["stdout"] and "starting with token ****" in att["stdout"]
+    # The server takes live logs, so log records go to the logs API (not into stdout).
+    lines = server.get(
+        f"/api/v1/projects/{key}/launches/{launch['id']}/logs?resultId={res['test_passes_with_logs_steps_and_attachments']['id']}"
+    )["items"]
+    assert any("starting with token ****" in ln["message"] for ln in lines), lines
+    assert "--- log ---" not in att["stdout"]
     assert att["steps"][0]["name"] == "outer" and att["steps"][0]["steps"][0]["name"] == "inner"
     shared = [a["id"] for a in att["attachments"] if a["name"] == "shared.bin"]
     failed = server.detail(key, res["test_fails_assertion"]["id"])
@@ -111,3 +118,40 @@ def test_testplan_runs_only_planned_tests(server, tmp_path):
     assert sorted(r["name"] for r in server.results(key, launch["id"])) == [
         "test_parametrized[alice-****]", "test_parametrized[bob-plain-password-value]", "test_skipped",
     ]
+
+
+IDENTITY_SAMPLE = '''
+import pytest
+
+
+@pytest.mark.fastproof_id("CHECKOUT-1")
+def test_checkout():
+    pass
+
+
+@pytest.mark.parametrize("browser", ["chrome", "firefox"])
+def test_p(browser):
+    assert browser == "chrome"
+'''
+
+
+@pytest.mark.parametrize("workers", [None, "2"])
+def test_live_results_keep_explicit_ids_and_parameters(server, tmp_path, workers):
+    key = server.project("py-ident" + (workers or ""))
+    (tmp_path / "test_ident.py").write_text(IDENTITY_SAMPLE)
+    env = server.env(key, FASTPROOF_SPOOL_DIR=str(tmp_path / "spool"), FASTPROOF_FLUSH_TIMEOUT_MS="5000")
+    args = [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "-q", "test_ident.py"]
+    if workers:
+        args += ["-n", workers]
+    out = subprocess.run(args, cwd=str(tmp_path), env=env, capture_output=True, text=True, timeout=300)
+    assert out.returncode == 1, out.stdout + out.stderr
+    launch = single_launch(server, key)
+    res = by_name(server, key, launch["id"])
+    assert {n: (r["status"], r["attemptCount"]) for n, r in res.items()} == {
+        "test_checkout": ("passed", 1),
+        "test_p[chrome]": ("passed", 1),
+        "test_p[firefox]": ("failed", 1),
+    }, res
+    assert launch["counts"]["total"] == 3
+    chrome = server.detail(key, res["test_p[chrome]"]["id"])
+    assert [(p["name"], p["value"]) for p in chrome["parameters"]] == [("browser", "chrome")]

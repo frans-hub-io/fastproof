@@ -1,4 +1,5 @@
 import type { ResultSummary } from '../api/types';
+import { stripAnsi } from './ansi';
 
 export interface FailureGroup {
   key: string;
@@ -10,7 +11,7 @@ export interface FailureGroup {
 const PREFIX = 96;
 
 export function messagePrefix(message: string): string {
-  const firstLine = message.split('\n').find((l) => l.trim() !== '') ?? '';
+  const firstLine = stripAnsi(message).split('\n').find((l) => l.trim() !== '') ?? '';
   const normalized = firstLine
     .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, '<uuid>')
     .replace(/\b0x[0-9a-f]+\b/gi, '<hex>')

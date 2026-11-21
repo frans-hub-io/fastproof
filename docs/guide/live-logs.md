@@ -27,16 +27,27 @@ A JSON array of the same objects is accepted too.
 | `resultId` | The client id of the result, the same one used when the result is reported |
 | `attempt` | Attempt number, starting at 0; retries get their own log |
 | `seq` | Sequence number within the attempt; lines are shown in this order |
-| `ts` | Time of the line (RFC 3339) |
-| `level` | `trace`, `debug`, `info`, `warn` or `error` |
+| `ts` | Time of the line: milliseconds since the Unix epoch, or an RFC 3339 string |
+| `level` | `trace`, `debug`, `info`, `warn` or `error` (`warning`, `fatal` and `critical` are accepted too) |
 | `stream` | `stdout`, `stderr`, `log` or `step` |
 | `message` | The line |
-| `step` | Optional step name for `stream: step` |
+| `step` | Optional step name (at most 1 KiB) |
 
-Lines are idempotent by `(resultId, attempt, seq)`: resending a batch after a timeout does not duplicate
-anything. Line size, lines per request and bytes per launch are limited; a request over
-the limits is rejected with a clear error. Mask secrets before sending: the reporters do it at the
-source.
+The answer is `202` with `{"accepted": 2, "duplicates": 0, "rejected": []}`. Lines are idempotent by
+`(resultId, attempt, seq)`: resending a batch after a timeout does not duplicate anything, and lines already
+stored are counted as `duplicates`. A line that breaks a rule (for example a message over the size limit) is
+listed in `rejected` with its index and the reason; the other lines are stored. Mask secrets before sending:
+the reporters do it at the source.
+
+| Limit | Default | Server setting |
+|---|---|---|
+| Message of one line | 64 KiB | `FASTPROOF_LOG_MAX_LINE_BYTES` |
+| Lines per request | 5000 | `FASTPROOF_LOG_MAX_LINES_PER_REQUEST` |
+| Request body | 8 MiB | `FASTPROOF_LOG_MAX_REQUEST_BYTES` |
+| Log bytes per launch | 256 MiB | `FASTPROOF_LOG_MAX_BYTES_PER_LAUNCH` |
+| `resultId` | 256 bytes | fixed |
+
+A request over the request, line-count or per-launch limit is refused with `413` and the name of the limit.
 
 ## Following logs
 
@@ -45,9 +56,15 @@ GET /api/v1/projects/{key}/launches/{id}/logs/stream?resultId=&level=&q=
 Accept: text/event-stream
 ```
 
-A server-sent event stream of `log` events, batched to at most 20 per second per subscriber. When a client
-reads too slowly, the oldest lines are dropped and a `gap` event says how many; fetch them from the stored
-logs if needed. Filters: `resultId`, minimum `level`, and a text `q`.
+A server-sent event stream. It starts with a `ready` event, then sends `log` events with
+`{"lines": [...]}` (at most 20 events per second per subscriber, up to 500 lines each). Each subscriber
+buffers up to 2000 lines; when a client reads too slowly, the oldest lines are dropped and a `gap` event with
+`{"skipped": n}` says how many, so fetch them from the stored logs if needed. A stream ends after an hour;
+clients reconnect and are authenticated again. Filters: `resultId`, minimum `level`, and a text `q`.
+
+`resultId` is either the client id of one attempt (as sent by the reporter) or the id of a result in the
+launch: then the lines of all its attempts are returned. Each attempt in `GET .../results/{id}` carries its
+`clientId` when it was reported live.
 
 With several replicas every replica sees every line: through PostgreSQL `LISTEN/NOTIFY` in direct mode, or by
 reading the `ingest.logs` Kafka topic in Kafka mode.
@@ -58,8 +75,10 @@ reading the `ingest.logs` Kafka topic in Kafka mode.
 GET /api/v1/projects/{key}/launches/{id}/logs?resultId=&attempt=&level=&q=&before=&limit=
 ```
 
-Pages backwards from `before`. Logs are stored as compressed chunks per attempt in PostgreSQL, and copied to
-ClickHouse or OpenSearch when a sink is enabled.
+Returns `{"items": [...], "next": "..."}`: the newest matching lines before the cursor, oldest first. Pass
+`next` as `before` to page to older lines. `limit` is 1 to 5000 (default 500), `q` is a case-insensitive text
+of at most 256 bytes. Logs are stored as compressed chunks per attempt in PostgreSQL, and copied to ClickHouse
+or OpenSearch when a sink is enabled.
 
 ## Searching logs
 
@@ -69,6 +88,8 @@ GET /api/v1/projects/{key}/results/{id}/similar
 ```
 
 Search across launches and "similar failures" run on the configured search backend: PostgreSQL by default,
-ClickHouse or OpenSearch for large volumes (see [Scaling and big data](../operations/scaling.md)).
+ClickHouse or OpenSearch for large volumes (see [Scaling and big data](../operations/scaling.md)). `q` has 1 to
+256 bytes (a substring in PostgreSQL and ClickHouse, a phrase in OpenSearch); `from` and `to` are RFC 3339 and
+default to the last 7 days; `limit` is 1 to 1000 (default 100).
 
 All endpoints need a token or session with read access to the project; sending needs `launches:write`.

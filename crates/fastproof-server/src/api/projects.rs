@@ -59,7 +59,7 @@ fn check_description(d: &str) -> ApiResult<()> {
     Ok(())
 }
 
-#[utoipa::path(get, path = "/api/v1/projects", tag = "projects",
+#[utoipa::path(get, path = "/api/v1/projects", tag = "projects", operation_id = "projects_list",
     responses((status = 200, body = ProjectList), (status = 401, body = ErrorBody)))]
 pub async fn list(State(s): State<AppState>, auth: Auth) -> ApiResult<Json<ProjectList>> {
     let items = s
@@ -72,7 +72,7 @@ pub async fn list(State(s): State<AppState>, auth: Auth) -> ApiResult<Json<Proje
     Ok(Json(ProjectList { items }))
 }
 
-#[utoipa::path(post, path = "/api/v1/projects", tag = "projects", request_body = NewProject,
+#[utoipa::path(post, path = "/api/v1/projects", tag = "projects", operation_id = "projects_create", request_body = NewProject,
     responses((status = 201, body = Project), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),
         (status = 409, body = ErrorBody)))]
 pub async fn create(
@@ -110,7 +110,7 @@ pub async fn create(
     }
 }
 
-#[utoipa::path(get, path = "/api/v1/projects/{key}", tag = "projects",
+#[utoipa::path(get, path = "/api/v1/projects/{key}", tag = "projects", operation_id = "projects_get",
     params(("key" = String, Path)),
     responses((status = 200, body = Project), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
 pub async fn get(
@@ -123,7 +123,7 @@ pub async fn get(
     ))
 }
 
-#[utoipa::path(patch, path = "/api/v1/projects/{key}", tag = "projects", request_body = PatchProject,
+#[utoipa::path(patch, path = "/api/v1/projects/{key}", tag = "projects", operation_id = "projects_patch", request_body = PatchProject,
     params(("key" = String, Path)),
     responses((status = 200, body = Project), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
 pub async fn patch(
@@ -158,7 +158,7 @@ pub async fn patch(
     Ok(Json(updated))
 }
 
-#[utoipa::path(delete, path = "/api/v1/projects/{key}", tag = "projects",
+#[utoipa::path(delete, path = "/api/v1/projects/{key}", tag = "projects", operation_id = "projects_delete",
     params(("key" = String, Path)),
     responses((status = 204), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
 pub async fn delete(

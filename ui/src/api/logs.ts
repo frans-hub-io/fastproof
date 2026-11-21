@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { projectPath, request, withQuery } from './client';
+import { eventStreamSupported, openEventStream } from './sse';
 import type { Page } from './types';
 import type { LogFilters, LogLevel, LogLine } from './types-next';
 import { LOG_LEVELS } from './types-next';
@@ -19,15 +20,21 @@ function normalizeLevel(v: unknown): LogLevel {
   return (LOG_LEVELS as readonly string[]).includes(s) ? (s as LogLevel) : 'info';
 }
 
+/** `ts` of a line: milliseconds since the epoch (or an RFC 3339 string) as ISO 8601. */
+function isoTime(v: unknown): string {
+  const ms = typeof v === 'number' ? v : typeof v === 'string' ? Date.parse(v) : NaN;
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : new Date(0).toISOString();
+}
+
 export function toLogLine(raw: unknown): LogLine | null {
   if (!raw || typeof raw !== 'object') return null;
   const r = raw as Record<string, unknown>;
   if (typeof r.message !== 'string') return null;
   return {
     resultId: typeof r.resultId === 'string' ? r.resultId : '',
-    attempt: asNumber(r.attempt) ?? 1,
+    attempt: asNumber(r.attempt) ?? 0,
     seq: asNumber(r.seq) ?? 0,
-    ts: typeof r.ts === 'string' ? r.ts : new Date().toISOString(),
+    ts: isoTime(r.ts),
     level: normalizeLevel(r.level),
     stream: r.stream === 'stderr' || r.stream === 'log' || r.stream === 'step' ? r.stream : 'stdout',
     message: r.message,
@@ -113,30 +120,33 @@ export function useLogStream(key: string, launchId: string, f: LogFilters, enabl
   useEffect(() => {
     setBuffer({ entries: [], trimmed: 0 });
     pending.current = [];
-    if (!enabled || typeof EventSource === 'undefined') {
+    if (!enabled || !eventStreamSupported()) {
       setState(enabled ? 'closed' : 'idle');
       return;
     }
     setState('connecting');
-    const es = new EventSource(withQuery(`${logsUrl(key, launchId)}/stream`, query({ resultId, attempt, level, q })), { withCredentials: true });
     const timer = setInterval(() => {
       if (!pending.current.length) return;
       const add = pending.current;
       pending.current = [];
       setBuffer((b) => appendEntries(b, add));
     }, 200);
-    es.onopen = () => setState('live');
-    es.onerror = () => setState(es.readyState === EventSource.CLOSED ? 'closed' : 'reconnecting');
-    es.addEventListener('log', (e: MessageEvent<string>) => {
-      for (const line of parseLogEvent(e.data)) pending.current.push({ kind: 'line', key: lineKey(line), line });
-    });
-    es.addEventListener('gap', (e: MessageEvent<string>) => {
-      const skipped = parseGapEvent(e.data);
-      if (skipped > 0) pending.current.push({ kind: 'gap', key: `gap:${String(++gapSeq.current)}`, skipped });
-    });
-    es.addEventListener('end', () => {
-      es.close();
-      setState('closed');
+    const es = openEventStream(withQuery(`${logsUrl(key, launchId)}/stream`, query({ resultId, attempt, level, q })), {
+      onOpen: () => setState('live'),
+      onError: (closed) => setState(closed ? 'closed' : 'reconnecting'),
+      events: {
+        log: (data) => {
+          for (const line of parseLogEvent(data)) pending.current.push({ kind: 'line', key: lineKey(line), line });
+        },
+        gap: (data) => {
+          const skipped = parseGapEvent(data);
+          if (skipped > 0) pending.current.push({ kind: 'gap', key: `gap:${String(++gapSeq.current)}`, skipped });
+        },
+        end: () => {
+          es.close();
+          setState('closed');
+        },
+      },
     });
     return () => {
       es.close();

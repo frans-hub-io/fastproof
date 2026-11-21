@@ -4,17 +4,12 @@ import openapiTS, { astToString } from 'openapi-typescript';
 const [input = '../schemas/openapi.json', output = 'src/api/schema.gen.ts'] = process.argv.slice(2);
 const spec = JSON.parse(readFileSync(input, 'utf8'));
 
-const seen = new Map();
+const ids = new Set();
 for (const item of Object.values(spec.paths ?? {})) {
   for (const op of Object.values(item)) {
-    if (op && typeof op === 'object' && typeof op.operationId === 'string') seen.set(op.operationId, (seen.get(op.operationId) ?? 0) + 1);
-  }
-}
-for (const item of Object.values(spec.paths ?? {})) {
-  for (const op of Object.values(item)) {
-    if (!op || typeof op !== 'object' || typeof op.operationId !== 'string' || seen.get(op.operationId) === 1) continue;
-    const tag = Array.isArray(op.tags) && typeof op.tags[0] === 'string' ? op.tags[0] : 'api';
-    op.operationId = `${tag}_${op.operationId}`;
+    if (!op || typeof op !== 'object' || typeof op.operationId !== 'string') continue;
+    if (ids.has(op.operationId)) throw new Error(`duplicate operationId ${op.operationId} in ${input}`);
+    ids.add(op.operationId);
   }
 }
 

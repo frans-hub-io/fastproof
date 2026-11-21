@@ -334,6 +334,9 @@ pub struct AttemptView {
     pub stderr: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trace_id: Option<String>,
+    /// Client id of an attempt sent through the results API: the `resultId` of its log lines.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
 }
 
 /// A link of a result.

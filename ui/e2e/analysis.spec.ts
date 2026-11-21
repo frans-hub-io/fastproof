@@ -96,13 +96,23 @@ test('rules: dry run against a launch, create, apply retroactively', async ({ pa
   await expect(page.getByTestId('rule-apply-result')).toContainText(`${String(matched)} results updated`);
 });
 
+/** Pushes `batches` batches of lines into every open mock log stream; returns how many streams got them. */
+async function pushLogs(page: Page, batches = 1): Promise<number> {
+  return page.evaluate((n) => (window as unknown as { __fastproofMockLogs?: (n: number) => number }).__fastproofMockLogs?.(n) ?? 0, batches);
+}
+
+async function lineCount(page: Page): Promise<number> {
+  return Number((await page.getByTestId('log-count').innerText()).replace(/\D/g, ''));
+}
+
 test('live console streams, pauses on scroll, shows gaps and filters by level', async ({ page }) => {
   await openRunningLaunch(page);
   await page.getByTestId('tab-logs').click();
   await expect(page.getByTestId('log-stream-state')).toHaveAttribute('data-state', 'live');
-  const count = page.getByTestId('log-count');
-  const before = Number((await count.innerText()).replace(/\D/g, ''));
-  await expect.poll(async () => Number((await count.innerText()).replace(/\D/g, '')), { timeout: 10_000 }).toBeGreaterThan(before);
+  await expect.poll(() => pushLogs(page, 0), { timeout: 30_000 }).toBeGreaterThan(0);
+  const before = await lineCount(page);
+  await pushLogs(page, 3);
+  await expect.poll(() => lineCount(page), { timeout: 30_000 }).toBeGreaterThan(before);
 
   const list = page.locator('.fp-console');
   await list.scrollIntoViewIfNeeded();
@@ -111,15 +121,24 @@ test('live console streams, pauses on scroll, shows gaps and filters by level', 
     if (!box) throw new Error('no console');
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
     await page.mouse.wheel(0, -2500);
-    await expect(page.getByTestId('log-paused')).toBeVisible({ timeout: 1000 });
-  }).toPass({ timeout: 15_000 });
-  await expect(page.getByTestId('log-resume')).toContainText(/new · Jump to latest/, { timeout: 10_000 });
+    await expect(page.getByTestId('log-paused')).toBeVisible({ timeout: 2_000 });
+  }).toPass({ timeout: 30_000 });
+  await pushLogs(page, 3);
+  await expect(page.getByTestId('log-resume')).toContainText(/new · Jump to latest/, { timeout: 30_000 });
   await page.getByTestId('log-resume').click();
   await expect(page.getByTestId('log-paused')).toHaveCount(0);
 
   await page.getByTestId('log-level-filter').click();
   await page.getByRole('option', { name: 'Errors only' }).click();
-  await expect.poll(async () => page.locator('[data-testid="log-line"]').count(), { timeout: 10_000 }).toBeGreaterThan(0);
+  await expect
+    .poll(
+      async () => {
+        await pushLogs(page, 3);
+        return page.locator('[data-testid="log-line"]').count();
+      },
+      { timeout: 30_000 },
+    )
+    .toBeGreaterThan(0);
   const levels = await page.locator('[data-testid="log-line"]').evaluateAll((rows) => rows.map((r) => r.getAttribute('data-level')));
   expect(new Set(levels)).toEqual(new Set(['error']));
 });

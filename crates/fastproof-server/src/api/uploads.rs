@@ -86,7 +86,7 @@ pub fn identity_encoding(req: &Request) -> ApiResult<()> {
     Ok(())
 }
 
-#[utoipa::path(post, path = "/api/v1/projects/{key}/launches/{id}/uploads", tag = "uploads",
+#[utoipa::path(post, path = "/api/v1/projects/{key}/launches/{id}/uploads", tag = "uploads", operation_id = "uploads_create",
     params(("key" = String, Path), ("id" = Uuid, Path), UploadQuery),
     request_body(content = Vec<u8>, description = "zip, tar, tar.gz, a JSON or XML report, or multipart with a `file` field",
         content_type = "application/octet-stream"),
@@ -220,7 +220,7 @@ pub async fn create(
     Ok((StatusCode::ACCEPTED, Json(upload)))
 }
 
-#[utoipa::path(get, path = "/api/v1/projects/{key}/launches/{id}/uploads", tag = "uploads",
+#[utoipa::path(get, path = "/api/v1/projects/{key}/launches/{id}/uploads", tag = "uploads", operation_id = "uploads_list",
     params(("key" = String, Path), ("id" = Uuid, Path)),
     responses((status = 200, body = UploadList), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
 pub async fn list(

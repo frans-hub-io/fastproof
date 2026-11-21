@@ -399,10 +399,11 @@ impl Store {
             Option<Vec<u8>>,
             Option<Vec<u8>>,
             i64,
+            String,
         );
         let mut rows: Vec<AttemptRow> = sqlx::query_as(
             "select id, status, started_at, stopped_at, duration_ms, message, trace, source_uuid, trace_id, detail, \
-             steps_z, logs_z, seq from attempts where result_id = $1 and launch_created_at = $2 \
+             steps_z, logs_z, seq, client_key from attempts where result_id = $1 and launch_created_at = $2 \
              order by seq limit 1000",
         )
         .bind(summary.id)
@@ -487,6 +488,7 @@ impl Store {
                 stdout: logs.stdout.map(|t| t.text),
                 stderr: logs.stderr.map(|t| t.text),
                 trace_id: a.8.clone(),
+                client_id: a.13.strip_prefix("r:").map(str::to_string),
             });
             latest_detail = detail;
         }

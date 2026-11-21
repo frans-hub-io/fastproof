@@ -236,7 +236,7 @@ const TOOLS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "create_rule_draft",
-        description: "Create a disabled triage rule for people to review and enable. Needs results:triage.",
+        description: "Create a disabled triage rule for people to review and enable; audited as AI-created. Needs rules:write.",
         schema: schema::<RuleDraftArgs>,
         write: true,
     },
@@ -506,14 +506,11 @@ impl McpServer {
             }
             "create_rule_draft" => {
                 let x: RuleDraftArgs = args(a)?;
-                let p = self
-                    .project(auth, &x.project, &s.perms.results_triage)
-                    .await?;
+                let p = self.project(auth, &x.project, &s.perms.rules_write).await?;
                 if x.name.trim().is_empty() || x.name.len() > 200 {
                     return Err(ToolError("name must have 1 to 200 bytes".into()));
                 }
-                let rule = json!({"name": x.name, "enabled": false, "match": x.matcher, "action": x.action,
-                    "source": "ai"});
+                let rule = json!({"name": x.name, "enabled": false, "match": x.matcher, "action": x.action});
                 if rule.to_string().len() > 16 * 1024 {
                     return Err(ToolError("the rule is larger than 16 KiB".into()));
                 }

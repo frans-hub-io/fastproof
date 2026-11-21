@@ -340,6 +340,7 @@ function makeLaunch(project: string, number: number, opts: { startedAt: number; 
     ],
     counts: emptyCounts(),
     uploads: { queued: 0, processing: 0, failed: 0 },
+    important: false,
   };
 }
 
@@ -708,6 +709,7 @@ function buildResults(def: LaunchDef): StoredResult[] {
       suitePath: t.suitePath,
       status,
       flakyInRun: flaky,
+      flaky,
       attemptCount,
       durationMs: duration,
       labels: labelsOf(t, def.project),

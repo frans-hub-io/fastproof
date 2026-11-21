@@ -51,7 +51,7 @@ fn backend_error(e: anyhow::Error) -> ApiError {
     )
 }
 
-#[utoipa::path(get, path = "/api/v1/projects/{key}/search/logs", tag = "logs",
+#[utoipa::path(get, path = "/api/v1/projects/{key}/search/logs", tag = "logs", operation_id = "logs_search",
     params(("key" = String, Path), LogSearchQuery),
     responses((status = 200, body = LogHits), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),
         (status = 404, body = ErrorBody), (status = 503, body = ErrorBody)))]
@@ -114,7 +114,7 @@ pub struct SimilarList {
     pub items: Vec<SimilarResult>,
 }
 
-#[utoipa::path(get, path = "/api/v1/projects/{key}/results/{id}/similar", tag = "results",
+#[utoipa::path(get, path = "/api/v1/projects/{key}/results/{id}/similar", tag = "results", operation_id = "results_similar",
     params(("key" = String, Path), ("id" = Uuid, Path), SimilarQuery),
     responses((status = 200, body = SimilarList, description = "The same fingerprint first (the normalized message hash while results carry no fingerprint), then text similarity"),
         (status = 400, body = ErrorBody), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody), (status = 503, body = ErrorBody)))]

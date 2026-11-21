@@ -1,6 +1,7 @@
 import { useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { projectPath } from './client';
+import { eventStreamSupported, openEventStream } from './sse';
 import { qk } from './hooks';
 import type { LaunchUpdatedEvent, UploadUpdatedEvent } from './types';
 
@@ -30,11 +31,10 @@ export function onUploadUpdated(qc: QueryClient, key: string, ev: UploadUpdatedE
 
 export function useProjectEvents(key: string | undefined): LiveState {
   const qc = useQueryClient();
-  const [state, setState] = useState<LiveState>(typeof EventSource === 'undefined' ? 'unsupported' : 'connecting');
+  const [state, setState] = useState<LiveState>(eventStreamSupported() ? 'connecting' : 'unsupported');
 
   useEffect(() => {
-    if (!key || typeof EventSource === 'undefined') return;
-    const es = new EventSource(`${projectPath(key)}/events`, { withCredentials: true });
+    if (!key || !eventStreamSupported()) return;
     const pending = new Map<string, ReturnType<typeof setTimeout>>();
     const debounce = (id: string, fn: () => void) => {
       if (pending.has(id)) return;
@@ -47,15 +47,19 @@ export function useProjectEvents(key: string | undefined): LiveState {
       );
     };
     setState('connecting');
-    es.onopen = () => setState('live');
-    es.onerror = () => setState(es.readyState === EventSource.CLOSED ? 'offline' : 'connecting');
-    es.addEventListener('launch.updated', (e: MessageEvent) => {
-      const ev = parse(e.data) as LaunchUpdatedEvent | null;
-      if (ev?.id) debounce(`l:${ev.id}`, () => onLaunchUpdated(qc, key, ev));
-    });
-    es.addEventListener('upload.updated', (e: MessageEvent) => {
-      const ev = parse(e.data) as UploadUpdatedEvent | null;
-      if (ev?.launchId) debounce(`u:${ev.launchId}`, () => onUploadUpdated(qc, key, ev));
+    const es = openEventStream(`${projectPath(key)}/events`, {
+      onOpen: () => setState('live'),
+      onError: (closed) => setState(closed ? 'offline' : 'connecting'),
+      events: {
+        'launch.updated': (data) => {
+          const ev = parse(data) as LaunchUpdatedEvent | null;
+          if (ev?.id) debounce(`l:${ev.id}`, () => onLaunchUpdated(qc, key, ev));
+        },
+        'upload.updated': (data) => {
+          const ev = parse(data) as UploadUpdatedEvent | null;
+          if (ev?.launchId) debounce(`u:${ev.launchId}`, () => onUploadUpdated(qc, key, ev));
+        },
+      },
     });
     return () => {
       es.close();

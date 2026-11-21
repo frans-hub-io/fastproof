@@ -9,6 +9,7 @@
 {{- $kafkaSasl := include "fastproof.kafkaSasl" . -}}
 {{- $streamingCas := include "fastproof.streamingCas" . | fromJsonArray -}}
 {{- $checksum := include (print $.Template.BasePath "/configmap.yaml") . | sha256sum -}}
+{{- $secretsChecksum := include "fastproof.secretsChecksum" . -}}
 {{- range $i, $w := include "fastproof.workloads" . | fromJsonArray }}
 {{- with $ }}
 {{- if $i }}
@@ -54,6 +55,7 @@ spec:
         {{- end }}
       annotations:
         checksum/config: {{ $checksum }}
+        checksum/secrets: {{ $secretsChecksum }}
         {{- with $w.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -225,6 +227,22 @@ spec:
                   items:
                     - key: {{ $c.key }}
                       path: opensearch-password
+              {{- end }}
+              {{- with include "fastproof.secretsKey" . }}
+              {{- $k := . | fromJson }}
+              - secret:
+                  name: {{ $k.name }}
+                  items:
+                    - key: {{ $k.key }}
+                      path: secrets-key
+              {{- end }}
+              {{- with include "fastproof.smtpPassword" . }}
+              {{- $k := . | fromJson }}
+              - secret:
+                  name: {{ $k.name }}
+                  items:
+                    - key: {{ $k.key }}
+                      path: smtp-password
               {{- end }}
         {{- if include "fastproof.needsCa" . }}
         - name: ca

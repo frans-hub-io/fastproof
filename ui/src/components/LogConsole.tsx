@@ -74,8 +74,8 @@ function Row({ entry, names, showResult }: { entry: LogEntry; names: Map<string,
       <span className="fp-console-level">{l.level}</span>
       {showResult && (
         <span className="fp-console-result" title={names.get(l.resultId) ?? l.resultId}>
-          {names.get(l.resultId) ?? l.resultId.slice(0, 8)}
-          {l.attempt > 1 ? ` #${String(l.attempt)}` : ''}
+          {names.get(l.resultId) ?? l.resultId}
+          {l.attempt > 0 ? ` · retry ${String(l.attempt)}` : ''}
         </span>
       )}
       <Message text={l.message} />

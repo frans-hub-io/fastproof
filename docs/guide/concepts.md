@@ -80,7 +80,8 @@ renames.
 Failures are grouped by a **fingerprint**: the error message with numbers, ids and timestamps normalised,
 plus the top stack frames. Triage (`results:triage`) sets a defect type (product bug, automation bug, system
 issue, no defect, to investigate), a comment and an issue link, or mutes a test until a date; it can be applied
-to every result with the same fingerprint. Every change is written to the audit log.
+to every result with the same fingerprint. Rules triage known failures automatically. Every change is
+written to the audit log. See [Rules and triage](rules-and-triage.md).
 
 ## FastMock correlation
 

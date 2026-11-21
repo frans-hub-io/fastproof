@@ -85,6 +85,84 @@ jobs:
           path: fastproof/ui/dist
           retention-days: 1
 
+  e2e-real:
+    name: e2e against the real server
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    needs: ui
+    services:
+      postgres:
+        image: docker.io/library/postgres:18.7-trixie
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      FASTPROOF_E2E_REAL: "1"
+      FASTPROOF_E2E_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+      FASTPROOF_BIN: ${{ github.workspace }}/fastproof/target/debug/fastproof
+    defaults:
+      run:
+        working-directory: fastproof
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: fastproof
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ env.PLATFORM_REPOSITORY }}
+          ref: ${{ env.PLATFORM_REF }}
+          ssh-key: ${{ secrets.PLATFORM_DEPLOY_KEY }}
+          path: franshub-platform
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: ui-dist
+          path: fastproof/ui/dist
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+        with:
+          workspaces: fastproof
+          key: e2e-real
+      - name: build the server with the UI
+        run: cargo build -p fastproof-server --bin fastproof --locked
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: |
+            fastproof/ui/package-lock.json
+            franshub-platform/packages/ui-shell/package-lock.json
+      - name: build ui-shell
+        working-directory: franshub-platform/packages/ui-shell
+        run: |
+          npm ci
+          npm run build
+      - name: install test dependencies
+        working-directory: fastproof/ui
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: end-to-end tests against the server
+        working-directory: fastproof/ui
+        run: npm run e2e:real
+      - if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: playwright-real-report
+          path: |
+            fastproof/ui/playwright-report
+            fastproof/ui/test-results
+          retention-days: 7
+
   rust:
     name: rust (postgres ${{ matrix.postgres }}, valkey ${{ matrix.valkey }})
     runs-on: ubuntu-24.04

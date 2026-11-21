@@ -7,6 +7,8 @@ import type { Launch, ResultStatus } from '../../api/types';
 import { RESULT_STATUSES } from '../../api/types';
 import { StatusDot } from '../../components/Status';
 import { STATUS_LABEL } from '../../lib/status';
+import { usesToken } from '../../lib/authToken';
+import { downloadWithToken } from '../../viewers/authedUrl';
 
 export function TestPlanModal({ project, launch, opened, onClose, initialStatuses }: { project: string; launch: Launch; opened: boolean; onClose: () => void; initialStatuses: ResultStatus[] }) {
   const [name, setName] = useState(`#${String(launch.number)} ${launch.name}: rerun`);
@@ -54,7 +56,16 @@ export function TestPlanModal({ project, launch, opened, onClose, initialStatuse
           <Stack gap="xs">
             <Alert color="green" variant="light" title="Test plan created">
               <Stack gap={6}>
-                <Anchor href={testPlanUrl(project, planId)} download="testplan.json" data-testid="test-plan-download">
+                <Anchor
+                  href={testPlanUrl(project, planId)}
+                  download="testplan.json"
+                  data-testid="test-plan-download"
+                  onClick={(e) => {
+                    if (!usesToken()) return;
+                    e.preventDefault();
+                    void downloadWithToken(testPlanUrl(project, planId), 'testplan.json');
+                  }}
+                >
                   <Group gap={6} component="span">
                     <IconDownload size={14} /> Download testplan.json
                   </Group>

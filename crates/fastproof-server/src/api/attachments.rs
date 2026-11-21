@@ -72,7 +72,7 @@ pub fn inline_safe(ct: &str) -> bool {
     )
 }
 
-#[utoipa::path(post, path = "/api/v1/projects/{key}/launches/{id}/attachments", tag = "attachments",
+#[utoipa::path(post, path = "/api/v1/projects/{key}/launches/{id}/attachments", tag = "attachments", operation_id = "attachments_upload",
     params(("key" = String, Path), ("id" = Uuid, Path),
         ("X-FastProof-Attachment-Name" = Option<String>, Header, description = "file name")),
     request_body(content = Vec<u8>, content_type = "application/octet-stream"),
@@ -185,7 +185,7 @@ fn disposition(kind: &str, name: &str) -> HeaderValue {
     .unwrap_or_else(|_| HeaderValue::from_static("attachment"))
 }
 
-#[utoipa::path(get, path = "/api/v1/projects/{key}/attachments/{id}/content", tag = "attachments",
+#[utoipa::path(get, path = "/api/v1/projects/{key}/attachments/{id}/content", tag = "attachments", operation_id = "attachments_content",
     params(("key" = String, Path), ("id" = Uuid, Path), ContentQuery),
     responses((status = 200, description = "the bytes, with X-Content-Type-Options nosniff and a sandbox CSP"),
         (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]

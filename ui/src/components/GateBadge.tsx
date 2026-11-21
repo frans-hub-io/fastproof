@@ -3,6 +3,7 @@ import { IconCheck, IconClockHour4, IconShieldCheck, IconShieldX, IconX } from '
 import { Link } from 'react-router';
 import { useGate } from '../api/stageC';
 import type { Launch } from '../api/types';
+import { actualText, ruleText } from '../lib/gates';
 
 const LOOK = {
   passed: { color: 'green', label: 'Gate passed', icon: <IconShieldCheck size={12} /> },
@@ -45,18 +46,23 @@ export function GateBadge({ project, launch }: { project: string; launch: Launch
                 </Table.Thead>
                 <Table.Tbody>
                   {g.results.map((r, i) => (
-                    <Table.Tr key={`${r.gate}:${r.rule}:${String(i)}`}>
+                    <Table.Tr key={`${r.gate}:${String(i)}`}>
                       <Table.Td>{r.ok ? <IconCheck size={14} color="var(--fp-status-passed)" /> : <IconX size={14} color="var(--fp-status-failed)" />}</Table.Td>
                       <Table.Td>
                         <Text size="xs" fw={600}>
                           {r.gate}
                         </Text>
                         <Text size="xs" c="dimmed" className="fp-mono">
-                          {r.rule}
+                          {ruleText(r.rule)}
                         </Text>
+                        {r.note && (
+                          <Text size="xs" c="dimmed">
+                            {r.note}
+                          </Text>
+                        )}
                       </Table.Td>
                       <Table.Td ta="right" className="fp-mono">
-                        {r.actual ?? '—'}
+                        {actualText(r.rule.metric, r.actual)}
                       </Table.Td>
                     </Table.Tr>
                   ))}

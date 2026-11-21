@@ -191,7 +191,7 @@ export function useSaveSettings(key: string) {
 export function useSecrets(key: string, enabled = true) {
   return useQuery({
     queryKey: qc2.secrets(key),
-    queryFn: () => request<ItemList<SecretInfo | string>>(`${projectPath(key)}/secrets`).then((r) => r.items.map((s) => (typeof s === 'string' ? { name: s } : s))),
+    queryFn: () => request<ItemList<SecretInfo>>(`${projectPath(key)}/secrets`).then((r) => r.items),
     enabled,
   });
 }

@@ -124,6 +124,7 @@ export function useResults(key: string, id: string, filters: ResultFilters) {
         withQuery(`${projectPath(key)}/launches/${encodeURIComponent(id)}/results`, { ...resultQuery(filters), before: pageParam, limit: RESULT_PAGE }),
       ),
     getNextPageParam: (last) => last.next ?? undefined,
+    enabled: !!id,
   });
 }
 

@@ -336,7 +336,8 @@ pub async fn notify_log_chunks(
 /// Filters of stored log reads.
 #[derive(Clone, Debug, Default)]
 pub struct LogFilter {
-    pub result_id: Option<String>,
+    /// Result keys (client ids of attempts); empty for every result.
+    pub result_ids: Vec<String>,
     pub attempt: Option<u32>,
     pub level: Option<LogLevel>,
     /// Case-insensitive substring of the message.
@@ -437,6 +438,23 @@ impl Store {
     }
 
     /// Chunks by id with their project and launch (for sinks and the live fan-out).
+    /// Client ids of the attempts of a result that were sent through the results API: the
+    /// `resultId` their log lines carry.
+    pub async fn result_client_ids(
+        &self,
+        launch_id: Uuid,
+        result_id: Uuid,
+    ) -> anyhow::Result<Vec<String>> {
+        Ok(sqlx::query_scalar(
+            "select substr(client_key, 3) from attempts where launch_id = $1 and result_id = $2 \
+             and client_key like 'r:%' order by seq limit 100",
+        )
+        .bind(launch_id)
+        .bind(result_id)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
     pub async fn log_chunks(&self, ids: &[i64]) -> anyhow::Result<Vec<LogChunk>> {
         if ids.is_empty() {
             return Ok(Vec::new());
@@ -483,11 +501,11 @@ impl Store {
                 .filter(|q| !q.is_empty());
         let rows = sqlx::query(
             "select id, result_key, attempt, lines_z from attempt_log_chunks where launch_id = $1 \
-             and ($2::text is null or result_key = $2) and ($3::int is null or attempt = $3) \
+             and (cardinality($2::text[]) = 0 or result_key = any($2)) and ($3::int is null or attempt = $3) \
              and (levels & $4) <> 0 and ($5::bigint is null or id <= $5) order by id desc limit $6",
         )
         .bind(launch_id)
-        .bind(f.result_id.as_deref())
+        .bind(&f.result_ids)
         .bind(f.attempt.map(|a| a as i32))
         .bind(mask)
         .bind(cursor.map(|c| c.0))

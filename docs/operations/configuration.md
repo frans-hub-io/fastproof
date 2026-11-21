@@ -85,8 +85,11 @@ Used only with `FASTPROOF_INGEST_MODE=kafka`.
 | `FASTPROOF_KAFKA_PASSWORD_FILE` | none | File with the SASL password |
 | `FASTPROOF_KAFKA_TOPIC_PREFIX` | `fastproof.` | Prefix of the topics `ingest.results`, `ingest.logs`, `ingest.uploads` and `events` |
 | `FASTPROOF_KAFKA_CREATE_TOPICS` | `false` | Create missing topics at start (needs the Kafka `Create` permission) |
-| `FASTPROOF_KAFKA_PARTITIONS` | `12` | Partitions of topics FastProof creates |
+| `FASTPROOF_KAFKA_PARTITIONS` | `12` | Partitions of topics FastProof creates (1 to 1000) |
+| `FASTPROOF_KAFKA_REPLICATION` | `-1` | Replication factor of topics FastProof creates; `-1` uses the broker default |
 | `FASTPROOF_KAFKA_TRUSTED_PRODUCERS` | `false` | Accept records written straight to Kafka by other producers. Leave it off unless Kafka ACLs restrict who can write |
+| `FASTPROOF_KAFKA_CLIENT_ID` | `fastproof` | Client id sent to the brokers (shows up in broker logs and quotas) |
+| `FASTPROOF_KAFKA_MAX_RECORD_BYTES` | `900000` | Largest record FastProof produces (16 KiB to 64 MiB); keep it below the topic's `max.message.bytes` |
 
 Consumer offsets and partition leases live in PostgreSQL, so Kafka needs only topic `Read`, `Describe` and
 `Write` for the FastProof user (plus `Create` when FastProof creates the topics). Use SASL over TLS outside a
@@ -120,9 +123,35 @@ Used when `FASTPROOF_SINKS` contains `opensearch` or `FASTPROOF_SEARCH_BACKEND=o
 | `FASTPROOF_OPENSEARCH_CA_FILE` | none | CA bundle for the cluster certificate |
 | `FASTPROOF_OPENSEARCH_INDEX_PREFIX` | `fastproof-` | Prefix of index templates, data streams (`<prefix>logs-*`) and the ISM policy |
 | `FASTPROOF_OPENSEARCH_RAW_TTL_DAYS` | `90` | Days raw documents are kept (through an ISM policy) |
+| `FASTPROOF_OPENSEARCH_REPLICAS` | `1` | Replicas of the indexes FastProof creates; `0` on a single-node cluster |
 
 OpenSearch 2.19 and 3.x are supported. The user needs `indices_all` on `<prefix>*` and `.ds-<prefix>*`, index
 template and ISM policy management, and `cluster_monitor`.
+
+## Sink batching
+
+Apply to every sink (`FASTPROOF_SINKS`).
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `FASTPROOF_SINK_BATCH_SIZE` | `2000` | Rows (or documents) written per request, 1 to 100000 |
+| `FASTPROOF_SINK_FLUSH_INTERVAL_MS` | `1000` | Longest wait before a partial batch is written, 10 to 600000 |
+
+Larger batches cost fewer requests and more memory per sink replica; a shorter interval makes search see new
+data sooner.
+
+## Live logs
+
+Limits of `POST /api/v1/projects/{key}/launches/{id}/logs` (see [Live logs](../guide/live-logs.md)).
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `FASTPROOF_LOG_MAX_LINE_BYTES` | `65536` (64 KiB) | Largest message of one line, 256 to 1048576 |
+| `FASTPROOF_LOG_MAX_LINES_PER_REQUEST` | `5000` | Lines in one request, 1 to 100000 |
+| `FASTPROOF_LOG_MAX_REQUEST_BYTES` | `8388608` (8 MiB) | Largest request body, 1024 to 268435456 |
+| `FASTPROOF_LOG_MAX_BYTES_PER_LAUNCH` | `268435456` (256 MiB) | Log bytes accepted per launch; later requests get `413` |
+
+A line over the size limit is rejected on its own; the rest of the request is stored.
 
 ## Access
 
@@ -157,6 +186,53 @@ OIDC is off until `FASTPROOF_OIDC_ISSUER` is set; then the other variables apply
 | `FASTPROOF_OIDC_INSECURE_COOKIE` | `false` | Cookies without `Secure`; only for a loopback redirect URL in development |
 | `FASTPROOF_OIDC_POST_LOGOUT_REDIRECT` | public URL | Where the provider sends the browser after logout |
 
+## Integrations
+
+Quality gates, notifications, merge request comments and the FastMock correlation are configured per project
+(see [Quality gates](../guide/quality-gates.md) and [Notifications](../guide/notifications.md)). The server
+settings below decide what they may reach.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `FASTPROOF_EGRESS_ALLOW` | empty (nothing) | Hosts that integrations may call: a comma list of `host`, `*.domain`, `*`, IP addresses, each optionally with `:port`. Empty denies every outbound call |
+| `FASTPROOF_SECRETS_KEY_FILE` | none | File with the keys that encrypt project secrets (AES-256-GCM), one per line: 64 hex characters or base64 of 32 bytes. The first line encrypts, every line decrypts. Without it the secrets API answers `503` |
+| `FASTPROOF_SMTP_URL` | none | Mail relay of email notifications: `smtps://host:465` (TLS), `smtp://host:587` (STARTTLS, required) or `smtp+insecure://host:25` (no TLS, for a relay on a trusted network). No credentials in the URL |
+| `FASTPROOF_SMTP_FROM` | required with SMTP | Sender, for example `FastProof <fastproof@example.com>` |
+| `FASTPROOF_SMTP_USERNAME` | none | SMTP user; set together with the password |
+| `FASTPROOF_SMTP_PASSWORD_FILE` | none | File with the SMTP password (or `FASTPROOF_SMTP_PASSWORD` inline) |
+| `FASTPROOF_TELEGRAM_API_URL` | `https://api.telegram.org` | Telegram Bot API base URL, for a proxy or a self-hosted Bot API server |
+| `FASTPROOF_DELIVERY_MAX_ATTEMPTS` | `6` | Attempts per notification or merge request update, 1 to 20 |
+| `FASTPROOF_DELIVERY_BACKOFF_SECONDS` | `30` | First retry delay, doubled per attempt, at most one hour (0 to 3600) |
+| `FASTPROOF_METRICS_TOP_BRANCHES` | `10` | Branches per project with their own `branch` label in the quality metrics; the rest are `other` (1 to 100) |
+
+Every outbound call of an integration (webhooks, Slack, Telegram, GitLab, GitHub, FastMock, and the SMTP relay)
+goes through the egress allowlist. A name that only matches a wildcard must resolve to public addresses; list
+an internal host exactly to allow it. Redirects are checked hop by hop and proxies from the environment are
+ignored. Allow only the hosts your projects need, for example
+`FASTPROOF_EGRESS_ALLOW=hooks.slack.com,api.telegram.org,gitlab.example.com,smtp.example.com:465`.
+
+Generate a secrets key with `openssl rand -hex 32` and keep it in your secret store. Only replicas with the
+`scheduler` role re-encrypt secrets; every replica that serves the API needs the same key file.
+
+### Secrets key rotation
+
+The key file may hold several keys. The first line encrypts new values, every line decrypts, and replicas with
+the `scheduler` role re-encrypt every secret with the first key when they start. A key's id is the first
+16 hex characters of the SHA-256 of the raw 32 bytes (for a hex key:
+`echo -n <key> | xxd -r -p | sha256sum | cut -c1-16`); the server logs it after re-encrypting.
+
+1. Add the new key as the second line of the key file and roll out (for example
+   `kubectl rollout restart deployment/<release>-fastproof`). Every replica can now decrypt values written with
+   either key.
+2. Move the new key to the first line and roll out again. Replicas encrypt with the new key, and the scheduler
+   replicas re-encrypt the existing secrets at start.
+3. Check that nothing uses the old key any more:
+   `select count(*) from project_secrets where key_id <> '<active id>'` returns `0`. Then remove the old line
+   and roll out.
+
+Do not remove a key while that count is above zero: secrets encrypted only with a removed key can no longer be
+read, and the server logs a warning about them.
+
 ## Live updates
 
 | Variable | Default | Meaning |
@@ -175,15 +251,20 @@ Secrets never appear in logs; tokens and passwords in URLs and headers are redac
 
 ## CLI
 
-The same binary is the CLI (`fastproof upload`, `watch`, `launch start`, `launch finish`, `migrate`,
-`version`). The CLI reads:
+The same binary is the CLI (`fastproof upload`, `watch`, `launch start`, `launch finish`, `gate`, `testplan`,
+`bench`, `migrate`, `version`). The CLI reads:
 
 | Variable | Meaning |
 |---|---|
 | `FASTPROOF_URL` | Server URL |
-| `FASTPROOF_TOKEN` | API token |
+| `FASTPROOF_TOKEN`, `FASTPROOF_TOKEN_FILE` | API token, or a file holding it |
 | `FASTPROOF_PROJECT` | Project key |
 | `FASTPROOF_LAUNCH` | External launch id; uploads with the same id join one launch |
+| `FASTPROOF_LAUNCH_NAME` | Launch name |
+| `FASTPROOF_ENVIRONMENT` | Environment key, part of the test identity |
+| `FASTPROOF_LOG_FORMAT` | `json` or `text` for the CLI's own messages |
+
+`fastproof bench --kafka` also reads the `FASTPROOF_KAFKA_*` variables.
 
 `fastproof migrate` needs only the database variables above (`FASTPROOF_DATABASE_*`, `PGSSLMODE`,
 `PGSSLROOTCERT`) and exits when the schema is up to date.

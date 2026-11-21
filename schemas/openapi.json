@@ -14,7 +14,7 @@
         "tags": [
           "admin"
         ],
-        "operationId": "jobs",
+        "operationId": "admin_jobs",
         "responses": {
           "200": {
             "content": {
@@ -42,7 +42,7 @@
         "tags": [
           "admin"
         ],
-        "operationId": "audit",
+        "operationId": "admin_audit",
         "parameters": [
           {
             "name": "action",
@@ -116,7 +116,7 @@
         "tags": [
           "projects"
         ],
-        "operationId": "list",
+        "operationId": "projects_list",
         "responses": {
           "200": {
             "content": {
@@ -142,7 +142,7 @@
         "tags": [
           "projects"
         ],
-        "operationId": "create",
+        "operationId": "projects_create",
         "requestBody": {
           "content": {
             "application/json": {
@@ -198,7 +198,7 @@
         "tags": [
           "projects"
         ],
-        "operationId": "get",
+        "operationId": "projects_get",
         "parameters": [
           {
             "name": "key",
@@ -243,7 +243,7 @@
         "tags": [
           "projects"
         ],
-        "operationId": "delete",
+        "operationId": "projects_delete",
         "parameters": [
           {
             "name": "key",
@@ -280,7 +280,7 @@
         "tags": [
           "projects"
         ],
-        "operationId": "patch",
+        "operationId": "projects_patch",
         "parameters": [
           {
             "name": "key",
@@ -337,7 +337,7 @@
         "tags": [
           "attachments"
         ],
-        "operationId": "content",
+        "operationId": "attachments_content",
         "parameters": [
           {
             "name": "key",
@@ -396,7 +396,7 @@
         "tags": [
           "analysis"
         ],
-        "operationId": "dashboard",
+        "operationId": "analysis_dashboard",
         "parameters": [
           {
             "name": "key",
@@ -495,7 +495,7 @@
         "tags": [
           "analysis"
         ],
-        "operationId": "defect_types",
+        "operationId": "analysis_defect_types",
         "parameters": [
           {
             "name": "key",
@@ -540,7 +540,7 @@
         "tags": [
           "analysis"
         ],
-        "operationId": "create_defect_type",
+        "operationId": "analysis_create_defect_type",
         "parameters": [
           {
             "name": "key",
@@ -615,7 +615,7 @@
         "tags": [
           "analysis"
         ],
-        "operationId": "delete_defect_type",
+        "operationId": "analysis_delete_defect_type",
         "parameters": [
           {
             "name": "key",
@@ -670,7 +670,7 @@
         "tags": [
           "analysis"
         ],
-        "operationId": "patch_defect_type",
+        "operationId": "analysis_patch_defect_type",
         "parameters": [
           {
             "name": "key",
@@ -754,7 +754,7 @@
         "tags": [
           "events"
         ],
-        "operationId": "stream",
+        "operationId": "events_stream",
         "parameters": [
           {
             "name": "key",
@@ -807,7 +807,7 @@
         "tags": [
           "analysis"
         ],
-        "operationId": "flaky",
+        "operationId": "analysis_flaky",
         "parameters": [
           {
             "name": "key",
@@ -880,7 +880,7 @@
         "tags": [
           "launches"
         ],
-        "operationId": "list",
+        "operationId": "launches_list",
         "parameters": [
           {
             "name": "key",
@@ -1004,7 +1004,7 @@
         "tags": [
           "launches"
         ],
-        "operationId": "create",
+        "operationId": "launches_create",
         "parameters": [
           {
             "name": "key",
@@ -1081,7 +1081,7 @@
         "tags": [
           "analysis"
         ],
-        "operationId": "compare",
+        "operationId": "analysis_compare",
         "parameters": [
           {
             "name": "key",
@@ -1148,7 +1148,7 @@
         "tags": [
           "launches"
         ],
-        "operationId": "get",
+        "operationId": "launches_get",
         "parameters": [
           {
             "name": "key",
@@ -1202,7 +1202,7 @@
         "tags": [
           "launches"
         ],
-        "operationId": "delete",
+        "operationId": "launches_delete",
         "parameters": [
           {
             "name": "key",
@@ -1248,7 +1248,7 @@
         "tags": [
           "launches"
         ],
-        "operationId": "patch_launch",
+        "operationId": "launches_patch",
         "parameters": [
           {
             "name": "key",
@@ -1323,7 +1323,7 @@
         "tags": [
           "attachments"
         ],
-        "operationId": "upload",
+        "operationId": "attachments_upload",
         "parameters": [
           {
             "name": "key",
@@ -1415,7 +1415,7 @@
         "tags": [
           "analysis"
         ],
-        "operationId": "clusters",
+        "operationId": "analysis_clusters",
         "parameters": [
           {
             "name": "key",
@@ -1471,7 +1471,7 @@
         "tags": [
           "launches"
         ],
-        "operationId": "finish",
+        "operationId": "launches_finish",
         "parameters": [
           {
             "name": "key",
@@ -1539,7 +1539,7 @@
           "integrations"
         ],
         "description": "Evaluates the project's quality gates for the launch now. `pending` while the launch runs or has unprocessed uploads; `failed` when a rule of an enabled gate that applies to the launch branch does not hold. A rule holds when `actual op value`.",
-        "operationId": "gate",
+        "operationId": "integrations_gate",
         "parameters": [
           {
             "name": "key",
@@ -1605,7 +1605,7 @@
         "tags": [
           "logs"
         ],
-        "operationId": "list",
+        "operationId": "logs_list",
         "parameters": [
           {
             "name": "key",
@@ -1627,7 +1627,7 @@
           {
             "name": "resultId",
             "in": "query",
-            "description": "Client id of a result.",
+            "description": "Client id of an attempt, or the id of a result of the launch (all its attempts).",
             "required": false,
             "schema": {
               "type": "string"
@@ -1725,7 +1725,7 @@
         "tags": [
           "logs"
         ],
-        "operationId": "ingest",
+        "operationId": "logs_ingest",
         "parameters": [
           {
             "name": "key",
@@ -1831,7 +1831,7 @@
         "tags": [
           "logs"
         ],
-        "operationId": "stream",
+        "operationId": "logs_stream",
         "parameters": [
           {
             "name": "key",
@@ -1853,6 +1853,7 @@
           {
             "name": "resultId",
             "in": "query",
+            "description": "Client id of an attempt, or the id of a result of the launch (all its attempts).",
             "required": false,
             "schema": {
               "type": "string"
@@ -1926,7 +1927,7 @@
         "tags": [
           "results"
         ],
-        "operationId": "list",
+        "operationId": "results_list",
         "parameters": [
           {
             "name": "key",
@@ -2049,7 +2050,7 @@
         "tags": [
           "results"
         ],
-        "operationId": "ingest",
+        "operationId": "results_ingest",
         "parameters": [
           {
             "name": "key",
@@ -2143,7 +2144,7 @@
         "tags": [
           "results"
         ],
-        "operationId": "tree",
+        "operationId": "results_tree",
         "parameters": [
           {
             "name": "key",
@@ -2208,7 +2209,7 @@
         "tags": [
           "uploads"
         ],
-        "operationId": "list",
+        "operationId": "uploads_list",
         "parameters": [
           {
             "name": "key",
@@ -2262,7 +2263,7 @@
         "tags": [
           "uploads"
         ],
-        "operationId": "create",
+        "operationId": "uploads_create",
         "parameters": [
           {
             "name": "key",
@@ -2371,7 +2372,7 @@
           "integrations"
         ],
         "description": "Notification and VCS deliveries, newest first (without targets or payloads).",
-        "operationId": "deliveries",
+        "operationId": "integrations_deliveries",
         "parameters": [
           {
             "name": "key",
@@ -2464,7 +2465,7 @@
         "tags": [
           "results"
         ],
-        "operationId": "detail",
+        "operationId": "results_detail",
         "parameters": [
           {
             "name": "key",
@@ -2521,7 +2522,7 @@
           "integrations"
         ],
         "description": "Requests the project's FastMock answered during an attempt: by the attempt's trace id, else by its time window (and the `fastmock.space` label or launch attribute).",
-        "operationId": "mock_interactions",
+        "operationId": "integrations_mock_interactions",
         "parameters": [
           {
             "name": "key",
@@ -2616,7 +2617,7 @@
         "tags": [
           "results"
         ],
-        "operationId": "similar",
+        "operationId": "results_similar",
         "parameters": [
           {
             "name": "key",
@@ -2701,7 +2702,7 @@
         "tags": [
           "analysis"
         ],
-        "operationId": "retention_preview",
+        "operationId": "analysis_retention_preview",
         "parameters": [
           {
             "name": "key",
@@ -2748,7 +2749,7 @@
         "tags": [
           "analysis"
         ],
-        "operationId": "rules",
+        "operationId": "analysis_rules",
         "parameters": [
           {
             "name": "key",
@@ -2793,7 +2794,7 @@
         "tags": [
           "analysis"
         ],
-        "operationId": "create_rule",
+        "operationId": "analysis_create_rule",
         "parameters": [
           {
             "name": "key",
@@ -2868,7 +2869,7 @@
         "tags": [
           "analysis"
         ],
-        "operationId": "test_rule",
+        "operationId": "analysis_test_rule",
         "parameters": [
           {
             "name": "key",
@@ -2934,7 +2935,7 @@
         "tags": [
           "analysis"
         ],
-        "operationId": "delete_rule",
+        "operationId": "analysis_delete_rule",
         "parameters": [
           {
             "name": "key",
@@ -2980,7 +2981,7 @@
         "tags": [
           "analysis"
         ],
-        "operationId": "patch_rule",
+        "operationId": "analysis_patch_rule",
         "parameters": [
           {
             "name": "key",
@@ -3055,7 +3056,7 @@
         "tags": [
           "analysis"
         ],
-        "operationId": "apply_rule",
+        "operationId": "analysis_apply_rule",
         "parameters": [
           {
             "name": "key",
@@ -3130,7 +3131,7 @@
         "tags": [
           "logs"
         ],
-        "operationId": "logs",
+        "operationId": "logs_search",
         "parameters": [
           {
             "name": "key",
@@ -3251,7 +3252,7 @@
           "integrations"
         ],
         "description": "Names of the project's secrets; values are write-only.",
-        "operationId": "secrets",
+        "operationId": "integrations_secrets",
         "parameters": [
           {
             "name": "key",
@@ -3299,7 +3300,7 @@
           "integrations"
         ],
         "description": "Creates or replaces a secret, encrypted at rest with `FASTPROOF_SECRETS_KEY_FILE`. Settings refer to it by name (`secretRef`, `tokenSecretRef`).",
-        "operationId": "put_secret",
+        "operationId": "integrations_put_secret",
         "parameters": [
           {
             "name": "key",
@@ -3378,7 +3379,7 @@
         "tags": [
           "integrations"
         ],
-        "operationId": "delete_secret",
+        "operationId": "integrations_delete_secret",
         "parameters": [
           {
             "name": "key",
@@ -3425,7 +3426,7 @@
         "tags": [
           "analysis"
         ],
-        "operationId": "get_settings",
+        "operationId": "analysis_get_settings",
         "parameters": [
           {
             "name": "key",
@@ -3470,7 +3471,7 @@
         "tags": [
           "analysis"
         ],
-        "operationId": "put_settings",
+        "operationId": "analysis_put_settings",
         "parameters": [
           {
             "name": "key",
@@ -3536,7 +3537,7 @@
         "tags": [
           "analysis"
         ],
-        "operationId": "task",
+        "operationId": "analysis_task",
         "parameters": [
           {
             "name": "key",
@@ -3592,7 +3593,7 @@
         "tags": [
           "results"
         ],
-        "operationId": "history",
+        "operationId": "results_history",
         "parameters": [
           {
             "name": "key",
@@ -3673,7 +3674,7 @@
         "tags": [
           "analysis"
         ],
-        "operationId": "create_test_plan",
+        "operationId": "analysis_create_test_plan",
         "parameters": [
           {
             "name": "key",
@@ -3739,7 +3740,7 @@
         "tags": [
           "analysis"
         ],
-        "operationId": "testplan_json",
+        "operationId": "analysis_testplan_json",
         "parameters": [
           {
             "name": "key",
@@ -3795,7 +3796,7 @@
         "tags": [
           "analysis"
         ],
-        "operationId": "triage",
+        "operationId": "analysis_triage",
         "parameters": [
           {
             "name": "key",
@@ -3936,6 +3937,13 @@
             "items": {
               "$ref": "#/components/schemas/AttachmentView"
             }
+          },
+          "clientId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Client id of an attempt sent through the results API: the `resultId` of its log lines."
           },
           "durationMs": {
             "type": [
@@ -4812,6 +4820,26 @@
           }
         }
       },
+      "FastMockSettings": {
+        "type": "object",
+        "description": "The FastMock instance whose journal is correlated with results.",
+        "required": [
+          "url"
+        ],
+        "properties": {
+          "tokenSecretRef": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "url": {
+            "type": "string",
+            "description": "Admin base URL, e.g. `https://fastmock.example.com:9090`."
+          }
+        },
+        "additionalProperties": false
+      },
       "FinishLaunch": {
         "type": "object",
         "description": "Body of `POST .../launches/{id}/finish`.",
@@ -4906,6 +4934,39 @@
             "minimum": 0
           }
         }
+      },
+      "Gate": {
+        "type": "object",
+        "description": "A quality gate.",
+        "required": [
+          "name",
+          "rules"
+        ],
+        "properties": {
+          "branches": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Branch globs (`*` matches any text); every branch when absent."
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "rules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GateRule"
+            }
+          }
+        },
+        "additionalProperties": false
       },
       "GateReport": {
         "type": "object",
@@ -5094,6 +5155,30 @@
           },
           "url": {
             "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "IssueTracker": {
+        "type": "object",
+        "description": "An issue tracker for links from issue keys.",
+        "required": [
+          "type",
+          "urlTemplate",
+          "keyRegex"
+        ],
+        "properties": {
+          "keyRegex": {
+            "type": "string",
+            "description": "Keys this tracker owns, e.g. `[A-Z][A-Z0-9]+-[0-9]+` (matched in full)."
+          },
+          "type": {
+            "type": "string",
+            "description": "`jira`, `gitlab` or `github`."
+          },
+          "urlTemplate": {
+            "type": "string",
+            "description": "URL with `{key}`, e.g. `https://jira.example.com/browse/{key}`."
           }
         },
         "additionalProperties": false
@@ -6010,6 +6095,78 @@
         },
         "additionalProperties": false
       },
+      "Notification": {
+        "type": "object",
+        "description": "A notification channel.",
+        "required": [
+          "id",
+          "kind",
+          "on"
+        ],
+        "properties": {
+          "filter": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/NotificationFilter"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "description": "`webhook`, `slack`, `email` or `telegram`."
+          },
+          "on": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "`launchFinished`, `gateFailed`, `newFailures`."
+          },
+          "secretRef": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Webhook: HMAC key; Slack: the webhook URL; Telegram: the bot token."
+          },
+          "target": {
+            "type": "string",
+            "description": "Webhook or Slack URL, Telegram chat id, or comma-separated email addresses. A Slack\nwebhook URL is better kept in a secret (`secretRef`), as settings are readable."
+          }
+        },
+        "additionalProperties": false
+      },
+      "NotificationFilter": {
+        "type": "object",
+        "description": "Which launches a notification is about.",
+        "properties": {
+          "branches": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "environments": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
       "Op": {
         "type": "string",
         "description": "A comparison.",
@@ -6625,11 +6782,14 @@
         "description": "Settings of a project. The analysis parts (`flaky`, `retention`, `rollup`) are typed here;\nthe integration parts (`gates`, `notifications`, `issueTrackers`, `fastmock`, and any other\nkey such as `vcs`) are kept as given and validated by the integrations feature.",
         "properties": {
           "fastmock": {
-            "type": [
-              "object",
-              "null"
-            ],
-            "description": "FastMock integration `{url, tokenSecretRef?}`."
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/FastMockSettings"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "flaky": {
             "$ref": "#/components/schemas/FlakySettings",
@@ -6642,7 +6802,7 @@
           "gates": {
             "type": "array",
             "items": {
-              "type": "object"
+              "$ref": "#/components/schemas/Gate"
             },
             "description": "Quality gates.",
             "default": []
@@ -6650,7 +6810,7 @@
           "issueTrackers": {
             "type": "array",
             "items": {
-              "type": "object"
+              "$ref": "#/components/schemas/IssueTracker"
             },
             "description": "Issue trackers `{type: jira|gitlab|github, urlTemplate, keyRegex}`; triage builds issue\nURLs from them when only a key is given.",
             "default": []
@@ -6658,7 +6818,7 @@
           "notifications": {
             "type": "array",
             "items": {
-              "type": "object"
+              "$ref": "#/components/schemas/Notification"
             },
             "description": "Notification targets.",
             "default": []
@@ -6675,6 +6835,16 @@
             "default": {
               "afterDays": 30
             }
+          },
+          "vcs": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/VcsSettings"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -8272,6 +8442,35 @@
             }
           }
         }
+      },
+      "VcsSettings": {
+        "type": "object",
+        "description": "Merge request comments and commit statuses.",
+        "required": [
+          "provider",
+          "url",
+          "tokenSecretRef"
+        ],
+        "properties": {
+          "comment": {
+            "type": "boolean"
+          },
+          "provider": {
+            "type": "string",
+            "description": "`gitlab` or `github`."
+          },
+          "status": {
+            "type": "boolean"
+          },
+          "tokenSecretRef": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string",
+            "description": "GitLab base URL (`https://gitlab.example.com`) or GitHub API URL\n(`https://api.github.com`, `https://github.example.com/api/v3`)."
+          }
+        },
+        "additionalProperties": false
       }
     },
     "securitySchemes": {

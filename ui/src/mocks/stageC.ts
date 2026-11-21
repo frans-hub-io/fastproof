@@ -10,7 +10,7 @@ import type {
   GateResult,
   LaunchComparison,
   LogLevel,
-  LogLine,
+  LogLineWire,
   MockInteractions,
   ProjectSettings,
   Rule,
@@ -190,8 +190,8 @@ function typeInfo(id: string | null | undefined): DefectType | undefined {
 }
 
 function defectFor(typeId: string, extra: Partial<DefectInfo>): DefectInfo {
-  const t = typeInfo(typeId) ?? BUILT_IN_TYPES[4];
-  return { typeId: t?.id, group: t?.group, name: t?.name, comment: null, issueUrl: null, issueKey: null, source: 'user', at: new Date().toISOString(), by: 'alex@example.com', ...extra };
+  const t = typeInfo(typeId) ?? BUILT_IN_TYPES[4] ?? { id: 'toInvestigate', group: 'toInvestigate' as const, name: 'To investigate' };
+  return { typeId: t.id, group: t.group, name: t.name, comment: null, issueUrl: null, issueKey: null, source: 'user', at: new Date().toISOString(), by: 'alex@example.com', ...extra };
 }
 
 export function settingsOf(project: string): ProjectSettings {
@@ -271,7 +271,7 @@ function transitionOf(project: string, r: ResultSummary): Transition | null {
 export function analyze<T extends ResultSummary>(project: string, r: T): T {
   const t = state.triage.get(r.id);
   let defect = t && 'defect' in t ? (t.defect ?? null) : (r.defect ?? null);
-  if (!defect && failing(r.status)) defect = { typeId: 'toInvestigate', group: 'toInvestigate', name: 'To investigate', source: null };
+  if (!defect && failing(r.status)) defect = { typeId: 'toInvestigate', group: 'toInvestigate', name: 'To investigate', source: 'rule', at: r.startedAt ?? new Date(NOW).toISOString(), by: 'fastproof' };
   if (defect?.typeId) {
     const ty = typeInfo(defect.typeId);
     if (ty) defect = { ...defect, group: ty.group, name: ty.name };
@@ -395,8 +395,8 @@ function compile(src: string | undefined): RegExp | null {
 export function ruleMatches(launchId: string, match: RuleMatch): string[] {
   const def = launchDef(launchId);
   if (!def) return [];
-  const msg = compile(match.messageRegex);
-  const trace = compile(match.traceRegex);
+  const msg = compile(match.messageRegex ?? undefined);
+  const trace = compile(match.traceRegex ?? undefined);
   const out: string[] = [];
   for (const r of launchResults(launchId)) {
     if (match.statuses?.length ? !match.statuses.includes(r.status) : !failing(r.status)) continue;
@@ -427,8 +427,8 @@ export function createRule(body: Partial<Rule>): Rule {
     updatedAt: now,
     hits: 0,
   };
-  compile(rule.match.messageRegex);
-  compile(rule.match.traceRegex);
+  compile(rule.match.messageRegex ?? undefined);
+  compile(rule.match.traceRegex ?? undefined);
   state.rules.push(rule);
   return rule;
 }
@@ -437,8 +437,8 @@ export function patchRule(id: string, body: Partial<Rule>): Rule | null {
   const r = state.rules.find((x) => x.id === id);
   if (!r) return null;
   if (body.match) {
-    compile(body.match.messageRegex);
-    compile(body.match.traceRegex);
+    compile(body.match.messageRegex ?? undefined);
+    compile(body.match.traceRegex ?? undefined);
   }
   Object.assign(r, { ...body, id: r.id, createdAt: r.createdAt, hits: r.hits, updatedAt: new Date().toISOString() });
   return r;
@@ -506,7 +506,7 @@ export function compare(project: string, a: string, b: string): LaunchComparison
   if (!launchDef(a) || !launchDef(b)) return null;
   const ra = new Map(launchResults(a).map((r) => [r.seriesKey, analyze(project, r)] as const));
   const rb = new Map(launchResults(b).map((r) => [r.seriesKey, analyze(project, r)] as const));
-  const out: LaunchComparison = { newFailures: [], fixed: [], stillFailing: [], newTests: [], missing: [], durationChanges: [] };
+  const out: LaunchComparison = { newFailures: [], fixed: [], stillFailing: [], newTests: [], missing: [], durationChanges: [], truncated: false };
   for (const [k, y] of rb) {
     const x = ra.get(k);
     if (!x) {
@@ -595,7 +595,8 @@ export function dashboard(project: string, q: { branch?: string; environment?: s
 }
 
 export function gateOf(project: string, launch: Launch): GateResult {
-  if (launch.status === 'running') return { status: 'pending', results: [] };
+  const evaluatedAt = new Date().toISOString();
+  if (launch.status === 'running') return { status: 'pending', results: [], launchId: launch.id, evaluatedAt };
   const gates = settingsOf(project).gates.filter((g) => g.enabled);
   const branch = launch.vcs?.branch ?? '';
   const results: GateResult['results'] = [];
@@ -615,10 +616,10 @@ export function gateOf(project: string, launch: Launch): GateResult {
               ? Math.round((launch.durationMs ?? 0) / 1000)
               : launch.counts[r.metric];
       const ok = r.op === 'gt' ? actual > r.value : r.op === 'gte' ? actual >= r.value : r.op === 'lt' ? actual < r.value : actual <= r.value;
-      results.push({ gate: g.name, rule: `${r.metric} ${r.op} ${String(r.value)}${r.baseline ? ` vs ${r.baseline}` : ''}`, actual, expected: r.value, ok });
+      results.push({ gate: g.name, rule: r, actual, expected: r.value, ok });
     }
   }
-  return { status: results.every((r) => r.ok) ? 'passed' : 'failed', results };
+  return { status: results.every((r) => r.ok) ? 'passed' : 'failed', results, launchId: launch.id, evaluatedAt };
 }
 
 export function deliveries(project: string): Delivery[] {
@@ -631,16 +632,17 @@ export function deliveries(project: string): Delivery[] {
     const d = launches[Math.floor(i / notes.length)];
     if (!n || !d) break;
     const h = hash(`${n.id}:${d.launch.id}`);
-    const status: Delivery['status'] = i === 1 ? 'retrying' : h % 9 === 0 ? 'failed' : 'delivered';
+    const status: Delivery['status'] = i === 1 ? 'pending' : h % 9 === 0 ? 'failed' : 'delivered';
     const event = n.on[h % n.on.length] ?? 'launchFinished';
     const created = Date.parse(d.launch.finishedAt ?? d.launch.startedAt) + 5000;
     out.push({
       id: `dlv-${String(i)}`,
       notificationId: n.id,
       kind: n.kind,
-      event,
-      target: n.target,
+      events: [event],
       status,
+      maxAttempts: 5,
+      nextAttemptAt: status === 'pending' ? iso(created + 120_000) : null,
       attempts: status === 'delivered' ? 1 + (h % 3 === 0 ? 1 : 0) : status === 'failed' ? 5 : 2,
       responseStatus: status === 'delivered' ? (n.kind === 'email' ? null : 200) : status === 'failed' ? 503 : 502,
       lastError: status === 'delivered' ? null : status === 'failed' ? 'HTTP 503 Service Unavailable after 5 attempts' : 'HTTP 502 Bad Gateway, retrying in 2m',
@@ -667,9 +669,9 @@ export function mockInteractions(project: string, resultId: string, attempt: num
     failingAttempt
       ? { at: iso(start + 1480), method: 'POST', url: '/payments', status: 502, matchedStub: 'payments-gateway-down', fault: 'injected 502 (scenario payments-outage)', durationMs: 1210 }
       : { at: iso(start + 1480), method: 'POST', url: '/payments', status: 201, matchedStub: 'payments-authorize', durationMs: 402 },
-    { at: iso(start + 1720), method: 'GET', url: '/orders/SO-2026-118842', status: 404, matchedStub: null, nearMiss: 'orders-by-id: path matched, header X-Tenant expected "shop" but was missing', durationMs: 3 },
+    { at: iso(start + 1720), method: 'GET', url: '/orders/SO-2026-118842', status: 404, matchedStub: null, nearMiss: true, durationMs: 3 },
   ];
-  return { source: kind === 'ui' ? 'traceId' : 'timeWindow', confidence: kind === 'ui' ? 1 : 0.62, items: kind === 'ui' ? items : items.slice(0, 3) };
+  return { source: kind === 'ui' ? 'traceId' : 'timeWindow', confidence: kind === 'ui' ? 1 : 0.62, items: kind === 'ui' ? items : items.slice(0, 3), attempt: a?.no ?? attempt, truncated: false };
 }
 
 export function setImportant(id: string, v: boolean): void {
@@ -727,7 +729,7 @@ export function jobs(): ScheduledJob[] {
 
 const LEVEL_RANK: Record<LogLevel, number> = { trace: 0, debug: 1, info: 2, warn: 3, error: 4 };
 
-const MESSAGES: [LogLevel, LogLine['stream'], (i: number) => string][] = [
+const MESSAGES: [LogLevel, LogLineWire['stream'], (i: number) => string][] = [
   ['info', 'stdout', (i) => `${ESC}[90m[worker-${String(i % 4)}]${ESC}[0m navigate https://shop.example.com/p/item-${String(i % 97)}`],
   ['debug', 'log', (i) => `locator.click getByRole('button', { name: 'Add to cart' }) attempt ${String((i % 3) + 1)}`],
   ['info', 'stdout', (i) => `GET https://api.example.com/cart ${ESC}[32m200${ESC}[0m ${String(40 + (i % 160))} ms`],
@@ -746,44 +748,44 @@ export function bigLogResult(): string | null {
 
 export const BIG_LOG_LINES = 120_000;
 
-function linesOf(resultId: string, attempt: number, count: number, start: number): LogLine[] {
-  const out: LogLine[] = [];
+function linesOf(resultId: string, attempt: number, count: number, start: number): LogLineWire[] {
+  const out: LogLineWire[] = [];
   const seed = hash(resultId);
   for (let i = 0; i < count; i++) {
     const m = MESSAGES[(seed + i * 7 + (i % 5)) % MESSAGES.length] ?? MESSAGES[0];
     if (!m) continue;
-    out.push({ resultId, attempt, seq: i + 1, ts: iso(start + i * 35), level: m[0], stream: m[1], message: m[2](i), step: m[1] === 'step' ? 'Pay for the order' : null });
+    out.push({ resultId, attempt, seq: i + 1, ts: start + i * 35, level: m[0], stream: m[1], message: m[2](i), step: m[1] === 'step' ? 'Pay for the order' : null });
   }
   return out;
 }
 
-const storedCache = new Map<string, LogLine[]>();
+const storedCache = new Map<string, LogLineWire[]>();
 
-export function storedLogs(launchId: string, resultId: string | null, attempt: number | null): LogLine[] {
+export function storedLogs(launchId: string, resultId: string | null, attempt: number | null): LogLineWire[] {
   const key = `${launchId}:${resultId ?? '*'}:${String(attempt ?? '*')}`;
   const cached = storedCache.get(key);
   if (cached) return cached;
   const results = launchResults(launchId).filter((r) => !resultId || r.id === resultId);
   const big = bigLogResult();
-  let out: LogLine[] = [];
+  let out: LogLineWire[] = [];
   for (const r of results) {
     if (r.status === 'skipped') continue;
-    const attempts = attempt ? [attempt] : Array.from({ length: r.attemptCount }, (_, i) => i + 1);
+    const attempts = attempt !== null ? [attempt + 1] : Array.from({ length: r.attemptCount }, (_, i) => i + 1);
     const d = resultDetail(r.id);
     for (const a of attempts) {
       const at = d?.attempts.find((x) => x.no === a);
       const start = at?.startedAt ? Date.parse(at.startedAt) : NOW;
       const count = r.id === big && a === r.attemptCount ? BIG_LOG_LINES : 24 + (hash(`${r.id}:${String(a)}`) % 80);
-      out = out.concat(linesOf(r.id, a, count, start));
+      out = out.concat(linesOf(r.id, a - 1, count, start));
     }
   }
-  if (!resultId) out.sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : a.seq - b.seq));
+  if (!resultId) out.sort((a, b) => a.ts - b.ts || a.seq - b.seq);
   if (storedCache.size > 20) storedCache.clear();
   storedCache.set(key, out);
   return out;
 }
 
-export function filterLogs(lines: LogLine[], level: string | null, q: string | null): LogLine[] {
+export function filterLogs(lines: LogLineWire[], level: string | null, q: string | null): LogLineWire[] {
   const min = level && level in LEVEL_RANK ? LEVEL_RANK[level as LogLevel] : 0;
   const needle = q?.toLowerCase() ?? '';
   if (!min && !needle) return lines;
@@ -793,18 +795,18 @@ export function filterLogs(lines: LogLine[], level: string | null, q: string | n
 let liveSeq = 0;
 
 /** A batch of live lines for the running launch. */
-export function liveBatch(launchId: string, resultId: string | null, tick: number): LogLine[] {
+export function liveBatch(launchId: string, resultId: string | null, tick: number): LogLineWire[] {
   const results = launchResults(launchId).slice(-12);
   const pool = resultId ? results.filter((r) => r.id === resultId) : results;
   const ids = pool.length ? pool.map((r) => r.id) : resultId ? [resultId] : ['running-result'];
   const n = 4 + (tick % 9) * 3;
-  const out: LogLine[] = [];
+  const out: LogLineWire[] = [];
   for (let i = 0; i < n; i++) {
     liveSeq++;
     const id = ids[(tick + i) % ids.length] ?? 'running-result';
     const m = MESSAGES[(tick * 3 + i) % MESSAGES.length] ?? MESSAGES[0];
     if (!m) continue;
-    out.push({ resultId: id, attempt: 1, seq: liveSeq, ts: new Date().toISOString(), level: m[0], stream: m[1], message: m[2](liveSeq), step: null });
+    out.push({ resultId: id, attempt: 0, seq: liveSeq, ts: Date.now(), level: m[0], stream: m[1], message: m[2](liveSeq), step: null });
   }
   return out;
 }

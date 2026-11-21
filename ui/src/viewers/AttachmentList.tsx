@@ -3,6 +3,7 @@ import { useMediaQuery } from '@mantine/hooks';
 import { IconBraces, IconExternalLink, IconFile, IconFileText, IconLayersSubtract, IconMovie, IconPhoto, IconRoute, IconWorld } from '@tabler/icons-react';
 import { useState } from 'react';
 import { attachmentUrl, traceViewerUrl } from '../api/client';
+import { usesToken } from '../lib/authToken';
 import type { Attachment, AttachmentRef } from '../api/types';
 import { attachmentKind, groupAttachments, isActiveContent, toAttachment, type AttachmentEntry } from '../lib/attachments';
 import { formatBytes } from '../lib/format';
@@ -67,7 +68,7 @@ export function AttachmentList({ project, attachments, compact = false }: { proj
         {entries.map((e) => {
           const info = entryInfo(e);
           const single = e.kind === 'single' ? e.attachment : null;
-          const external = info.active && single ? attachmentUrl(project, single.id) : single && info.kind === 'trace' ? traceViewerUrl(project, single.id) : null;
+          const external = usesToken() ? null : info.active && single ? attachmentUrl(project, single.id) : single && info.kind === 'trace' ? traceViewerUrl(project, single.id) : null;
           const content = (
             <Group gap="xs" wrap="nowrap" style={{ minWidth: 0 }}>
               <span style={{ color: 'var(--mantine-color-dimmed)', display: 'inline-flex' }}>{iconFor(info.kind)}</span>

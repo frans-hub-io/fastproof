@@ -18,7 +18,7 @@ use crate::integrations::secrets::{MAX_SECRET_BYTES, valid_name};
 use crate::integrations::settings::IntegrationSettings;
 use crate::state::AppState;
 
-#[utoipa::path(get, path = "/api/v1/projects/{key}/launches/{id}/gate", tag = "integrations",
+#[utoipa::path(get, path = "/api/v1/projects/{key}/launches/{id}/gate", tag = "integrations", operation_id = "integrations_gate",
     description = "Evaluates the project's quality gates for the launch now. `pending` while the launch runs or has unprocessed uploads; `failed` when a rule of an enabled gate that applies to the launch branch does not hold. A rule holds when `actual op value`.",
     params(("key" = String, Path), ("id" = Uuid, Path)),
     responses((status = 200, body = GateReport), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody),
@@ -57,7 +57,7 @@ impl std::fmt::Debug for SecretValue {
     }
 }
 
-#[utoipa::path(get, path = "/api/v1/projects/{key}/secrets", tag = "integrations",
+#[utoipa::path(get, path = "/api/v1/projects/{key}/secrets", tag = "integrations", operation_id = "integrations_secrets",
     description = "Names of the project's secrets; values are write-only.",
     params(("key" = String, Path)),
     responses((status = 200, body = SecretList), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
@@ -72,7 +72,7 @@ pub async fn secrets(
     }))
 }
 
-#[utoipa::path(put, path = "/api/v1/projects/{key}/secrets/{name}", tag = "integrations", request_body = SecretValue,
+#[utoipa::path(put, path = "/api/v1/projects/{key}/secrets/{name}", tag = "integrations", operation_id = "integrations_put_secret", request_body = SecretValue,
     description = "Creates or replaces a secret, encrypted at rest with `FASTPROOF_SECRETS_KEY_FILE`. Settings refer to it by name (`secretRef`, `tokenSecretRef`).",
     params(("key" = String, Path), ("name" = String, Path)),
     responses((status = 201, description = "created"), (status = 204, description = "replaced"),
@@ -125,7 +125,7 @@ pub async fn put_secret(
     })
 }
 
-#[utoipa::path(delete, path = "/api/v1/projects/{key}/secrets/{name}", tag = "integrations",
+#[utoipa::path(delete, path = "/api/v1/projects/{key}/secrets/{name}", tag = "integrations", operation_id = "integrations_delete_secret",
     params(("key" = String, Path), ("name" = String, Path)),
     responses((status = 204), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
 pub async fn delete_secret(
@@ -160,7 +160,7 @@ pub struct DeliveryQuery {
     pub limit: Option<i64>,
 }
 
-#[utoipa::path(get, path = "/api/v1/projects/{key}/notifications/deliveries", tag = "integrations",
+#[utoipa::path(get, path = "/api/v1/projects/{key}/notifications/deliveries", tag = "integrations", operation_id = "integrations_deliveries",
     description = "Notification and VCS deliveries, newest first (without targets or payloads).",
     params(("key" = String, Path), DeliveryQuery),
     responses((status = 200, body = Page<DeliveryView>), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),
@@ -200,7 +200,7 @@ pub struct MockQuery {
     pub attempt: Option<i32>,
 }
 
-#[utoipa::path(get, path = "/api/v1/projects/{key}/results/{id}/mock-interactions", tag = "integrations",
+#[utoipa::path(get, path = "/api/v1/projects/{key}/results/{id}/mock-interactions", tag = "integrations", operation_id = "integrations_mock_interactions",
     description = "Requests the project's FastMock answered during an attempt: by the attempt's trace id, else by its time window (and the `fastmock.space` label or launch attribute).",
     params(("key" = String, Path), ("id" = Uuid, Path), MockQuery),
     responses((status = 200, body = MockInteractions), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),

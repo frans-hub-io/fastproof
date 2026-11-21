@@ -2,10 +2,10 @@
 // `schemas/openapi.json` with `npm run gen:api`; the aliases below only narrow string fields that
 // the spec documents as fixed sets (statuses, kinds) and give the UI short names. Platform routes
 // that are not part of the FastProof OpenAPI (`/me`, `/tokens`) and client-side formats
-// (Allure HTTP exchanges and image diffs) are written by hand at the end. Specified but not yet
-// published endpoints live in `types-next.ts`.
+// (Allure HTTP exchanges and image diffs) are written by hand at the end. The analysis,
+// integrations and logs aliases live in `types-next.ts`.
 import type { components } from './schema.gen';
-import type { DefectInfo, ResultAnalysis } from './types-next';
+import type { DefectInfo, Transition } from './types-next';
 
 type S = components['schemas'];
 
@@ -55,15 +55,9 @@ export type LastLaunch = Omit<S['LastLaunch'], 'status'> & { status: LaunchStatu
 export type Project = Omit<S['Project'], 'lastLaunch' | 'description'> & {
   description: string | null;
   lastLaunch?: LastLaunch | null;
-  /** Stage C: kept from retention (`PATCH /launches/{id}`). */
-  important?: boolean;
 };
 
-export type Launch = Omit<S['Launch'], 'status'> & {
-  status: LaunchStatus;
-  /** Stage C: kept from retention. */
-  important?: boolean;
-};
+export type Launch = Omit<S['Launch'], 'status'> & { status: LaunchStatus };
 
 export interface LaunchFilters {
   branch?: string;
@@ -82,14 +76,13 @@ export type UploadError = S['UploadError'];
 
 export type Upload = Omit<S['Upload'], 'status'> & { status: UploadStatus };
 
-/** Stage B `defect` (`{type, comment, issueUrl}`) widened with the stage C fields. */
 export type Defect = DefectInfo;
 
-export type ResultSummary = Omit<S['ResultSummary'], 'status' | 'defect'> &
-  ResultAnalysis & {
-    status: ResultStatus;
-    defect?: Defect | null;
-  };
+export type ResultSummary = Omit<S['ResultSummary'], 'status' | 'defect' | 'transition'> & {
+  status: ResultStatus;
+  defect?: Defect | null;
+  transition?: Transition | null;
+};
 
 export interface ResultFilters {
   status?: string;

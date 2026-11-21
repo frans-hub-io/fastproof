@@ -27,7 +27,8 @@ More frameworks follow; until then, upload the files of the framework's own repo
   yourself. A reporter problem never changes the result of the test run.
 - **CI aware:** the launch name and the external launch id come from the CI system, so parallel shards and
   jobs of one pipeline join one launch.
-- **Test plans:** an Allure-format `testplan.json` (`FASTPROOF_TESTPLAN`) selects which tests run.
+- **Test plans:** an Allure-format `testplan.json` (`FASTPROOF_TESTPLAN`) selects which tests run; `fastproof
+  testplan` prints one, for example of the tests that failed in a launch.
 
 ## Common settings
 
@@ -48,7 +49,7 @@ off.
 | `FASTPROOF_FLUSH_TIMEOUT_MS` | How long the end of the run waits for the last uploads (default 30 s) |
 | `FASTPROOF_LIVE_LOGS` | `false` sends logs with the result instead of live |
 | `FASTPROOF_SECRET_ENV`, `FASTPROOF_SECRET_PATTERNS` | Extra environment variable names (globs) and regular expressions to mask |
-| `FASTPROOF_TESTPLAN` | Path of an Allure-format `testplan.json` |
+| `FASTPROOF_TESTPLAN` | Path of an Allure-format `testplan.json` (`ALLURE_TESTPLAN_PATH` is read too) |
 | `FASTPROOF_QUIET` | `true` prints nothing but errors |
 
 Give the token through your CI system's secret store, never in the repository.
@@ -98,7 +99,9 @@ The plugin registers itself; settings are also `--fastproof-*` options (`--fastp
 `--fastproof-project`, `--fastproof-launch`, `--fastproof-offline`, `--fastproof-disable` and others; see
 `pytest --help`). pytest-xdist works: workers stream logs, and the controller sends results once. Live
 streaming covers `logging` records and steps; captured stdout and stderr arrive per test phase (or live with
-`-s`). Lower the log level (`log_level = INFO` in the ini file) to stream more than warnings.
+`-s`). Records from `INFO` up are streamed; change it with `fastproof_log_level` in the ini file or
+`FASTPROOF_LOG_LEVEL` (for example `DEBUG`). The plugin lowers the root logger to that level when it is
+higher.
 
 Send what earlier runs left in the spool:
 

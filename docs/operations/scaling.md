@@ -114,8 +114,34 @@ Start from these and measure with `fastproof bench`:
 - Run one heavy backend at a time on small nodes: ClickHouse, OpenSearch and Kafka together need about
   4.5 GiB.
 
-!!! note "TODO"
-    Throughput and lag numbers from the big-data benchmark (G9) will be added here.
+## Measured numbers
+
+The numbers below come from one development VM that also ran other workloads, with PostgreSQL 18 and the
+default settings of FastProof. Treat them as an order of magnitude, not a promise; measure your own setup with
+`fastproof bench`.
+
+### Log search in PostgreSQL
+
+| Measurement | Result |
+|---|---|
+| Log lines loaded and indexed | 5.5 million (about 1.3 GiB of table, 0.5 GiB of message indexes) |
+| Full-text search (words, words plus a level, a rare token) | under 20 ms, extrapolated to under 20 ms at 10 million lines |
+| Selective substring search (trigram index, rare text or an id fragment) | under 100 ms |
+| Unselective substring search (common words, first 50 hits) | 120 to 250 ms |
+
+PostgreSQL search is fine up to around ten million log lines. Move log search to ClickHouse
+(`search.backend: clickhouse` with the ClickHouse sink) from tens of millions of lines, or earlier when people
+often search for unselective substrings (common words, partial stack frames) across many launches.
+
+### Ingest throughput
+
+| Path | Results per second | Log lines per second | Lag |
+|---|---|---|---|
+| `direct` (HTTP, spool, PostgreSQL queue) | 1,516 | 30,000 | none beyond the request |
+| `kafka`, produced through the HTTP gateway | 492 | not measured separately | about 32 s from request to PostgreSQL |
+
+Kafka mode is not tuned yet. Today it pays off for absorbing bursts and decoupling the API from PostgreSQL,
+not for raw throughput; use `direct` unless one of the signals above applies.
 
 ## Benchmark
 

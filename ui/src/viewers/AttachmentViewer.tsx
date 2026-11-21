@@ -1,6 +1,9 @@
 import { Alert, Anchor, Button, Group, SegmentedControl, Stack, Text } from '@mantine/core';
 import { IconDownload, IconExternalLink, IconPlayerPlay } from '@tabler/icons-react';
 import { useState } from 'react';
+import { notifications } from '@mantine/notifications';
+import { usesToken } from '../lib/authToken';
+import { downloadWithToken, useAuthedUrl } from './authedUrl';
 import { attachmentUrl, errorMessage, traceViewerUrl } from '../api/client';
 import type { AllureImageDiff, Attachment } from '../api/types';
 import { AnsiText } from '../components/Ansi';
@@ -87,7 +90,16 @@ function AllureDiffView({ project, a }: { project: string; a: Attachment }) {
   return <ImageCompare images={{ expected, actual, diff }} name={a.name} />;
 }
 
+function TokenOnly({ what }: { what: string }) {
+  return (
+    <Text size="sm" c="dimmed" data-testid="token-mode-note">
+      {what} needs a browser session, which an API token does not create. Download the file below, or sign in with SSO.
+    </Text>
+  );
+}
+
 function TraceView({ project, a }: { project: string; a: Attachment }) {
+  if (usesToken()) return <TokenOnly what="The trace viewer" />;
   return (
     <Stack gap="sm" align="flex-start">
       <Text size="sm">The Playwright trace opens in the trace viewer hosted by this server.</Text>
@@ -99,6 +111,7 @@ function TraceView({ project, a }: { project: string; a: Attachment }) {
 }
 
 function ActiveView({ project, a }: { project: string; a: Attachment }) {
+  if (usesToken()) return <TokenOnly what={`Opening ${a.contentType} attachments in a sandboxed tab`} />;
   return (
     <Stack gap="sm" align="flex-start">
       <Text size="sm">
@@ -111,22 +124,49 @@ function ActiveView({ project, a }: { project: string; a: Attachment }) {
   );
 }
 
+function ImageView({ url, name }: { url: string; name: string }) {
+  const { src, error } = useAuthedUrl(url);
+  if (error) return <Problem message={error} />;
+  if (!src) return <Loading />;
+  const img = <img src={src} alt={name} style={{ maxWidth: '100%', height: 'auto', display: 'block', borderRadius: 8 }} data-testid="image-viewer" />;
+  return usesToken() ? (
+    img
+  ) : (
+    <Anchor href={url} target="_blank" rel="noopener noreferrer">
+      {img}
+    </Anchor>
+  );
+}
+
+function VideoView({ url }: { url: string }) {
+  const { src, error } = useAuthedUrl(url);
+  if (error) return <Problem message={error} />;
+  if (!src) return <Loading />;
+  return (
+    <video src={src} controls preload="metadata" style={{ width: '100%', maxHeight: '70vh', borderRadius: 8, background: '#000' }} data-testid="video-viewer">
+      <track kind="captions" />
+    </video>
+  );
+}
+
+function CompareView({ name, urls }: { name: string; urls: { expected: string; actual: string; diff?: string } }) {
+  const expected = useAuthedUrl(urls.expected);
+  const actual = useAuthedUrl(urls.actual);
+  const diff = useAuthedUrl(urls.diff);
+  const error = expected.error ?? actual.error ?? diff.error;
+  if (error) return <Problem message={error} />;
+  if (!expected.src || !actual.src || (urls.diff && !diff.src)) return <Loading />;
+  return <ImageCompare name={name} images={{ expected: expected.src, actual: actual.src, diff: diff.src }} />;
+}
+
 export function AttachmentBody({ project, attachment: a }: { project: string; attachment: Attachment }) {
   if (isActiveContent(a)) return <ActiveView project={project} a={a} />;
   const url = attachmentUrl(project, a.id);
   switch (attachmentKind(a)) {
     case 'image':
-      return (
-        <Anchor href={url} target="_blank" rel="noopener noreferrer">
-          <img src={url} alt={a.name} style={{ maxWidth: '100%', height: 'auto', display: 'block', borderRadius: 8 }} data-testid="image-viewer" />
-        </Anchor>
-      );
+      return <ImageView url={url} name={a.name} />;
     case 'video':
-      return (
-        <video src={url} controls preload="metadata" style={{ width: '100%', maxHeight: '70vh', borderRadius: 8, background: '#000' }} data-testid="video-viewer">
-          <track kind="captions" />
-        </video>
-      );
+      return <VideoView url={url} />;
     case 'imageDiff':
       return <AllureDiffView project={project} a={a} />;
     case 'httpExchange':
@@ -152,9 +192,9 @@ export function EntryBody({ project, entry }: { project: string; entry: Attachme
   if (entry.kind === 'single') return <AttachmentBody project={project} attachment={entry.attachment} />;
   if (!entry.expected || !entry.actual) return null;
   return (
-    <ImageCompare
+    <CompareView
       name={entry.name}
-      images={{
+      urls={{
         expected: attachmentUrl(project, entry.expected.id),
         actual: attachmentUrl(project, entry.actual.id),
         diff: entry.diff ? attachmentUrl(project, entry.diff.id) : undefined,
@@ -167,11 +207,25 @@ export function DownloadLinks({ project, entry }: { project: string; entry: Atta
   const list = entry.kind === 'single' ? [entry.attachment] : [entry.expected, entry.actual, entry.diff].filter((x): x is Attachment => !!x);
   return (
     <Group gap="xs" wrap="wrap">
-      {list.map((a) => (
-        <Button key={a.id} component="a" href={attachmentUrl(project, a.id, true)} variant="default" size="xs" leftSection={<IconDownload size={14} />} download={a.name}>
-          {list.length > 1 ? a.name : `Download (${formatBytes(a.size)})`}
-        </Button>
-      ))}
+      {list.map((a) => {
+        const label = list.length > 1 ? a.name : `Download (${formatBytes(a.size)})`;
+        const url = attachmentUrl(project, a.id, true);
+        return usesToken() ? (
+          <Button
+            key={a.id}
+            variant="default"
+            size="xs"
+            leftSection={<IconDownload size={14} />}
+            onClick={() => void downloadWithToken(url, a.name).catch((e: unknown) => notifications.show({ color: 'red', title: 'Download failed', message: errorMessage(e) }))}
+          >
+            {label}
+          </Button>
+        ) : (
+          <Button key={a.id} component="a" href={url} variant="default" size="xs" leftSection={<IconDownload size={14} />} download={a.name}>
+            {label}
+          </Button>
+        );
+      })}
     </Group>
   );
 }

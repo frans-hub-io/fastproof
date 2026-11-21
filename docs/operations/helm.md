@@ -131,6 +131,7 @@ digest:
 | `server.maxUploadBytes`, `server.ingestWorkers` | 1 GiB, `2` | Ingest settings |
 | `server.retainUploads`, `server.outboxRetentionDays` | `false`, `7` | `FASTPROOF_RETAIN_UPLOADS`, `FASTPROOF_OUTBOX_RETENTION_DAYS` |
 | `server.ui` | `true` | Serve the web UI |
+| `server.logs.maxLineBytes`, `maxLinesPerRequest`, `maxRequestBytes`, `maxBytesPerLaunch` | 64 KiB, `5000`, 8 MiB, 256 MiB | Live log limits (`FASTPROOF_LOG_MAX_*`) |
 | `server.extraEnv`, `server.extraEnvFrom` | none | Additional environment |
 | `database.*` | | External database URL, pool size, TLS |
 | `migrations.mode` | `job` | `job`: a Helm hook Job runs `fastproof migrate`; `auto`: the server migrates at start |
@@ -138,13 +139,19 @@ digest:
 | `spool.sizeLimit` | `4Gi` | `emptyDir` for uploads in progress (`FASTPROOF_SPOOL_DIR`) |
 | `auth.adminTokens.existingSecret` / `tokens` / `generate` | none | Static tokens file |
 | `auth.access.roles`, `auth.access.bindings` or `existingConfigMap` | none | Access file |
-| `oidc.*` | off | OIDC sign-in; `clientSecret.existingSecret` (key `client-secret`) |
+| `oidc.*` | off | OIDC sign-in; `clientSecret.existingSecret` (key `client-secret`); `insecureCookie` only for local development |
 | `tls.existingSecret`, `tls.clientCa` | none | TLS on the main listener |
+| `integrations.egressAllow` | `[]` | Hosts integrations may call (`FASTPROOF_EGRESS_ALLOW`); empty denies every outbound call |
+| `integrations.secretsKey.existingSecret`, `key` | none | Key file of project secrets (`FASTPROOF_SECRETS_KEY_FILE`); `value` makes the chart create the Secret |
+| `integrations.smtp.url`, `from`, `username`, `password.existingSecret` | none | Mail relay of email notifications (`FASTPROOF_SMTP_*`; the password is mounted as a file) |
+| `integrations.telegramApiUrl` | none (`https://api.telegram.org`) | `FASTPROOF_TELEGRAM_API_URL` |
+| `integrations.delivery.maxAttempts`, `backoffSeconds` | `6`, `30` | Notification retries (`FASTPROOF_DELIVERY_*`) |
 | `otel.endpoint`, `otel.protocol` | none | OTLP traces |
 | `service.port`, `service.opsPort` | `8080`, `9090` | Service ports `http` and `ops` |
 | `httpRoute.*` | off | Gateway API HTTPRoute (`parentRefs`, `hostnames`, `timeouts`) |
 | `ingress.*` | off | Ingress (`className`, `hosts`, `tls`, `annotations`) |
 | `metrics.serviceMonitor.enabled` | `false` | Prometheus Operator ServiceMonitor on the `ops` port |
+| `metrics.topBranches` | `10` | Branches per project with their own label in quality metrics (`FASTPROOF_METRICS_TOP_BRANCHES`) |
 | `networkPolicy.*` | off | See below |
 | `pdb.enabled`, `pdb.maxUnavailable` | `true`, `1` | PodDisruptionBudget, rendered with more than one replica |
 | `autoscaling.*` | off | HorizontalPodAutoscaler on CPU (and memory) |
@@ -153,9 +160,11 @@ digest:
 | `search.backend` | `postgres` | `postgres`, `clickhouse` or `opensearch` |
 | `roles.split`, `roles.<role>.*` | `false` | Separate Deployments per role |
 | `kafka.*`, `sinks.*`, `opensearch.*` | off | Kafka, ClickHouse and OpenSearch; see above |
+| `kafka.topics.replication`, `kafka.clientId`, `kafka.maxRecordBytes` | `-1`, `fastproof`, `900000` | `FASTPROOF_KAFKA_REPLICATION`, `_CLIENT_ID`, `_MAX_RECORD_BYTES` |
+| `sinks.batchSize`, `sinks.flushIntervalMs`, `sinks.opensearch.replicas` | `2000`, `1000`, `1` | `FASTPROOF_SINK_BATCH_SIZE`, `FASTPROOF_SINK_FLUSH_INTERVAL_MS`, `FASTPROOF_OPENSEARCH_REPLICAS` |
 
 Every secret (database URL, S3 keys, token file, OIDC client secret, Kafka, ClickHouse and OpenSearch
-passwords) is mounted as a file under
+passwords, the secrets key and the SMTP password) is mounted as a file under
 `/etc/fastproof/secrets`; CAs under `/etc/fastproof/ca`. Use existing Secrets in production; values such as
 `database.url` or `blob.s3.credentials.secretKey` make the chart create the Secret, which puts the secret in
 the Helm release data.
@@ -163,7 +172,13 @@ the Helm release data.
 The `ci/` directory of the chart has complete examples: `minimal-fs-values.yaml`,
 `cloudpirates-garage-values.yaml`, `cnpg-external-s3-values.yaml`, `oidc-values.yaml`, `ha-values.yaml`,
 `kafka-clickhouse-values.yaml`, `kafka-opensearch-values.yaml`, `split-roles-values.yaml`,
-`bigdata-values.yaml` (a small-footprint big-data setup) and `mirror-values.yaml`.
+`bigdata-values.yaml` (a small-footprint big-data setup), `integrations-values.yaml` (egress allowlist,
+secrets key, SMTP and delivery settings) and `mirror-values.yaml`.
+
+The chart sets every server variable on [Configuration](configuration.md), from a value or from its own
+layout (listeners, spool and blob directories, mounted file paths); `server.extraEnv` remains for anything
+new before the chart catches up. The secrets key is read at start: after changing the Secret, restart
+the Deployments (see [Secrets key rotation](configuration.md#secrets-key-rotation)).
 
 ## Exposing FastProof
 
@@ -212,6 +227,8 @@ With `networkPolicy.enabled: true` the chart allows:
   `egress.database.to`, `egress.s3.to`, `egress.oidc.to`, `egress.valkey.to`, `egress.otlp.to`,
   `egress.kafka.to` (port 9092 by default), `egress.clickhouse.to` (8443) and `egress.opensearch.to` (9200),
   each with `ports`, plus `egress.extraRules`. The chart refuses to render when an external service is configured without peers.
+  Integrations (webhooks, Slack, Telegram, GitLab, GitHub, FastMock, the SMTP relay) need their own
+  `egress.extraRules`, matching `integrations.egressAllow`.
 
 `networkPolicy.storage` (on by default) restricts ingress to the bundled PostgreSQL, Valkey and Garage pods to
 FastProof's own pods. Pods managed by CloudNativePG are excluded from it (`cnpg.io/cluster DoesNotExist`),
@@ -243,6 +260,10 @@ networkPolicy:
 Migrations are additive (expand and contract): a column or table is removed only one minor release after the
 code stopped using it, indexes are built with `CREATE INDEX CONCURRENTLY`, and every query names its columns.
 Old and new pods therefore run side by side during a rolling update.
+
+Pods carry checksums of the chart's ConfigMap and of the secret values the chart writes into Secrets
+(`checksum/config`, `checksum/secrets`), so `helm upgrade` with a changed setting or secret rolls them. Secrets
+you manage yourself (`existingSecret`) are not tracked: restart the Deployment after changing one.
 
 With `migrations.mode: job` (default):
 

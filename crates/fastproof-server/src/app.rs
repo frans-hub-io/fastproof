@@ -40,7 +40,7 @@ pub fn api_router() -> (Router<AppState>, utoipa::openapi::OpenApi) {
     let uploads = OpenApiRouter::<AppState>::new()
         .routes(routes!(api::uploads::create, api::uploads::list))
         .layer(DefaultBodyLimit::disable());
-    OpenApiRouter::with_openapi(ApiDoc::openapi())
+    let (router, mut doc) = OpenApiRouter::with_openapi(ApiDoc::openapi())
         .routes(routes!(api::projects::list, api::projects::create))
         .routes(routes!(
             api::projects::get,
@@ -104,7 +104,9 @@ pub fn api_router() -> (Router<AppState>, utoipa::openapi::OpenApi) {
         .routes(routes!(api::analysis::create_test_plan))
         .routes(routes!(api::analysis::testplan_json))
         .merge(uploads)
-        .split_for_parts()
+        .split_for_parts();
+    api::type_project_settings(&mut doc);
+    (router, doc)
 }
 
 /// The OpenAPI document as committed in `schemas/openapi.json`.
@@ -139,6 +141,64 @@ async fn docs_csp(req: Request, next: Next) -> Response {
     r
 }
 
+/// How the UI signs in: `{oidc}` tells whether single sign-on is configured; API tokens always
+/// work. Public, like the sign-in page that reads it.
+async fn auth_config(axum::extract::State(s): axum::extract::State<AppState>) -> Response {
+    (
+        [(header::CACHE_CONTROL, HeaderValue::from_static("no-store"))],
+        axum::Json(serde_json::json!({ "oidc": s.cfg.oidc.is_some() })),
+    )
+        .into_response()
+}
+
+#[derive(serde::Deserialize)]
+struct LoginQuery {
+    #[serde(rename = "return")]
+    to: Option<String>,
+}
+
+/// Without single sign-on, `/auth/login` sends the browser to the UI's sign-in page, where an API
+/// token can be used; the return path is kept only when it is a safe local path.
+async fn sign_in_redirect(axum::extract::Query(q): axum::extract::Query<LoginQuery>) -> Response {
+    let target = match q
+        .to
+        .filter(|r| r.len() <= 2048 && franshub_oidc::safe_return(r, "/"))
+    {
+        Some(r) => format!(
+            "/sign-in?return={}",
+            url::form_urlencoded::byte_serialize(r.as_bytes()).collect::<String>()
+        ),
+        None => "/sign-in".to_string(),
+    };
+    (
+        axum::http::StatusCode::SEE_OTHER,
+        [
+            (
+                header::LOCATION,
+                HeaderValue::from_str(&target).unwrap_or(HeaderValue::from_static("/sign-in")),
+            ),
+            (header::CACHE_CONTROL, HeaderValue::from_static("no-store")),
+        ],
+    )
+        .into_response()
+}
+
+/// The `/auth/*` routes without single sign-on: sign-in goes to the token sign-in page; the
+/// callback and logout answer 404 `sso_disabled`.
+fn token_sign_in_router() -> Router<AppState> {
+    let off = || async {
+        franshub_http::ApiError::new(
+            axum::http::StatusCode::NOT_FOUND,
+            "sso_disabled",
+            "single sign-on is not configured",
+        )
+    };
+    Router::new()
+        .route("/auth/login", get(sign_in_redirect))
+        .route("/auth/callback", get(off))
+        .route("/auth/logout", axum::routing::post(off))
+}
+
 /// The main router: API, platform routes, OIDC, docs, `/healthz` and the UI.
 pub fn router(state: AppState) -> Router {
     let (api, _) = api_router();
@@ -150,7 +210,12 @@ pub fn router(state: AppState) -> Router {
     let mut app: Router<AppState> = Router::new()
         .merge(api)
         .merge(franshub_auth::routes::<AppState>())
-        .merge(state.platform.oidc_router())
+        .merge(if state.cfg.oidc.is_some() {
+            state.platform.oidc_router()
+        } else {
+            token_sign_in_router()
+        })
+        .route("/auth/config", get(auth_config))
         .route("/api/openapi.json", get(openapi_json))
         .merge(crate::mcp::router(&state))
         .route("/healthz", get(|| async { "ok" }));
@@ -322,6 +387,13 @@ pub async fn start_with_pool(
         search,
         cfg: Arc::new(cfg),
     }));
+    let sched = if state.cfg.roles.scheduler {
+        let mut sched = crate::scheduler::standard_jobs()?;
+        sched.register_all(&state.store).await?;
+        Some(sched)
+    } else {
+        None
+    };
     let stop = CancellationToken::new();
     let mut tasks = Vec::new();
 
@@ -382,12 +454,11 @@ pub async fn start_with_pool(
             )));
         }
     }
-    if state.cfg.roles.scheduler {
+    if let Some(sched) = sched {
         tasks.push(tokio::spawn(crate::integrations::dispatch::run(
             state.clone(),
             stop.clone(),
         )));
-        let sched = crate::scheduler::standard_jobs()?;
         tasks.push(tokio::spawn(sched.run(state.clone(), stop.clone())));
     }
     tasks.extend(crate::stream::start(&state, &stop).await?);

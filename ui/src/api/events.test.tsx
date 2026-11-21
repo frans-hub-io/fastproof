@@ -65,8 +65,31 @@ describe('useProjectEvents', () => {
     expect(es?.closed).toBe(true);
   });
 
-  it('reports unsupported without EventSource', () => {
+  it('reads the stream with fetch when signed in with an API token', async () => {
+    window.sessionStorage.setItem('fastproof.apiToken', 'fp_token_for_test_0000');
+    const body = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(new TextEncoder().encode('retry: 3000\n\nevent: launch.updated\ndata: {"id":"L2"}\n\n'));
+      },
+    });
+    const fetchMock = vi.fn(() => Promise.resolve(new Response(body, { status: 200, headers: { 'Content-Type': 'text/event-stream' } })));
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('EventSource', FakeEventSource);
+    const client = testClient();
+    const spy = vi.spyOn(client, 'invalidateQueries');
+    const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+    const { result, unmount } = renderHook(() => useProjectEvents('web-shop'), { wrapper });
+    await vi.waitFor(() => expect(result.current).toBe('live'));
+    await vi.waitFor(() => expect(spy.mock.calls.map((c) => JSON.stringify(c[0]?.queryKey))).toContain(JSON.stringify(qk.launch('web-shop', 'L2'))));
+    expect(FakeEventSource.instances).toHaveLength(0);
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/projects/web-shop/events', expect.objectContaining({ headers: { Accept: 'text/event-stream' } }));
+    unmount();
+    window.sessionStorage.removeItem('fastproof.apiToken');
+  });
+
+  it('reports unsupported without EventSource and streams', () => {
     vi.stubGlobal('EventSource', undefined);
+    vi.stubGlobal('ReadableStream', undefined);
     const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={testClient()}>{children}</QueryClientProvider>;
     const { result } = renderHook(() => useProjectEvents('web-shop'), { wrapper });
     expect(result.current).toBe('unsupported');

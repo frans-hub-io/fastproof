@@ -156,6 +156,26 @@ verify-full
 {{- end -}}
 {{- end -}}
 
+{{- define "fastproof.secretsKey" -}}
+{{- $k := .Values.integrations.secretsKey -}}
+{{- if $k.existingSecret -}}
+{{- toJson (dict "name" $k.existingSecret "key" $k.key) -}}
+{{- else if $k.value -}}
+{{- toJson (dict "name" (printf "%s-integrations" (include "fastproof.fullname" .)) "key" "secrets-key") -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "fastproof.smtpPassword" -}}
+{{- $s := .Values.integrations.smtp -}}
+{{- if and $s.url $s.username -}}
+{{- if $s.password.existingSecret -}}
+{{- toJson (dict "name" $s.password.existingSecret "key" $s.password.key) -}}
+{{- else -}}
+{{- toJson (dict "name" (printf "%s-integrations" (include "fastproof.fullname" .)) "key" "smtp-password") -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "fastproof.valkeyUrlSecret" -}}
 {{- if .Values.valkey.enabled -}}
 {{- toJson (dict "name" (include "fastproof.valkeySecretName" .) "key" "url") -}}
@@ -262,6 +282,18 @@ off
 {{- fail "oidc.clientSecret.existingSecret (or oidc.clientSecret.value) is required when oidc.issuer is set" -}}
 {{- end -}}
 {{- end -}}
+{{- $smtp := .Values.integrations.smtp -}}
+{{- if $smtp.url -}}
+{{- if not $smtp.from -}}
+{{- fail "integrations.smtp.from is required with integrations.smtp.url, for example FastProof <fastproof@example.com>" -}}
+{{- end -}}
+{{- if and $smtp.username (not (or $smtp.password.existingSecret $smtp.password.value)) -}}
+{{- fail "integrations.smtp.password.existingSecret (or value) is required with integrations.smtp.username" -}}
+{{- end -}}
+{{- if and (not $smtp.username) (or $smtp.password.existingSecret $smtp.password.value) -}}
+{{- fail "integrations.smtp.username is required with integrations.smtp.password" -}}
+{{- end -}}
+{{- end -}}
 {{- if and .Values.valkey.enabled .Values.externalValkey.existingSecret -}}
 {{- fail "set either valkey.enabled or externalValkey.existingSecret, not both" -}}
 {{- end -}}
@@ -316,4 +348,21 @@ off
 {{- end -}}
 {{- end -}}
 {{- toJson $out -}}
+{{- end -}}
+
+{{- define "fastproof.secretsChecksum" -}}
+{{- $v := .Values -}}
+{{- $in := $v.integrations -}}
+{{- $ks := $v.kafka.external.sasl -}}
+{{- $parts := list
+  $v.database.url
+  $v.blob.s3.credentials.accessKey $v.blob.s3.credentials.secretKey
+  (toJson $v.auth.adminTokens.tokens) (toString $v.auth.adminTokens.generate)
+  $v.oidc.clientSecret.value
+  $ks.password.value
+  $v.sinks.clickhouse.external.password.value
+  $v.sinks.opensearch.external.password.value
+  $in.secretsKey.value
+  $in.smtp.password.value -}}
+{{- toJson $parts | sha256sum -}}
 {{- end -}}

@@ -1,0 +1,291 @@
+suite: integrations and tuning
+templates:
+  - templates/configmap.yaml
+  - templates/deployment.yaml
+  - templates/secrets.yaml
+release:
+  name: fp
+  namespace: qa
+values:
+  - ../ci/minimal-fs-values.yaml
+tests:
+  - it: renders the defaults of delivery, metrics and log limits
+    template: templates/configmap.yaml
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: data.FASTPROOF_DELIVERY_MAX_ATTEMPTS
+          value: "6"
+      - equal:
+          path: data.FASTPROOF_DELIVERY_BACKOFF_SECONDS
+          value: "30"
+      - equal:
+          path: data.FASTPROOF_METRICS_TOP_BRANCHES
+          value: "10"
+      - equal:
+          path: data.FASTPROOF_LOG_MAX_LINE_BYTES
+          value: "65536"
+      - equal:
+          path: data.FASTPROOF_LOG_MAX_LINES_PER_REQUEST
+          value: "5000"
+      - equal:
+          path: data.FASTPROOF_LOG_MAX_REQUEST_BYTES
+          value: "8388608"
+      - equal:
+          path: data.FASTPROOF_LOG_MAX_BYTES_PER_LAUNCH
+          value: "268435456"
+      - notExists:
+          path: data.FASTPROOF_EGRESS_ALLOW
+      - notExists:
+          path: data.FASTPROOF_SECRETS_KEY_FILE
+      - notExists:
+          path: data.FASTPROOF_SMTP_URL
+      - notExists:
+          path: data.FASTPROOF_TELEGRAM_API_URL
+      - notExists:
+          path: data.FASTPROOF_SINK_BATCH_SIZE
+      - notExists:
+          path: data.FASTPROOF_OIDC_INSECURE_COOKIE
+
+  - it: passes integration settings and secrets as files
+    template: templates/configmap.yaml
+    documentIndex: 0
+    values:
+      - ../ci/integrations-values.yaml
+    asserts:
+      - equal:
+          path: data.FASTPROOF_EGRESS_ALLOW
+          value: hooks.example.com,*.example.org:443,smtp.example.com:465,198.51.100.7
+      - equal:
+          path: data.FASTPROOF_SECRETS_KEY_FILE
+          value: /etc/fastproof/secrets/secrets-key
+      - equal:
+          path: data.FASTPROOF_SMTP_URL
+          value: smtps://smtp.example.com:465
+      - equal:
+          path: data.FASTPROOF_SMTP_FROM
+          value: FastProof <fastproof@example.com>
+      - equal:
+          path: data.FASTPROOF_SMTP_USERNAME
+          value: fastproof
+      - equal:
+          path: data.FASTPROOF_SMTP_PASSWORD_FILE
+          value: /etc/fastproof/secrets/smtp-password
+      - notExists:
+          path: data.FASTPROOF_SMTP_PASSWORD
+      - equal:
+          path: data.FASTPROOF_TELEGRAM_API_URL
+          value: https://telegram-proxy.example.com
+      - equal:
+          path: data.FASTPROOF_DELIVERY_MAX_ATTEMPTS
+          value: "10"
+      - equal:
+          path: data.FASTPROOF_DELIVERY_BACKOFF_SECONDS
+          value: "60"
+      - equal:
+          path: data.FASTPROOF_METRICS_TOP_BRANCHES
+          value: "20"
+      - equal:
+          path: data.FASTPROOF_LOG_MAX_LINE_BYTES
+          value: "131072"
+      - equal:
+          path: data.FASTPROOF_LOG_MAX_BYTES_PER_LAUNCH
+          value: "1073741824"
+
+  - it: mounts the secrets key and the SMTP password from existing secrets
+    template: templates/deployment.yaml
+    documentIndex: 0
+    values:
+      - ../ci/integrations-values.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes[?(@.name == "secrets")].projected.sources
+          content:
+            secret:
+              name: fastproof-secrets-key
+              items:
+                - key: keys
+                  path: secrets-key
+      - contains:
+          path: spec.template.spec.volumes[?(@.name == "secrets")].projected.sources
+          content:
+            secret:
+              name: fastproof-smtp
+              items:
+                - key: password
+                  path: smtp-password
+
+  - it: creates a secret for inline values
+    template: templates/secrets.yaml
+    set:
+      integrations.secretsKey.value: abababababababababababababababababababababababababababababababab
+      integrations.smtp.url: smtp://smtp.example.com
+      integrations.smtp.from: fastproof@example.com
+      integrations.smtp.username: fastproof
+      integrations.smtp.password.value: smtp-secret
+    asserts:
+      - containsDocument:
+          kind: Secret
+          apiVersion: v1
+          name: fp-fastproof-integrations
+      - equal:
+          path: stringData.secrets-key
+          value: abababababababababababababababababababababababababababababababab
+        documentSelector:
+          path: metadata.name
+          value: fp-fastproof-integrations
+      - equal:
+          path: stringData.smtp-password
+          value: smtp-secret
+        documentSelector:
+          path: metadata.name
+          value: fp-fastproof-integrations
+
+  - it: mounts a chart-created secrets key
+    template: templates/deployment.yaml
+    documentIndex: 0
+    set:
+      integrations.secretsKey.value: abababababababababababababababababababababababababababababababab
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes[?(@.name == "secrets")].projected.sources
+          content:
+            secret:
+              name: fp-fastproof-integrations
+              items:
+                - key: secrets-key
+                  path: secrets-key
+
+  - it: sends mail without authentication when no user is set
+    template: templates/configmap.yaml
+    documentIndex: 0
+    set:
+      integrations.smtp.url: smtp+insecure://relay.example.com:25
+      integrations.smtp.from: fastproof@example.com
+    asserts:
+      - equal:
+          path: data.FASTPROOF_SMTP_URL
+          value: smtp+insecure://relay.example.com:25
+      - notExists:
+          path: data.FASTPROOF_SMTP_USERNAME
+      - notExists:
+          path: data.FASTPROOF_SMTP_PASSWORD_FILE
+
+  - it: requires a sender with SMTP
+    template: templates/deployment.yaml
+    set:
+      integrations.smtp.url: smtps://smtp.example.com
+    asserts:
+      - failedTemplate:
+          errorPattern: "integrations.smtp.from is required"
+
+  - it: requires a password with an SMTP user
+    template: templates/deployment.yaml
+    set:
+      integrations.smtp.url: smtps://smtp.example.com
+      integrations.smtp.from: fastproof@example.com
+      integrations.smtp.username: fastproof
+    asserts:
+      - failedTemplate:
+          errorPattern: "integrations.smtp.password.existingSecret"
+
+  - it: rejects credentials in the SMTP URL
+    template: templates/deployment.yaml
+    set:
+      integrations.smtp.url: smtps://user:pw@smtp.example.com
+      integrations.smtp.from: fastproof@example.com
+    asserts:
+      - failedTemplate: {}
+
+  - it: rejects a secrets key given twice
+    template: templates/deployment.yaml
+    set:
+      integrations.secretsKey.existingSecret: keys
+      integrations.secretsKey.value: abc
+    asserts:
+      - failedTemplate: {}
+
+  - it: sets the OIDC insecure cookie only when asked
+    template: templates/configmap.yaml
+    documentIndex: 0
+    values:
+      - ../ci/oidc-values.yaml
+    set:
+      database.existingSecret: ""
+      oidc.insecureCookie: true
+    asserts:
+      - equal:
+          path: data.FASTPROOF_OIDC_INSECURE_COOKIE
+          value: "true"
+
+  - it: passes Kafka client and topic tuning
+    template: templates/configmap.yaml
+    documentIndex: 0
+    values:
+      - ../ci/kafka-opensearch-values.yaml
+    set:
+      kafka.topics.replication: 3
+      kafka.clientId: fastproof-qa
+      kafka.maxRecordBytes: 2097152
+    asserts:
+      - equal:
+          path: data.FASTPROOF_KAFKA_REPLICATION
+          value: "3"
+      - equal:
+          path: data.FASTPROOF_KAFKA_CLIENT_ID
+          value: fastproof-qa
+      - equal:
+          path: data.FASTPROOF_KAFKA_MAX_RECORD_BYTES
+          value: "2097152"
+
+  - it: uses the broker default replication unless set
+    template: templates/configmap.yaml
+    documentIndex: 0
+    values:
+      - ../ci/kafka-opensearch-values.yaml
+    asserts:
+      - equal:
+          path: data.FASTPROOF_KAFKA_REPLICATION
+          value: "-1"
+      - equal:
+          path: data.FASTPROOF_KAFKA_CLIENT_ID
+          value: fastproof
+      - equal:
+          path: data.FASTPROOF_KAFKA_MAX_RECORD_BYTES
+          value: "900000"
+
+  - it: rejects a Kafka replication factor of zero
+    template: templates/deployment.yaml
+    values:
+      - ../ci/kafka-opensearch-values.yaml
+    set:
+      kafka.topics.replication: 0
+    asserts:
+      - failedTemplate: {}
+
+  - it: passes sink batching and OpenSearch replicas when a sink runs
+    template: templates/configmap.yaml
+    documentIndex: 0
+    values:
+      - ../ci/kafka-opensearch-values.yaml
+    set:
+      sinks.batchSize: 5000
+      sinks.flushIntervalMs: 250
+      sinks.opensearch.replicas: 0
+    asserts:
+      - equal:
+          path: data.FASTPROOF_SINK_BATCH_SIZE
+          value: "5000"
+      - equal:
+          path: data.FASTPROOF_SINK_FLUSH_INTERVAL_MS
+          value: "250"
+      - equal:
+          path: data.FASTPROOF_OPENSEARCH_REPLICAS
+          value: "0"
+
+  - it: rejects log limits outside the server's range
+    template: templates/deployment.yaml
+    set:
+      server.logs.maxLineBytes: 100
+    asserts:
+      - failedTemplate: {}

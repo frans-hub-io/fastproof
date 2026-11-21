@@ -8,37 +8,10 @@ import { useParams } from 'react-router';
 import { errorMessage } from '../api/client';
 import { useProject } from '../api/hooks';
 import { useSaveSettings, useSettings } from '../api/stageC';
-import type { Gate, GateMetric, GateOp, GateRule, ProjectSettings } from '../api/types-next';
+import type { Gate, GateRule, ProjectSettings } from '../api/types-next';
+import { METRICS, OPS, metricOf, ruleText } from '../lib/gates';
 import { PageHeader } from '../components/PageHeader';
 import { QueryState } from '../components/QueryState';
-
-const METRICS: { value: GateMetric; label: string; unit: string }[] = [
-  { value: 'failed', label: 'Failed results', unit: 'results' },
-  { value: 'broken', label: 'Broken results', unit: 'results' },
-  { value: 'newFailures', label: 'New failures', unit: 'results' },
-  { value: 'passRate', label: 'Pass rate', unit: '%' },
-  { value: 'flaky', label: 'Flaky results', unit: 'results' },
-  { value: 'duration', label: 'Duration', unit: 'seconds' },
-];
-
-const OPS: { value: GateOp; label: string }[] = [
-  { value: 'lte', label: '≤' },
-  { value: 'lt', label: '<' },
-  { value: 'gte', label: '≥' },
-  { value: 'gt', label: '>' },
-];
-
-const OP_LABEL: Record<GateOp, string> = { gt: '>', gte: '≥', lt: '<', lte: '≤' };
-
-function metricOf(m: GateMetric) {
-  return METRICS.find((x) => x.value === m) ?? { value: m, label: m, unit: '' };
-}
-
-function ruleText(r: GateRule): string {
-  const m = metricOf(r.metric);
-  const unit = m.unit === '%' ? '%' : m.unit === 'seconds' ? ' s' : '';
-  return `${m.label} ${OP_LABEL[r.op]} ${String(r.value)}${unit}${r.baseline ? ` (vs ${r.baseline})` : ''}`;
-}
 
 const GLOB = /^[A-Za-z0-9._/*-]{1,200}$/;
 
@@ -66,7 +39,7 @@ function GateEditor({ initial, taken, onSave, onDelete, onCancel, saving }: { in
         description="Globs; empty applies the gate to every branch"
         placeholder="main, release/*"
         value={g.branches ?? []}
-        onChange={(v) => setG({ ...g, branches: v })}
+        onChange={(v) => setG({ ...g, branches: v.length ? v : null })}
         error={branchError}
         maxTags={20}
         comboboxProps={{ withinPortal: true }}
@@ -219,7 +192,7 @@ export default function GatesPage() {
         subtitle="Pass or fail a finished launch on its numbers; CI waits for the verdict."
         actions={
           canWrite && q.data ? (
-            <Button leftSection={<IconPlus size={16} />} onClick={() => setEditing({ index: null, gate: { name: '', enabled: true, branches: [], rules: [{ metric: 'failed', op: 'lte', value: 0 }] } })} data-testid="gate-add">
+            <Button leftSection={<IconPlus size={16} />} onClick={() => setEditing({ index: null, gate: { name: '', enabled: true, rules: [{ metric: 'failed', op: 'lte', value: 0 }] } })} data-testid="gate-add">
               Add gate
             </Button>
           ) : undefined

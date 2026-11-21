@@ -418,6 +418,31 @@
           "type": "integer",
           "minimum": 1
         },
+        "logs": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "maxLineBytes": {
+              "type": "integer",
+              "minimum": 256,
+              "maximum": 1048576
+            },
+            "maxLinesPerRequest": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100000
+            },
+            "maxRequestBytes": {
+              "type": "integer",
+              "minimum": 1024,
+              "maximum": 268435456
+            },
+            "maxBytesPerLaunch": {
+              "type": "integer",
+              "minimum": 1024
+            }
+          }
+        },
         "extraEnv": {
           "type": "array",
           "items": {
@@ -755,6 +780,9 @@
         },
         "ca": {
           "$ref": "#/definitions/caRef"
+        },
+        "insecureCookie": {
+          "type": "boolean"
         }
       }
     },
@@ -779,6 +807,63 @@
         },
         "key": {
           "$ref": "#/definitions/nonEmptyString"
+        }
+      }
+    },
+    "integrations": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "egressAllow": {
+          "type": "array",
+          "maxItems": 500,
+          "items": {
+            "type": "string",
+            "pattern": "^[^,\\s]+$",
+            "maxLength": 300
+          }
+        },
+        "secretsKey": {
+          "$ref": "#/definitions/passwordRef"
+        },
+        "smtp": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "url": {
+              "type": "string",
+              "pattern": "^$|^(smtps|smtp|smtp\\+insecure)://[^@/]+(:[0-9]+)?/?$"
+            },
+            "from": {
+              "type": "string"
+            },
+            "username": {
+              "type": "string"
+            },
+            "password": {
+              "$ref": "#/definitions/passwordRef"
+            }
+          }
+        },
+        "telegramApiUrl": {
+          "type": "string",
+          "pattern": "^$|^https?://"
+        },
+        "delivery": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "maxAttempts": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 20
+            },
+            "backoffSeconds": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 3600
+            }
+          }
         }
       }
     },
@@ -895,6 +980,11 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "topBranches": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
         "serviceMonitor": {
           "type": "object",
           "additionalProperties": false,
@@ -1296,11 +1386,29 @@
               "type": "integer",
               "minimum": 1,
               "maximum": 1000
+            },
+            "replication": {
+              "type": "integer",
+              "minimum": -1,
+              "maximum": 32767,
+              "not": {
+                "const": 0
+              }
             }
           }
         },
         "trustedProducers": {
           "type": "boolean"
+        },
+        "clientId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._-]+$",
+          "maxLength": 200
+        },
+        "maxRecordBytes": {
+          "type": "integer",
+          "minimum": 16384,
+          "maximum": 67108864
         },
         "external": {
           "type": "object",
@@ -1446,6 +1554,16 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "batchSize": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000
+        },
+        "flushIntervalMs": {
+          "type": "integer",
+          "minimum": 10,
+          "maximum": 600000
+        },
         "clickhouse": {
           "type": "object",
           "additionalProperties": false,
@@ -1585,6 +1703,11 @@
             "rawTtlDays": {
               "type": "integer",
               "minimum": 1
+            },
+            "replicas": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100
             },
             "external": {
               "$ref": "#/definitions/externalService"

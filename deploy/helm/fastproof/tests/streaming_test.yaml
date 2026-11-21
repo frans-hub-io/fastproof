@@ -1,0 +1,254 @@
+suite: streaming
+templates:
+  - templates/configmap.yaml
+  - templates/deployment.yaml
+  - templates/kafka.yaml
+  - templates/secrets.yaml
+release:
+  name: fp
+  namespace: qa
+values:
+  - ../ci/minimal-fs-values.yaml
+tests:
+  - it: configures direct ingest and PostgreSQL search by default
+    template: templates/configmap.yaml
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: data.FASTPROOF_INGEST_MODE
+          value: direct
+      - equal:
+          path: data.FASTPROOF_SEARCH_BACKEND
+          value: postgres
+      - equal:
+          path: data.FASTPROOF_SINKS
+          value: ""
+      - notExists:
+          path: data.FASTPROOF_KAFKA_BROKERS
+
+  - it: passes external Kafka with TLS and SCRAM through files
+    template: templates/configmap.yaml
+    documentIndex: 0
+    set:
+      ingest.mode: kafka
+      kafka.external.brokers: [kafka-0.example.com:9093, kafka-1.example.com:9093]
+      kafka.external.tls.enabled: true
+      kafka.external.tls.ca.existingSecret: kafka-ca
+      kafka.external.sasl.mechanism: scram-sha-256
+      kafka.external.sasl.username: fastproof
+      kafka.external.sasl.password.existingSecret: kafka-user
+      kafka.topics.prefix: qa.
+      kafka.topics.partitions: 24
+    asserts:
+      - equal:
+          path: data.FASTPROOF_KAFKA_BROKERS
+          value: kafka-0.example.com:9093,kafka-1.example.com:9093
+      - equal:
+          path: data.FASTPROOF_KAFKA_TLS
+          value: "true"
+      - equal:
+          path: data.FASTPROOF_KAFKA_CA_FILE
+          value: /etc/fastproof/ca/kafka.crt
+      - equal:
+          path: data.FASTPROOF_KAFKA_SASL_MECHANISM
+          value: scram-sha-256
+      - equal:
+          path: data.FASTPROOF_KAFKA_PASSWORD_FILE
+          value: /etc/fastproof/secrets/kafka-password
+      - equal:
+          path: data.FASTPROOF_KAFKA_TOPIC_PREFIX
+          value: qa.
+      - equal:
+          path: data.FASTPROOF_KAFKA_PARTITIONS
+          value: "24"
+      - equal:
+          path: data.FASTPROOF_KAFKA_CREATE_TOPICS
+          value: "false"
+      - equal:
+          path: data.FASTPROOF_KAFKA_TRUSTED_PRODUCERS
+          value: "false"
+      - notExists:
+          path: data.FASTPROOF_KAFKA_PASSWORD
+
+  - it: mounts the external Kafka password and CA into the server
+    template: templates/deployment.yaml
+    documentIndex: 0
+    set:
+      ingest.mode: kafka
+      kafka.external.brokers: [kafka-0.example.com:9093]
+      kafka.external.tls.enabled: true
+      kafka.external.tls.ca.existingConfigMap: corporate-ca
+      kafka.external.sasl.mechanism: plain
+      kafka.external.sasl.username: fastproof
+      kafka.external.sasl.password.existingSecret: kafka-user
+      kafka.external.sasl.password.key: secret
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes[1].projected.sources
+          content:
+            secret:
+              name: kafka-user
+              items:
+                - key: secret
+                  path: kafka-password
+      - contains:
+          path: spec.template.spec.volumes[2].projected.sources
+          content:
+            configMap:
+              name: corporate-ca
+              items:
+                - key: ca.crt
+                  path: kafka.crt
+
+  - it: stores an inline external Kafka password in a Secret
+    template: templates/secrets.yaml
+    set:
+      ingest.mode: kafka
+      kafka.external.brokers: [kafka-0.example.com:9092]
+      kafka.external.sasl.mechanism: plain
+      kafka.external.sasl.username: fastproof
+      kafka.external.sasl.password.value: s3cret
+    documentSelector:
+      path: metadata.name
+      value: fp-fastproof-kafka
+    asserts:
+      - equal:
+          path: stringData.password
+          value: s3cret
+
+  - it: runs the simple bundled Kafka as a hardened KRaft node with SCRAM
+    template: templates/kafka.yaml
+    set:
+      ingest.mode: kafka
+      kafka.bundled.enabled: true
+    documentSelector:
+      path: kind
+      value: StatefulSet
+    asserts:
+      - equal:
+          path: metadata.name
+          value: fp-kafka
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: docker.io/apache/kafka:4.4.0@sha256:833b867a9585a141da455dc2b57431c65cbccb27f11c91f694444cca9f777e0f
+      - equal:
+          path: spec.template.spec.securityContext.runAsNonRoot
+          value: true
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem
+          value: true
+      - equal:
+          path: spec.template.spec.serviceAccountName
+          value: fp-kafka
+      - equal:
+          path: spec.template.spec.automountServiceAccountToken
+          value: false
+      - matchRegex:
+          path: spec.template.spec.containers[0].args[0]
+          pattern: '--add-scram "SCRAM-SHA-512=\[name=\$\{SASL_USERNAME\},password=\$\{SASL_PASSWORD\}\]"'
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.tcpSocket.port
+          value: client
+      - matchRegex:
+          path: spec.template.spec.containers[0].env[0].value
+          pattern: '^[A-Za-z0-9_-]{22}$'
+
+  - it: keeps the bundled broker private and authenticated
+    template: templates/kafka.yaml
+    set:
+      ingest.mode: kafka
+      kafka.bundled.enabled: true
+    documentSelector:
+      path: kind
+      value: ConfigMap
+    asserts:
+      - matchRegex:
+          path: data["server.properties"]
+          pattern: 'listener.security.protocol.map=CLIENT:SASL_PLAINTEXT,INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT'
+      - matchRegex:
+          path: data["server.properties"]
+          pattern: 'listeners=CLIENT://0.0.0.0:9092,INTERNAL://127.0.0.1:9094,CONTROLLER://127.0.0.1:9093'
+      - matchRegex:
+          path: data["server.properties"]
+          pattern: 'advertised.listeners=CLIENT://fp-kafka.qa.svc:9092'
+      - matchRegex:
+          path: data["server.properties"]
+          pattern: 'auto.create.topics.enable=false'
+
+  - it: switches the simple broker to SASL_SSL with a TLS secret and PLAIN
+    template: templates/kafka.yaml
+    set:
+      ingest.mode: kafka
+      kafka.bundled.enabled: true
+      kafka.bundled.simple.tls.existingSecret: kafka-tls
+      kafka.bundled.simple.saslMechanism: plain
+    documentSelector:
+      path: kind
+      value: ConfigMap
+    asserts:
+      - matchRegex:
+          path: data["server.properties"]
+          pattern: 'CLIENT:SASL_SSL'
+      - matchRegex:
+          path: data["server.properties"]
+          pattern: 'ssl.keystore.type=PEM'
+      - notMatchRegex:
+          path: data["server.properties"]
+          pattern: 'ScramLoginModule'
+
+  - it: points the server at the bundled broker and creates topics
+    template: templates/configmap.yaml
+    documentIndex: 0
+    set:
+      ingest.mode: kafka
+      kafka.bundled.enabled: true
+    asserts:
+      - equal:
+          path: data.FASTPROOF_KAFKA_BROKERS
+          value: fp-kafka:9092
+      - equal:
+          path: data.FASTPROOF_KAFKA_SASL_MECHANISM
+          value: scram-sha-512
+      - equal:
+          path: data.FASTPROOF_KAFKA_USERNAME
+          value: fastproof
+      - equal:
+          path: data.FASTPROOF_KAFKA_CREATE_TOPICS
+          value: "true"
+      - equal:
+          path: data.FASTPROOF_KAFKA_TLS
+          value: "false"
+
+  - it: generates the bundled broker password once
+    template: templates/kafka.yaml
+    set:
+      ingest.mode: kafka
+      kafka.bundled.enabled: true
+    documentSelector:
+      path: kind
+      value: Secret
+    asserts:
+      - equal:
+          path: metadata.name
+          value: fp-kafka-credentials
+      - isNotEmpty:
+          path: data.password
+
+  - it: uses the CloudPirates chart credentials in chart mode
+    template: templates/configmap.yaml
+    documentIndex: 0
+    set:
+      ingest.mode: kafka
+      kafka.enabled: true
+      kafka.bundled.enabled: true
+      kafka.bundled.mode: chart
+    asserts:
+      - equal:
+          path: data.FASTPROOF_KAFKA_BROKERS
+          value: fp-kafka:9092
+      - equal:
+          path: data.FASTPROOF_KAFKA_SASL_MECHANISM
+          value: plain
+      - equal:
+          path: data.FASTPROOF_KAFKA_USERNAME
+          value: fastproof

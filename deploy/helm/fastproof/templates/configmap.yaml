@@ -46,6 +46,48 @@ data:
   FASTPROOF_INGEST_WORKERS: {{ .Values.server.ingestWorkers | quote }}
   FASTPROOF_RETAIN_UPLOADS: {{ .Values.server.retainUploads | quote }}
   FASTPROOF_OUTBOX_RETENTION_DAYS: {{ .Values.server.outboxRetentionDays | quote }}
+  FASTPROOF_INGEST_MODE: {{ .Values.ingest.mode | quote }}
+  FASTPROOF_SEARCH_BACKEND: {{ .Values.search.backend | quote }}
+  FASTPROOF_SINKS: {{ include "fastproof.sinks" . | quote }}
+  {{- if include "fastproof.kafkaMode" . }}
+  FASTPROOF_KAFKA_BROKERS: {{ include "fastproof.kafkaBrokers" . | quote }}
+  FASTPROOF_KAFKA_TLS: {{ ternary "true" "false" (not (empty (include "fastproof.kafkaTls" .))) | quote }}
+  {{- if include "fastproof.kafkaCa" . }}
+  FASTPROOF_KAFKA_CA_FILE: /etc/fastproof/ca/kafka.crt
+  {{- end }}
+  {{- with include "fastproof.kafkaSasl" . }}
+  {{- $k := . | fromJson }}
+  FASTPROOF_KAFKA_SASL_MECHANISM: {{ $k.mechanism | quote }}
+  FASTPROOF_KAFKA_USERNAME: {{ $k.username | quote }}
+  FASTPROOF_KAFKA_PASSWORD_FILE: /etc/fastproof/secrets/kafka-password
+  {{- end }}
+  FASTPROOF_KAFKA_TOPIC_PREFIX: {{ .Values.kafka.topics.prefix | quote }}
+  FASTPROOF_KAFKA_CREATE_TOPICS: {{ include "fastproof.createTopics" . | quote }}
+  FASTPROOF_KAFKA_PARTITIONS: {{ .Values.kafka.topics.partitions | quote }}
+  FASTPROOF_KAFKA_TRUSTED_PRODUCERS: {{ .Values.kafka.trustedProducers | quote }}
+  {{- end }}
+  {{- if .Values.sinks.clickhouse.enabled }}
+  {{- $c := include "fastproof.clickhouseConn" . | fromJson }}
+  FASTPROOF_CLICKHOUSE_URL: {{ $c.url | quote }}
+  FASTPROOF_CLICKHOUSE_DATABASE: {{ .Values.sinks.clickhouse.database | quote }}
+  FASTPROOF_CLICKHOUSE_USER: {{ $c.user | quote }}
+  FASTPROOF_CLICKHOUSE_PASSWORD_FILE: /etc/fastproof/secrets/clickhouse-password
+  {{- if $c.ca }}
+  FASTPROOF_CLICKHOUSE_CA_FILE: /etc/fastproof/ca/clickhouse.crt
+  {{- end }}
+  FASTPROOF_CLICKHOUSE_RAW_TTL_DAYS: {{ .Values.sinks.clickhouse.rawTtlDays | quote }}
+  {{- end }}
+  {{- if .Values.sinks.opensearch.enabled }}
+  {{- $c := include "fastproof.opensearchConn" . | fromJson }}
+  FASTPROOF_OPENSEARCH_URL: {{ $c.url | quote }}
+  FASTPROOF_OPENSEARCH_USER: {{ $c.user | quote }}
+  FASTPROOF_OPENSEARCH_PASSWORD_FILE: /etc/fastproof/secrets/opensearch-password
+  {{- if $c.ca }}
+  FASTPROOF_OPENSEARCH_CA_FILE: /etc/fastproof/ca/opensearch.crt
+  {{- end }}
+  FASTPROOF_OPENSEARCH_INDEX_PREFIX: {{ .Values.sinks.opensearch.indexPrefix | quote }}
+  FASTPROOF_OPENSEARCH_RAW_TTL_DAYS: {{ .Values.sinks.opensearch.rawTtlDays | quote }}
+  {{- end }}
   {{- if include "fastproof.accessEnabled" . }}
   FASTPROOF_ACCESS_FILE: /etc/fastproof/access/access.yaml
   {{- end }}

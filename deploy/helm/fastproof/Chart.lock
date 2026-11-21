@@ -8,5 +8,11 @@ dependencies:
 - name: valkey
   repository: https://valkey.io/valkey-helm/
   version: 0.12.1
-digest: sha256:a8c7dcaeb91562e677973a718b673cce244977cd163750875976dadd25b93bac
-generated: "2026-11-21T09:15:06.248988344Z"
+- name: kafka
+  repository: oci://registry-1.docker.io/cloudpirates
+  version: 0.2.1
+- name: opensearch
+  repository: https://opensearch-project.github.io/helm-charts
+  version: 3.9.0
+digest: sha256:2d80dcf487048c32b1dc6cc315b60feaebb099386341f1b572880ff6ce7ee4bc
+generated: "2026-11-21T10:34:05.280711801Z"

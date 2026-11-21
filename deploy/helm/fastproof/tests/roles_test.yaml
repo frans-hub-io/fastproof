@@ -1,0 +1,178 @@
+suite: split roles
+templates:
+  - templates/deployment.yaml
+  - templates/configmap.yaml
+  - templates/service.yaml
+  - templates/availability.yaml
+release:
+  name: fp
+  namespace: qa
+values:
+  - ../ci/split-roles-values.yaml
+tests:
+  - it: renders one Deployment per role with its own FASTPROOF_ROLES
+    template: templates/deployment.yaml
+    asserts:
+      - hasDocuments:
+          count: 4
+      - equal:
+          path: metadata.name
+          value: fp-fastproof-api
+        documentIndex: 0
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: FASTPROOF_ROLES
+            value: api,scheduler
+        documentIndex: 0
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: FASTPROOF_ROLES
+            value: ingest
+        documentIndex: 1
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: FASTPROOF_ROLES
+            value: writer
+        documentIndex: 2
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: FASTPROOF_ROLES
+            value: sink
+        documentIndex: 3
+
+  - it: selects each role by its own label and exposes http only on api
+    template: templates/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.selector.matchLabels["fastproof.franshub.io/role"]
+          value: ingest
+        documentIndex: 1
+      - equal:
+          path: spec.template.metadata.labels["fastproof.franshub.io/role"]
+          value: ingest
+        documentIndex: 1
+      - contains:
+          path: spec.template.spec.containers[0].ports
+          content:
+            name: http
+            containerPort: 8080
+            protocol: TCP
+        documentIndex: 0
+      - notContains:
+          path: spec.template.spec.containers[0].ports
+          content:
+            name: http
+            containerPort: 8080
+            protocol: TCP
+        documentIndex: 1
+
+  - it: applies per-role replicas, resources and probe overrides
+    template: templates/deployment.yaml
+    asserts:
+      - notExists:
+          path: spec.replicas
+        documentIndex: 0
+      - equal:
+          path: spec.replicas
+          value: 2
+        documentIndex: 1
+      - equal:
+          path: spec.template.spec.containers[0].resources.limits.memory
+          value: 2Gi
+        documentIndex: 1
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.periodSeconds
+          value: 10
+        documentIndex: 2
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.failureThreshold
+          value: 3
+        documentIndex: 2
+      - equal:
+          path: spec.template.spec.containers[0].resources.limits.memory
+          value: 512Mi
+        documentIndex: 3
+
+  - it: keeps the Service on the api role and adds a headless ops Service
+    template: templates/service.yaml
+    asserts:
+      - equal:
+          path: spec.selector["fastproof.franshub.io/role"]
+          value: api
+        documentIndex: 0
+      - equal:
+          path: metadata.name
+          value: fp-fastproof-ops
+        documentIndex: 1
+      - notExists:
+          path: spec.selector["fastproof.franshub.io/role"]
+        documentIndex: 1
+
+  - it: renders an HPA for api and PDBs for roles with more than one replica
+    template: templates/availability.yaml
+    asserts:
+      - containsDocument:
+          kind: HorizontalPodAutoscaler
+          apiVersion: autoscaling/v2
+          name: fp-fastproof-api
+          any: true
+      - containsDocument:
+          kind: PodDisruptionBudget
+          apiVersion: policy/v1
+          name: fp-fastproof-writer
+          any: true
+      - containsDocument:
+          kind: PodDisruptionBudget
+          apiVersion: policy/v1
+          name: fp-fastproof-ingest
+          any: true
+      - hasDocuments:
+          count: 5
+
+  - it: scrapes metrics from every role through the ops Service
+    template: templates/availability.yaml
+    documentSelector:
+      path: kind
+      value: ServiceMonitor
+    asserts:
+      - equal:
+          path: spec.selector.matchLabels["fastproof.franshub.io/service"]
+          value: ops
+
+  - it: leaves out the writer in direct mode and the sink without sinks
+    template: templates/deployment.yaml
+    set:
+      ingest.mode: direct
+      kafka.bundled.enabled: false
+      sinks.clickhouse.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 2
+
+  - it: runs all roles in one Deployment without split
+    template: templates/deployment.yaml
+    values:
+      - ../ci/minimal-fs-values.yaml
+    set:
+      roles.split: false
+      ingest.mode: direct
+      kafka.bundled.enabled: false
+      sinks.clickhouse.enabled: false
+      networkPolicy.enabled: false
+      blob.backend: fs
+    asserts:
+      - hasDocuments:
+          count: 2
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: FASTPROOF_ROLES
+            value: all
+        documentIndex: 0
+      - notExists:
+          path: spec.selector.matchLabels["fastproof.franshub.io/role"]
+        documentIndex: 0

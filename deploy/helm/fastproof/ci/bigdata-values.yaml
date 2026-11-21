@@ -1,0 +1,125 @@
+publicUrl: https://fastproof.example.com
+
+postgresql:
+  enabled: true
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 768Mi
+
+garage:
+  enabled: true
+  persistence:
+    dataSize: 10Gi
+
+blob:
+  backend: s3
+
+auth:
+  adminTokens:
+    generate: true
+
+server:
+  ingestWorkers: 2
+
+ingest:
+  mode: kafka
+
+search:
+  backend: clickhouse
+
+roles:
+  split: true
+  api:
+    replicaCount: 1
+    pdb:
+      enabled: false
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+        ephemeral-storage: 256Mi
+      limits:
+        cpu: "1"
+        memory: 512Mi
+        ephemeral-storage: 4Gi
+  ingest:
+    replicaCount: 1
+    pdb:
+      enabled: false
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+        ephemeral-storage: 256Mi
+      limits:
+        cpu: "1"
+        memory: 768Mi
+        ephemeral-storage: 4Gi
+  writer:
+    replicaCount: 1
+    pdb:
+      enabled: false
+    resources:
+      requests:
+        cpu: 50m
+        memory: 96Mi
+        ephemeral-storage: 64Mi
+      limits:
+        cpu: 500m
+        memory: 384Mi
+        ephemeral-storage: 512Mi
+  sink:
+    replicaCount: 1
+    pdb:
+      enabled: false
+    resources:
+      requests:
+        cpu: 50m
+        memory: 96Mi
+        ephemeral-storage: 64Mi
+      limits:
+        cpu: 500m
+        memory: 384Mi
+        ephemeral-storage: 512Mi
+
+kafka:
+  topics:
+    partitions: 6
+  bundled:
+    enabled: true
+    mode: simple
+    simple:
+      heapOpts: -Xms384m -Xmx384m
+      logRetentionHours: 24
+      persistence:
+        size: 5Gi
+      resources:
+        requests:
+          cpu: 100m
+          memory: 640Mi
+        limits:
+          cpu: "1"
+          memory: 768Mi
+
+sinks:
+  clickhouse:
+    enabled: true
+    rawTtlDays: 14
+    bundled:
+      enabled: true
+      persistence:
+        size: 10Gi
+      resources:
+        requests:
+          cpu: 200m
+          memory: 1Gi
+        limits:
+          cpu: "2"
+          memory: 2Gi
+
+networkPolicy:
+  enabled: true

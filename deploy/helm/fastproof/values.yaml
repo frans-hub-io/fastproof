@@ -23,6 +23,120 @@ server:
   extraEnv: []
   extraEnvFrom: []
 
+ingest:
+  mode: direct
+
+search:
+  backend: postgres
+
+roles:
+  split: false
+  api:
+    replicaCount: 2
+    extraRoles:
+      - scheduler
+    resources: {}
+    startupProbe: {}
+    readinessProbe: {}
+    livenessProbe: {}
+    autoscaling:
+      enabled: false
+      minReplicas: 2
+      maxReplicas: 6
+      targetCPUUtilizationPercentage: 70
+      targetMemoryUtilizationPercentage: 0
+    pdb:
+      enabled: true
+      maxUnavailable: 1
+    podAnnotations: {}
+    podLabels: {}
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+    topologySpreadConstraints: []
+  ingest:
+    replicaCount: 1
+    extraRoles: []
+    resources: {}
+    startupProbe: {}
+    readinessProbe: {}
+    livenessProbe: {}
+    autoscaling:
+      enabled: false
+      minReplicas: 1
+      maxReplicas: 4
+      targetCPUUtilizationPercentage: 70
+      targetMemoryUtilizationPercentage: 0
+    pdb:
+      enabled: true
+      maxUnavailable: 1
+    podAnnotations: {}
+    podLabels: {}
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+    topologySpreadConstraints: []
+  writer:
+    replicaCount: 1
+    extraRoles: []
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+        ephemeral-storage: 64Mi
+      limits:
+        cpu: "1"
+        memory: 512Mi
+        ephemeral-storage: 1Gi
+    startupProbe: {}
+    readinessProbe: {}
+    livenessProbe: {}
+    autoscaling:
+      enabled: false
+      minReplicas: 1
+      maxReplicas: 4
+      targetCPUUtilizationPercentage: 70
+      targetMemoryUtilizationPercentage: 0
+    pdb:
+      enabled: true
+      maxUnavailable: 1
+    podAnnotations: {}
+    podLabels: {}
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+    topologySpreadConstraints: []
+  sink:
+    replicaCount: 1
+    extraRoles: []
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+        ephemeral-storage: 64Mi
+      limits:
+        cpu: "1"
+        memory: 512Mi
+        ephemeral-storage: 1Gi
+    startupProbe: {}
+    readinessProbe: {}
+    livenessProbe: {}
+    autoscaling:
+      enabled: false
+      minReplicas: 1
+      maxReplicas: 3
+      targetCPUUtilizationPercentage: 70
+      targetMemoryUtilizationPercentage: 0
+    pdb:
+      enabled: true
+      maxUnavailable: 1
+    podAnnotations: {}
+    podLabels: {}
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+    topologySpreadConstraints: []
+
 database:
   existingSecret: ""
   secretKey: database-url
@@ -199,6 +313,18 @@ networkPolicy:
       ports:
         - 4317
         - 4318
+    kafka:
+      to: []
+      ports:
+        - 9092
+    clickhouse:
+      to: []
+      ports:
+        - 8443
+    opensearch:
+      to: []
+      ports:
+        - 9200
     extraRules: []
   storage: true
 
@@ -410,3 +536,309 @@ garage:
   nodeSelector: {}
   tolerations: []
   affinity: {}
+
+kafka:
+  topics:
+    prefix: fastproof.
+    create: false
+    partitions: 12
+  trustedProducers: false
+  external:
+    brokers: []
+    tls:
+      enabled: false
+      ca:
+        existingSecret: ""
+        existingConfigMap: ""
+        key: ca.crt
+    sasl:
+      mechanism: ""
+      username: ""
+      password:
+        existingSecret: ""
+        key: password
+        value: ""
+  bundled:
+    enabled: false
+    mode: simple
+    simple:
+      image:
+        repository: docker.io/apache/kafka
+        tag: 4.4.0
+        digest: sha256:833b867a9585a141da455dc2b57431c65cbccb27f11c91f694444cca9f777e0f
+        pullPolicy: IfNotPresent
+      clusterId: ""
+      username: fastproof
+      saslMechanism: scram-sha-512
+      credentials:
+        existingSecret: ""
+        key: password
+      tls:
+        existingSecret: ""
+      heapOpts: -Xms512m -Xmx512m
+      logRetentionHours: 72
+      extraConfig: []
+      persistence:
+        enabled: true
+        storageClass: ""
+        size: 10Gi
+      resources:
+        requests:
+          cpu: 100m
+          memory: 768Mi
+        limits:
+          cpu: "1"
+          memory: 1Gi
+      podSecurityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      securityContext:
+        runAsNonRoot: true
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop:
+            - ALL
+      nodeSelector: {}
+      tolerations: []
+      affinity: {}
+  enabled: false
+  replicaCount: 1
+  image:
+    registry: docker.io
+    repository: apache/kafka
+    tag: "4.3.2@sha256:852a0d49fc4e656b022e7f23785411802c9a088c78a7c5e39f33969de9c227a7"
+    imagePullPolicy: IfNotPresent
+  podDisruptionBudget:
+    enabled: false
+  auth:
+    client:
+      enabled: true
+    interBroker:
+      enabled: true
+    controller:
+      enabled: true
+    clientUser: fastproof
+  kafkaConfig:
+    numPartitions: 12
+    defaultReplicationFactor: 1
+    offsetsTopicReplicationFactor: 1
+    transactionStateLogReplicationFactor: 1
+    transactionStateLogMinIsr: 1
+    autoCreateTopicsEnable: false
+    logRetentionHours: 72
+  heapOpts: -Xmx512m -Xms512m
+  persistence:
+    enabled: true
+    size: 10Gi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 768Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+sinks:
+  clickhouse:
+    enabled: false
+    database: fastproof
+    rawTtlDays: 90
+    external:
+      url: ""
+      user: ""
+      password:
+        existingSecret: ""
+        key: password
+        value: ""
+      ca:
+        existingSecret: ""
+        existingConfigMap: ""
+        key: ca.crt
+    bundled:
+      enabled: false
+      image:
+        repository: docker.io/clickhouse/clickhouse-server
+        tag: 26.8.36.3-distroless
+        digest: sha256:d149c739994af7d3687b05ce3111b6a748e0f17702c80b52a93c0161a439a091
+        pullPolicy: IfNotPresent
+      user: fastproof
+      extraGrants:
+        - GRANT SELECT ON system.parts
+      credentials:
+        existingSecret: ""
+        key: password
+      tls:
+        existingSecret: ""
+      server:
+        max_server_memory_usage_to_ram_ratio: "0.75"
+        cache_size_to_ram_max_ratio: "0.2"
+        mark_cache_size: "268435456"
+        uncompressed_cache_size: "0"
+        index_mark_cache_size: "67108864"
+        index_uncompressed_cache_size: "0"
+        primary_index_cache_size: "67108864"
+        text_index_tokens_cache_size: "33554432"
+        text_index_header_cache_size: "33554432"
+        text_index_postings_cache_size: "33554432"
+        page_cache_max_size: "0"
+        query_condition_cache_size: "33554432"
+        background_pool_size: "4"
+        background_schedule_pool_size: "32"
+        max_concurrent_queries: "50"
+        merges_mutations_memory_usage_to_ram_ratio: "0.3"
+      mergeTree:
+        number_of_free_entries_in_pool_to_execute_mutation: "2"
+        number_of_free_entries_in_pool_to_lower_max_size_of_merge: "2"
+        number_of_free_entries_in_pool_to_execute_optimize_entire_partition: "2"
+      profile:
+        max_memory_usage: "1073741824"
+        max_threads: "2"
+        max_insert_threads: "1"
+      queryLogTtlDays: 3
+      persistence:
+        enabled: true
+        storageClass: ""
+        size: 20Gi
+      resources:
+        requests:
+          cpu: 250m
+          memory: 1Gi
+        limits:
+          cpu: "2"
+          memory: 2Gi
+      podSecurityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        fsGroup: 101
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      securityContext:
+        runAsNonRoot: true
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop:
+            - ALL
+      nodeSelector: {}
+      tolerations: []
+      affinity: {}
+  opensearch:
+    enabled: false
+    indexPrefix: fastproof-
+    rawTtlDays: 90
+    external:
+      url: ""
+      user: ""
+      password:
+        existingSecret: ""
+        key: password
+        value: ""
+      ca:
+        existingSecret: ""
+        existingConfigMap: ""
+        key: ca.crt
+    bundled:
+      user: fastproof
+      credentialsSecret: fastproof-opensearch-credentials
+      tlsSecret: fastproof-opensearch-tls
+      generateTls: true
+
+opensearch:
+  enabled: false
+  clusterName: fastproof-opensearch
+  nodeGroup: node
+  masterService: fastproof-opensearch-node
+  singleNode: true
+  replicas: 1
+  majorVersion: "3"
+  image:
+    repository: docker.io/opensearchproject/opensearch
+    tag: "3.9.0@sha256:3bf4fe26aeb9f7b03c0ebcb1302bb24e855ee6b89fd926d26a71a83ef6f7e076"
+    pullPolicy: IfNotPresent
+  opensearchJavaOpts: -Xms768m -Xmx768m
+  resources:
+    requests:
+      cpu: 250m
+      memory: 1536Mi
+    limits:
+      cpu: "2"
+      memory: 1536Mi
+  initResources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi
+  persistence:
+    enabled: true
+    enableInitChown: false
+    size: 10Gi
+  sysctlInit:
+    enabled: false
+  rbac:
+    create: true
+    automountServiceAccountToken: false
+  enableServiceLinks: false
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    fsGroupChangePolicy: OnRootMismatch
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+  livenessProbe:
+    tcpSocket:
+      port: 9200
+    periodSeconds: 20
+    timeoutSeconds: 5
+    failureThreshold: 10
+  extraEnvs:
+    - name: DISABLE_INSTALL_DEMO_CONFIG
+      value: "true"
+  secretMounts:
+    - name: fastproof-tls
+      secretName: fastproof-opensearch-tls
+      path: /usr/share/opensearch/config/certs
+  securityConfig:
+    enabled: true
+    config:
+      securityConfigSecret: fastproof-opensearch-security
+  config:
+    opensearch.yml: |
+      cluster.name: fastproof-opensearch
+      network.host: 0.0.0.0
+      node.store.allow_mmap: false
+      plugins.security.ssl.transport.pemcert_filepath: certs/tls.crt
+      plugins.security.ssl.transport.pemkey_filepath: certs/tls.key
+      plugins.security.ssl.transport.pemtrustedcas_filepath: certs/ca.crt
+      plugins.security.ssl.transport.enforce_hostname_verification: false
+      plugins.security.ssl.http.enabled: true
+      plugins.security.ssl.http.pemcert_filepath: certs/tls.crt
+      plugins.security.ssl.http.pemkey_filepath: certs/tls.key
+      plugins.security.ssl.http.pemtrustedcas_filepath: certs/ca.crt
+      plugins.security.allow_default_init_securityindex: true
+      plugins.security.authcz.admin_dn:
+        - CN=fastproof-opensearch-admin
+      plugins.security.nodes_dn:
+        - CN=fastproof-opensearch-node
+      plugins.security.restapi.roles_enabled:
+        - all_access
+      plugins.security.system_indices.enabled: true

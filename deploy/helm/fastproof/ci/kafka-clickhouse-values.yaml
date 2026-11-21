@@ -1,0 +1,36 @@
+publicUrl: https://fastproof.example.com
+
+postgresql:
+  enabled: true
+
+garage:
+  enabled: true
+
+blob:
+  backend: s3
+
+auth:
+  adminTokens:
+    generate: true
+
+ingest:
+  mode: kafka
+
+search:
+  backend: clickhouse
+
+kafka:
+  enabled: true
+  bundled:
+    enabled: true
+    mode: chart
+
+sinks:
+  clickhouse:
+    enabled: true
+    rawTtlDays: 30
+    bundled:
+      enabled: true
+
+networkPolicy:
+  enabled: true

@@ -72,33 +72,59 @@ const PATTERN = /^[A-Za-z0-9._/*-]{1,200}$/;
 function NotificationEditor({ initial, secrets, onSave, onDelete, onCancel, saving }: { initial: NotificationTarget; secrets: string[]; onSave: (n: NotificationTarget) => void; onDelete?: () => void; onCancel: () => void; saving: boolean }) {
   const [n, setN] = useState<NotificationTarget>(initial);
   const kind = KINDS.find((k) => k.value === n.kind) ?? KINDS[0];
-  const tError = targetError(n.kind, n.target ?? '');
+  const urlKind = n.kind === 'webhook' || n.kind === 'slack';
+  const fromSecret = urlKind && !!n.targetSecretRef;
+  const tError = fromSecret ? null : targetError(n.kind, n.target ?? '');
   const branches = n.filter?.branches ?? [];
   const environments = n.filter?.environments ?? [];
   const filterError = [...branches, ...environments].some((p) => !PATTERN.test(p)) ? 'Use names or globs like release/*' : null;
   const valid = !tError && n.on.length > 0 && !filterError;
-  const secretData = n.secretRef && !secrets.includes(n.secretRef) ? [...secrets, n.secretRef] : secrets;
+  const withCurrent = (cur: string | null | undefined) => (cur && !secrets.includes(cur) ? [...secrets, cur] : secrets);
+  const usesSecretRef = n.kind === 'webhook' || n.kind === 'telegram';
   const submit = () => {
     if (!valid) return;
     const filter = branches.length || environments.length ? { branches, environments } : null;
-    onSave({ ...n, target: (n.target ?? '').trim(), filter, secretRef: n.secretRef ?? null });
+    onSave({
+      ...n,
+      target: fromSecret ? '' : (n.target ?? '').trim(),
+      filter,
+      secretRef: usesSecretRef ? (n.secretRef ?? null) : null,
+      targetSecretRef: urlKind ? (n.targetSecretRef ?? null) : null,
+    });
   };
   return (
     <Stack gap="sm">
       <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="sm">
         <Select label="Kind" data={KINDS.map(({ value, label }) => ({ value, label }))} value={n.kind} onChange={(v) => v && setN({ ...n, kind: v })} allowDeselect={false} comboboxProps={{ withinPortal: true }} data-testid="notification-kind" />
+        {usesSecretRef && (
+          <Select
+            label={n.kind === 'webhook' ? 'Signing secret' : 'Bot token secret'}
+            description={n.kind === 'webhook' ? 'Purpose webhook; HMAC-SHA256 key for X-FastProof-Signature' : 'Purpose telegram'}
+            placeholder="None"
+            data={withCurrent(n.secretRef)}
+            value={n.secretRef ?? null}
+            onChange={(v) => setN({ ...n, secretRef: v })}
+            clearable
+            comboboxProps={{ withinPortal: true }}
+          />
+        )}
+      </SimpleGrid>
+      {urlKind && (
         <Select
-          label={n.kind === 'webhook' ? 'Signing secret' : n.kind === 'telegram' ? 'Bot token secret' : 'Secret'}
-          description={n.kind === 'webhook' ? 'HMAC-SHA256 key for X-FastProof-Signature' : undefined}
-          placeholder="None"
-          data={secretData}
-          value={n.secretRef ?? null}
-          onChange={(v) => setN({ ...n, secretRef: v })}
+          label="URL from a secret"
+          description={n.kind === 'slack' ? 'Recommended: the Slack webhook URL is a credential (purpose slack)' : 'For a URL that carries a token (purpose webhook)'}
+          placeholder="None: type the URL below"
+          data={withCurrent(n.targetSecretRef)}
+          value={n.targetSecretRef ?? null}
+          onChange={(v) => setN({ ...n, targetSecretRef: v })}
           clearable
           comboboxProps={{ withinPortal: true }}
+          data-testid="notification-target-secret"
         />
-      </SimpleGrid>
-      <TextInput label={kind?.target} placeholder={kind?.placeholder} value={n.target ?? ''} onChange={(e) => setN({ ...n, target: e.currentTarget.value })} error={tError} maxLength={500} data-testid="notification-target" data-autofocus />
+      )}
+      {!fromSecret && (
+        <TextInput label={kind?.target} placeholder={kind?.placeholder} value={n.target ?? ''} onChange={(e) => setN({ ...n, target: e.currentTarget.value })} error={tError} maxLength={500} data-testid="notification-target" data-autofocus />
+      )}
       <Checkbox.Group label="Send on" value={n.on} onChange={(v) => setN({ ...n, on: v })} error={n.on.length ? null : 'Pick at least one event'}>
         <Group gap="md" mt={6}>
           {EVENTS.map((e) => (
@@ -150,8 +176,8 @@ function TargetCard({ n, canWrite, onEdit }: { n: NotificationTarget; canWrite: 
             </Tooltip>
           )}
         </Group>
-        <Text size="sm" className="fp-mono" style={{ wordBreak: 'break-all' }}>
-          {n.target}
+        <Text size="sm" className="fp-mono" style={{ wordBreak: 'break-all' }} c={n.target ? undefined : 'dimmed'}>
+          {n.targetSecretRef ? `URL in secret ${n.targetSecretRef}` : n.target || 'hidden (needs settings:write)'}
         </Text>
         <Group gap={6} wrap="wrap">
           {n.on.map((e) => (
@@ -219,7 +245,7 @@ function Deliveries({ project, settings }: { project: string; settings: ProjectS
                         <Table.Td style={{ maxWidth: 260 }}>
                           <Group gap={6} wrap="nowrap">
                             <ChannelIcon kind={d.kind} />
-                            <Text size="sm" className="fh-truncate fp-mono" title={byId.get(d.notificationId)?.target ?? d.notificationId}>
+                            <Text size="sm" className="fh-truncate fp-mono" title={byId.get(d.notificationId)?.target || d.notificationId}>
                               {d.notificationId === 'vcs' ? `${d.kind} (VCS)` : d.notificationId}
                             </Text>
                           </Group>

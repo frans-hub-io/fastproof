@@ -5,8 +5,9 @@
 //! DNS rebinding is handled by resolving in the client's own resolver: every address a name
 //! resolves to is checked, and the connection goes to the checked addresses. Names that match
 //! only a wildcard must resolve to public addresses; a host listed exactly (or an IP address
-//! listed exactly) may be internal. Redirects are checked hop by hop, proxies from the
-//! environment are ignored, and errors never carry the URL (which may hold a token).
+//! listed exactly for the port of the URL) may be internal. Redirects are checked hop by hop
+//! (credential headers are dropped when the origin changes), proxies from the environment are
+//! ignored, and errors never carry the URL (which may hold a token).
 
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -15,7 +16,8 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
-use reqwest::{Method, RequestBuilder};
+use reqwest::header::{CONTENT_LENGTH, CONTENT_TYPE, LOCATION, TRANSFER_ENCODING};
+use reqwest::{Method, RequestBuilder, StatusCode};
 
 /// Largest response body read from an integration endpoint.
 pub const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
@@ -173,35 +175,43 @@ impl EgressPolicy {
         self.rules.is_empty()
     }
 
-    /// Whether `host` (a name or an IP address) may be called on `port` (any port when
-    /// `None`): `Some(true)` when it is listed exactly (internal addresses allowed),
-    /// `Some(false)` when only a wildcard matches, `None` when it is not allowed.
-    pub fn allows(&self, host: &str, port: Option<u16>) -> Option<bool> {
+    /// `Some(true)` when the rule lists the host exactly, `Some(false)` when it matches by a
+    /// wildcard, `None` when it does not match (ports are not compared here).
+    fn host_match(r: &Rule, h: &str, ip: Option<IpAddr>) -> Option<bool> {
+        match (&r.host, ip) {
+            (HostPattern::Ip(a), Some(b)) => (*a == b).then_some(true),
+            (HostPattern::Ip(_), None) => None,
+            (HostPattern::Exact(e), None) => (e == h).then_some(true),
+            (HostPattern::Suffix(s), None) => (h.len() > s.len()
+                && h.ends_with(s.as_str())
+                && h.as_bytes()[h.len() - s.len() - 1] == b'.')
+                .then_some(false),
+            (HostPattern::Any, _) => Some(false),
+            (_, Some(_)) => None,
+        }
+    }
+
+    fn normalize(host: &str) -> (String, Option<IpAddr>) {
         let h = host
             .trim_start_matches('[')
             .trim_end_matches(']')
             .trim_end_matches('.')
             .to_ascii_lowercase();
         let ip = h.parse::<IpAddr>().ok();
+        (h, ip)
+    }
+
+    /// Whether `host` (a name or an IP address) may be called on `port`: `Some(true)` when a
+    /// rule lists it exactly for that port (internal addresses allowed), `Some(false)` when
+    /// only a wildcard matches, `None` when it is not allowed.
+    pub fn allows(&self, host: &str, port: u16) -> Option<bool> {
+        let (h, ip) = Self::normalize(host);
         let mut found = None;
         for r in &self.rules {
-            if let (Some(rp), Some(p)) = (r.port, port)
-                && rp != p
-            {
+            if r.port.is_some_and(|rp| rp != port) {
                 continue;
             }
-            let m = match (&r.host, ip) {
-                (HostPattern::Ip(a), Some(b)) => (*a == b).then_some(true),
-                (HostPattern::Ip(_), None) => None,
-                (HostPattern::Exact(e), None) => (*e == h).then_some(true),
-                (HostPattern::Suffix(s), None) => (h.len() > s.len()
-                    && h.ends_with(s.as_str())
-                    && h.as_bytes()[h.len() - s.len() - 1] == b'.')
-                    .then_some(false),
-                (HostPattern::Any, _) => Some(false),
-                (_, Some(_)) => None,
-            };
-            match m {
+            match Self::host_match(r, &h, ip) {
                 Some(true) => return Some(true),
                 Some(false) => found = Some(false),
                 None => {}
@@ -210,8 +220,20 @@ impl EgressPolicy {
         found
     }
 
+    /// Whether a rule (on any port) matches the name; with `exact_only`, only exact rules.
+    /// For the resolvers, which do not see the port: the port was checked with the URL.
+    fn names(&self, host: &str, exact_only: bool) -> bool {
+        let (h, ip) = Self::normalize(host);
+        self.rules
+            .iter()
+            .filter_map(|r| Self::host_match(r, &h, ip))
+            .any(|exact| exact || !exact_only)
+    }
+
     /// Checks a URL before a request: scheme, host and port, and the address of an IP host.
-    pub fn check_url(&self, u: &url::Url) -> Result<(), EgressError> {
+    /// Returns whether the host is listed exactly for that port (its names may then resolve to
+    /// internal addresses).
+    pub fn check_url(&self, u: &url::Url) -> Result<bool, EgressError> {
         if !matches!(u.scheme(), "http" | "https") {
             return Err(EgressError::Scheme);
         }
@@ -221,8 +243,11 @@ impl EgressPolicy {
             Some(url::Host::Ipv6(v)) => v.to_string(),
             None => return Err(EgressError::NotAllowed("(no host)".into())),
         };
+        let port = u
+            .port_or_known_default()
+            .ok_or_else(|| EgressError::NotAllowed(host.clone()))?;
         let explicit = self
-            .allows(&host, u.port_or_known_default())
+            .allows(&host, port)
             .ok_or_else(|| EgressError::NotAllowed(host.clone()))?;
         if let Ok(ip) = host.parse::<IpAddr>()
             && !explicit
@@ -230,45 +255,60 @@ impl EgressPolicy {
         {
             return Err(EgressError::Internal(host));
         }
-        Ok(())
+        Ok(explicit)
     }
 
-    /// Resolves an allowed host and returns only addresses it may connect to (`port` is
-    /// checked when given and used in the addresses).
-    pub async fn resolve(
-        &self,
-        host: &str,
-        port: Option<u16>,
-    ) -> Result<Vec<SocketAddr>, EgressError> {
+    /// Resolves an allowed host for a connection to `port` and returns only addresses it may
+    /// connect to.
+    pub async fn resolve(&self, host: &str, port: u16) -> Result<Vec<SocketAddr>, EgressError> {
         let explicit = self
             .allows(host, port)
             .ok_or_else(|| EgressError::NotAllowed(host.to_string()))?;
-        let port = port.unwrap_or(0);
-        let addrs: Vec<SocketAddr> = match host.parse::<IpAddr>() {
-            Ok(ip) => vec![SocketAddr::new(ip, port)],
-            Err(_) => tokio::net::lookup_host((host, port))
-                .await
-                .map_err(|_| EgressError::Resolve(host.to_string()))?
-                .collect(),
-        };
-        if addrs.is_empty() {
-            return Err(EgressError::Resolve(host.to_string()));
-        }
-        if !explicit && addrs.iter().any(|a| is_internal(a.ip())) {
-            return Err(EgressError::Internal(host.to_string()));
-        }
-        Ok(addrs)
+        lookup(host, port, explicit).await
     }
 }
 
-struct PolicyResolver(Arc<EgressPolicy>);
+async fn lookup(
+    host: &str,
+    port: u16,
+    allow_internal: bool,
+) -> Result<Vec<SocketAddr>, EgressError> {
+    let addrs: Vec<SocketAddr> = match host.parse::<IpAddr>() {
+        Ok(ip) => vec![SocketAddr::new(ip, port)],
+        Err(_) => tokio::net::lookup_host((host, port))
+            .await
+            .map_err(|_| EgressError::Resolve(host.to_string()))?
+            .collect(),
+    };
+    if addrs.is_empty() {
+        return Err(EgressError::Resolve(host.to_string()));
+    }
+    if !allow_internal && addrs.iter().any(|a| is_internal(a.ip())) {
+        return Err(EgressError::Internal(host.to_string()));
+    }
+    Ok(addrs)
+}
+
+/// The resolver of one of the two clients. reqwest hands a resolver the name without the
+/// port, so the decision that needs the port (exact listing or wildcard) is made per request
+/// from the URL, and the request goes to the client of that decision: the public client never
+/// connects to internal addresses, the explicit one is used only for hosts listed exactly for
+/// the URL's port.
+struct PolicyResolver {
+    policy: Arc<EgressPolicy>,
+    explicit: bool,
+}
 
 impl Resolve for PolicyResolver {
     fn resolve(&self, name: Name) -> Resolving {
-        let policy = self.0.clone();
+        let policy = self.policy.clone();
+        let explicit = self.explicit;
         let host = name.as_str().to_string();
         Box::pin(async move {
-            let addrs = policy.resolve(&host, None).await?;
+            if !policy.names(&host, explicit) {
+                return Err(EgressError::NotAllowed(host).into());
+            }
+            let addrs = lookup(&host, 0, explicit).await?;
             let it: Addrs = Box::new(addrs.into_iter());
             Ok(it)
         })
@@ -336,11 +376,27 @@ impl OutResponse {
     }
 }
 
-/// The egress-checked HTTP client.
+/// Redirects followed by [`Egress::send`].
+pub const MAX_REDIRECTS: usize = 3;
+
+/// Headers dropped when a redirect leaves the origin of the request.
+const CREDENTIAL_HEADERS: [&str; 6] = [
+    "authorization",
+    "proxy-authorization",
+    "cookie",
+    "private-token",
+    "job-token",
+    "x-api-key",
+];
+
+/// The egress-checked HTTP client. It never follows redirects by itself: [`Egress::send`]
+/// follows them hop by hop, checking every URL and dropping credential headers when the
+/// origin changes, and [`Egress::send_no_redirect`] does not follow them at all.
 #[derive(Clone)]
 pub struct Egress {
     policy: Arc<EgressPolicy>,
-    http: reqwest::Client,
+    public: reqwest::Client,
+    explicit: reqwest::Client,
 }
 
 impl fmt::Debug for Egress {
@@ -351,28 +407,53 @@ impl fmt::Debug for Egress {
     }
 }
 
+fn client(policy: &Arc<EgressPolicy>, explicit: bool) -> anyhow::Result<reqwest::Client> {
+    Ok(reqwest::Client::builder()
+        .user_agent(concat!("FastProof/", env!("CARGO_PKG_VERSION")))
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .dns_resolver(Arc::new(PolicyResolver {
+            policy: policy.clone(),
+            explicit,
+        }))
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(20))
+        .build()?)
+}
+
+/// The request for the next hop of a redirect.
+fn redirected(mut req: reqwest::Request, status: StatusCode, to: url::Url) -> reqwest::Request {
+    let method = req.method().clone();
+    let to_get = (status == StatusCode::SEE_OTHER && method != Method::HEAD)
+        || (matches!(status, StatusCode::MOVED_PERMANENTLY | StatusCode::FOUND)
+            && method == Method::POST);
+    let h = req.headers_mut();
+    if to_get {
+        for name in [CONTENT_TYPE, CONTENT_LENGTH, TRANSFER_ENCODING] {
+            h.remove(name);
+        }
+    }
+    if req.url().origin() != to.origin() {
+        for name in CREDENTIAL_HEADERS {
+            req.headers_mut().remove(name);
+        }
+    }
+    if to_get {
+        *req.method_mut() = Method::GET;
+        *req.body_mut() = None;
+    }
+    *req.url_mut() = to;
+    req
+}
+
 impl Egress {
     pub fn new(policy: Arc<EgressPolicy>) -> anyhow::Result<Self> {
         fastproof_blob::install_crypto_provider();
-        let p = policy.clone();
-        let redirect = reqwest::redirect::Policy::custom(move |attempt| {
-            if attempt.previous().len() >= 3 {
-                return attempt.error(EgressError::NotAllowed("(too many redirects)".into()));
-            }
-            match p.check_url(attempt.url()) {
-                Ok(()) => attempt.follow(),
-                Err(e) => attempt.error(e),
-            }
-        });
-        let http = reqwest::Client::builder()
-            .user_agent(concat!("FastProof/", env!("CARGO_PKG_VERSION")))
-            .no_proxy()
-            .redirect(redirect)
-            .dns_resolver(Arc::new(PolicyResolver(policy.clone())))
-            .connect_timeout(Duration::from_secs(5))
-            .timeout(Duration::from_secs(20))
-            .build()?;
-        Ok(Self { policy, http })
+        Ok(Self {
+            public: client(&policy, false)?,
+            explicit: client(&policy, true)?,
+            policy,
+        })
     }
 
     pub fn policy(&self) -> &EgressPolicy {
@@ -383,12 +464,66 @@ impl Egress {
     pub fn request(&self, method: Method, url: &str) -> Result<RequestBuilder, OutboundError> {
         let u = url::Url::parse(url).map_err(|_| OutboundError::Network("invalid URL".into()))?;
         self.policy.check_url(&u).map_err(OutboundError::Denied)?;
-        Ok(self.http.request(method, u))
+        Ok(self.public.request(method, u))
     }
 
-    /// Sends and reads the response body up to `max` bytes.
+    /// Sends, following up to [`MAX_REDIRECTS`] redirects, and reads the response body up to
+    /// `max` bytes.
     pub async fn send(&self, rb: RequestBuilder, max: usize) -> Result<OutResponse, OutboundError> {
-        let mut resp = rb.send().await.map_err(classify)?;
+        self.send_with(rb, max, true).await
+    }
+
+    /// Sends without following redirects (a 3xx answer is returned as it is), for requests
+    /// that carry credentials.
+    pub async fn send_no_redirect(
+        &self,
+        rb: RequestBuilder,
+        max: usize,
+    ) -> Result<OutResponse, OutboundError> {
+        self.send_with(rb, max, false).await
+    }
+
+    async fn send_with(
+        &self,
+        rb: RequestBuilder,
+        max: usize,
+        follow: bool,
+    ) -> Result<OutResponse, OutboundError> {
+        let mut req = rb.build().map_err(classify)?;
+        let mut hops = 0;
+        let mut resp = loop {
+            let explicit = self
+                .policy
+                .check_url(req.url())
+                .map_err(OutboundError::Denied)?;
+            let http = if explicit {
+                &self.explicit
+            } else {
+                &self.public
+            };
+            let again = if follow { req.try_clone() } else { None };
+            let resp = http.execute(req).await.map_err(classify)?;
+            let location = resp
+                .headers()
+                .get(LOCATION)
+                .and_then(|l| l.to_str().ok())
+                .map(str::to_string);
+            match (again, location) {
+                (Some(next), Some(loc)) if resp.status().is_redirection() => {
+                    if hops >= MAX_REDIRECTS {
+                        return Err(OutboundError::Denied(EgressError::NotAllowed(
+                            "(too many redirects)".into(),
+                        )));
+                    }
+                    let to = next.url().join(&loc).map_err(|_| {
+                        OutboundError::Network("the redirect location is not a URL".into())
+                    })?;
+                    req = redirected(next, resp.status(), to);
+                    hops += 1;
+                }
+                _ => break resp,
+            }
+        };
         let status = resp.status().as_u16();
         let headers = resp.headers().clone();
         let mut body = Vec::new();
@@ -449,26 +584,26 @@ mod tests {
             "hooks.example.com, *.example.org, 127.0.0.1:8080, gitlab.example.net:443",
         )
         .unwrap();
-        assert_eq!(p.allows("hooks.example.com", Some(443)), Some(true));
-        assert_eq!(p.allows("HOOKS.example.com.", None), Some(true));
-        assert_eq!(p.allows("a.example.org", Some(443)), Some(false));
-        assert_eq!(p.allows("example.org", Some(443)), None);
-        assert_eq!(p.allows("evil-example.org", Some(443)), None);
-        assert_eq!(p.allows("127.0.0.1", Some(8080)), Some(true));
-        assert_eq!(p.allows("127.0.0.1", Some(8081)), None);
-        assert_eq!(p.allows("gitlab.example.net", Some(80)), None);
-        assert_eq!(p.allows("other.example.com", Some(443)), None);
+        assert_eq!(p.allows("hooks.example.com", 443), Some(true));
+        assert_eq!(p.allows("HOOKS.example.com.", 8443), Some(true));
+        assert_eq!(p.allows("a.example.org", 443), Some(false));
+        assert_eq!(p.allows("example.org", 443), None);
+        assert_eq!(p.allows("evil-example.org", 443), None);
+        assert_eq!(p.allows("127.0.0.1", 8080), Some(true));
+        assert_eq!(p.allows("127.0.0.1", 8081), None);
+        assert_eq!(p.allows("gitlab.example.net", 80), None);
+        assert_eq!(p.allows("other.example.com", 443), None);
         assert!(EgressPolicy::parse("").unwrap().is_empty());
         assert_eq!(
-            EgressPolicy::parse("").unwrap().allows("example.com", None),
+            EgressPolicy::parse("").unwrap().allows("example.com", 443),
             None
         );
         assert!(EgressPolicy::parse("a*b.example.com").is_err());
         assert!(EgressPolicy::parse("host:notaport").is_err());
         let any = EgressPolicy::parse("*").unwrap();
-        assert_eq!(any.allows("example.com", Some(443)), Some(false));
+        assert_eq!(any.allows("example.com", 443), Some(false));
         let u = |s: &str| url::Url::parse(s).unwrap();
-        assert!(any.check_url(&u("https://198.51.100.4/x")).is_ok());
+        assert_eq!(any.check_url(&u("https://198.51.100.4/x")), Ok(false));
         assert_eq!(
             any.check_url(&u("http://10.0.0.1/")),
             Err(EgressError::Internal("10.0.0.1".into()))
@@ -481,21 +616,130 @@ mod tests {
             any.check_url(&u("ftp://example.com/")),
             Err(EgressError::Scheme)
         );
-        assert!(p.check_url(&u("http://127.0.0.1:8080/hook")).is_ok());
+        assert_eq!(p.check_url(&u("http://127.0.0.1:8080/hook")), Ok(true));
+        let mixed = EgressPolicy::parse("gitlab.example.net:443, *").unwrap();
+        assert_eq!(mixed.check_url(&u("https://gitlab.example.net/")), Ok(true));
+        assert_eq!(
+            mixed.check_url(&u("http://gitlab.example.net:22/")),
+            Ok(false),
+            "another port of an exactly listed host is only a wildcard match"
+        );
     }
 
     #[tokio::test]
     async fn wildcard_names_must_resolve_publicly() {
         let p = EgressPolicy::parse("*.localhost, localhost").unwrap();
-        assert!(p.resolve("localhost", Some(80)).await.is_ok());
+        assert!(p.resolve("localhost", 80).await.is_ok());
         assert!(matches!(
-            p.resolve("foo.localhost", Some(80)).await,
+            p.resolve("foo.localhost", 80).await,
             Err(EgressError::Internal(_)) | Err(EgressError::Resolve(_))
         ));
         assert!(matches!(
-            p.resolve("example.com", Some(80)).await,
+            p.resolve("example.com", 80).await,
             Err(EgressError::NotAllowed(_))
         ));
+        let ported = EgressPolicy::parse("localhost:8080, *").unwrap();
+        assert!(ported.resolve("localhost", 8080).await.is_ok());
+        assert!(matches!(
+            ported.resolve("localhost", 22).await,
+            Err(EgressError::Internal(_))
+        ));
+    }
+
+    type Seen = Arc<std::sync::Mutex<Vec<String>>>;
+
+    /// A listener answering every connection with `answer`, keeping the request heads.
+    async fn listener(answer: String) -> (u16, Seen) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = l.local_addr().unwrap().port();
+        let seen: Seen = Arc::default();
+        let s = seen.clone();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = l.accept().await {
+                let mut buf = vec![0u8; 8192];
+                let n = sock.read(&mut buf).await.unwrap_or(0);
+                s.lock()
+                    .unwrap()
+                    .push(String::from_utf8_lossy(&buf[..n]).to_ascii_lowercase());
+                let _ = sock.write_all(answer.as_bytes()).await;
+            }
+        });
+        (port, seen)
+    }
+
+    const NO_CONTENT: &str =
+        "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+
+    #[tokio::test]
+    async fn the_port_survives_name_resolution() {
+        let (port, seen) = listener(NO_CONTENT.into()).await;
+        let other = if port == 1 { 2 } else { 1 };
+        let e = Egress::new(Arc::new(
+            EgressPolicy::parse(&format!("localhost:{other}, *")).unwrap(),
+        ))
+        .unwrap();
+        let rb = e
+            .request(Method::GET, &format!("http://localhost:{port}/"))
+            .unwrap();
+        let err = e.send(rb, 1024).await.unwrap_err();
+        assert!(
+            matches!(err, OutboundError::Denied(EgressError::Internal(_))),
+            "localhost:{other} must not open localhost:{port}: {err}"
+        );
+        assert!(seen.lock().unwrap().is_empty());
+        let ok = Egress::new(Arc::new(
+            EgressPolicy::parse(&format!("localhost:{port}, *")).unwrap(),
+        ))
+        .unwrap();
+        let rb = ok
+            .request(Method::GET, &format!("http://localhost:{port}/"))
+            .unwrap();
+        assert_eq!(ok.send(rb, 1024).await.unwrap().status, 204);
+    }
+
+    #[tokio::test]
+    async fn redirects_drop_credentials_across_origins() {
+        let (to, landed) = listener(NO_CONTENT.into()).await;
+        let (from, _) = listener(format!(
+            "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{to}/landed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        ))
+        .await;
+        let e = Egress::new(Arc::new(EgressPolicy::parse("127.0.0.1").unwrap())).unwrap();
+        let url = format!("http://127.0.0.1:{from}/start");
+        let with_token = || {
+            e.request(Method::POST, &url)
+                .unwrap()
+                .header("PRIVATE-TOKEN", "glpat-secret")
+                .bearer_auth("also-secret")
+                .body("{}")
+        };
+        let r = e.send_no_redirect(with_token(), 1024).await.unwrap();
+        assert_eq!(r.status, 302);
+        assert!(landed.lock().unwrap().is_empty());
+        let r = e.send(with_token(), 1024).await.unwrap();
+        assert_eq!(r.status, 204);
+        let heads = landed.lock().unwrap().clone();
+        assert_eq!(heads.len(), 1);
+        assert!(heads[0].starts_with("get /landed"), "{}", heads[0]);
+        for secret in [
+            "private-token",
+            "authorization",
+            "glpat-secret",
+            "also-secret",
+        ] {
+            assert!(!heads[0].contains(secret), "{secret} leaked: {}", heads[0]);
+        }
+        let same = redirected(
+            with_token().build().unwrap(),
+            StatusCode::TEMPORARY_REDIRECT,
+            url::Url::parse(&format!("http://127.0.0.1:{from}/again")).unwrap(),
+        );
+        assert_eq!(same.method(), Method::POST);
+        assert!(
+            same.headers().contains_key("private-token"),
+            "same origin keeps them"
+        );
     }
 
     #[tokio::test]

@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use super::secrets::valid_name;
+use super::secrets::{SecretPurpose, valid_name};
 
 pub const MAX_GATES: usize = 20;
 pub const MAX_RULES: usize = 20;
@@ -104,11 +104,16 @@ pub struct Notification {
     pub kind: String,
     /// `launchFinished`, `gateFailed`, `newFailures`.
     pub on: Vec<String>,
-    /// Webhook or Slack URL, Telegram chat id, or comma-separated email addresses. A Slack
-    /// webhook URL is better kept in a secret (`secretRef`), as settings are readable.
+    /// Webhook or Slack URL, Telegram chat id, or comma-separated email addresses. A URL that
+    /// is itself a credential (a Slack webhook URL) belongs in a secret (`targetSecretRef`).
     #[serde(default)]
     pub target: String,
-    /// Webhook: HMAC key; Slack: the webhook URL; Telegram: the bot token.
+    /// Webhook and Slack: a secret (purpose `webhook` or `slack`) holding the URL, instead of
+    /// `target`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_secret_ref: Option<String>,
+    /// Webhook: the HMAC signing key (purpose `webhook`); Telegram: the bot token (purpose
+    /// `telegram`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secret_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -124,6 +129,13 @@ pub struct VcsSettings {
     /// GitLab base URL (`https://gitlab.example.com`) or GitHub API URL
     /// (`https://api.github.com`, `https://github.example.com/api/v3`).
     pub url: String,
+    /// The only repository the token is used for: `group/sub/app` on GitLab, `owner/repo` on
+    /// GitHub. A launch whose repository is another one gets no comment or status.
+    pub repository: String,
+    /// Branch globs: only launches of these branches (the merge request source branch) post.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_branches: Option<Vec<String>>,
+    /// A secret with purpose `vcs` bound to the origin of `url`.
     pub token_secret_ref: String,
     #[serde(default = "yes")]
     pub comment: bool,
@@ -283,17 +295,38 @@ impl IntegrationSettings {
                 );
             }
             secret_ref("notifications.secretRef", &n.secret_ref)?;
+            secret_ref("notifications.targetSecretRef", &n.target_secret_ref)?;
             if let Some(f) = &n.filter {
                 globs("notifications.filter.branches", &f.branches)?;
                 globs("notifications.filter.environments", &f.environments)?;
             }
+            if n.target_secret_ref.is_some() && !matches!(n.kind.as_str(), "webhook" | "slack") {
+                return Err("notifications.targetSecretRef is for webhook and slack".into());
+            }
             match n.kind.as_str() {
-                "webhook" => {
-                    http_url("notifications.target", &n.target)?;
-                }
-                "slack" => {
-                    if n.secret_ref.is_none() {
-                        http_url("notifications.target", &n.target)?;
+                "webhook" | "slack" => {
+                    match (&n.target_secret_ref, n.target.trim().is_empty()) {
+                        (Some(_), true) => {}
+                        (None, false) => {
+                            http_url("notifications.target", &n.target)?;
+                        }
+                        (Some(_), false) => {
+                            return Err(
+                                "notifications: give target or targetSecretRef, not both".into()
+                            );
+                        }
+                        (None, true) => {
+                            return Err(format!(
+                                "{} notifications need target or targetSecretRef",
+                                n.kind
+                            ));
+                        }
+                    }
+                    if n.kind == "slack" && n.secret_ref.is_some() {
+                        return Err(
+                            "slack notifications: keep the webhook URL in targetSecretRef (secretRef is not used)"
+                                .into(),
+                        );
                     }
                 }
                 "telegram" => {
@@ -343,6 +376,13 @@ impl IntegrationSettings {
             }
             http_url("vcs.url", &v.url)?;
             secret_ref("vcs.tokenSecretRef", &Some(v.token_secret_ref.clone()))?;
+            if !valid_repository(&v.provider, &v.repository) {
+                return Err(
+                    "vcs.repository must be the project path: group/sub/app (GitLab) or owner/repo (GitHub)"
+                        .into(),
+                );
+            }
+            globs("vcs.sourceBranches", &v.source_branches)?;
         }
         if self.issue_trackers.len() > MAX_TRACKERS {
             return Err(format!("issueTrackers: at most {MAX_TRACKERS}"));
@@ -366,6 +406,192 @@ impl IntegrationSettings {
         }
         Ok(())
     }
+}
+
+/// Whether `path` is a repository path of the provider: segments of letters, digits, `-`, `_`
+/// and `.` (not `.` or `..`), two or more for GitLab, exactly two for GitHub.
+pub fn valid_repository(provider: &str, path: &str) -> bool {
+    let parts: Vec<&str> = path.split('/').collect();
+    path.len() <= 512
+        && parts.len() >= 2
+        && (provider != "github" || parts.len() == 2)
+        && parts.iter().all(|p| {
+            !p.is_empty()
+                && *p != "."
+                && *p != ".."
+                && p.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+        })
+}
+
+/// A secret the settings refer to: name, purpose and the URL it is sent to (`None` when the
+/// secret is itself the URL, or the URL is in another secret).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SecretUse {
+    pub name: String,
+    pub purpose: SecretPurpose,
+    pub destination: Option<String>,
+}
+
+impl IntegrationSettings {
+    /// Every secret reference with its purpose and destination.
+    pub fn secret_uses(&self) -> Vec<SecretUse> {
+        let mut out = Vec::new();
+        let mut add = |name: &str, purpose, destination: Option<String>| {
+            out.push(SecretUse {
+                name: name.to_string(),
+                purpose,
+                destination,
+            })
+        };
+        for n in &self.notifications {
+            let purpose = match n.kind.as_str() {
+                "webhook" => SecretPurpose::Webhook,
+                "slack" => SecretPurpose::Slack,
+                "telegram" => SecretPurpose::Telegram,
+                _ => continue,
+            };
+            if let Some(t) = &n.target_secret_ref {
+                add(t, purpose, None);
+            }
+            if let Some(k) = &n.secret_ref {
+                let dest = (n.kind == "webhook" && n.target_secret_ref.is_none())
+                    .then(|| n.target.clone());
+                add(k, purpose, dest);
+            }
+        }
+        if let Some(v) = &self.vcs {
+            add(&v.token_secret_ref, SecretPurpose::Vcs, Some(v.url.clone()));
+        }
+        if let Some(f) = &self.fastmock
+            && let Some(t) = &f.token_secret_ref
+        {
+            add(t, SecretPurpose::Fastmock, Some(f.url.clone()));
+        }
+        out
+    }
+}
+
+/// The URL-valued fields of a settings document, by a stable name (`vcs.url`,
+/// `notifications[hook].target`, ...), with user info, query and fragment left out.
+fn url_fields(doc: &serde_json::Value) -> std::collections::BTreeMap<String, String> {
+    let mut out = std::collections::BTreeMap::new();
+    let clean = |s: &str| match url::Url::parse(s) {
+        Ok(mut u) => {
+            let _ = u.set_username("");
+            let _ = u.set_password(None);
+            u.set_query(None);
+            u.set_fragment(None);
+            u.to_string()
+        }
+        Err(_) => s.chars().take(256).collect(),
+    };
+    let text = |v: &serde_json::Value, k: &str| v.get(k).and_then(|x| x.as_str()).map(clean);
+    for k in ["vcs", "fastmock"] {
+        if let Some(v) = doc.get(k) {
+            if let Some(u) = text(v, "url") {
+                out.insert(format!("{k}.url"), u);
+            }
+            if let Some(r) = v.get("repository").and_then(|x| x.as_str()) {
+                out.insert(format!("{k}.repository"), r.chars().take(512).collect());
+            }
+        }
+    }
+    for n in doc
+        .get("notifications")
+        .and_then(|x| x.as_array())
+        .into_iter()
+        .flatten()
+    {
+        let id = n.get("id").and_then(|x| x.as_str()).unwrap_or_default();
+        if matches!(
+            n.get("kind").and_then(|x| x.as_str()),
+            Some("webhook" | "slack")
+        ) && let Some(u) = text(n, "target").filter(|u| !u.is_empty())
+        {
+            out.insert(format!("notifications[{id}].target"), u);
+        }
+    }
+    for (i, t) in doc
+        .get("issueTrackers")
+        .and_then(|x| x.as_array())
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
+        if let Some(u) = t.get("urlTemplate").and_then(|x| x.as_str()) {
+            out.insert(
+                format!("issueTrackers[{i}].urlTemplate"),
+                u.chars().take(512).collect(),
+            );
+        }
+    }
+    out
+}
+
+/// The URL fields that a settings change adds, changes or removes, with the old and the new
+/// value, for the audit log.
+pub fn url_changes(old: &serde_json::Value, new: &serde_json::Value) -> Vec<serde_json::Value> {
+    let (a, b) = (url_fields(old), url_fields(new));
+    let keys: BTreeSet<&String> = a.keys().chain(b.keys()).collect();
+    keys.into_iter()
+        .filter(|k| a.get(*k) != b.get(*k))
+        .take(100)
+        .map(|k| serde_json::json!({"field": k, "old": a.get(k), "new": b.get(k)}))
+        .collect()
+}
+
+/// Hides what a caller without `settings:write` should not see: notification targets (URLs
+/// that may carry tokens, chat ids, addresses) and the VCS and FastMock URLs.
+pub fn redact(doc: &mut fastproof_store::analysis::settings::ProjectSettings) {
+    for n in &mut doc.notifications {
+        if let Some(o) = n.as_object_mut() {
+            o.insert("target".into(), serde_json::json!(""));
+            o.insert("redacted".into(), serde_json::json!(true));
+        }
+    }
+    if let Some(o) = doc.fastmock.as_mut().and_then(|f| f.as_object_mut()) {
+        o.insert("url".into(), serde_json::json!(""));
+        o.insert("redacted".into(), serde_json::json!(true));
+    }
+    if let Some(o) = doc.other.get_mut("vcs").and_then(|v| v.as_object_mut()) {
+        o.insert("url".into(), serde_json::json!(""));
+        o.insert("redacted".into(), serde_json::json!(true));
+    }
+}
+
+/// Checks the secrets the settings refer to against their stored purpose and origin, so a
+/// settings change that would send a secret to another origin is refused when it is saved.
+/// A secret that does not exist yet may be written later; using it is checked again.
+pub async fn check_secret_uses(
+    st: &crate::state::AppState,
+    project_id: uuid::Uuid,
+    doc: &serde_json::Value,
+) -> Result<(), String> {
+    let settings = IntegrationSettings::parse(doc)?;
+    let uses = settings.secret_uses();
+    if uses.is_empty() {
+        return Ok(());
+    }
+    let metas = st
+        .store
+        .secret_names(project_id)
+        .await
+        .map_err(|_| "reading the project secrets failed".to_string())?;
+    for u in uses {
+        let Some(m) = metas.iter().find(|m| m.name == u.name) else {
+            continue;
+        };
+        super::check_binding(
+            &u.name,
+            m.purpose.as_deref(),
+            m.origin.as_deref(),
+            u.purpose,
+            u.destination.as_deref(),
+        )
+        .map_err(|e| e.0)?;
+    }
+    Ok(())
 }
 
 /// Validates the integration keys of a settings document (for the settings API).
@@ -448,9 +674,11 @@ mod tests {
                 {"id": "hook", "kind": "webhook", "on": ["launchFinished"], "target": "https://hooks.example.com/fp", "secretRef": "hook-key"},
                 {"id": "chat", "kind": "telegram", "on": ["gateFailed"], "target": "-100123", "secretRef": "tg"},
                 {"id": "mail", "kind": "email", "on": ["newFailures"], "target": "qa@example.com, dev@example.com"},
-                {"id": "sl", "kind": "slack", "on": ["gateFailed"], "secretRef": "slack-url"}
+                {"id": "sl", "kind": "slack", "on": ["gateFailed"], "targetSecretRef": "slack-url"},
+                {"id": "hidden", "kind": "webhook", "on": ["gateFailed"], "targetSecretRef": "hook-url", "secretRef": "hook-key"}
             ],
-            "vcs": {"provider": "gitlab", "url": "https://gitlab.example.com", "tokenSecretRef": "gl"},
+            "vcs": {"provider": "gitlab", "url": "https://gitlab.example.com", "repository": "group/app", "tokenSecretRef": "gl",
+                    "sourceBranches": ["main", "feature/*"]},
             "issueTrackers": [{"type": "jira", "urlTemplate": "https://jira.example.com/browse/{key}", "keyRegex": "[A-Z]+-[0-9]+"}],
             "fastmock": {"url": "https://fastmock.example.com:9090", "tokenSecretRef": "fm"}
         });
@@ -490,7 +718,39 @@ mod tests {
             ),
             (
                 "vcs",
-                json!({"provider": "bitbucket", "url": "https://x.example.com", "tokenSecretRef": "t"}),
+                json!({"provider": "bitbucket", "url": "https://x.example.com", "repository": "a/b", "tokenSecretRef": "t"}),
+            ),
+            (
+                "vcs",
+                json!({"provider": "gitlab", "url": "https://x.example.com", "tokenSecretRef": "t"}),
+            ),
+            (
+                "vcs",
+                json!({"provider": "gitlab", "url": "https://x.example.com", "repository": "app", "tokenSecretRef": "t"}),
+            ),
+            (
+                "vcs",
+                json!({"provider": "github", "url": "https://x.example.com", "repository": "a/b/c", "tokenSecretRef": "t"}),
+            ),
+            (
+                "vcs",
+                json!({"provider": "gitlab", "url": "https://x.example.com", "repository": "a/../b", "tokenSecretRef": "t"}),
+            ),
+            (
+                "notifications",
+                json!([{"id": "a", "kind": "slack", "on": ["launchFinished"], "secretRef": "s"}]),
+            ),
+            (
+                "notifications",
+                json!([{"id": "a", "kind": "webhook", "on": ["launchFinished"], "target": "https://x.example.com", "targetSecretRef": "u"}]),
+            ),
+            (
+                "notifications",
+                json!([{"id": "a", "kind": "webhook", "on": ["launchFinished"]}]),
+            ),
+            (
+                "notifications",
+                json!([{"id": "a", "kind": "email", "on": ["launchFinished"], "target": "qa@example.com", "targetSecretRef": "u"}]),
             ),
             (
                 "issueTrackers",
@@ -514,5 +774,65 @@ mod tests {
             IntegrationSettings::parse(&json!({})).unwrap(),
             IntegrationSettings::default()
         );
+        let uses = s.secret_uses();
+        let find = |n: &str| uses.iter().find(|u| u.name == n).unwrap().clone();
+        assert_eq!(find("gl").purpose, SecretPurpose::Vcs);
+        assert_eq!(
+            find("gl").destination.as_deref(),
+            Some("https://gitlab.example.com")
+        );
+        assert_eq!(find("fm").purpose, SecretPurpose::Fastmock);
+        assert_eq!(find("slack-url").purpose, SecretPurpose::Slack);
+        assert_eq!(find("tg").purpose, SecretPurpose::Telegram);
+        assert_eq!(find("hook-url").destination, None);
+        assert_eq!(
+            uses.iter()
+                .filter(|u| u.name == "hook-key")
+                .map(|u| u.destination.clone())
+                .collect::<Vec<_>>(),
+            vec![Some("https://hooks.example.com/fp".to_string()), None]
+        );
+    }
+
+    #[test]
+    fn url_changes_are_listed_with_old_and_new_values() {
+        let old = json!({"fastmock": {"url": "https://fastmock.example.com:9090"},
+            "vcs": {"provider": "gitlab", "url": "https://gitlab.example.com", "repository": "g/app"},
+            "notifications": [{"id": "hook", "kind": "webhook", "target": "https://u:p@hooks.example.com/x?sig=1"}]});
+        let mut new = old.clone();
+        new["fastmock"]["url"] = json!("https://collector.example.net");
+        new["notifications"][0]["target"] = json!("https://hooks.example.com/y");
+        new["issueTrackers"] = json!([{"urlTemplate": "https://jira.example.com/browse/{key}"}]);
+        let c = url_changes(&old, &new);
+        assert_eq!(c.len(), 3, "{c:?}");
+        assert!(
+            c.contains(&json!({"field": "fastmock.url",
+            "old": "https://fastmock.example.com:9090/", "new": "https://collector.example.net/"}))
+        );
+        assert!(c.contains(&json!({"field": "notifications[hook].target",
+            "old": "https://hooks.example.com/x", "new": "https://hooks.example.com/y"})));
+        assert!(c.contains(&json!({"field": "issueTrackers[0].urlTemplate",
+            "old": null, "new": "https://jira.example.com/browse/{key}"})));
+        assert!(url_changes(&old, &old).is_empty());
+    }
+
+    #[test]
+    fn redaction_hides_targets_and_urls() {
+        let mut doc: fastproof_store::analysis::settings::ProjectSettings =
+            serde_json::from_value(json!({
+                "notifications": [{"id": "sl", "kind": "slack", "on": ["gateFailed"],
+                    "target": "https://hooks.example.com/services/T0/B0/secret-part"}],
+                "fastmock": {"url": "https://fastmock.internal.example.com"},
+                "vcs": {"provider": "gitlab", "url": "https://gitlab.internal.example.com",
+                    "repository": "g/app", "tokenSecretRef": "gl"}
+            }))
+            .unwrap();
+        redact(&mut doc);
+        let text = serde_json::to_string(&doc).unwrap();
+        for hidden in ["secret-part", "fastmock.internal", "gitlab.internal"] {
+            assert!(!text.contains(hidden), "{text}");
+        }
+        assert!(text.contains("\"redacted\":true"), "{text}");
+        assert!(text.contains("g/app"), "{text}");
     }
 }

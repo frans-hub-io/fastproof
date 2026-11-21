@@ -72,6 +72,9 @@ A `viewer` token is enough to investigate; give an `editor` token only to agents
 tool checks the permission in the project's scope, exactly like the API. Writes through MCP are recorded with
 `source: ai`, so people can tell them apart and change them, are never replaced by rules, and are written to
 the audit log with `via: mcp`. Tool answers are bounded (256 KiB per answer, 64 KiB per log field).
+Tools never return project secrets or notification targets; `fastmock_interactions` queries the project's
+FastMock with its token only when the token's secret is bound to the origin of `fastmock.url` (see
+[Project secrets](notifications.md#project-secrets)).
 
 ## Good practice
 

@@ -526,7 +526,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** @description Names of the project's secrets; values are write-only. */
+        /** @description Names, purposes and origins of the project's secrets; values are write-only. */
         get: operations["integrations_secrets"];
         put?: never;
         post?: never;
@@ -544,7 +544,7 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        /** @description Creates or replaces a secret, encrypted at rest with `FASTPROOF_SECRETS_KEY_FILE`. Settings refer to it by name (`secretRef`, `tokenSecretRef`). */
+        /** @description Creates or replaces a secret, encrypted at rest with `FASTPROOF_SECRETS_KEY_FILE` and bound to a purpose and, optionally, the origin it may be sent to. Settings refer to it by name (`secretRef`, `targetSecretRef`, `tokenSecretRef`); a reference with another purpose, or a URL on another origin, is refused. */
         put: operations["integrations_put_secret"];
         post?: never;
         delete: operations["integrations_delete_secret"];
@@ -560,6 +560,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /** @description The settings document. Callers without `settings:write` get notification targets and the `vcs` and `fastmock` URLs emptied, with `redacted: true` on each. */
         get: operations["analysis_get_settings"];
         put: operations["analysis_put_settings"];
         post?: never;
@@ -1386,13 +1387,21 @@ export interface components {
             kind: string;
             /** @description `launchFinished`, `gateFailed`, `newFailures`. */
             on: string[];
-            /** @description Webhook: HMAC key; Slack: the webhook URL; Telegram: the bot token. */
+            /**
+             * @description Webhook: the HMAC signing key (purpose `webhook`); Telegram: the bot token (purpose
+             *     `telegram`).
+             */
             secretRef?: string | null;
             /**
-             * @description Webhook or Slack URL, Telegram chat id, or comma-separated email addresses. A Slack
-             *     webhook URL is better kept in a secret (`secretRef`), as settings are readable.
+             * @description Webhook or Slack URL, Telegram chat id, or comma-separated email addresses. A URL that
+             *     is itself a credential (a Slack webhook URL) belongs in a secret (`targetSecretRef`).
              */
             target?: string;
+            /**
+             * @description Webhook and Slack: a secret (purpose `webhook` or `slack`) holding the URL, instead of
+             *     `target`.
+             */
+            targetSecretRef?: string | null;
         };
         /** @description Which launches a notification is about. */
         NotificationFilter: {
@@ -1950,12 +1959,33 @@ export interface components {
             /** Format: date-time */
             createdAt: string;
             name: string;
+            /** @description The only origin (`https://host[:port]`) the secret may be sent to, when bound to one. */
+            origin?: string | null;
+            /**
+             * @description What the secret may be used for: `vcs`, `fastmock`, `slack`, `telegram`, `webhook` or
+             *     `smtp` (absent for a secret stored before purposes existed; it must be stored again).
+             */
+            purpose?: string | null;
             /** Format: date-time */
             updatedAt: string;
             updatedBy?: string | null;
         };
+        /**
+         * @description What a secret may be used for.
+         * @enum {string}
+         */
+        SecretPurpose: "vcs" | "fastmock" | "slack" | "telegram" | "webhook" | "smtp";
         /** @description Body of `PUT .../secrets/{name}`. */
         SecretValue: {
+            /**
+             * @description The only origin (`https://host[:port]`) the secret may be sent to. Required for `vcs`
+             *     (the GitLab base URL or GitHub API URL) and `fastmock` (the admin URL); optional for the
+             *     others (for `slack` and a webhook URL it must then be the origin of the URL itself).
+             *     Changing the URL in the settings needs the secret written again for the new origin.
+             */
+            origin?: string | null;
+            /** @description What the secret is for; it is refused for anything else. */
+            purpose: components["schemas"]["SecretPurpose"];
             /** @description At most 8 KiB. Never returned by the API. */
             value: string;
         };
@@ -2154,7 +2184,15 @@ export interface components {
             comment?: boolean;
             /** @description `gitlab` or `github`. */
             provider: string;
+            /**
+             * @description The only repository the token is used for: `group/sub/app` on GitLab, `owner/repo` on
+             *     GitHub. A launch whose repository is another one gets no comment or status.
+             */
+            repository: string;
+            /** @description Branch globs: only launches of these branches (the merge request source branch) post. */
+            sourceBranches?: string[] | null;
             status?: boolean;
+            /** @description A secret with purpose `vcs` bound to the origin of `url`. */
             tokenSecretRef: string;
             /**
              * @description GitLab base URL (`https://gitlab.example.com`) or GitHub API URL

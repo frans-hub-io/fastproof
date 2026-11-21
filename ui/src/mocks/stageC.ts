@@ -119,7 +119,7 @@ function initialSettings(): ProjectSettings {
       },
     ],
     notifications: [
-      { id: 'n-slack', kind: 'slack', on: ['gateFailed', 'newFailures'], target: 'https://hooks.example.com/services/T000/B000', secretRef: 'slack-webhook', filter: { branches: ['main'], environments: [] } },
+      { id: 'n-slack', kind: 'slack', on: ['gateFailed', 'newFailures'], target: '', targetSecretRef: 'slack-webhook', secretRef: null, filter: { branches: ['main'], environments: [] } },
       { id: 'n-hook', kind: 'webhook', on: ['launchFinished'], target: 'https://ci.example.com/hooks/fastproof', secretRef: 'webhook-hmac', filter: null },
       { id: 'n-mail', kind: 'email', on: ['gateFailed'], target: 'qa-leads@example.com', secretRef: null, filter: { branches: ['release/*'], environments: ['production-smoke'] } },
     ],
@@ -127,7 +127,7 @@ function initialSettings(): ProjectSettings {
       { type: 'jira', urlTemplate: 'https://issues.example.com/browse/{key}', keyRegex: '^[A-Z][A-Z0-9]+-\\d+$' },
       { type: 'github', urlTemplate: 'https://github.com/example/web-shop/issues/{key}', keyRegex: '^#?\\d+$' },
     ],
-    vcs: { provider: 'gitlab', url: 'https://gitlab.example.com', tokenSecretRef: 'gitlab-token', comment: true, status: true },
+    vcs: { provider: 'gitlab', url: 'https://gitlab.example.com', repository: 'example/web-shop', tokenSecretRef: 'gitlab-token', comment: true, status: true },
     fastmock: { url: 'https://fastmock.example.com', tokenSecretRef: 'fastmock-token' },
   };
 }
@@ -138,11 +138,13 @@ interface TriageState {
   muteUntil?: string | null;
 }
 
+type MockSecret = { name: string; purpose: string | null; origin: string | null; updatedAt: string };
+
 const state = {
   types: initialTypes(),
   rules: initialRules(),
   settings: new Map<string, ProjectSettings>(),
-  secrets: new Map<string, { name: string; updatedAt: string }[]>(),
+  secrets: new Map<string, MockSecret[]>(),
   triage: new Map<string, TriageState>(),
   important: new Map<string, boolean>(),
   plans: new Map<string, { project: string; plan: TestPlanCreate }>(),
@@ -214,16 +216,16 @@ export function putSettings(project: string, s: ProjectSettings): ProjectSetting
   return settingsOf(project);
 }
 
-export function secretsOf(project: string): { name: string; updatedAt: string }[] {
+export function secretsOf(project: string): MockSecret[] {
   let list = state.secrets.get(project);
   if (!list) {
     list =
       project === 'web-shop'
         ? [
-            { name: 'fastmock-token', updatedAt: iso(NOW - 30 * DAY) },
-            { name: 'gitlab-token', updatedAt: iso(NOW - 12 * DAY) },
-            { name: 'slack-webhook', updatedAt: iso(NOW - 40 * DAY) },
-            { name: 'webhook-hmac', updatedAt: iso(NOW - 3 * DAY) },
+            { name: 'fastmock-token', purpose: 'fastmock', origin: 'https://fastmock.example.com', updatedAt: iso(NOW - 30 * DAY) },
+            { name: 'gitlab-token', purpose: 'vcs', origin: 'https://gitlab.example.com', updatedAt: iso(NOW - 12 * DAY) },
+            { name: 'slack-webhook', purpose: 'slack', origin: null, updatedAt: iso(NOW - 40 * DAY) },
+            { name: 'webhook-hmac', purpose: 'webhook', origin: null, updatedAt: iso(NOW - 3 * DAY) },
           ]
         : [];
     state.secrets.set(project, list);
@@ -231,9 +233,9 @@ export function secretsOf(project: string): { name: string; updatedAt: string }[
   return list;
 }
 
-export function writeSecret(project: string, name: string): void {
+export function writeSecret(project: string, name: string, purpose: string, origin: string | null): void {
   const list = secretsOf(project).filter((s) => s.name !== name);
-  list.push({ name, updatedAt: new Date().toISOString() });
+  list.push({ name, purpose, origin, updatedAt: new Date().toISOString() });
   list.sort((a, b) => a.name.localeCompare(b.name));
   state.secrets.set(project, list);
 }

@@ -55,7 +55,9 @@ failure as new, and the other rules with a `baseline` hold; both carry a `note` 
   server evaluates every enabled gate whose `branches` match the launch branch. The result is `failed` when
   any rule does not hold, otherwise `passed`. A branch without gates passes with no rule results.
 - The result is stored with the launch, sent to [notifications](notifications.md) and posted to the merge
-  request, and recomputed on demand by the API.
+  request of the project's pinned repository (see
+  [Merge request comments](notifications.md#merge-request-comments-and-commit-statuses)), and recomputed on
+  demand by the API.
 
 ```http
 GET /api/v1/projects/{key}/launches/{id}/gate

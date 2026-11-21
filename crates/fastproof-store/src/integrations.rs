@@ -13,18 +13,24 @@ use uuid::Uuid;
 use crate::launches::{LAUNCH_SELECT, launch_row};
 use crate::{Launch, Page, Store, json_no_nul, no_nul};
 
-/// An encrypted secret as stored.
+/// An encrypted secret as stored, with what it may be used for: `purpose` (`vcs`, `fastmock`,
+/// `slack`, `telegram`, `webhook`, `smtp`; `None` for secrets stored before purposes existed,
+/// which cannot be used) and the destination `origin` it may be sent to.
 #[derive(Clone, PartialEq, Eq)]
 pub struct SealedSecret {
     pub key_id: String,
     pub nonce: Vec<u8>,
     pub ciphertext: Vec<u8>,
+    pub purpose: Option<String>,
+    pub origin: Option<String>,
 }
 
 impl std::fmt::Debug for SealedSecret {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SealedSecret")
             .field("key_id", &self.key_id)
+            .field("purpose", &self.purpose)
+            .field("origin", &self.origin)
             .finish_non_exhaustive()
     }
 }
@@ -34,6 +40,11 @@ impl std::fmt::Debug for SealedSecret {
 #[serde(rename_all = "camelCase")]
 pub struct SecretMeta {
     pub name: String,
+    /// What the secret may be used for: `vcs`, `fastmock`, `slack`, `telegram`, `webhook` or
+    /// `smtp` (absent for a secret stored before purposes existed; it must be stored again).
+    pub purpose: Option<String>,
+    /// The only origin (`https://host[:port]`) the secret may be sent to, when bound to one.
+    pub origin: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub updated_by: Option<String>,
@@ -118,8 +129,23 @@ pub struct QualityRow {
     pub skipped: i64,
 }
 
-type SecretMetaRow = (String, DateTime<Utc>, DateTime<Utc>, Option<String>);
-type SealedRow = (Uuid, String, String, Vec<u8>, Vec<u8>);
+type SecretMetaRow = (
+    String,
+    Option<String>,
+    Option<String>,
+    DateTime<Utc>,
+    DateTime<Utc>,
+    Option<String>,
+);
+type SealedRow = (
+    Uuid,
+    String,
+    String,
+    Vec<u8>,
+    Vec<u8>,
+    Option<String>,
+    Option<String>,
+);
 type AttemptRow = (
     Option<DateTime<Utc>>,
     Option<DateTime<Utc>>,
@@ -161,10 +187,11 @@ impl Store {
         by: &str,
     ) -> anyhow::Result<bool> {
         let created: bool = sqlx::query_scalar(
-            "insert into project_secrets (project_id, name, key_id, nonce, ciphertext, updated_by) \
-             values ($1, $2, $3, $4, $5, $6) \
+            "insert into project_secrets (project_id, name, key_id, nonce, ciphertext, updated_by, purpose, origin) \
+             values ($1, $2, $3, $4, $5, $6, $7, $8) \
              on conflict (project_id, name) do update set key_id = excluded.key_id, nonce = excluded.nonce, \
-             ciphertext = excluded.ciphertext, updated_by = excluded.updated_by, updated_at = now() \
+             ciphertext = excluded.ciphertext, updated_by = excluded.updated_by, purpose = excluded.purpose, \
+             origin = excluded.origin, updated_at = now() \
              returning (xmax = 0)",
         )
         .bind(project_id)
@@ -173,6 +200,8 @@ impl Store {
         .bind(&sealed.nonce)
         .bind(&sealed.ciphertext)
         .bind(no_nul(by))
+        .bind(sealed.purpose.as_deref().map(no_nul))
+        .bind(sealed.origin.as_deref().map(no_nul))
         .fetch_one(&self.pool)
         .await?;
         Ok(created)
@@ -183,35 +212,46 @@ impl Store {
         project_id: Uuid,
         name: &str,
     ) -> anyhow::Result<Option<SealedSecret>> {
-        let r: Option<(String, Vec<u8>, Vec<u8>)> = sqlx::query_as(
-            "select key_id, nonce, ciphertext from project_secrets where project_id = $1 and name = $2",
+        type Row = (String, Vec<u8>, Vec<u8>, Option<String>, Option<String>);
+        let r: Option<Row> = sqlx::query_as(
+            "select key_id, nonce, ciphertext, purpose, origin from project_secrets \
+             where project_id = $1 and name = $2",
         )
         .bind(project_id)
         .bind(no_nul(name))
         .fetch_optional(&self.pool)
         .await?;
-        Ok(r.map(|(key_id, nonce, ciphertext)| SealedSecret {
-            key_id,
-            nonce,
-            ciphertext,
-        }))
+        Ok(r.map(
+            |(key_id, nonce, ciphertext, purpose, origin)| SealedSecret {
+                key_id,
+                nonce,
+                ciphertext,
+                purpose,
+                origin,
+            },
+        ))
     }
 
     pub async fn secret_names(&self, project_id: Uuid) -> anyhow::Result<Vec<SecretMeta>> {
         let rows: Vec<SecretMetaRow> = sqlx::query_as(
-            "select name, created_at, updated_at, updated_by from project_secrets where project_id = $1 order by name",
+            "select name, purpose, origin, created_at, updated_at, updated_by from project_secrets \
+             where project_id = $1 order by name",
         )
         .bind(project_id)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows
             .into_iter()
-            .map(|(name, created_at, updated_at, updated_by)| SecretMeta {
-                name,
-                created_at,
-                updated_at,
-                updated_by,
-            })
+            .map(
+                |(name, purpose, origin, created_at, updated_at, updated_by)| SecretMeta {
+                    name,
+                    purpose,
+                    origin,
+                    created_at,
+                    updated_at,
+                    updated_by,
+                },
+            )
             .collect())
     }
 
@@ -231,7 +271,8 @@ impl Store {
         limit: i64,
     ) -> anyhow::Result<Vec<(Uuid, String, SealedSecret)>> {
         let rows: Vec<SealedRow> = sqlx::query_as(
-            "select project_id, name, key_id, nonce, ciphertext from project_secrets where key_id <> $1 limit $2",
+            "select project_id, name, key_id, nonce, ciphertext, purpose, origin from project_secrets \
+             where key_id <> $1 limit $2",
         )
         .bind(key_id)
         .bind(limit)
@@ -239,7 +280,7 @@ impl Store {
         .await?;
         Ok(rows
             .into_iter()
-            .map(|(p, n, key_id, nonce, ciphertext)| {
+            .map(|(p, n, key_id, nonce, ciphertext, purpose, origin)| {
                 (
                     p,
                     n,
@@ -247,6 +288,8 @@ impl Store {
                         key_id,
                         nonce,
                         ciphertext,
+                        purpose,
+                        origin,
                     },
                 )
             })

@@ -1,5 +1,6 @@
-//! Notifications: webhook (HMAC-SHA256 signed), Slack incoming webhook, Telegram bot API and
-//! email over SMTP. Messages are built from a [`Summary`] stored with the delivery.
+//! Notifications: webhook (HMAC-SHA256 signed over a timestamp and the body), Slack incoming
+//! webhook, Telegram bot API and email over SMTP. Messages are built from a [`Summary`] stored
+//! with the delivery.
 
 use std::time::Duration;
 
@@ -17,6 +18,7 @@ use uuid::Uuid;
 use super::config::{SmtpConfig, SmtpTls};
 use super::egress::OutboundError;
 use super::gates::GateReport;
+use super::secrets::{SecretPurpose, origin_of};
 use super::settings::Notification;
 use crate::state::AppState;
 
@@ -88,10 +90,17 @@ impl Outcome {
     }
 }
 
-/// `sha256=<hex>` of the HMAC-SHA256 of `body` with `key`.
-pub fn signature(key: &[u8], body: &[u8]) -> String {
+/// `sha256=<hex>` of the HMAC-SHA256 with `key` of `<timestamp>.<body>`, where `timestamp`
+/// is the `X-FastProof-Timestamp` header (Unix seconds). A receiver recomputes it over the raw
+/// body, compares in constant time, rejects timestamps more than a few minutes away from its
+/// clock and drops repeated `X-FastProof-Delivery` ids.
+pub fn signature(key: &[u8], timestamp: i64, body: &[u8]) -> String {
     let k = hmac::Key::new(hmac::HMAC_SHA256, key);
-    format!("sha256={}", hex::encode(hmac::sign(&k, body).as_ref()))
+    let mut ctx = hmac::Context::with_key(&k);
+    ctx.update(timestamp.to_string().as_bytes());
+    ctx.update(b".");
+    ctx.update(body);
+    format!("sha256={}", hex::encode(ctx.sign().as_ref()))
 }
 
 fn one_line(s: &str, max: usize) -> String {
@@ -191,14 +200,38 @@ async fn secret(
     st: &AppState,
     project_id: Uuid,
     name: &Option<String>,
+    purpose: SecretPurpose,
+    destination: Option<&str>,
 ) -> Result<Option<Secret>, Outcome> {
     match name {
         None => Ok(None),
         Some(n) => st
-            .project_secret(project_id, n)
+            .project_secret(project_id, n, purpose, destination)
             .await
             .map(Some)
             .map_err(|e| Outcome::Fail(e.to_string(), None)),
+    }
+}
+
+/// The URL of a webhook or Slack notification: `target`, or the value of `targetSecretRef`.
+async fn target_url(
+    st: &AppState,
+    project_id: Uuid,
+    n: &Notification,
+    purpose: SecretPurpose,
+) -> Result<String, Outcome> {
+    match secret(st, project_id, &n.target_secret_ref, purpose, None).await? {
+        Some(v) => {
+            let u = v.expose().trim().to_string();
+            if origin_of(&u).is_none() {
+                return Err(Outcome::Fail(
+                    "the targetSecretRef secret is not an http(s) URL".into(),
+                    None,
+                ));
+            }
+            Ok(u)
+        }
+        None => Ok(n.target.clone()),
     }
 }
 
@@ -240,40 +273,70 @@ pub async fn send(
     n: &Notification,
     s: &Summary,
 ) -> Outcome {
-    let key = match secret(st, project_id, &n.secret_ref).await {
-        Ok(k) => k,
-        Err(o) => return o,
-    };
     match n.kind.as_str() {
         "webhook" => {
+            let url = match target_url(st, project_id, n, SecretPurpose::Webhook).await {
+                Ok(u) => u,
+                Err(o) => return o,
+            };
+            let key = match secret(
+                st,
+                project_id,
+                &n.secret_ref,
+                SecretPurpose::Webhook,
+                Some(&url),
+            )
+            .await
+            {
+                Ok(k) => k,
+                Err(o) => return o,
+            };
             let body = webhook_body(delivery, s);
+            let ts = chrono::Utc::now().timestamp();
             let mut headers = vec![
                 (
                     "X-FastProof-Event",
                     s.events.first().cloned().unwrap_or_default(),
                 ),
                 ("X-FastProof-Delivery", delivery.to_string()),
+                ("X-FastProof-Timestamp", ts.to_string()),
             ];
             if let Some(k) = &key {
                 headers.push((
                     "X-FastProof-Signature",
-                    signature(k.expose().as_bytes(), &body),
+                    signature(k.expose().as_bytes(), ts, &body),
                 ));
             }
-            post_json(st, &n.target, body, &headers).await
+            post_json(st, &url, body, &headers).await
         }
         "slack" => {
-            let url = key
-                .as_ref()
-                .map(|k| k.expose().trim().to_string())
-                .unwrap_or_else(|| n.target.clone());
+            let url = match target_url(st, project_id, n, SecretPurpose::Slack).await {
+                Ok(u) => u,
+                Err(o) => return o,
+            };
             let body = serde_json::to_vec(&serde_json::json!({"text": slack_escape(&text(s))}))
                 .unwrap_or_default();
             post_json(st, &url, body, &[]).await
         }
         "telegram" => {
-            let Some(token) = key else {
-                return Outcome::Fail("telegram needs secretRef".into(), None);
+            let base = st
+                .cfg
+                .integrations
+                .telegram_api
+                .as_str()
+                .trim_end_matches('/');
+            let token = match secret(
+                st,
+                project_id,
+                &n.secret_ref,
+                SecretPurpose::Telegram,
+                Some(base),
+            )
+            .await
+            {
+                Ok(Some(t)) => t,
+                Ok(None) => return Outcome::Fail("telegram needs secretRef".into(), None),
+                Err(o) => return o,
             };
             let t = token.expose().trim();
             if t.is_empty()
@@ -284,12 +347,6 @@ pub async fn send(
             {
                 return Outcome::Fail("the telegram bot token is malformed".into(), None);
             }
-            let base = st
-                .cfg
-                .integrations
-                .telegram_api
-                .as_str()
-                .trim_end_matches('/');
             let url = format!("{base}/bot{t}/sendMessage");
             let body = serde_json::to_vec(&serde_json::json!({
                 "chat_id": n.target.trim(),
@@ -326,12 +383,7 @@ async fn send_email(st: &AppState, smtp: &SmtpConfig, to: &str, s: &Summary) -> 
         Ok(m) => m,
         Err(e) => return Outcome::Fail(format!("building the message failed: {e}"), None),
     };
-    let addrs = match st
-        .egress
-        .policy()
-        .resolve(&smtp.host, Some(smtp.port))
-        .await
-    {
+    let addrs = match st.egress.policy().resolve(&smtp.host, smtp.port).await {
         Ok(a) => a,
         Err(e) => return Outcome::Fail(e.to_string(), None),
     };
@@ -425,8 +477,20 @@ mod tests {
     #[test]
     fn signing_and_text() {
         assert_eq!(
-            signature(b"key", b"The quick brown fox jumps over the lazy dog"),
-            "sha256=f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8"
+            signature(b"key", 1_795_249_079, b"{}"),
+            format!(
+                "sha256={}",
+                hex::encode(
+                    hmac::sign(&hmac::Key::new(hmac::HMAC_SHA256, b"key"), b"1795249079.{}")
+                        .as_ref()
+                )
+            ),
+            "the signature covers <timestamp>.<body>"
+        );
+        assert_ne!(
+            signature(b"key", 1, b"{}"),
+            signature(b"key", 2, b"{}"),
+            "a replayed body with a new timestamp needs a new signature"
         );
         let s = summary();
         let t = text(&s);

@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
+use super::secrets::SecretPurpose;
 use super::settings::IntegrationSettings;
 use crate::state::AppState;
 
@@ -163,7 +164,7 @@ pub async fn interactions(
     }
     let token = match &fm.token_secret_ref {
         Some(r) => Some(
-            s.project_secret(project.id, r)
+            s.project_secret(project.id, r, SecretPurpose::Fastmock, Some(&fm.url))
                 .await
                 .map_err(|e| ApiError::conflict(e.to_string()))?,
         ),
@@ -199,7 +200,7 @@ pub async fn interactions(
         }
         let r = s
             .egress
-            .send(rb, 32 * 1024 * 1024)
+            .send_no_redirect(rb, 32 * 1024 * 1024)
             .await
             .map_err(|e| unavailable(format!("FastMock: {e}")))?;
         if r.status != 200 {

@@ -1,229 +1,105 @@
-// Hand-written types for endpoints that are specified (31-streaming, 33-stage-c) but not yet in
-// schemas/openapi.json. Drop each one once the server publishes it and `npm run gen:api` picks it up.
-import type { IsoDateTime, ResultStatus, ResultSummary, Uuid } from './types';
+// Types of the analysis, integrations and logs endpoints, from `schema.gen.ts` (generated from
+// `schemas/openapi.json` with `npm run gen:api`). The aliases only narrow string fields that the
+// spec documents as fixed sets and add the shapes the UI derives (normalized log lines, filters).
+import type { components } from './schema.gen';
+import type { IsoDateTime, ResultStatus, ResultSummary } from './types';
+
+type S = components['schemas'];
 
 export type DefectGroup = 'productBug' | 'automationBug' | 'systemIssue' | 'noDefect' | 'toInvestigate';
 
 export const DEFECT_GROUPS: readonly DefectGroup[] = ['productBug', 'automationBug', 'systemIssue', 'noDefect', 'toInvestigate'];
 
-export interface DefectType {
-  id: string;
-  group: DefectGroup;
-  name: string;
-  shortName: string;
-  color: string;
-  builtIn: boolean;
-}
+export type DefectType = Omit<S['DefectType'], 'group'> & { group: DefectGroup };
 
-export interface DefectTypeInput {
-  group: DefectGroup;
-  name: string;
-  shortName: string;
-  color: string;
-}
+export type DefectTypeInput = Omit<S['NewDefectType'], 'group'> & { group: DefectGroup };
+
+export type DefectTypePatch = S['DefectTypePatch'];
 
 export type DefectSource = 'user' | 'ai' | 'rule';
 
-export interface DefectInfo {
-  typeId?: string | null;
-  group?: DefectGroup | null;
-  name?: string | null;
-  /** Stage B name of the type; kept for servers before stage C. */
-  type?: string | null;
-  comment?: string | null;
-  issueUrl?: string | null;
-  issueKey?: string | null;
-  source?: DefectSource | null;
-  ruleId?: string | null;
-  at?: IsoDateTime | null;
-  by?: string | null;
-}
+/** `defect` of a result or cluster. */
+export type DefectInfo = Omit<S['Defect'], 'group' | 'source'> & {
+  group: DefectGroup;
+  source: DefectSource;
+};
 
 export type Transition = 'new' | 'fixed' | 'regressed' | 'malfunctioned';
 
-/** Stage C fields added to `ResultSummary`. */
-export interface ResultAnalysis {
-  defect?: DefectInfo | null;
-  muteUntil?: IsoDateTime | null;
-  transition?: Transition | null;
-  flaky?: boolean | null;
-}
+export type TriageRequest = Omit<S['TriageRequest'], 'source'> & { source?: 'user' | 'ai' | null };
 
-export interface TriageRequest {
-  resultIds?: Uuid[];
-  launchId?: Uuid;
-  fingerprint?: string;
-  defectTypeId?: string;
-  comment?: string;
-  issue?: { url: string; key?: string };
-  mute?: { until?: IsoDateTime; reason: string };
-  unmute?: boolean;
-  source?: 'user' | 'ai';
-}
+export type TriageResponse = S['TriageOutcome'];
 
-export interface TriageResponse {
-  updated: number;
-}
+export type Cluster = Omit<S['Cluster'], 'defect'> & { defect?: DefectInfo | null };
 
-export interface Cluster {
-  fingerprint: string;
-  message: string;
-  count: number;
-  statuses: { failed: number; broken: number };
-  sampleResultId: Uuid;
-  defect?: DefectInfo | null;
-  knownSince?: string | null;
-  isNew: boolean;
-}
+export type SimilarFailure = Omit<S['SimilarResult'], 'defect'> & { defect?: DefectInfo | null };
 
-export interface SimilarFailure {
-  resultId: Uuid;
-  launchId: Uuid;
-  launchNumber: number;
-  name: string;
-  message: string;
-  score: number;
-  defect?: DefectInfo | null;
-}
+export type RuleMatch = Omit<S['RuleMatch'], 'statuses'> & { statuses?: ResultStatus[] | null };
 
-export interface RuleMatch {
-  messageRegex?: string;
-  traceRegex?: string;
-  testCaseId?: string;
-  fingerprint?: string;
-  environment?: string;
-  statuses?: ResultStatus[];
-}
+export type RuleAction = S['RuleAction'];
 
-export interface RuleAction {
-  defectTypeId?: string;
-  comment?: string;
-  issue?: { url: string; key?: string };
-  mute?: { days?: number };
-  accept?: boolean;
-}
+export type Rule = Omit<S['Rule'], 'match'> & { match: RuleMatch };
 
-export interface Rule {
-  id: string;
-  name: string;
-  enabled: boolean;
-  order: number;
-  match: RuleMatch;
-  action: RuleAction;
-  createdAt: IsoDateTime;
-  updatedAt: IsoDateTime;
-  hits: number;
-}
+export type RuleInput = Omit<S['NewRule'], 'match'> & { match: RuleMatch };
 
-export type RuleInput = Pick<Rule, 'name' | 'enabled' | 'order' | 'match' | 'action'>;
+export type RulePatch = S['RulePatch'];
 
-export interface RuleTestResponse {
-  matches: Uuid[];
-}
+export type RuleTestResponse = S['DryRun'];
 
-export interface FlakySettings {
-  historyDepth: number;
-  stabilizationPeriod: number;
-  includePassedTests: boolean;
-}
+export type Task = S['Task'];
 
-export interface RetentionSettings {
-  rawDays: number;
-  launchesKeep?: number | null;
-  keepImportant: boolean;
-}
+export type FlakySettings = Required<S['FlakySettings']>;
 
-export type GateMetric = 'failed' | 'broken' | 'newFailures' | 'passRate' | 'flaky' | 'duration';
-export type GateOp = 'gt' | 'gte' | 'lt' | 'lte';
+export type RetentionSettings = Required<Omit<S['RetentionSettings'], 'launchesKeep'>> & Pick<S['RetentionSettings'], 'launchesKeep'>;
 
-export interface GateRule {
-  metric: GateMetric;
-  op: GateOp;
-  value: number;
-  baseline?: string | null;
-}
+export type RollupSettings = Required<S['RollupSettings']>;
 
-export interface Gate {
-  name: string;
-  enabled: boolean;
-  branches?: string[];
-  rules: GateRule[];
-}
+export type GateMetric = S['Metric'];
+export type GateOp = S['Op'];
+export type GateRule = S['GateRule'];
+export type Gate = S['Gate'];
 
 export type NotificationKind = 'webhook' | 'slack' | 'email' | 'telegram';
 export type NotificationEvent = 'launchFinished' | 'gateFailed' | 'newFailures';
 
-export interface NotificationTarget {
-  id: string;
+export type NotificationTarget = Omit<S['Notification'], 'kind' | 'on'> & {
   kind: NotificationKind;
   on: NotificationEvent[];
-  target: string;
-  secretRef?: string | null;
-  filter?: { branches?: string[]; environments?: string[] } | null;
-}
+};
 
 export type IssueTrackerType = 'jira' | 'gitlab' | 'github';
 
-export interface IssueTracker {
-  type: IssueTrackerType;
-  urlTemplate: string;
-  keyRegex: string;
-}
+export type IssueTracker = Omit<S['IssueTracker'], 'type'> & { type: IssueTrackerType };
 
-export interface VcsSettings {
-  provider: 'gitlab' | 'github';
-  url: string;
-  tokenSecretRef?: string | null;
-  comment: boolean;
-  status: boolean;
-}
+export type VcsSettings = Omit<S['VcsSettings'], 'provider'> & { provider: 'gitlab' | 'github' };
 
-export interface FastMockSettings {
-  url: string;
-  tokenSecretRef?: string | null;
-}
+export type FastMockSettings = S['FastMockSettings'];
 
+/** The settings document with every part filled in (see `withSettingsDefaults`). */
 export interface ProjectSettings {
   flaky: FlakySettings;
   retention: RetentionSettings;
-  rollup: { afterDays: number };
+  rollup: RollupSettings;
   gates: Gate[];
   notifications: NotificationTarget[];
   issueTrackers: IssueTracker[];
-  vcs?: VcsSettings | null;
-  fastmock?: FastMockSettings | null;
+  vcs: VcsSettings | null;
+  fastmock: FastMockSettings | null;
 }
 
-export interface SecretInfo {
-  name: string;
-  updatedAt?: IsoDateTime | null;
-}
+export type SecretInfo = S['SecretMeta'];
 
-export interface FlakyTest {
-  testCaseId: string;
-  seriesKey: string;
-  name: string;
-  score: number;
-  lastStatuses: ResultStatus[];
-  lastFlakyAt: IsoDateTime | null;
-}
+export type FlakyTest = Omit<S['FlakyItem'], 'lastStatuses'> & { lastStatuses: ResultStatus[] };
 
-export interface DurationChange {
-  resultIdA: Uuid;
-  resultIdB: Uuid;
-  name: string;
-  deltaMs: number;
-  ratio: number;
-}
+export type DurationChange = S['DurationChange'];
 
-export interface LaunchComparison {
+export type LaunchComparison = Omit<S['Comparison'], 'newFailures' | 'fixed' | 'stillFailing' | 'newTests' | 'missing'> & {
   newFailures: ResultSummary[];
   fixed: ResultSummary[];
   stillFailing: ResultSummary[];
   newTests: ResultSummary[];
   missing: ResultSummary[];
-  durationChanges: DurationChange[];
-}
+};
 
 export type DashboardBucket = 'day' | 'week';
 
@@ -235,96 +111,49 @@ export interface DashboardFilters {
   bucket?: DashboardBucket;
 }
 
-export interface Dashboard {
-  passRate: { t: string; passRate: number; total: number }[];
-  durations: { t: string; p50Ms: number; p95Ms: number }[];
-  flakyTop: FlakyTest[];
-  mostFailing: { testCaseId: string; name: string; failures: number }[];
-  defectGroups: ({ t: string } & Record<DefectGroup, number>)[];
-  launches: { t: string; count: number }[];
-}
+export type Dashboard = Omit<S['Dashboard'], 'flakyTop'> & { flakyTop: FlakyTest[] };
 
-export interface TestPlanCreate {
-  name: string;
-  fromLaunchId?: Uuid;
-  statuses?: ResultStatus[];
-  testCaseIds?: string[];
-}
+export type TestPlanCreate = Omit<S['NewTestPlan'], 'statuses'> & { statuses?: ResultStatus[] | null };
 
-export interface TestPlanCreated {
-  id: string;
-}
+export type TestPlanCreated = S['TestPlanCreated'];
 
-export type GateStatus = 'passed' | 'failed' | 'pending';
+export type GateStatus = S['GateStatus'];
 
-export interface GateResult {
-  status: GateStatus;
-  results: { gate: string; rule: string; actual: number | null; expected: number; ok: boolean }[];
-}
+export type GateRuleResult = S['RuleResult'];
 
-export interface Delivery {
-  id: string;
-  notificationId: string;
-  kind: NotificationKind;
-  event: NotificationEvent;
-  target: string;
-  status: 'pending' | 'delivered' | 'failed' | 'retrying';
-  attempts: number;
-  responseStatus?: number | null;
-  lastError?: string | null;
-  createdAt: IsoDateTime;
-  deliveredAt?: IsoDateTime | null;
-  launchId?: Uuid | null;
-}
+export type GateResult = S['GateReport'];
 
-export interface MockInteraction {
-  at: IsoDateTime;
-  method: string;
-  url: string;
-  status: number;
-  matchedStub?: string | null;
-  nearMiss?: string | null;
-  fault?: string | null;
-  durationMs: number;
-}
+export type DeliveryStatus = 'pending' | 'sending' | 'delivered' | 'failed';
 
-export interface MockInteractions {
-  source: 'traceId' | 'timeWindow';
-  confidence: number;
-  items: MockInteraction[];
-}
+export type Delivery = Omit<S['DeliveryView'], 'status'> & { status: DeliveryStatus };
 
-export interface LaunchPatch {
-  important?: boolean;
-  name?: string;
-  attributes?: { key: string; value: string }[];
-}
+export type MockInteraction = S['MockInteraction'];
 
-export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error';
+export type MockInteractions = Omit<S['MockInteractions'], 'source'> & { source: 'traceId' | 'timeWindow' };
+
+export type LaunchPatch = S['LaunchPatch'];
+
+export type LogLevel = S['LogLevel'];
 
 export const LOG_LEVELS: readonly LogLevel[] = ['trace', 'debug', 'info', 'warn', 'error'];
 
-export type LogStream = 'stdout' | 'stderr' | 'log' | 'step';
+export type LogStream = S['LogStream'];
 
-export interface LogLine {
-  resultId: string;
-  attempt: number;
-  seq: number;
-  ts: IsoDateTime;
-  level: LogLevel;
-  stream: LogStream;
-  message: string;
-  step?: string | null;
-}
+/** A log line as the server sends it (`ts` in milliseconds since the epoch). */
+export type LogLineWire = S['LogLine'];
+
+/** A log line as the UI keeps it: `ts` normalized to an ISO 8601 string. */
+export type LogLine = Omit<LogLineWire, 'ts'> & { ts: IsoDateTime };
+
+export type LogStreamBatch = S['LogStreamBatch'];
+
+/** `gap` SSE event: the server dropped lines because the client was too slow. */
+export type LogGap = S['LogGap'];
 
 export interface LogFilters {
+  /** Client id of an attempt, or the id of a result (all its attempts). */
   resultId?: string;
   attempt?: number;
   level?: LogLevel;
   q?: string;
-}
-
-/** `gap` SSE event: the server dropped lines because the client was too slow. */
-export interface LogGap {
-  skipped: number;
 }

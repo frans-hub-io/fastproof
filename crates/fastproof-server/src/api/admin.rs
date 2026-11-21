@@ -47,7 +47,7 @@ pub struct AuditList {
     pub next: Option<String>,
 }
 
-#[utoipa::path(get, path = "/api/v1/audit", tag = "admin", params(AuditQuery),
+#[utoipa::path(get, path = "/api/v1/audit", tag = "admin", operation_id = "admin_audit", params(AuditQuery),
     responses((status = 200, body = AuditList), (status = 403, body = ErrorBody)))]
 pub async fn audit(
     State(s): State<AppState>,
@@ -105,7 +105,7 @@ pub struct JobList {
     pub items: Vec<ScheduledJob>,
 }
 
-#[utoipa::path(get, path = "/api/v1/admin/jobs", tag = "admin",
+#[utoipa::path(get, path = "/api/v1/admin/jobs", tag = "admin", operation_id = "admin_jobs",
     responses((status = 200, body = JobList), (status = 403, body = ErrorBody)))]
 pub async fn jobs(State(s): State<AppState>, auth: Auth) -> ApiResult<Json<JobList>> {
     require(&auth, &s.perms.settings_write, None)?;

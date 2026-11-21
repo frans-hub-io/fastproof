@@ -209,6 +209,11 @@ function MockInteractionsView({ project, resultId, attempt }: { project: string;
             <Text size="xs" c="dimmed">
               {m.source === 'traceId' ? 'Matched by trace id' : 'Matched by the attempt time window (other tests may share it)'} · confidence {Math.round(m.confidence * 100)}%
             </Text>
+            {m.truncated && (
+              <Text size="xs" c="dimmed" data-testid="mock-truncated">
+                FastMock holds more requests for this window than were read; the list may be incomplete.
+              </Text>
+            )}
             {m.items.length === 0 ? (
               <Text size="sm" c="dimmed">
                 FastMock recorded no requests for this attempt.
@@ -246,7 +251,7 @@ function MockInteractionsView({ project, resultId, attempt }: { project: string;
                           )}
                           {i.nearMiss && (
                             <Text size="xs" c="var(--fh-semantic-warning-fg)">
-                              near miss: {i.nearMiss}
+                              near miss: see the closest stubs in FastMock
                             </Text>
                           )}
                         </Table.Td>
@@ -295,17 +300,25 @@ function Side({ project, r, types }: { project: string; r: ResultDetail; types: 
             Links
           </Text>
           <Stack gap={4} data-testid="links">
-            {r.links
-              .filter((l) => isHttpUrl(l.url))
-              .map((l) => (
-                <Anchor key={l.url} href={l.url} target="_blank" rel="noopener noreferrer nofollow" size="sm">
+            {r.links.map((l, i) => {
+              const icon = l.type === 'issue' ? <IconBug size={14} /> : l.type === 'tms' ? <IconListCheck size={14} /> : <IconLink size={14} />;
+              return isHttpUrl(l.url) ? (
+                <Anchor key={`${l.url}:${String(i)}`} href={l.url} target="_blank" rel="noopener noreferrer nofollow" size="sm">
                   <Group gap={6} wrap="nowrap">
-                    {l.type === 'issue' ? <IconBug size={14} /> : l.type === 'tms' ? <IconListCheck size={14} /> : <IconLink size={14} />}
+                    {icon}
                     <span className="fh-truncate">{l.name || l.url}</span>
                     <IconExternalLink size={12} />
                   </Group>
                 </Anchor>
-              ))}
+              ) : (
+                <Group key={`text:${String(i)}`} gap={6} wrap="nowrap" c="dimmed">
+                  {icon}
+                  <Text size="sm" className="fh-truncate" title="Not a web address">
+                    {l.name || l.url}
+                  </Text>
+                </Group>
+              );
+            })}
           </Stack>
         </Card>
       )}
@@ -414,7 +427,7 @@ function AttemptView({ project, attempt, r, launch }: { project: string; attempt
         </Tabs.Panel>
         <Tabs.Panel value="logs" pt="sm">
           {r.launchId ? (
-            <LogConsole project={project} launchId={r.launchId} live={launch?.status === 'running'} resultId={r.id} attempt={attempt.no} height="min(55vh, 520px)" fileName={`${r.name}-attempt-${String(attempt.no)}.log`} />
+            <LogConsole project={project} launchId={r.launchId} live={launch?.status === 'running'} resultId={attempt.clientId ?? r.id} attempt={attempt.clientId ? undefined : attempt.no - 1} height="min(55vh, 520px)" fileName={`${r.name}-attempt-${String(attempt.no)}.log`} />
           ) : (
             <Alert color="gray">The launch of this result is unknown, so its logs cannot be read.</Alert>
           )}

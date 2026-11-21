@@ -20,6 +20,11 @@ server:
   ingestWorkers: 2
   retainUploads: false
   outboxRetentionDays: 7
+  logs:
+    maxLineBytes: 65536
+    maxLinesPerRequest: 5000
+    maxRequestBytes: 8388608
+    maxBytesPerLaunch: 268435456
   extraEnv: []
   extraEnvFrom: []
 
@@ -224,6 +229,7 @@ oidc:
   sessionIdle: ""
   cookieName: ""
   postLogoutRedirect: ""
+  insecureCookie: false
   ca:
     existingSecret: ""
     existingConfigMap: ""
@@ -239,6 +245,25 @@ tls:
 externalValkey:
   existingSecret: ""
   key: url
+
+integrations:
+  egressAllow: []
+  secretsKey:
+    existingSecret: ""
+    key: secrets-key
+    value: ""
+  smtp:
+    url: ""
+    from: ""
+    username: ""
+    password:
+      existingSecret: ""
+      key: password
+      value: ""
+  telegramApiUrl: ""
+  delivery:
+    maxAttempts: 6
+    backoffSeconds: 30
 
 otel:
   endpoint: ""
@@ -268,6 +293,7 @@ ingress:
   tls: []
 
 metrics:
+  topBranches: 10
   serviceMonitor:
     enabled: false
     interval: 30s
@@ -542,7 +568,10 @@ kafka:
     prefix: fastproof.
     create: false
     partitions: 12
+    replication: -1
   trustedProducers: false
+  clientId: fastproof
+  maxRecordBytes: 900000
   external:
     brokers: []
     tls:
@@ -645,6 +674,8 @@ kafka:
       memory: 1Gi
 
 sinks:
+  batchSize: 2000
+  flushIntervalMs: 1000
   clickhouse:
     enabled: false
     database: fastproof
@@ -734,6 +765,7 @@ sinks:
     enabled: false
     indexPrefix: fastproof-
     rawTtlDays: 90
+    replicas: 1
     external:
       url: ""
       user: ""

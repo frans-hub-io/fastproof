@@ -11,7 +11,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get: operations["jobs"];
+        get: operations["admin_jobs"];
         put?: never;
         post?: never;
         delete?: never;
@@ -27,7 +27,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get: operations["audit"];
+        get: operations["admin_audit"];
         put?: never;
         post?: never;
         delete?: never;
@@ -65,7 +65,7 @@ export interface paths {
         delete: operations["projects_delete"];
         options?: never;
         head?: never;
-        patch: operations["patch"];
+        patch: operations["projects_patch"];
         trace?: never;
     };
     "/api/v1/projects/{key}/attachments/{id}/content": {
@@ -75,13 +75,61 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get: operations["content"];
+        get: operations["attachments_content"];
         put?: never;
         post?: never;
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/dashboard": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["analysis_dashboard"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/defect-types": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["analysis_defect_types"];
+        put?: never;
+        post: operations["analysis_create_defect_type"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/defect-types/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["analysis_delete_defect_type"];
+        options?: never;
+        head?: never;
+        patch: operations["analysis_patch_defect_type"];
         trace?: never;
     };
     "/api/v1/projects/{key}/events": {
@@ -91,7 +139,23 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get: operations["stream"];
+        get: operations["events_stream"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/flaky": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["analysis_flaky"];
         put?: never;
         post?: never;
         delete?: never;
@@ -116,6 +180,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{key}/launches/{a}/compare/{b}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["analysis_compare"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{key}/launches/{id}": {
         parameters: {
             query?: never;
@@ -129,7 +209,7 @@ export interface paths {
         delete: operations["launches_delete"];
         options?: never;
         head?: never;
-        patch?: never;
+        patch: operations["launches_patch"];
         trace?: never;
     };
     "/api/v1/projects/{key}/launches/{id}/attachments": {
@@ -141,7 +221,23 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        post: operations["upload"];
+        post: operations["attachments_upload"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/launches/{id}/clusters": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["analysis_clusters"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -157,7 +253,56 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        post: operations["finish"];
+        post: operations["launches_finish"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/launches/{id}/gate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Evaluates the project's quality gates for the launch now. `pending` while the launch runs or has unprocessed uploads; `failed` when a rule of an enabled gate that applies to the launch branch does not hold. A rule holds when `actual op value`. */
+        get: operations["integrations_gate"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/launches/{id}/logs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["logs_list"];
+        put?: never;
+        post: operations["logs_ingest"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/launches/{id}/logs/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["logs_stream"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -173,7 +318,7 @@ export interface paths {
         };
         get: operations["results_list"];
         put?: never;
-        post: operations["ingest"];
+        post: operations["results_ingest"];
         delete?: never;
         options?: never;
         head?: never;
@@ -187,7 +332,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get: operations["tree"];
+        get: operations["results_tree"];
         put?: never;
         post?: never;
         delete?: never;
@@ -212,6 +357,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{key}/notifications/deliveries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Notification and VCS deliveries, newest first (without targets or payloads). */
+        get: operations["integrations_deliveries"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{key}/results/{id}": {
         parameters: {
             query?: never;
@@ -219,7 +381,202 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get: operations["detail"];
+        get: operations["results_detail"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/results/{id}/mock-interactions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Requests the project's FastMock answered during an attempt: by the attempt's trace id, else by its time window (and the `fastmock.space` label or launch attribute). */
+        get: operations["integrations_mock_interactions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/results/{id}/similar": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["results_similar"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/retention/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["analysis_retention_preview"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/rules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["analysis_rules"];
+        put?: never;
+        post: operations["analysis_create_rule"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/rules/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["analysis_test_rule"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/rules/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["analysis_delete_rule"];
+        options?: never;
+        head?: never;
+        patch: operations["analysis_patch_rule"];
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/rules/{id}/apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["analysis_apply_rule"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/search/logs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["logs_search"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/secrets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Names of the project's secrets; values are write-only. */
+        get: operations["integrations_secrets"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/secrets/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** @description Creates or replaces a secret, encrypted at rest with `FASTPROOF_SECRETS_KEY_FILE`. Settings refer to it by name (`secretRef`, `tokenSecretRef`). */
+        put: operations["integrations_put_secret"];
+        post?: never;
+        delete: operations["integrations_delete_secret"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["analysis_get_settings"];
+        put: operations["analysis_put_settings"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/tasks/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["analysis_task"];
         put?: never;
         post?: never;
         delete?: never;
@@ -235,9 +592,57 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get: operations["history"];
+        get: operations["results_history"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/test-plans": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["analysis_create_test_plan"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/test-plans/{id}/testplan.json": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["analysis_testplan_json"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/triage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["analysis_triage"];
         delete?: never;
         options?: never;
         head?: never;
@@ -273,6 +678,8 @@ export interface components {
         /** @description One execution of a result. */
         AttemptView: {
             attachments: components["schemas"]["AttachmentView"][];
+            /** @description Client id of an attempt sent through the results API: the `resultId` of its log lines. */
+            clientId?: string | null;
             /** Format: int64 */
             durationMs?: number | null;
             error?: components["schemas"]["ErrorView"] | null;
@@ -311,6 +718,50 @@ export interface components {
             items: components["schemas"]["AuditItem"][];
             next?: string | null;
         };
+        /** @description A unique error of a launch. */
+        Cluster: {
+            /** Format: int64 */
+            count: number;
+            defect?: components["schemas"]["Defect"] | null;
+            fingerprint: string;
+            isNew: boolean;
+            /**
+             * Format: date
+             * @description First seen in an earlier launch on this day.
+             */
+            knownSince?: string | null;
+            message?: string | null;
+            /** Format: uuid */
+            sampleResultId: string;
+            statuses: components["schemas"]["ClusterStatuses"];
+        };
+        /** @description `{items}` of clusters. */
+        ClusterList: {
+            items: components["schemas"]["Cluster"][];
+        };
+        /** @description Failed and broken counts of a cluster. */
+        ClusterStatuses: {
+            /** Format: int64 */
+            broken: number;
+            /** Format: int64 */
+            failed: number;
+        };
+        /** @description Launch B compared with launch A. */
+        Comparison: {
+            durationChanges: components["schemas"]["DurationChange"][];
+            /** @description Failed or broken in A, passed in B (results of B). */
+            fixed: components["schemas"]["ResultSummary"][];
+            /** @description In A only (results of A). */
+            missing: components["schemas"]["ResultSummary"][];
+            /** @description Failed or broken in B, passed or skipped in A (results of B). */
+            newFailures: components["schemas"]["ResultSummary"][];
+            /** @description In B only. */
+            newTests: components["schemas"]["ResultSummary"][];
+            /** @description Failed or broken in both (results of B). */
+            stillFailing: components["schemas"]["ResultSummary"][];
+            /** @description A list was cut at its limit. */
+            truncated: boolean;
+        };
         /** @description Status counts of a launch (results, not attempts). */
         Counts: {
             /** Format: int64 */
@@ -330,11 +781,156 @@ export interface components {
             /** Format: int64 */
             unknown: number;
         };
-        /** @description Triage of a result (filled in stage C). */
+        /** @description Daily aggregates of a test case (launches that were rolled up). */
+        DailyEntry: {
+            branch?: string | null;
+            /** Format: int64 */
+            broken: number;
+            /** Format: date */
+            day: string;
+            /** Format: int64 */
+            durationMaxMs?: number | null;
+            /** Format: int64 */
+            durationMinMs?: number | null;
+            environment?: string | null;
+            /** Format: int64 */
+            failed: number;
+            /** Format: int64 */
+            flaky: number;
+            /** Format: int64 */
+            passed: number;
+            /** Format: int64 */
+            runs: number;
+            /** Format: int64 */
+            skipped: number;
+        };
+        /** @description The dashboard. */
+        Dashboard: {
+            defectGroups: components["schemas"]["DefectGroupsPoint"][];
+            durations: components["schemas"]["DurationPoint"][];
+            flakyTop: components["schemas"]["FlakyItem"][];
+            launches: components["schemas"]["LaunchCountPoint"][];
+            mostFailing: components["schemas"]["FailingTest"][];
+            passRate: components["schemas"]["PassRatePoint"][];
+        };
+        /** @description Triage of a result: defect type (with its group and name when triaged), comment, issue. */
         Defect: {
+            /** @description An accepted (known, tolerated) failure. */
+            accepted?: boolean;
+            /** Format: date-time */
+            at: string;
+            by: string;
             comment?: string | null;
+            /** @description `productBug`, `automationBug`, `systemIssue`, `noDefect` or `toInvestigate`. */
+            group: string;
+            issueKey?: string | null;
             issueUrl?: string | null;
-            type: string;
+            name: string;
+            /** Format: uuid */
+            ruleId?: string | null;
+            /** @description `user`, `ai` or `rule` (a rule without `ruleId` is the project default for failures). */
+            source: string;
+            /** Format: uuid */
+            typeId: string;
+        };
+        DefectGroupsPoint: {
+            /** Format: int64 */
+            automationBug: number;
+            /** Format: int64 */
+            noDefect: number;
+            /** Format: int64 */
+            productBug: number;
+            /** Format: int64 */
+            systemIssue: number;
+            /** Format: date */
+            t: string;
+            /** Format: int64 */
+            toInvestigate: number;
+        };
+        /** @description A defect type. */
+        DefectType: {
+            builtIn: boolean;
+            color: string;
+            /** @description `productBug`, `automationBug`, `systemIssue`, `noDefect` or `toInvestigate`. */
+            group: string;
+            /** Format: uuid */
+            id: string;
+            name: string;
+            shortName: string;
+        };
+        /** @description `{items}` of defect types. */
+        DefectTypeList: {
+            items: components["schemas"]["DefectType"][];
+        };
+        /** @description Body of `PATCH .../defect-types/{id}`. */
+        DefectTypePatch: {
+            color?: string | null;
+            name?: string | null;
+            shortName?: string | null;
+        };
+        /** @description A delivery as the API shows it (no target, no payload). */
+        DeliveryView: {
+            /** Format: int32 */
+            attempts: number;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            deliveredAt?: string | null;
+            events: string[];
+            /** Format: uuid */
+            id: string;
+            /** @description `webhook`, `slack`, `email`, `telegram`, `gitlab` or `github`. */
+            kind: string;
+            lastError?: string | null;
+            /** Format: uuid */
+            launchId?: string | null;
+            /** Format: int32 */
+            maxAttempts: number;
+            /** Format: date-time */
+            nextAttemptAt?: string | null;
+            /** @description The notification id, or `vcs`. */
+            notificationId: string;
+            /** Format: int32 */
+            responseStatus?: number | null;
+            /** @description `pending`, `sending`, `delivered` or `failed`. */
+            status: string;
+        };
+        /** @description Result of a dry run. */
+        DryRun: {
+            /**
+             * Format: int64
+             * @description Results the rule was evaluated on.
+             */
+            evaluated: number;
+            matches: string[];
+            /** @description More matches than listed, or the evaluation budget ran out. */
+            truncated: boolean;
+        };
+        /** @description A test that became slower or faster. */
+        DurationChange: {
+            /**
+             * Format: int64
+             * @description Duration in B minus duration in A.
+             */
+            deltaMs: number;
+            name: string;
+            /**
+             * Format: double
+             * @description Duration in B over duration in A.
+             */
+            ratio: number;
+            /** Format: uuid */
+            resultIdA: string;
+            /** Format: uuid */
+            resultIdB: string;
+        };
+        DurationPoint: {
+            /** Format: int64 */
+            p50Ms?: number | null;
+            /** Format: int64 */
+            p95Ms?: number | null;
+            /** Format: date */
+            t: string;
         };
         /** @description The uniform error body (`franshub_http::ErrorBody`), for the documentation. */
         ErrorBody: {
@@ -349,11 +945,100 @@ export interface components {
             message?: string | null;
             trace?: string | null;
         };
+        FailingTest: {
+            /** Format: int64 */
+            failures: number;
+            name: string;
+            /** Format: uuid */
+            testCaseId: string;
+        };
+        /** @description The FastMock instance whose journal is correlated with results. */
+        FastMockSettings: {
+            tokenSecretRef?: string | null;
+            /** @description Admin base URL, e.g. `https://fastmock.example.com:9090`. */
+            url: string;
+        };
         /** @description Body of `POST .../launches/{id}/finish`. */
         FinishLaunch: {
             /** @description `finished` (default) or `interrupted`. */
             status?: string | null;
         };
+        /** @description A flaky test. */
+        FlakyItem: {
+            /** Format: date-time */
+            lastFlakyAt?: string | null;
+            /** @description Newest first. */
+            lastStatuses: string[];
+            name: string;
+            /**
+             * Format: float
+             * @description Share of status changes over the detection window (0..1).
+             */
+            score: number;
+            seriesKey: string;
+            /** Format: uuid */
+            testCaseId: string;
+        };
+        /** @description `{items}` of flaky tests. */
+        FlakyList: {
+            items: components["schemas"]["FlakyItem"][];
+        };
+        /** @description Flaky detection across runs (Allure 3 `flakyDetection`). */
+        FlakySettings: {
+            /**
+             * Format: int32
+             * @description Past runs that are compared: `-1` disables detection, `0` uses all (up to 50).
+             * @default 10
+             */
+            historyDepth?: number;
+            /**
+             * @description Also mark passed tests as flaky.
+             * @default false
+             */
+            includePassedTests?: boolean;
+            /**
+             * Format: int32
+             * @description Identical outcomes in a row that reset earlier instability.
+             * @default 5
+             */
+            stabilizationPeriod?: number;
+        };
+        /** @description A quality gate. */
+        Gate: {
+            /** @description Branch globs (`*` matches any text); every branch when absent. */
+            branches?: string[] | null;
+            enabled?: boolean;
+            name: string;
+            rules: components["schemas"]["GateRule"][];
+        };
+        /**
+         * @description The gate result of a launch: `pending` while the launch runs or uploads are processed,
+         *     otherwise `failed` when a rule of an enabled gate that applies to the branch does not hold.
+         */
+        GateReport: {
+            /** Format: date-time */
+            evaluatedAt: string;
+            /** Format: uuid */
+            launchId: string;
+            results: components["schemas"]["RuleResult"][];
+            status: components["schemas"]["GateStatus"];
+        };
+        /**
+         * @description A rule: it holds when `metric op value`. With `baseline`, `newFailures` compares with the
+         *     newest finished launch of that branch and the other metrics become the difference to it.
+         */
+        GateRule: {
+            baseline?: string | null;
+            metric: components["schemas"]["Metric"];
+            op: components["schemas"]["Op"];
+            /** Format: double */
+            value: number;
+        };
+        /**
+         * @description `passed`, `failed` or `pending`.
+         * @enum {string}
+         */
+        GateStatus: "passed" | "failed" | "pending";
         /** @description One result of a test case in a launch. */
         HistoryEntry: {
             branch?: string | null;
@@ -372,6 +1057,11 @@ export interface components {
         };
         /** @description History of a test case, newest first. */
         HistoryList: {
+            /**
+             * @description Daily aggregates before the oldest item, when the raw history is shorter than `limit`
+             *     (launches beyond the raw window).
+             */
+            daily?: components["schemas"]["DailyEntry"][];
             items: components["schemas"]["HistoryEntry"][];
             testCase: components["schemas"]["TestCaseView"];
         };
@@ -382,6 +1072,20 @@ export interface components {
             /** Format: int64 */
             duplicates: number;
             rejected: components["schemas"]["Rejected"][];
+        };
+        /** @description An issue link. */
+        IssueRef: {
+            key?: string | null;
+            url: string;
+        };
+        /** @description An issue tracker for links from issue keys. */
+        IssueTracker: {
+            /** @description Keys this tracker owns, e.g. `[A-Z][A-Z0-9]+-[0-9]+` (matched in full). */
+            keyRegex: string;
+            /** @description `jira`, `gitlab` or `github`. */
+            type: string;
+            /** @description URL with `{key}`, e.g. `https://jira.example.com/browse/{key}`. */
+            urlTemplate: string;
         };
         /** @description Periodic jobs of the scheduler. */
         JobList: {
@@ -423,6 +1127,8 @@ export interface components {
             finishedAt?: string | null;
             /** Format: uuid */
             id: string;
+            /** @description Kept by retention. */
+            important: boolean;
             name: string;
             /** Format: int64 */
             number: number;
@@ -442,12 +1148,23 @@ export interface components {
             buildOrder?: number | null;
             /** @default null */
             jobId?: string | null;
+            /**
+             * @description Merge request IID (GitLab) or pull request number (GitHub) of the pipeline.
+             * @default null
+             */
+            mergeRequest?: string | null;
             /** @default null */
             pipelineId?: string | null;
             /** @default null */
             provider?: string | null;
             /** @default null */
             url?: string | null;
+        };
+        LaunchCountPoint: {
+            /** Format: int64 */
+            count: number;
+            /** Format: date */
+            t: string;
         };
         /** @description The named environment of a launch; `key` is part of every series identity. */
         LaunchEnvironment: {
@@ -457,6 +1174,12 @@ export interface components {
             values?: {
                 [key: string]: string;
             };
+        };
+        /** @description Body of `PATCH .../launches/{id}`. */
+        LaunchPatch: {
+            attributes?: components["schemas"]["Attribute"][] | null;
+            important?: boolean | null;
+            name?: string | null;
         };
         /** @description Body of `POST /api/v1/projects/{key}/launches`. */
         LaunchStart: {
@@ -495,12 +1218,222 @@ export interface components {
             type?: string | null;
             url: string;
         };
+        /** @description A log line with its launch, as reads and searches return it. */
+        LogEntry: components["schemas"]["LogLine"] & {
+            /** Format: uuid */
+            launchId: string;
+        };
+        /** @description Data of a `gap` event of `GET .../logs/stream`: lines dropped because the client was slow. */
+        LogGap: {
+            /** Format: int64 */
+            skipped: number;
+        };
+        /** @description Matching log lines of a search. */
+        LogHits: {
+            items: components["schemas"]["LogEntry"][];
+            /** @description True when the scan stopped at its budget before the time range was covered. */
+            partial: boolean;
+        };
+        /** @description Outcome of `POST .../logs`. */
+        LogIngestSummary: {
+            /** Format: int64 */
+            accepted: number;
+            /**
+             * Format: int64
+             * @description Lines already stored (direct mode; in Kafka mode the writer drops them).
+             */
+            duplicates: number;
+            rejected: components["schemas"]["Rejected"][];
+        };
+        /**
+         * @description Severity of a log line.
+         * @enum {string}
+         */
+        LogLevel: "trace" | "debug" | "info" | "warn" | "error";
+        /** @description One log line as clients send it and as the API returns it. */
+        LogLine: {
+            /**
+             * Format: int32
+             * @description Zero-based retry number.
+             */
+            attempt: number;
+            level: components["schemas"]["LogLevel"];
+            message: string;
+            /** @description Client id of the result (the `id` of its `ReportResult`). */
+            resultId: string;
+            /**
+             * Format: int64
+             * @description Sequence number within the attempt; a line sent again with the same number is a no-op.
+             */
+            seq: number;
+            /** @description Name of the step the line belongs to. */
+            step?: string | null;
+            stream: components["schemas"]["LogStream"];
+            /**
+             * Format: int64
+             * @description Time, milliseconds since the Unix epoch (an RFC 3339 string is accepted too).
+             */
+            ts: number;
+        };
+        /**
+         * @description Where a line came from.
+         * @enum {string}
+         */
+        LogStream: "stdout" | "stderr" | "log" | "step";
+        /** @description Data of a `log` event of `GET .../logs/stream`: lines in order. */
+        LogStreamBatch: {
+            lines: components["schemas"]["LogLine"][];
+        };
+        /**
+         * @description A metric a gate rule checks.
+         * @enum {string}
+         */
+        Metric: "failed" | "broken" | "newFailures" | "passRate" | "flaky" | "duration";
+        /** @description One request FastMock answered. */
+        MockInteraction: {
+            /** Format: date-time */
+            at: string;
+            /** Format: int64 */
+            durationMs: number;
+            /** @description A fault FastMock injected (not recorded in the journal of FastMock 0.1). */
+            fault?: string | null;
+            /** @description Id of the stub that answered. */
+            matchedStub?: string | null;
+            method: string;
+            /** @description `true` when no stub matched (see FastMock's near misses for the closest ones). */
+            nearMiss?: boolean | null;
+            space?: string | null;
+            /** Format: int32 */
+            status: number;
+            traceId?: string | null;
+            /** @description Path and query. */
+            url: string;
+        };
+        /** @description The requests correlated with an attempt. */
+        MockInteractions: {
+            /** Format: int32 */
+            attempt: number;
+            /**
+             * Format: double
+             * @description 0 to 1: how likely the items belong to this attempt.
+             */
+            confidence: number;
+            items: components["schemas"]["MockInteraction"][];
+            /** @description `traceId` or `timeWindow`. */
+            source: string;
+            space?: string | null;
+            /** @description More journal entries than were read could belong to the window. */
+            truncated: boolean;
+        };
+        /** @description Mute effect of a rule. */
+        MuteAction: {
+            /**
+             * Format: int32
+             * @description Mute for this many days (1..=365); without it the mute has no end.
+             */
+            days?: number | null;
+        };
+        /** @description Mute part of a triage request. */
+        MuteRequest: {
+            reason: string;
+            /**
+             * Format: date-time
+             * @description End of the mute; without it the mute lasts until removed.
+             */
+            until?: string | null;
+        };
+        /** @description Body of `POST .../defect-types`. */
+        NewDefectType: {
+            color?: string | null;
+            group: string;
+            name: string;
+            shortName?: string | null;
+        };
         /** @description Body of `POST /api/v1/projects`. */
         NewProject: {
             description?: string | null;
             /** @description `^[a-z0-9][a-z0-9-]{1,62}$` */
             key: string;
             name: string;
+        };
+        /** @description Body of `POST .../rules` (and the rule of a dry run). */
+        NewRule: {
+            action: components["schemas"]["RuleAction"];
+            enabled?: boolean | null;
+            match: components["schemas"]["RuleMatch"];
+            name: string;
+            /** Format: int32 */
+            order?: number | null;
+        };
+        /** @description Body of `POST .../test-plans`. */
+        NewTestPlan: {
+            /**
+             * Format: uuid
+             * @description Take the tests of this launch with `statuses`.
+             */
+            fromLaunchId?: string | null;
+            name: string;
+            /** @description Statuses picked from the launch (default `failed`, `broken`). */
+            statuses?: string[] | null;
+            /** @description Test cases added to the plan. */
+            testCaseIds?: string[] | null;
+        };
+        /** @description A notification channel. */
+        Notification: {
+            filter?: components["schemas"]["NotificationFilter"] | null;
+            id: string;
+            /** @description `webhook`, `slack`, `email` or `telegram`. */
+            kind: string;
+            /** @description `launchFinished`, `gateFailed`, `newFailures`. */
+            on: string[];
+            /** @description Webhook: HMAC key; Slack: the webhook URL; Telegram: the bot token. */
+            secretRef?: string | null;
+            /**
+             * @description Webhook or Slack URL, Telegram chat id, or comma-separated email addresses. A Slack
+             *     webhook URL is better kept in a secret (`secretRef`), as settings are readable.
+             */
+            target?: string;
+        };
+        /** @description Which launches a notification is about. */
+        NotificationFilter: {
+            branches?: string[] | null;
+            environments?: string[] | null;
+        };
+        /**
+         * @description A comparison.
+         * @enum {string}
+         */
+        Op: "gt" | "gte" | "lt" | "lte";
+        /** @description A page of a list. */
+        Page_DeliveryView: {
+            items: {
+                /** Format: int32 */
+                attempts: number;
+                /** Format: date-time */
+                createdAt: string;
+                /** Format: date-time */
+                deliveredAt?: string | null;
+                events: string[];
+                /** Format: uuid */
+                id: string;
+                /** @description `webhook`, `slack`, `email`, `telegram`, `gitlab` or `github`. */
+                kind: string;
+                lastError?: string | null;
+                /** Format: uuid */
+                launchId?: string | null;
+                /** Format: int32 */
+                maxAttempts: number;
+                /** Format: date-time */
+                nextAttemptAt?: string | null;
+                /** @description The notification id, or `vcs`. */
+                notificationId: string;
+                /** Format: int32 */
+                responseStatus?: number | null;
+                /** @description `pending`, `sending`, `delivered` or `failed`. */
+                status: string;
+            }[];
+            /** @description Opaque cursor for the next page (`before=`), `null` on the last page. */
+            next?: string | null;
         };
         /** @description A page of a list. */
         Page_Launch: {
@@ -517,6 +1450,8 @@ export interface components {
                 finishedAt?: string | null;
                 /** Format: uuid */
                 id: string;
+                /** @description Kept by retention. */
+                important: boolean;
                 name: string;
                 /** Format: int64 */
                 number: number;
@@ -531,6 +1466,35 @@ export interface components {
             next?: string | null;
         };
         /** @description A page of a list. */
+        Page_LogLine: {
+            items: {
+                /**
+                 * Format: int32
+                 * @description Zero-based retry number.
+                 */
+                attempt: number;
+                level: components["schemas"]["LogLevel"];
+                message: string;
+                /** @description Client id of the result (the `id` of its `ReportResult`). */
+                resultId: string;
+                /**
+                 * Format: int64
+                 * @description Sequence number within the attempt; a line sent again with the same number is a no-op.
+                 */
+                seq: number;
+                /** @description Name of the step the line belongs to. */
+                step?: string | null;
+                stream: components["schemas"]["LogStream"];
+                /**
+                 * Format: int64
+                 * @description Time, milliseconds since the Unix epoch (an RFC 3339 string is accepted too).
+                 */
+                ts: number;
+            }[];
+            /** @description Opaque cursor for the next page (`before=`), `null` on the last page. */
+            next?: string | null;
+        };
+        /** @description A page of a list. */
         Page_ResultSummary: {
             items: {
                 /** Format: int32 */
@@ -539,6 +1503,8 @@ export interface components {
                 /** Format: int64 */
                 durationMs?: number | null;
                 fingerprint?: string | null;
+                /** @description Flaky across runs (Allure 3 algorithm, project settings). */
+                flaky: boolean;
                 flakyInRun: boolean;
                 fullName: string;
                 /** Format: uuid */
@@ -548,6 +1514,11 @@ export interface components {
                 launchId: string;
                 /** @description Error message of the final attempt (first 500 characters). */
                 message?: string | null;
+                /**
+                 * Format: date-time
+                 * @description End of the mute, when it has one.
+                 */
+                muteUntil?: string | null;
                 muted: boolean;
                 name: string;
                 seriesKey: string;
@@ -557,6 +1528,11 @@ export interface components {
                 suitePath: string[];
                 /** Format: uuid */
                 testCaseId: string;
+                /**
+                 * @description Status change against the previous run of the series on the same branch: `new`,
+                 *     `fixed`, `regressed` or `malfunctioned`.
+                 */
+                transition?: string | null;
             }[];
             /** @description Opaque cursor for the next page (`before=`), `null` on the last page. */
             next?: string | null;
@@ -584,6 +1560,17 @@ export interface components {
             name: string;
             value?: string | null;
         };
+        PassRatePoint: {
+            /**
+             * Format: double
+             * @description passed / (total − skipped); `null` when nothing but skipped results ran.
+             */
+            passRate?: number | null;
+            /** Format: date */
+            t: string;
+            /** Format: int64 */
+            total: number;
+        };
         /** @description Body of `PATCH /api/v1/projects/{key}`. */
         PatchProject: {
             description?: string | null;
@@ -605,6 +1592,52 @@ export interface components {
         /** @description Projects the caller can read. */
         ProjectList: {
             items: components["schemas"]["Project"][];
+        };
+        /**
+         * @description Settings of a project. The analysis parts (`flaky`, `retention`, `rollup`) are typed here;
+         *     the integration parts (`gates`, `notifications`, `issueTrackers`, `fastmock`, and any other
+         *     key such as `vcs`) are kept as given and validated by the integrations feature.
+         */
+        ProjectSettings: {
+            fastmock?: components["schemas"]["FastMockSettings"] | null;
+            /**
+             * @default {
+             *       "historyDepth": 10,
+             *       "stabilizationPeriod": 5,
+             *       "includePassedTests": false
+             *     }
+             */
+            flaky?: components["schemas"]["FlakySettings"];
+            /**
+             * @description Quality gates.
+             * @default []
+             */
+            gates?: components["schemas"]["Gate"][];
+            /**
+             * @description Issue trackers `{type: jira|gitlab|github, urlTemplate, keyRegex}`; triage builds issue
+             *     URLs from them when only a key is given.
+             * @default []
+             */
+            issueTrackers?: components["schemas"]["IssueTracker"][];
+            /**
+             * @description Notification targets.
+             * @default []
+             */
+            notifications?: components["schemas"]["Notification"][];
+            /**
+             * @default {
+             *       "rawDays": 90,
+             *       "keepImportant": true
+             *     }
+             */
+            retention?: components["schemas"]["RetentionSettings"];
+            /**
+             * @default {
+             *       "afterDays": 30
+             *     }
+             */
+            rollup?: components["schemas"]["RollupSettings"];
+            vcs?: components["schemas"]["VcsSettings"] | null;
         };
         /** @description A result that was not accepted. */
         Rejected: {
@@ -665,7 +1698,8 @@ export interface components {
              * @description Start, milliseconds since the Unix epoch.
              */
             start?: number | null;
-            status: components["schemas"]["Status"];
+            /** @description A final status, or `running` while the test runs. */
+            status: components["schemas"]["ReportStatus"];
             stderr?: string | null;
             stdout?: string | null;
             steps?: components["schemas"]["ReportStep"][];
@@ -685,6 +1719,12 @@ export interface components {
             /** Format: int32 */
             line?: number | null;
         };
+        /**
+         * @description Status of a reported result: a final status, or `running` for a result opened before its
+         *     test finished (sent again later with the same `id` and a final status).
+         * @enum {string}
+         */
+        ReportStatus: "passed" | "failed" | "broken" | "skipped" | "unknown" | "running";
         /** @description A step; nested steps form a tree. */
         ReportStep: {
             attachments?: components["schemas"]["ReportAttachment"][];
@@ -726,6 +1766,8 @@ export interface components {
             /** Format: int64 */
             durationMs?: number | null;
             fingerprint?: string | null;
+            /** @description Flaky across runs (Allure 3 algorithm, project settings). */
+            flaky: boolean;
             flakyInRun: boolean;
             fullName: string;
             /** Format: uuid */
@@ -735,6 +1777,11 @@ export interface components {
             launchId: string;
             /** @description Error message of the final attempt (first 500 characters). */
             message?: string | null;
+            /**
+             * Format: date-time
+             * @description End of the mute, when it has one.
+             */
+            muteUntil?: string | null;
             muted: boolean;
             name: string;
             seriesKey: string;
@@ -744,6 +1791,133 @@ export interface components {
             suitePath: string[];
             /** Format: uuid */
             testCaseId: string;
+            /**
+             * @description Status change against the previous run of the series on the same branch: `new`,
+             *     `fixed`, `regressed` or `malfunctioned`.
+             */
+            transition?: string | null;
+        };
+        /** @description Launches a retention run would delete. */
+        RetentionPreview: {
+            /**
+             * Format: int64
+             * @description Important launches kept although beyond the window.
+             */
+            importantKept: number;
+            /** @description The first launches that would go (oldest first, at most 50). */
+            launchIds: string[];
+            /** Format: int64 */
+            launches: number;
+            /** Format: date-time */
+            oldest?: string | null;
+            /** Format: int64 */
+            results: number;
+        };
+        /** @description How long raw results are kept. */
+        RetentionSettings: {
+            /**
+             * @description Never delete launches marked important.
+             * @default true
+             */
+            keepImportant?: boolean;
+            /**
+             * Format: int32
+             * @description Keep at most this many launches (important ones are not counted).
+             * @default null
+             */
+            launchesKeep?: number | null;
+            /**
+             * Format: int32
+             * @description Launches older than this many days are deleted (after their history is rolled up).
+             * @default 90
+             */
+            rawDays?: number;
+        };
+        /** @description When launches are aggregated into daily history. */
+        RollupSettings: {
+            /**
+             * Format: int32
+             * @default 30
+             */
+            afterDays?: number;
+        };
+        /** @description A rule. */
+        Rule: {
+            action: components["schemas"]["RuleAction"];
+            /** Format: date-time */
+            createdAt: string;
+            enabled: boolean;
+            /** Format: int64 */
+            hits: number;
+            /** Format: uuid */
+            id: string;
+            match: components["schemas"]["RuleMatch"];
+            name: string;
+            /** Format: int32 */
+            order: number;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        /** @description Effects of a rule. */
+        RuleAction: {
+            /** @description Mark the failure as accepted (a known, tolerated failure). */
+            accept?: boolean | null;
+            comment?: string | null;
+            /** Format: uuid */
+            defectTypeId?: string | null;
+            issue?: components["schemas"]["IssueRef"] | null;
+            mute?: components["schemas"]["MuteAction"] | null;
+        };
+        /** @description `{items}` of rules. */
+        RuleList: {
+            items: components["schemas"]["Rule"][];
+        };
+        /** @description Conditions of a rule; all given ones must hold. */
+        RuleMatch: {
+            /** @description Environment key of the launch. */
+            environment?: string | null;
+            fingerprint?: string | null;
+            messageRegex?: string | null;
+            /** @description Result statuses; default `failed` and `broken`. */
+            statuses?: string[] | null;
+            /** Format: uuid */
+            testCaseId?: string | null;
+            traceRegex?: string | null;
+        };
+        /** @description Body of `PATCH .../rules/{id}`. */
+        RulePatch: {
+            action?: components["schemas"]["RuleAction"] | null;
+            enabled?: boolean | null;
+            match?: components["schemas"]["RuleMatch"] | null;
+            name?: string | null;
+            /** Format: int32 */
+            order?: number | null;
+        };
+        /** @description Outcome of one rule. */
+        RuleResult: {
+            /**
+             * Format: double
+             * @description The measured value (a difference to the baseline for metrics other than
+             *     `newFailures` when the rule has a baseline); `null` when it cannot be measured.
+             */
+            actual?: number | null;
+            /** Format: uuid */
+            baselineLaunchId?: string | null;
+            /**
+             * Format: double
+             * @description The rule's value.
+             */
+            expected: number;
+            gate: string;
+            note?: string | null;
+            ok: boolean;
+            rule: components["schemas"]["GateRule"];
+        };
+        /** @description Body of `POST .../rules/test`. */
+        RuleTest: {
+            /** Format: uuid */
+            launchId: string;
+            rule: components["schemas"]["NewRule"];
         };
         /** @description A periodic job of the scheduler. */
         ScheduledJob: {
@@ -767,6 +1941,24 @@ export interface components {
             runCount: number;
             schedule: string;
         };
+        /** @description Names of the project's secrets. */
+        SecretList: {
+            items: components["schemas"]["SecretMeta"][];
+        };
+        /** @description A secret as listed: the name only, never the value. */
+        SecretMeta: {
+            /** Format: date-time */
+            createdAt: string;
+            name: string;
+            /** Format: date-time */
+            updatedAt: string;
+            updatedBy?: string | null;
+        };
+        /** @description Body of `PUT .../secrets/{name}`. */
+        SecretValue: {
+            /** @description At most 8 KiB. Never returned by the API. */
+            value: string;
+        };
         /** @description One past result of the same series. */
         SeriesPoint: {
             /** Format: uuid */
@@ -778,6 +1970,27 @@ export interface components {
             /** Format: date-time */
             startedAt?: string | null;
             status: string;
+        };
+        /** @description Similar failures of a result. */
+        SimilarList: {
+            items: components["schemas"]["SimilarResult"][];
+        };
+        /** @description A similar failure. */
+        SimilarResult: {
+            defect?: unknown;
+            /** Format: uuid */
+            launchId: string;
+            /** Format: int64 */
+            launchNumber: number;
+            message?: string | null;
+            name: string;
+            /** Format: uuid */
+            resultId: string;
+            /**
+             * Format: double
+             * @description 1 for the same fingerprint, else the text similarity of the messages (0..1).
+             */
+            score: number;
         };
         /**
          * @description Final outcome of a test result, attempt or step.
@@ -801,12 +2014,45 @@ export interface components {
             /** Format: date-time */
             stoppedAt?: string | null;
         };
+        /** @description A background task. */
+        Task: {
+            /** Format: date-time */
+            createdAt: string;
+            error?: string | null;
+            /** Format: date-time */
+            finishedAt?: string | null;
+            /** Format: uuid */
+            id: string;
+            kind: string;
+            progress: Record<string, never>;
+            /** @description `queued`, `running`, `done` or `failed`. */
+            status: string;
+        };
         /** @description A test case (logical identity across parameters and environments). */
         TestCaseView: {
             fullName: string;
             /** Format: uuid */
             id: string;
             name: string;
+        };
+        /** @description A created plan. */
+        TestPlanCreated: {
+            /** Format: uuid */
+            id: string;
+            /** Format: int64 */
+            testCount: number;
+        };
+        /** @description Allure `testplan.json` (version 1.0). */
+        TestPlanJson: {
+            tests: components["schemas"]["TestPlanTest"][];
+            version: string;
+        };
+        /** @description One test of an Allure test plan. */
+        TestPlanTest: {
+            /** @description `ALLURE_ID` of the test, when it has one. */
+            id?: string | null;
+            /** @description Full name as the Allure adapter reports it. */
+            selector: string;
         };
         /** @description A node of the launch tree. */
         TreeNode: {
@@ -815,6 +2061,33 @@ export interface components {
             name: string;
             path: string[];
             resultIds?: string[] | null;
+        };
+        /** @description Issue of a triage: a URL, or a key that a project issue tracker turns into one. */
+        TriageIssue: {
+            key?: string | null;
+            url?: string | null;
+        };
+        /** @description Outcome of a triage request. */
+        TriageOutcome: {
+            /** Format: int64 */
+            updated: number;
+        };
+        /** @description Body of `POST .../triage`. */
+        TriageRequest: {
+            /** @description Empty string removes the comment. */
+            comment?: string | null;
+            /** Format: uuid */
+            defectTypeId?: string | null;
+            /** @description With `launchId`: every result of the launch with this fingerprint. */
+            fingerprint?: string | null;
+            issue?: components["schemas"]["TriageIssue"] | null;
+            /** Format: uuid */
+            launchId?: string | null;
+            mute?: components["schemas"]["MuteRequest"] | null;
+            resultIds?: string[] | null;
+            /** @description `user` (default) or `ai`. */
+            source?: string | null;
+            unmute?: boolean | null;
         };
         /** @description One upload (shard) of a launch. */
         Upload: {
@@ -876,6 +2149,19 @@ export interface components {
         UploadList: {
             items: components["schemas"]["Upload"][];
         };
+        /** @description Merge request comments and commit statuses. */
+        VcsSettings: {
+            comment?: boolean;
+            /** @description `gitlab` or `github`. */
+            provider: string;
+            status?: boolean;
+            tokenSecretRef: string;
+            /**
+             * @description GitLab base URL (`https://gitlab.example.com`) or GitHub API URL
+             *     (`https://api.github.com`, `https://github.example.com/api/v3`).
+             */
+            url: string;
+        };
     };
     responses: never;
     parameters: never;
@@ -885,7 +2171,7 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
-    jobs: {
+    admin_jobs: {
         parameters: {
             query?: never;
             header?: never;
@@ -912,7 +2198,7 @@ export interface operations {
             };
         };
     };
-    audit: {
+    admin_audit: {
         parameters: {
             query?: {
                 /** @description An action or a `prefix*`. */
@@ -1093,7 +2379,7 @@ export interface operations {
             };
         };
     };
-    patch: {
+    projects_patch: {
         parameters: {
             query?: never;
             header?: never;
@@ -1134,7 +2420,7 @@ export interface operations {
             };
         };
     };
-    content: {
+    attachments_content: {
         parameters: {
             query?: {
                 /** @description `1` forces a download. */
@@ -1174,7 +2460,257 @@ export interface operations {
             };
         };
     };
-    stream: {
+    analysis_dashboard: {
+        parameters: {
+            query?: {
+                branch?: string;
+                environment?: string;
+                /** @description First day (`YYYY-MM-DD` or RFC 3339, UTC); default 30 days before `to`. */
+                from?: string;
+                /** @description Last day (inclusive); default today. */
+                to?: string;
+                /** @description `day` (default) or `week`. */
+                bucket?: string;
+            };
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Dashboard"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    analysis_defect_types: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DefectTypeList"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    analysis_create_defect_type: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NewDefectType"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DefectType"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    analysis_delete_defect_type: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    analysis_patch_defect_type: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DefectTypePatch"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DefectType"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    events_stream: {
         parameters: {
             query?: never;
             header?: never;
@@ -1220,6 +2756,48 @@ export interface operations {
             };
         };
     };
+    analysis_flaky: {
+        parameters: {
+            query?: {
+                branch?: string;
+                environment?: string;
+                /** @description 1..=500, default 50. */
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FlakyList"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     launches_list: {
         parameters: {
             query?: {
@@ -1231,6 +2809,8 @@ export interface operations {
                 attr?: string;
                 /** @description Substring of the name. */
                 q?: string;
+                /** @description Exact external id. */
+                externalId?: string;
                 /** @description `false` (default): regular launches; `true`: debug launches only. */
                 debug?: boolean;
                 /** @description Cursor from `next`. */
@@ -1330,6 +2910,47 @@ export interface operations {
             };
         };
     };
+    analysis_compare: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                /** @description base launch */
+                a: string;
+                /** @description compared launch */
+                b: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Comparison"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     launches_get: {
         parameters: {
             query?: never;
@@ -1404,7 +3025,57 @@ export interface operations {
             };
         };
     };
-    upload: {
+    launches_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LaunchPatch"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Launch"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    attachments_upload: {
         parameters: {
             query?: never;
             header?: {
@@ -1457,7 +3128,45 @@ export interface operations {
             };
         };
     };
-    finish: {
+    analysis_clusters: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClusterList"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    launches_finish: {
         parameters: {
             query?: never;
             header?: never;
@@ -1491,6 +3200,247 @@ export interface operations {
                 };
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    integrations_gate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GateReport"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description the gate settings are invalid */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    logs_list: {
+        parameters: {
+            query?: {
+                /** @description Client id of an attempt, or the id of a result of the launch (all its attempts). */
+                resultId?: string;
+                attempt?: number;
+                /** @description Lowest level shown: `trace`, `debug`, `info`, `warn` or `error`. */
+                level?: string;
+                /** @description Case-insensitive text in the message. */
+                q?: string;
+                /** @description Cursor from `next`: older lines. */
+                before?: string;
+                /** @description 1..=5000, default 500. */
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The newest matching lines before the cursor, oldest first; `next` pages to older lines */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_LogLine"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    logs_ingest: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** @description A JSON array of lines or NDJSON (application/x-ndjson), one line per object */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LogLine"][];
+            };
+        };
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LogIngestSummary"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    logs_stream: {
+        parameters: {
+            query?: {
+                /** @description Client id of an attempt, or the id of a result of the launch (all its attempts). */
+                resultId?: string;
+                level?: string;
+                q?: string;
+            };
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description text/event-stream: `ready` first; `log` events carry `LogStreamBatch` {lines} (at most 20 events per second); `gap` events carry `LogGap` {skipped} when the oldest buffered lines were dropped because the client was slow */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": unknown;
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1551,7 +3501,7 @@ export interface operations {
             };
         };
     };
-    ingest: {
+    results_ingest: {
         parameters: {
             query?: never;
             header?: never;
@@ -1618,7 +3568,7 @@ export interface operations {
             };
         };
     };
-    tree: {
+    results_tree: {
         parameters: {
             query?: {
                 /** @description `suite` (default), `feature` or `package`. */
@@ -1761,7 +3711,59 @@ export interface operations {
             };
         };
     };
-    detail: {
+    integrations_deliveries: {
+        parameters: {
+            query?: {
+                /** @description `pending`, `sending`, `delivered` or `failed`. */
+                status?: string;
+                launchId?: string;
+                /** @description Cursor from `next`. */
+                before?: string;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_DeliveryView"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    results_detail: {
         parameters: {
             query?: never;
             header?: never;
@@ -1799,7 +3801,774 @@ export interface operations {
             };
         };
     };
-    history: {
+    integrations_mock_interactions: {
+        parameters: {
+            query?: {
+                /** @description Attempt number, 1-based (default: the last attempt). */
+                attempt?: number;
+            };
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MockInteractions"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description FastMock is not configured */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description FastMock is unreachable or refused */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    results_similar: {
+        parameters: {
+            query?: {
+                /** @description 1..=100, default 20. */
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The same fingerprint first (the normalized message hash while results carry no fingerprint), then text similarity */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SimilarList"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    analysis_retention_preview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RetentionPreview"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    analysis_rules: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuleList"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    analysis_create_rule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NewRule"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Rule"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    analysis_test_rule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RuleTest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DryRun"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    analysis_delete_rule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    analysis_patch_rule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RulePatch"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Rule"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    analysis_apply_rule: {
+        parameters: {
+            query?: {
+                /** @description One launch; default: the launches of the last 30 days (at most 500). */
+                launchId?: string;
+            };
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Task"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    logs_search: {
+        parameters: {
+            query: {
+                /** @description Text to find (1..=256 bytes; a substring in PostgreSQL and ClickHouse, a phrase in OpenSearch). */
+                q: string;
+                launchId?: string;
+                /** @description RFC 3339; default 7 days before `to`. */
+                from?: string;
+                /** @description RFC 3339; default now. */
+                to?: string;
+                /** @description Lowest level: `trace`, `debug`, `info`, `warn` or `error`. */
+                level?: string;
+                /** @description 1..=1000, default 100. */
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LogHits"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    integrations_secrets: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecretList"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    integrations_put_secret: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SecretValue"];
+            };
+        };
+        responses: {
+            /** @description created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description replaced */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description FASTPROOF_SECRETS_KEY_FILE is not set */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    integrations_delete_secret: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    analysis_get_settings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectSettings"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    analysis_put_settings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProjectSettings"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectSettings"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    analysis_task: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Task"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    results_history: {
         parameters: {
             query?: {
                 branch?: string;
@@ -1821,6 +4590,142 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HistoryList"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    analysis_create_test_plan: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NewTestPlan"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TestPlanCreated"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    analysis_testplan_json: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TestPlanJson"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    analysis_triage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TriageRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TriageOutcome"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
                 };
             };
             403: {

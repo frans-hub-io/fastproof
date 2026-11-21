@@ -103,6 +103,11 @@ nav:
       - guide/reporters.md
       - guide/live-logs.md
       - guide/migrating-from-allure.md
+  - Triage and integrations:
+      - guide/rules-and-triage.md
+      - guide/quality-gates.md
+      - guide/notifications.md
+      - guide/mcp-copilot.md
   - Operations:
       - operations/configuration.md
       - operations/helm.md

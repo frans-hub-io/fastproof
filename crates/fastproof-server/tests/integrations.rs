@@ -1185,17 +1185,28 @@ async fn mcp_tools_over_http() {
         a.contains("triage.apply") && a.contains("\"source\":\"ai\""),
         "{a}"
     );
-    let r = tool(
-        &s,
-        &editor,
-        "create_rule_draft",
-        json!({"project": "shop", "name": "r", "match": {}, "action": {}}),
-    )
-    .await;
-    assert_eq!(
-        r["isError"], true,
-        "rules come with the analysis module: {r}"
-    );
+    let draft = json!({"project": "shop", "name": "Payment timeouts", "match": {"messageRegex": "timeout"},
+        "action": {"comment": "known gateway timeout"}});
+    let r = tool(&s, &viewer, "create_rule_draft", draft.clone()).await;
+    assert_eq!(r["isError"], true, "a viewer cannot write rules: {r}");
+    let uploader = s.token("u", "uploader", &["shop"]).await;
+    let r = tool(&s, &uploader, "create_rule_draft", draft.clone()).await;
+    assert_eq!(r["isError"], true, "rules:write is required: {r}");
+    let r = tool(&s, &editor, "create_rule_draft", draft).await;
+    assert_ne!(r["isError"], true, "{r}");
+    let created = tool_json(&r);
+    assert_eq!(created["name"], "Payment timeouts", "{created}");
+    assert_eq!(created["enabled"], false, "drafts are disabled: {created}");
+    let (st, rules) = s.get("/api/v1/projects/shop/rules", &editor).await;
+    assert_eq!(st, StatusCode::OK, "{rules}");
+    assert_eq!(rules["items"].as_array().unwrap().len(), 1, "{rules}");
+    let (_, audit) = s.get("/api/v1/audit?limit=100", ADMIN_TOKEN).await;
+    let created_by_ai = audit["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|e| e["action"] == "rule.create" && e.to_string().contains("\"source\":\"ai\""));
+    assert!(created_by_ai, "{audit}");
     let (st, b) = mcp(
         &s,
         Some(&viewer),

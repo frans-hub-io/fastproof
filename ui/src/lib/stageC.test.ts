@@ -46,15 +46,15 @@ describe('defects', () => {
     expect(issueUrlFor('https://x.example.com/{key}', '(', 'x')).toBeNull();
   });
 
-  it('labels and colors a defect from its type, group or stage B name', () => {
+  it('labels and colors a defect from its type, group or name', () => {
     const t1 = { id: 't1', group: 'productBug' as const, name: 'Checkout bug', shortName: 'CB', color: '#123456', builtIn: false };
     const types = new Map([['t1', t1]]);
     expect(defectLabel({ typeId: 't1' }, types)).toBe('Checkout bug');
     expect(defectColor({ typeId: 't1' }, types)).toBe('#123456');
     expect(defectLabel({ group: 'systemIssue' })).toBe('System issue');
     expect(defectColor({ group: 'systemIssue' })).toBe(GROUP_COLOR.systemIssue);
-    expect(defectLabel({ type: 'automation_bug' })).toBe('automation bug');
-    expect(defectColor({ typeId: 'x', group: null }, new Map([['x', { ...t1, id: 'x', color: 'red;background:url(x)' }]]))).toBe(GROUP_COLOR.toInvestigate);
+    expect(defectLabel({ name: 'Flaky env' })).toBe('Flaky env');
+    expect(defectColor({ typeId: 'x' }, new Map([['x', { ...t1, id: 'x', color: 'red;background:url(x)' }]]))).toBe(GROUP_COLOR.toInvestigate);
   });
 });
 

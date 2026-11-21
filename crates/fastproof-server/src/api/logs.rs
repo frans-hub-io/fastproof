@@ -78,7 +78,7 @@ fn validate(l: &LogLine, max_line: usize) -> Result<(), String> {
     Ok(())
 }
 
-#[utoipa::path(post, path = "/api/v1/projects/{key}/launches/{id}/logs", tag = "logs",
+#[utoipa::path(post, path = "/api/v1/projects/{key}/launches/{id}/logs", tag = "logs", operation_id = "logs_ingest",
     params(("key" = String, Path), ("id" = Uuid, Path)),
     request_body(content = Vec<LogLine>, description = "A JSON array of lines or NDJSON (application/x-ndjson), one line per object"),
     responses((status = 202, body = LogIngestSummary), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),
@@ -213,7 +213,7 @@ pub async fn ingest(
 #[into_params(parameter_in = Query)]
 #[serde(rename_all = "camelCase")]
 pub struct LogQuery {
-    /// Client id of a result.
+    /// Client id of an attempt, or the id of a result of the launch (all its attempts).
     pub result_id: Option<String>,
     pub attempt: Option<u32>,
     /// Lowest level shown: `trace`, `debug`, `info`, `warn` or `error`.
@@ -224,6 +224,25 @@ pub struct LogQuery {
     pub before: Option<String>,
     /// 1..=5000, default 500.
     pub limit: Option<i64>,
+}
+
+/// The result keys a `resultId` filter stands for: the value itself and, when it is the id of a
+/// result of the launch, the client ids of that result's attempts.
+async fn result_keys(s: &AppState, launch: Uuid, v: Option<String>) -> ApiResult<Vec<String>> {
+    let Some(v) = v.map(|v| v.trim().to_string()).filter(|v| !v.is_empty()) else {
+        return Ok(Vec::new());
+    };
+    if v.len() > MAX_RESULT_ID_BYTES {
+        return Err(ApiError::bad_request(format!(
+            "resultId has at most {MAX_RESULT_ID_BYTES} bytes"
+        )));
+    }
+    let mut keys = match Uuid::parse_str(&v) {
+        Ok(id) => s.store.result_client_ids(launch, id).await?,
+        Err(_) => Vec::new(),
+    };
+    keys.push(v);
+    Ok(keys)
 }
 
 fn level_of(v: Option<&str>) -> ApiResult<Option<LogLevel>> {
@@ -242,7 +261,7 @@ fn text_filter(q: Option<String>) -> ApiResult<Option<String>> {
     }
 }
 
-#[utoipa::path(get, path = "/api/v1/projects/{key}/launches/{id}/logs", tag = "logs",
+#[utoipa::path(get, path = "/api/v1/projects/{key}/launches/{id}/logs", tag = "logs", operation_id = "logs_list",
     params(("key" = String, Path), ("id" = Uuid, Path), LogQuery),
     responses((status = 200, body = Page<LogLine>, description = "The newest matching lines before the cursor, oldest first; `next` pages to older lines"),
         (status = 400, body = ErrorBody), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
@@ -267,7 +286,7 @@ pub async fn list(
         return Err(ApiError::bad_request("invalid cursor"));
     }
     let f = LogFilter {
-        result_id: q.result_id.filter(|r| !r.is_empty()),
+        result_ids: result_keys(&s, launch.id, q.result_id).await?,
         attempt: q.attempt,
         level: level_of(q.level.as_deref())?,
         q: text_filter(q.q)?,
@@ -282,6 +301,7 @@ pub async fn list(
 #[into_params(parameter_in = Query)]
 #[serde(rename_all = "camelCase")]
 pub struct StreamQuery {
+    /// Client id of an attempt, or the id of a result of the launch (all its attempts).
     pub result_id: Option<String>,
     pub level: Option<String>,
     pub q: Option<String>,
@@ -291,7 +311,7 @@ struct Subscriber {
     rx: tokio::sync::broadcast::Receiver<std::sync::Arc<crate::stream::live::LogBatch>>,
     project: String,
     launch: Uuid,
-    result_id: Option<String>,
+    result_ids: Vec<String>,
     level: Option<LogLevel>,
     q: Option<String>,
     buf: VecDeque<LogLine>,
@@ -302,7 +322,7 @@ struct Subscriber {
 
 impl Subscriber {
     fn wants(&self, l: &LogLine) -> bool {
-        if self.result_id.as_ref().is_some_and(|r| *r != l.result_id) {
+        if !self.result_ids.is_empty() && !self.result_ids.contains(&l.result_id) {
             return false;
         }
         if self.level.is_some_and(|min| l.level < min) {
@@ -360,7 +380,7 @@ impl Subscriber {
     }
 }
 
-#[utoipa::path(get, path = "/api/v1/projects/{key}/launches/{id}/logs/stream", tag = "logs",
+#[utoipa::path(get, path = "/api/v1/projects/{key}/launches/{id}/logs/stream", tag = "logs", operation_id = "logs_stream",
     params(("key" = String, Path), ("id" = Uuid, Path), StreamQuery),
     responses((status = 200, description = "text/event-stream: `ready` first; `log` events carry `LogStreamBatch` {lines} (at most 20 events per second); `gap` events carry `LogGap` {skipped} when the oldest buffered lines were dropped because the client was slow", content_type = "text/event-stream"),
         (status = 400, body = ErrorBody), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody), (status = 429, body = ErrorBody)))]
@@ -386,7 +406,7 @@ pub async fn stream(
         rx: s.logs.subscribe(),
         project: project.key,
         launch: launch.id,
-        result_id: q.result_id.filter(|r| !r.is_empty()),
+        result_ids: result_keys(&s, launch.id, q.result_id).await?,
         level,
         q: text,
         buf: VecDeque::new(),

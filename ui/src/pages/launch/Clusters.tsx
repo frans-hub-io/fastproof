@@ -171,7 +171,7 @@ export function Clusters({ project, launch }: { project: string; launch: Launch 
                             size="xs"
                             variant="light"
                             leftSection={<IconTag size={14} />}
-                            onClick={() => setTarget({ label: `${String(c.count)} results with: ${c.message}`, count: c.count, launchId: launch.id, fingerprint: c.fingerprint, defect: c.defect })}
+                            onClick={() => setTarget({ label: `${String(c.count)} result${c.count === 1 ? '' : 's'} with: ${c.message ?? '(no message)'}`, count: c.count, launchId: launch.id, fingerprint: c.fingerprint, defect: c.defect })}
                             data-testid="triage-cluster"
                           >
                             Triage all {c.count}

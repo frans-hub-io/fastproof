@@ -83,6 +83,28 @@ S3-compatible bucket or a directory.
 
 </div>
 
+## Triage and integrations
+
+<div class="grid cards fp-cards" markdown>
+
+-   :material-bug-check-outline:{ .fp-card__icon } **[Rules and triage](guide/rules-and-triage.md)**
+
+    Failure clusters, defect types, mutes and rules that triage known failures on ingest.
+
+-   :material-traffic-light-outline:{ .fp-card__icon } **[Quality gates](guide/quality-gates.md)**
+
+    Pass or fail a launch on its numbers, in CI and on the merge request.
+
+-   :material-bell-ring-outline:{ .fp-card__icon } **[Notifications](guide/notifications.md)**
+
+    Signed webhooks, Slack, email, Telegram, merge request comments and commit statuses.
+
+-   :material-robot-outline:{ .fp-card__icon } **[MCP and GitHub Copilot](guide/mcp-copilot.md)**
+
+    Let a coding agent in your editor investigate and triage failures.
+
+</div>
+
 ## Operate
 
 <div class="grid cards fp-cards" markdown>

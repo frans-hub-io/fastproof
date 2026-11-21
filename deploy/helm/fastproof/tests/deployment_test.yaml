@@ -233,3 +233,23 @@ tests:
               items:
                 - key: uri
                   path: database-url
+  - it: annotates pods with a checksum of the chart-managed secret values
+    template: templates/deployment.yaml
+    documentSelector:
+      path: kind
+      value: Deployment
+    asserts:
+      - equal:
+          path: spec.template.metadata.annotations["checksum/secrets"]
+          value: 574e108ecfa03b6f351a55fc08a68ea5a6985dc35799f133baf5501ade98fe21
+  - it: changes the secrets checksum when a secret value changes, so the pods roll
+    template: templates/deployment.yaml
+    documentSelector:
+      path: kind
+      value: Deployment
+    set:
+      integrations.secretsKey.value: k1-aaa
+    asserts:
+      - equal:
+          path: spec.template.metadata.annotations["checksum/secrets"]
+          value: 21b2ef80122bf3245b29adcd58faac738e0d185260b6b033a06dc0c5d757248f

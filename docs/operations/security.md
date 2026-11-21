@@ -9,6 +9,7 @@ metrics on the separate operations port and the sign-in flow itself.
 |---|---|---|
 | Static tokens | Bootstrap, automation | `FASTPROOF_ADMIN_TOKENS_FILE`, one `name:role:sha256:<hex>` line per token; the role is granted globally. Prefer hashes: then the file holds no secret |
 | Managed API tokens | CI, scripts, integrations | Created in the UI or with `POST /api/v1/tokens`; prefix `fp_`, mandatory expiry, scoped to projects, only the SHA-256 is stored, revocable; a token can only grant what its creator holds |
+| API token sign-in | People in the UI without single sign-on | The token is pasted on the sign-in page, kept in session storage of that tab and sent as `Authorization: Bearer` to the API only (never in URLs); bearer requests need no CSRF header. Without OIDC, `/auth/login` redirects to that page; `GET /auth/config` tells the page whether SSO is configured |
 | OIDC sign-in | People in the UI | Authorization code flow with PKCE, server-side sessions, `__Host-` cookies (`HttpOnly`, `Secure`, `SameSite=Lax`), logout at the provider |
 | OIDC bearer JWT | Services with tokens from your identity provider | Enabled with `FASTPROOF_OIDC_API_AUDIENCE`; `iss`, `aud`, `exp`, `nbf` and the algorithm are checked |
 
@@ -97,6 +98,13 @@ Every parser has size, depth and count limits, and one byte budget per upload co
 - Pass secrets as files (`*_FILE` variables). The Helm chart mounts every secret as a file, never as an
   environment variable, except the optional Valkey URL.
 - Secrets are redacted from logs and never returned by the API.
+- Project secrets (integration tokens, webhook keys) are encrypted at rest with AES-256-GCM under the key in
+  `FASTPROOF_SECRETS_KEY_FILE`, bound to their project and name, and write-only through the API. Rotate the key
+  as described in [Secrets key rotation](configuration.md#secrets-key-rotation).
+- Integrations reach only the hosts in `FASTPROOF_EGRESS_ALLOW` (empty by default: no outbound calls). Names
+  matched only by a wildcard must resolve to public addresses, every redirect is checked again, and proxies
+  from the environment are ignored.
+- Webhooks are signed with HMAC-SHA256 (`X-FastProof-Signature`); verify the signature on the receiving side.
 - Keep port 9090 (metrics, health, readiness) inside the cluster; the Helm chart's NetworkPolicy allows it
   only from the monitoring namespace.
 

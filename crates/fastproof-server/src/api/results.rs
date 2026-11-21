@@ -229,7 +229,7 @@ pub async fn prepare_reports(
     Ok(out)
 }
 
-#[utoipa::path(post, path = "/api/v1/projects/{key}/launches/{id}/results", tag = "results",
+#[utoipa::path(post, path = "/api/v1/projects/{key}/launches/{id}/results", tag = "results", operation_id = "results_ingest",
     params(("key" = String, Path), ("id" = Uuid, Path)),
     request_body(content = ReportResult, description = "One ReportResult, a JSON array of them, or NDJSON (application/x-ndjson), see schemas/fastproof-report-v1.json"),
     responses((status = 202, body = IngestSummary), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),
@@ -386,7 +386,7 @@ pub struct ResultQuery {
     pub limit: Option<i64>,
 }
 
-#[utoipa::path(get, path = "/api/v1/projects/{key}/launches/{id}/results", tag = "results",
+#[utoipa::path(get, path = "/api/v1/projects/{key}/launches/{id}/results", tag = "results", operation_id = "results_list",
     params(("key" = String, Path), ("id" = Uuid, Path), ResultQuery),
     responses((status = 200, body = Page<ResultSummary>), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
 pub async fn list(
@@ -439,7 +439,7 @@ pub struct TreeQuery {
     pub group_by: Option<String>,
 }
 
-#[utoipa::path(get, path = "/api/v1/projects/{key}/launches/{id}/tree", tag = "results",
+#[utoipa::path(get, path = "/api/v1/projects/{key}/launches/{id}/tree", tag = "results", operation_id = "results_tree",
     params(("key" = String, Path), ("id" = Uuid, Path), TreeQuery),
     responses((status = 200, body = TreeNode), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
 pub async fn tree(
@@ -463,7 +463,7 @@ pub async fn tree(
     Ok(Json(s.store.tree(&launch, by).await?))
 }
 
-#[utoipa::path(get, path = "/api/v1/projects/{key}/results/{id}", tag = "results",
+#[utoipa::path(get, path = "/api/v1/projects/{key}/results/{id}", tag = "results", operation_id = "results_detail",
     params(("key" = String, Path), ("id" = Uuid, Path)),
     responses((status = 200, body = ResultDetail), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
 pub async fn detail(
@@ -501,7 +501,7 @@ pub struct HistoryList {
     pub daily: Vec<DailyEntry>,
 }
 
-#[utoipa::path(get, path = "/api/v1/projects/{key}/test-cases/{testCaseId}/history", tag = "results",
+#[utoipa::path(get, path = "/api/v1/projects/{key}/test-cases/{testCaseId}/history", tag = "results", operation_id = "results_history",
     params(("key" = String, Path), ("testCaseId" = Uuid, Path), HistoryQuery),
     responses((status = 200, body = HistoryList), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
 pub async fn history(

@@ -70,13 +70,13 @@ function hasData(d: Dashboard): boolean {
 }
 
 function Content({ project, d }: { project: string; d: Dashboard }) {
-  const passRate = useMemo(() => d.passRate.map((p) => ({ t: shortDay(p.t), passRate: p.total > 0 ? Math.round(p.passRate * 1000) / 10 : null, total: p.total })), [d.passRate]);
+  const passRate = useMemo(() => d.passRate.map((p) => ({ t: shortDay(p.t), passRate: p.total > 0 && p.passRate != null ? Math.round(p.passRate * 1000) / 10 : null, total: p.total })), [d.passRate]);
   const durations = useMemo(() => d.durations.map((p) => ({ t: shortDay(p.t), p50: p.p50Ms ? p.p50Ms / 1000 : null, p95: p.p95Ms ? p.p95Ms / 1000 : null })), [d.durations]);
   const launches = useMemo(() => d.launches.map((p) => ({ t: shortDay(p.t), launches: p.count })), [d.launches]);
   const groups = useMemo(() => d.defectGroups.map((p) => ({ ...p, t: shortDay(p.t) })), [d.defectGroups]);
   const rates = passRate.map((p) => p.passRate).filter((v): v is number => v !== null);
   const passFloor = rates.length ? Math.max(0, Math.floor((Math.min(...rates) - 5) / 10) * 10) : 0;
-  const latest = [...d.passRate].reverse().find((p) => p.total > 0);
+  const latest = [...d.passRate].reverse().find((p) => p.total > 0 && p.passRate != null);
   const totalLaunches = d.launches.reduce((s, l) => s + l.count, 0);
   const totalResults = d.passRate.reduce((s, p) => s + p.total, 0);
   const defects = DEFECT_GROUPS.map((g) => ({ g, n: d.defectGroups.reduce((s, p) => s + p[g], 0) }));
@@ -87,7 +87,7 @@ function Content({ project, d }: { project: string; d: Dashboard }) {
   return (
     <Stack gap="md">
       <SimpleGrid cols={{ base: 2, md: 4 }} spacing="sm">
-        <Stat label="Latest pass rate" value={latest ? `${(latest.passRate * 100).toFixed(1)}%` : '—'} hint="passed / (total − skipped)" />
+        <Stat label="Latest pass rate" value={latest?.passRate != null ? `${(latest.passRate * 100).toFixed(1)}%` : '—'} hint="passed / (total − skipped)" />
         <Stat label="Launches" value={String(totalLaunches)} hint="in the selected range" />
         <Stat label="Results" value={totalResults.toLocaleString()} />
         <Stat label="Failures to investigate" value={String(investigate)} hint={`of ${String(failures)} failed or broken`} />

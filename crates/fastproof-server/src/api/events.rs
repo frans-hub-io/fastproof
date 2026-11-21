@@ -17,7 +17,7 @@ use crate::state::AppState;
 /// A stream ends after this long; clients reconnect and are authenticated again.
 pub const MAX_STREAM: Duration = Duration::from_secs(3600);
 
-#[utoipa::path(get, path = "/api/v1/projects/{key}/events", tag = "events",
+#[utoipa::path(get, path = "/api/v1/projects/{key}/events", tag = "events", operation_id = "events_stream",
     params(("key" = String, Path)),
     responses((status = 200, description = "text/event-stream: `launch.updated` {id}, `upload.updated` {launchId, id}; `ready` first, `resync` after missed events", content_type = "text/event-stream"),
         (status = 403, body = ErrorBody), (status = 404, body = ErrorBody), (status = 429, body = ErrorBody)))]

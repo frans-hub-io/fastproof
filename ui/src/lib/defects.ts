@@ -20,12 +20,15 @@ export function safeColor(c: string | null | undefined): string | undefined {
   return c && /^#[0-9a-fA-F]{3,8}$/.test(c) ? c : undefined;
 }
 
-export function defectLabel(d: DefectInfo, types?: Map<string, DefectType>): string {
+/** The parts of a defect that name and color it. */
+export type DefectRef = Partial<Pick<DefectInfo, 'typeId' | 'group' | 'name'>>;
+
+export function defectLabel(d: DefectRef, types?: Map<string, DefectType>): string {
   const t = d.typeId ? types?.get(d.typeId) : undefined;
-  return t?.name ?? d.name ?? (d.group ? GROUP_LABEL[d.group] : undefined) ?? (d.type ? d.type.replace(/_/g, ' ') : 'Defect');
+  return t?.name ?? d.name ?? (d.group ? GROUP_LABEL[d.group] : undefined) ?? 'Defect';
 }
 
-export function defectColor(d: DefectInfo, types?: Map<string, DefectType>): string {
+export function defectColor(d: DefectRef, types?: Map<string, DefectType>): string {
   const t = d.typeId ? types?.get(d.typeId) : undefined;
   return safeColor(t?.color) ?? (d.group ? GROUP_COLOR[d.group] : undefined) ?? GROUP_COLOR.toInvestigate;
 }

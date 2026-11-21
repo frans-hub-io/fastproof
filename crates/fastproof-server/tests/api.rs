@@ -192,13 +192,15 @@ async fn auth_is_uniform_and_scoped() {
         .iter()
         .map(|j| j["name"].as_str().unwrap())
         .collect();
-    for j in [
-        "partitions.ensure",
-        "uploads.cleanup",
-        "jobs.reap",
-        "outbox.prune",
-    ] {
-        assert!(names.contains(&j), "{names:?}");
+    let registered = fastproof_server::scheduler::standard_jobs()
+        .unwrap()
+        .names();
+    assert!(registered.len() >= 4, "{registered:?}");
+    for j in &registered {
+        assert!(
+            names.contains(&j.as_str()),
+            "{j} is listed as soon as the server is up: {names:?}"
+        );
     }
 }
 
@@ -823,4 +825,69 @@ impl Server {
         let s = r.status();
         (s, r.json().await.unwrap_or(Value::Null))
     }
+}
+
+#[tokio::test]
+async fn token_sign_in_without_sso() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = Server::start(&db).await;
+    let r = s
+        .req(Method::GET, "/auth/config", None)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    let b: Value = r.json().await.unwrap();
+    assert_eq!(b, json!({"oidc": false}), "public, and says SSO is off");
+
+    let plain = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    for (ret, want) in [
+        (
+            "%2Fp%2Fshop%3Fbranch%3Dmain",
+            "/sign-in?return=%2Fp%2Fshop%3Fbranch%3Dmain",
+        ),
+        ("%2F%2Fevil.example.com", "/sign-in"),
+        ("https%3A%2F%2Fevil.example.com%2F", "/sign-in"),
+    ] {
+        let r = plain
+            .get(format!("{}/auth/login?return={ret}", s.base))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::SEE_OTHER, "{ret}");
+        assert_eq!(r.headers()["location"], want, "{ret}");
+    }
+    let r = plain
+        .get(format!("{}/auth/login", s.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.headers()["location"], "/sign-in");
+    let r = s
+        .req(Method::POST, "/auth/logout", None)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::NOT_FOUND);
+
+    let (st, me) = s.get("/api/v1/me", ADMIN_TOKEN).await;
+    assert_eq!(st, StatusCode::OK, "{me}");
+    let (st, _) = s
+        .call(
+            Method::POST,
+            "/api/v1/projects",
+            Some(ADMIN_TOKEN),
+            Some(json!({"key": "tok", "name": "Token"})),
+        )
+        .await;
+    assert_eq!(
+        st,
+        StatusCode::CREATED,
+        "bearer requests need no CSRF header"
+    );
 }

@@ -6,7 +6,7 @@ use axum::extract::State;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use chrono::{DateTime, NaiveDate, Utc};
-use fastproof_store::analysis::clusters::{Cluster, MAX_SIMILAR, SimilarItem};
+use fastproof_store::analysis::clusters::Cluster;
 use fastproof_store::analysis::compare::Comparison;
 use fastproof_store::analysis::dashboard::{Bucket, Dashboard, DashboardQuery};
 use fastproof_store::analysis::defects::{
@@ -42,12 +42,6 @@ pub struct ClusterList {
     pub items: Vec<Cluster>,
 }
 
-/// `{items}` of similar failures.
-#[derive(Serialize, ToSchema)]
-pub struct SimilarList {
-    pub items: Vec<SimilarItem>,
-}
-
 /// `{items}` of rules.
 #[derive(Serialize, ToSchema)]
 pub struct RuleList {
@@ -71,7 +65,7 @@ async fn defect_type_ok(s: &AppState, project: &Project, id: Option<Uuid>) -> Ap
 
 // Defect types.
 
-#[utoipa::path(get, path = "/api/v1/projects/{key}/defect-types", tag = "analysis",
+#[utoipa::path(get, path = "/api/v1/projects/{key}/defect-types", tag = "analysis", operation_id = "analysis_defect_types",
     params(("key" = String, Path)),
     responses((status = 200, body = DefectTypeList), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
 pub async fn defect_types(
@@ -85,7 +79,7 @@ pub async fn defect_types(
     }))
 }
 
-#[utoipa::path(post, path = "/api/v1/projects/{key}/defect-types", tag = "analysis", request_body = NewDefectType,
+#[utoipa::path(post, path = "/api/v1/projects/{key}/defect-types", tag = "analysis", operation_id = "analysis_create_defect_type", request_body = NewDefectType,
     params(("key" = String, Path)),
     responses((status = 201, body = DefectType), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),
         (status = 404, body = ErrorBody), (status = 409, body = ErrorBody)))]
@@ -124,7 +118,7 @@ pub async fn create_defect_type(
     }
 }
 
-#[utoipa::path(patch, path = "/api/v1/projects/{key}/defect-types/{id}", tag = "analysis", request_body = DefectTypePatch,
+#[utoipa::path(patch, path = "/api/v1/projects/{key}/defect-types/{id}", tag = "analysis", operation_id = "analysis_patch_defect_type", request_body = DefectTypePatch,
     params(("key" = String, Path), ("id" = Uuid, Path)),
     responses((status = 200, body = DefectType), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),
         (status = 404, body = ErrorBody), (status = 409, body = ErrorBody)))]
@@ -157,7 +151,7 @@ pub async fn patch_defect_type(
     }
 }
 
-#[utoipa::path(delete, path = "/api/v1/projects/{key}/defect-types/{id}", tag = "analysis",
+#[utoipa::path(delete, path = "/api/v1/projects/{key}/defect-types/{id}", tag = "analysis", operation_id = "analysis_delete_defect_type",
     params(("key" = String, Path), ("id" = Uuid, Path)),
     responses((status = 204), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody), (status = 409, body = ErrorBody)))]
 pub async fn delete_defect_type(
@@ -184,7 +178,7 @@ pub async fn delete_defect_type(
 
 // Triage.
 
-#[utoipa::path(post, path = "/api/v1/projects/{key}/triage", tag = "analysis", request_body = TriageRequest,
+#[utoipa::path(post, path = "/api/v1/projects/{key}/triage", tag = "analysis", operation_id = "analysis_triage", request_body = TriageRequest,
     params(("key" = String, Path)),
     responses((status = 200, body = TriageOutcome), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),
         (status = 404, body = ErrorBody)))]
@@ -256,7 +250,7 @@ pub async fn create_rule_draft(
 
 // Clusters and similar failures.
 
-#[utoipa::path(get, path = "/api/v1/projects/{key}/launches/{id}/clusters", tag = "analysis",
+#[utoipa::path(get, path = "/api/v1/projects/{key}/launches/{id}/clusters", tag = "analysis", operation_id = "analysis_clusters",
     params(("key" = String, Path), ("id" = Uuid, Path)),
     responses((status = 200, body = ClusterList), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
 pub async fn clusters(
@@ -271,42 +265,9 @@ pub async fn clusters(
     }))
 }
 
-/// Query of similar failures.
-#[derive(Deserialize, IntoParams)]
-#[into_params(parameter_in = Query)]
-pub struct SimilarQuery {
-    /// 1..=50, default 10.
-    pub limit: Option<i64>,
-}
-
-#[utoipa::path(get, path = "/api/v1/projects/{key}/results/{id}/similar", tag = "analysis",
-    params(("key" = String, Path), ("id" = Uuid, Path), SimilarQuery),
-    responses((status = 200, body = SimilarList), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),
-        (status = 404, body = ErrorBody)))]
-pub async fn similar(
-    State(s): State<AppState>,
-    auth: Auth,
-    P((key, id)): P<(String, Uuid)>,
-    Q(q): Q<SimilarQuery>,
-) -> ApiResult<Json<SimilarList>> {
-    let p = s.project_for(&auth, &key, &s.perms.launches_read).await?;
-    let limit = q.limit.unwrap_or(10);
-    if !(1..=MAX_SIMILAR).contains(&limit) {
-        return Err(ApiError::bad_request(format!(
-            "limit must be 1..={MAX_SIMILAR}"
-        )));
-    }
-    let items = s
-        .store
-        .similar_results(p.id, id, limit, None)
-        .await?
-        .ok_or_else(|| ApiError::not_found("result"))?;
-    Ok(Json(SimilarList { items }))
-}
-
 // Rules.
 
-#[utoipa::path(get, path = "/api/v1/projects/{key}/rules", tag = "analysis",
+#[utoipa::path(get, path = "/api/v1/projects/{key}/rules", tag = "analysis", operation_id = "analysis_rules",
     params(("key" = String, Path)),
     responses((status = 200, body = RuleList), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
 pub async fn rules(
@@ -329,7 +290,7 @@ fn check_order(o: Option<i32>) -> ApiResult<()> {
     Ok(())
 }
 
-#[utoipa::path(post, path = "/api/v1/projects/{key}/rules", tag = "analysis", request_body = NewRule,
+#[utoipa::path(post, path = "/api/v1/projects/{key}/rules", tag = "analysis", operation_id = "analysis_create_rule", request_body = NewRule,
     params(("key" = String, Path)),
     responses((status = 201, body = Rule), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),
         (status = 404, body = ErrorBody), (status = 409, body = ErrorBody)))]
@@ -363,7 +324,7 @@ pub async fn create_rule(
     }
 }
 
-#[utoipa::path(patch, path = "/api/v1/projects/{key}/rules/{id}", tag = "analysis", request_body = RulePatch,
+#[utoipa::path(patch, path = "/api/v1/projects/{key}/rules/{id}", tag = "analysis", operation_id = "analysis_patch_rule", request_body = RulePatch,
     params(("key" = String, Path), ("id" = Uuid, Path)),
     responses((status = 200, body = Rule), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),
         (status = 404, body = ErrorBody)))]
@@ -413,7 +374,7 @@ pub async fn patch_rule(
     }
 }
 
-#[utoipa::path(delete, path = "/api/v1/projects/{key}/rules/{id}", tag = "analysis",
+#[utoipa::path(delete, path = "/api/v1/projects/{key}/rules/{id}", tag = "analysis", operation_id = "analysis_delete_rule",
     params(("key" = String, Path), ("id" = Uuid, Path)),
     responses((status = 204), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
 pub async fn delete_rule(
@@ -443,7 +404,7 @@ pub struct RuleTest {
     pub launch_id: Uuid,
 }
 
-#[utoipa::path(post, path = "/api/v1/projects/{key}/rules/test", tag = "analysis", request_body = RuleTest,
+#[utoipa::path(post, path = "/api/v1/projects/{key}/rules/test", tag = "analysis", operation_id = "analysis_test_rule", request_body = RuleTest,
     params(("key" = String, Path)),
     responses((status = 200, body = DryRun), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),
         (status = 404, body = ErrorBody)))]
@@ -484,7 +445,7 @@ pub struct ApplyQuery {
     pub launch_id: Option<Uuid>,
 }
 
-#[utoipa::path(post, path = "/api/v1/projects/{key}/rules/{id}/apply", tag = "analysis",
+#[utoipa::path(post, path = "/api/v1/projects/{key}/rules/{id}/apply", tag = "analysis", operation_id = "analysis_apply_rule",
     params(("key" = String, Path), ("id" = Uuid, Path), ApplyQuery),
     responses((status = 202, body = Task), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody),
         (status = 429, body = ErrorBody)))]
@@ -523,7 +484,7 @@ pub async fn apply_rule(
     Ok((StatusCode::ACCEPTED, Json(task)))
 }
 
-#[utoipa::path(get, path = "/api/v1/projects/{key}/tasks/{id}", tag = "analysis",
+#[utoipa::path(get, path = "/api/v1/projects/{key}/tasks/{id}", tag = "analysis", operation_id = "analysis_task",
     params(("key" = String, Path), ("id" = Uuid, Path)),
     responses((status = 200, body = Task), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
 pub async fn task(
@@ -552,7 +513,7 @@ pub struct FlakyQuery {
     pub limit: Option<i64>,
 }
 
-#[utoipa::path(get, path = "/api/v1/projects/{key}/flaky", tag = "analysis",
+#[utoipa::path(get, path = "/api/v1/projects/{key}/flaky", tag = "analysis", operation_id = "analysis_flaky",
     params(("key" = String, Path), FlakyQuery),
     responses((status = 200, body = FlakyList), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
 pub async fn flaky(
@@ -573,7 +534,7 @@ pub async fn flaky(
     }))
 }
 
-#[utoipa::path(get, path = "/api/v1/projects/{key}/settings", tag = "analysis",
+#[utoipa::path(get, path = "/api/v1/projects/{key}/settings", tag = "analysis", operation_id = "analysis_get_settings",
     params(("key" = String, Path)),
     responses((status = 200, body = ProjectSettings), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
 pub async fn get_settings(
@@ -585,7 +546,7 @@ pub async fn get_settings(
     Ok(Json(s.store.project_settings(p.id).await?))
 }
 
-#[utoipa::path(put, path = "/api/v1/projects/{key}/settings", tag = "analysis", request_body = ProjectSettings,
+#[utoipa::path(put, path = "/api/v1/projects/{key}/settings", tag = "analysis", operation_id = "analysis_put_settings", request_body = ProjectSettings,
     params(("key" = String, Path)),
     responses((status = 200, body = ProjectSettings), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),
         (status = 404, body = ErrorBody)))]
@@ -618,7 +579,7 @@ fn validate_integration_settings(doc: &ProjectSettings) -> ApiResult<()> {
     crate::integrations::settings::validate(&v).map_err(ApiError::bad_request)
 }
 
-#[utoipa::path(get, path = "/api/v1/projects/{key}/retention/preview", tag = "analysis",
+#[utoipa::path(get, path = "/api/v1/projects/{key}/retention/preview", tag = "analysis", operation_id = "analysis_retention_preview",
     params(("key" = String, Path)),
     responses((status = 200, body = RetentionPreview), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
 pub async fn retention_preview(
@@ -633,7 +594,7 @@ pub async fn retention_preview(
 
 // Launches.
 
-#[utoipa::path(patch, path = "/api/v1/projects/{key}/launches/{id}", tag = "launches", request_body = LaunchPatch,
+#[utoipa::path(patch, path = "/api/v1/projects/{key}/launches/{id}", tag = "launches", operation_id = "launches_patch", request_body = LaunchPatch,
     params(("key" = String, Path), ("id" = Uuid, Path)),
     responses((status = 200, body = Launch), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),
         (status = 404, body = ErrorBody)))]
@@ -672,7 +633,7 @@ pub async fn patch_launch(
     Ok(Json(l))
 }
 
-#[utoipa::path(get, path = "/api/v1/projects/{key}/launches/{a}/compare/{b}", tag = "analysis",
+#[utoipa::path(get, path = "/api/v1/projects/{key}/launches/{a}/compare/{b}", tag = "analysis", operation_id = "analysis_compare",
     params(("key" = String, Path), ("a" = Uuid, Path, description = "base launch"), ("b" = Uuid, Path, description = "compared launch")),
     responses((status = 200, body = Comparison), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
 pub async fn compare(
@@ -714,7 +675,7 @@ fn parse_day(s: &str, what: &str) -> ApiResult<NaiveDate> {
         .map_err(|_| ApiError::bad_request(format!("{what} must be YYYY-MM-DD or RFC 3339")))
 }
 
-#[utoipa::path(get, path = "/api/v1/projects/{key}/dashboard", tag = "analysis",
+#[utoipa::path(get, path = "/api/v1/projects/{key}/dashboard", tag = "analysis", operation_id = "analysis_dashboard",
     params(("key" = String, Path), DashboardParams),
     responses((status = 200, body = Dashboard), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),
         (status = 404, body = ErrorBody)))]
@@ -756,7 +717,7 @@ pub async fn dashboard(
 
 // Test plans.
 
-#[utoipa::path(post, path = "/api/v1/projects/{key}/test-plans", tag = "analysis", request_body = NewTestPlan,
+#[utoipa::path(post, path = "/api/v1/projects/{key}/test-plans", tag = "analysis", operation_id = "analysis_create_test_plan", request_body = NewTestPlan,
     params(("key" = String, Path)),
     responses((status = 201, body = TestPlanCreated), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),
         (status = 404, body = ErrorBody)))]
@@ -790,7 +751,7 @@ pub async fn create_test_plan(
     Ok((StatusCode::CREATED, Json(created)))
 }
 
-#[utoipa::path(get, path = "/api/v1/projects/{key}/test-plans/{id}/testplan.json", tag = "analysis",
+#[utoipa::path(get, path = "/api/v1/projects/{key}/test-plans/{id}/testplan.json", tag = "analysis", operation_id = "analysis_testplan_json",
     params(("key" = String, Path), ("id" = Uuid, Path)),
     responses((status = 200, body = TestPlanJson), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
 pub async fn testplan_json(

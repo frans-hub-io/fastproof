@@ -56,6 +56,17 @@ curl -fsS http://localhost:9090/readyz
 `/readyz` answers 200 once PostgreSQL is reachable, the schema is at the expected version and the blob store
 is writable. Open <http://localhost:8080/> for the UI.
 
+## Sign in to the UI
+
+Without single sign-on, the UI opens a sign-in page: paste the admin token printed above under **Use an API
+token**. The token stays in that browser tab only (session storage, gone when the tab closes) and is sent as
+`Authorization: Bearer` with every API call; **Sign out** in the account menu forgets it. Later, create
+personal tokens with an expiry under **API tokens**, or configure OIDC
+([Configuration](../operations/configuration.md)) and the page offers **Sign in with SSO** as well.
+
+While signed in with a token, the Playwright trace viewer and opening HTML or SVG attachments in a sandboxed
+tab are not available (they need a browser session); download those files instead.
+
 ## Option 2: Docker Compose with PostgreSQL and Garage
 
 [Garage](https://garagehq.deuxfleurs.fr/) is a small S3-compatible server. With it, attachments live in a

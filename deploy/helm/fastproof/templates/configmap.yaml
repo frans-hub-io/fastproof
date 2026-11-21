@@ -1,5 +1,6 @@
 {{- $backend := include "fastproof.blobBackend" . -}}
 {{- $o := .Values.oidc -}}
+{{- $i := .Values.integrations -}}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -46,6 +47,10 @@ data:
   FASTPROOF_INGEST_WORKERS: {{ .Values.server.ingestWorkers | quote }}
   FASTPROOF_RETAIN_UPLOADS: {{ .Values.server.retainUploads | quote }}
   FASTPROOF_OUTBOX_RETENTION_DAYS: {{ .Values.server.outboxRetentionDays | quote }}
+  FASTPROOF_LOG_MAX_LINE_BYTES: {{ .Values.server.logs.maxLineBytes | int64 | quote }}
+  FASTPROOF_LOG_MAX_LINES_PER_REQUEST: {{ .Values.server.logs.maxLinesPerRequest | int64 | quote }}
+  FASTPROOF_LOG_MAX_REQUEST_BYTES: {{ .Values.server.logs.maxRequestBytes | int64 | quote }}
+  FASTPROOF_LOG_MAX_BYTES_PER_LAUNCH: {{ .Values.server.logs.maxBytesPerLaunch | int64 | quote }}
   FASTPROOF_INGEST_MODE: {{ .Values.ingest.mode | quote }}
   FASTPROOF_SEARCH_BACKEND: {{ .Values.search.backend | quote }}
   FASTPROOF_SINKS: {{ include "fastproof.sinks" . | quote }}
@@ -64,7 +69,10 @@ data:
   FASTPROOF_KAFKA_TOPIC_PREFIX: {{ .Values.kafka.topics.prefix | quote }}
   FASTPROOF_KAFKA_CREATE_TOPICS: {{ include "fastproof.createTopics" . | quote }}
   FASTPROOF_KAFKA_PARTITIONS: {{ .Values.kafka.topics.partitions | quote }}
+  FASTPROOF_KAFKA_REPLICATION: {{ .Values.kafka.topics.replication | int | quote }}
   FASTPROOF_KAFKA_TRUSTED_PRODUCERS: {{ .Values.kafka.trustedProducers | quote }}
+  FASTPROOF_KAFKA_CLIENT_ID: {{ .Values.kafka.clientId | quote }}
+  FASTPROOF_KAFKA_MAX_RECORD_BYTES: {{ .Values.kafka.maxRecordBytes | int64 | quote }}
   {{- end }}
   {{- if .Values.sinks.clickhouse.enabled }}
   {{- $c := include "fastproof.clickhouseConn" . | fromJson }}
@@ -87,6 +95,11 @@ data:
   {{- end }}
   FASTPROOF_OPENSEARCH_INDEX_PREFIX: {{ .Values.sinks.opensearch.indexPrefix | quote }}
   FASTPROOF_OPENSEARCH_RAW_TTL_DAYS: {{ .Values.sinks.opensearch.rawTtlDays | quote }}
+  FASTPROOF_OPENSEARCH_REPLICAS: {{ .Values.sinks.opensearch.replicas | quote }}
+  {{- end }}
+  {{- if include "fastproof.sinks" . }}
+  FASTPROOF_SINK_BATCH_SIZE: {{ .Values.sinks.batchSize | int64 | quote }}
+  FASTPROOF_SINK_FLUSH_INTERVAL_MS: {{ .Values.sinks.flushIntervalMs | int64 | quote }}
   {{- end }}
   {{- if include "fastproof.accessEnabled" . }}
   FASTPROOF_ACCESS_FILE: /etc/fastproof/access/access.yaml
@@ -129,6 +142,9 @@ data:
   {{- with $o.postLogoutRedirect }}
   FASTPROOF_OIDC_POST_LOGOUT_REDIRECT: {{ . | quote }}
   {{- end }}
+  {{- if $o.insecureCookie }}
+  FASTPROOF_OIDC_INSECURE_COOKIE: "true"
+  {{- end }}
   {{- if or $o.ca.existingSecret $o.ca.existingConfigMap }}
   FASTPROOF_OIDC_CA_FILE: /etc/fastproof/ca/oidc.crt
   {{- end }}
@@ -140,6 +156,26 @@ data:
   FASTPROOF_TLS_CLIENT_CA_FILE: /etc/fastproof/ca/tls-client.crt
   {{- end }}
   {{- end }}
+  {{- with $i.egressAllow }}
+  FASTPROOF_EGRESS_ALLOW: {{ join "," . | quote }}
+  {{- end }}
+  {{- if include "fastproof.secretsKey" . }}
+  FASTPROOF_SECRETS_KEY_FILE: /etc/fastproof/secrets/secrets-key
+  {{- end }}
+  {{- with $i.smtp.url }}
+  FASTPROOF_SMTP_URL: {{ . | quote }}
+  FASTPROOF_SMTP_FROM: {{ $i.smtp.from | quote }}
+  {{- if $i.smtp.username }}
+  FASTPROOF_SMTP_USERNAME: {{ $i.smtp.username | quote }}
+  FASTPROOF_SMTP_PASSWORD_FILE: /etc/fastproof/secrets/smtp-password
+  {{- end }}
+  {{- end }}
+  {{- with $i.telegramApiUrl }}
+  FASTPROOF_TELEGRAM_API_URL: {{ . | quote }}
+  {{- end }}
+  FASTPROOF_DELIVERY_MAX_ATTEMPTS: {{ $i.delivery.maxAttempts | quote }}
+  FASTPROOF_DELIVERY_BACKOFF_SECONDS: {{ $i.delivery.backoffSeconds | quote }}
+  FASTPROOF_METRICS_TOP_BRANCHES: {{ .Values.metrics.topBranches | quote }}
   FASTPROOF_LOG_FORMAT: {{ .Values.server.logFormat | quote }}
   RUST_LOG: {{ .Values.server.logFilter | quote }}
   FASTPROOF_UI: {{ ternary "on" "off" .Values.server.ui | quote }}

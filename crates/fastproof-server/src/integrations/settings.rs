@@ -401,9 +401,11 @@ pub fn glob_match(pattern: &str, text: &str) -> bool {
 }
 
 /// Whether a value matches any of the globs (`None`: no restriction).
+/// Whether `value` matches one of the globs; no globs (absent or an empty list) match everything.
 pub fn matches_any(globs: &Option<Vec<String>>, value: Option<&str>) -> bool {
     match globs {
         None => true,
+        Some(g) if g.is_empty() => true,
         Some(g) => value.is_some_and(|v| g.iter().any(|p| glob_match(p, v))),
     }
 }
@@ -416,6 +418,12 @@ mod tests {
 
     #[test]
     fn globs_match() {
+        assert!(
+            matches_any(&Some(vec![]), Some("main")),
+            "an empty list is no filter"
+        );
+        assert!(matches_any(&Some(vec![]), None));
+        assert!(!matches_any(&Some(vec!["release/*".into()]), Some("main")));
         assert!(glob_match("*", ""));
         assert!(glob_match("release/*", "release/1.2"));
         assert!(!glob_match("release/*", "main"));

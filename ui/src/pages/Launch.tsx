@@ -278,7 +278,7 @@ function ResultRow({ project, r, index, selected, onHover, types }: { project: s
             )}
           </Group>
           <Group gap={6} wrap="nowrap" style={{ minWidth: 0 }}>
-            {r.defect && (r.status === 'failed' || r.status === 'broken' || r.defect.source) && <DefectChip defect={r.defect} types={types} size="xs" />}
+            {r.defect && <DefectChip defect={r.defect} types={types} size="xs" />}
             <Text size="xs" c="dimmed" className="fh-truncate">
               {r.suitePath.join(' › ')}
             </Text>
@@ -479,7 +479,7 @@ function LaunchLogs({ project, launch }: { project: string; launch: Launch }) {
 function ImportantToggle({ project, launch }: { project: string; launch: Launch }) {
   const canWrite = useCan('launches:write', project);
   const patch = usePatchLaunch(project, launch.id);
-  const important = !!launch.important;
+  const important = launch.important;
   if (!canWrite) {
     return important ? (
       <Tooltip label="Kept by retention">

@@ -33,17 +33,21 @@ to FastProof without changes, and import data from ReportPortal.
 
 See [Scaling and big data](operations/scaling.md).
 
+## Available now for triage and integrations
+
+- [Rules and triage](guide/rules-and-triage.md): failure clusters, defect types, mutes, and rules with dry runs
+  and retroactive application.
+- [Quality gates](guide/quality-gates.md) and [notifications](guide/notifications.md): signed webhooks, Slack,
+  email, Telegram, merge request comments and commit statuses.
+- [MCP for GitHub Copilot](guide/mcp-copilot.md): local agents read launches, failures, clusters, history,
+  logs and FastMock interactions, and write triage that is marked as AI, audited and revertible, with
+  ready-made `.vscode/mcp.json`, agent and prompt files.
+
 ## FastProof Analysis
 
 An optional bundle, switched on in the Helm chart, for deeper analysis on top of the sinks; the core stays
-light without it:
-
-- failure clustering and "similar failures" across projects over the ClickHouse or OpenSearch store;
-- an MCP endpoint (same tokens and permissions as the API) for local GitHub Copilot agents: read launches,
-  failures, clusters, history, logs, attachments and FastMock interactions, and write triage (defect type,
-  comment, issue link, mute, apply to a cluster), every AI change marked, audited and revertible;
-- ready-made configurations in the documentation: `.vscode/mcp.json` and `.github` agent and prompt files for
-  triaging a launch, explaining a failure and proposing a rule.
+light without it: failure clustering and "similar failures" across projects over the ClickHouse or OpenSearch
+store.
 
 ## Always
 

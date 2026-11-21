@@ -338,8 +338,9 @@ function IntegrationsForm({ project, settings, canWrite }: { project: string; se
 
   const tErrors = trackers.map(trackerErrors);
   const vcsUrlError = vcs && !HTTP_URL.test(vcs.url) ? 'Must be an http(s) URL' : null;
+  const vcsTokenError = vcs && !vcs.tokenSecretRef ? 'Choose the secret with the API token' : null;
   const fmUrlError = fm && !HTTP_URL.test(fm.url) ? 'Must be an http(s) URL' : null;
-  const valid = tErrors.every((e) => !e.url && !e.regex) && !vcsUrlError && !fmUrlError && trackers.length <= 10;
+  const valid = tErrors.every((e) => !e.url && !e.regex) && !vcsUrlError && !vcsTokenError && !fmUrlError && trackers.length <= 10;
 
   const setTracker = (i: number, t: Partial<IssueTracker>) => setTrackers(trackers.map((x, j) => (j === i ? { ...x, ...t } : x)));
 
@@ -401,7 +402,7 @@ function IntegrationsForm({ project, settings, canWrite }: { project: string; se
           <Switch
             label="Enabled"
             checked={!!vcs}
-            onChange={(e) => setVcs(e.currentTarget.checked ? { provider: 'gitlab', url: 'https://gitlab.example.com', tokenSecretRef: null, comment: true, status: true } : null)}
+            onChange={(e) => setVcs(e.currentTarget.checked ? { provider: 'gitlab', url: 'https://gitlab.example.com', tokenSecretRef: '', comment: true, status: true } : null)}
             data-testid="vcs-enabled"
           />
           {vcs && (
@@ -419,7 +420,7 @@ function IntegrationsForm({ project, settings, canWrite }: { project: string; se
                   comboboxProps={{ withinPortal: true }}
                 />
                 <TextInput label="API base URL" value={vcs.url} onChange={(e) => setVcs({ ...vcs, url: e.currentTarget.value })} error={vcsUrlError} />
-                <Select label="Token secret" placeholder="Choose a secret" data={secretOptions(names, vcs.tokenSecretRef)} value={vcs.tokenSecretRef ?? null} onChange={(v) => setVcs({ ...vcs, tokenSecretRef: v })} clearable comboboxProps={{ withinPortal: true }} />
+                <Select label="Token secret" placeholder="Choose a secret" data={secretOptions(names, vcs.tokenSecretRef)} value={vcs.tokenSecretRef || null} onChange={(v) => setVcs({ ...vcs, tokenSecretRef: v ?? '' })} error={vcsTokenError} comboboxProps={{ withinPortal: true }} data-testid="vcs-token" />
               </SimpleGrid>
               <Group gap="lg">
                 <Switch label="Comment with the summary" checked={vcs.comment} onChange={(e) => setVcs({ ...vcs, comment: e.currentTarget.checked })} />
@@ -520,8 +521,8 @@ function Secrets({ project, canWrite }: { project: string; canWrite: boolean }) 
                       <Table.Tr key={s.name} data-testid="secret-row">
                         <Table.Td className="fp-mono">{s.name}</Table.Td>
                         <Table.Td c="dimmed">••••••••</Table.Td>
-                        <Table.Td c="dimmed" title={formatDateTime(s.updatedAt)}>
-                          {s.updatedAt ? formatRelative(s.updatedAt) : '—'}
+                        <Table.Td c="dimmed" title={`${formatDateTime(s.updatedAt)}${s.updatedBy ? ` by ${s.updatedBy}` : ''}`}>
+                          {formatRelative(s.updatedAt)}
                         </Table.Td>
                       </Table.Tr>
                     ))}

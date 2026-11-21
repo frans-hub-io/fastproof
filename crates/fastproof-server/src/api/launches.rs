@@ -121,7 +121,7 @@ pub fn validate_start(b: &LaunchStart) -> ApiResult<()> {
     Ok(())
 }
 
-#[utoipa::path(post, path = "/api/v1/projects/{key}/launches", tag = "launches", request_body = LaunchStart,
+#[utoipa::path(post, path = "/api/v1/projects/{key}/launches", tag = "launches", operation_id = "launches_create", request_body = LaunchStart,
     params(("key" = String, Path)),
     responses((status = 201, description = "created", body = Launch),
         (status = 200, description = "a launch with this externalId exists", body = Launch),
@@ -148,7 +148,7 @@ pub async fn create(
     ))
 }
 
-#[utoipa::path(get, path = "/api/v1/projects/{key}/launches", tag = "launches",
+#[utoipa::path(get, path = "/api/v1/projects/{key}/launches", tag = "launches", operation_id = "launches_list",
     params(("key" = String, Path), LaunchQuery),
     responses((status = 200, body = Page<Launch>), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
 pub async fn list(
@@ -179,7 +179,7 @@ pub async fn list(
     Ok(Json(s.store.launches(project.id, &f).await?))
 }
 
-#[utoipa::path(get, path = "/api/v1/projects/{key}/launches/{id}", tag = "launches",
+#[utoipa::path(get, path = "/api/v1/projects/{key}/launches/{id}", tag = "launches", operation_id = "launches_get",
     params(("key" = String, Path), ("id" = Uuid, Path)),
     responses((status = 200, body = Launch), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
 pub async fn get(
@@ -191,7 +191,7 @@ pub async fn get(
     Ok(Json(s.launch_of(&project, id).await?))
 }
 
-#[utoipa::path(post, path = "/api/v1/projects/{key}/launches/{id}/finish", tag = "launches",
+#[utoipa::path(post, path = "/api/v1/projects/{key}/launches/{id}/finish", tag = "launches", operation_id = "launches_finish",
     request_body(content = FinishLaunch, description = "optional"),
     params(("key" = String, Path), ("id" = Uuid, Path)),
     responses((status = 200, body = Launch), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
@@ -229,7 +229,7 @@ pub async fn finish(
     Ok(Json(launch))
 }
 
-#[utoipa::path(delete, path = "/api/v1/projects/{key}/launches/{id}", tag = "launches",
+#[utoipa::path(delete, path = "/api/v1/projects/{key}/launches/{id}", tag = "launches", operation_id = "launches_delete",
     params(("key" = String, Path), ("id" = Uuid, Path)),
     responses((status = 204), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
 pub async fn delete(

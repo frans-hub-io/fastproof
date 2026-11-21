@@ -51,12 +51,48 @@ impl Modify for BearerAuth {
     }
 }
 
+/// Types the integration parts of `ProjectSettings` (stored as free JSON by the store and
+/// validated by [`crate::integrations::settings`]) in the document.
+pub fn type_project_settings(doc: &mut utoipa::openapi::OpenApi) {
+    let Some(c) = doc.components.as_mut() else {
+        return;
+    };
+    let Some(schema) = c.schemas.get("ProjectSettings") else {
+        return;
+    };
+    let Ok(mut v) = serde_json::to_value(schema) else {
+        return;
+    };
+    let reference =
+        |name: &str| serde_json::json!({"$ref": format!("#/components/schemas/{name}")});
+    let nullable = |name: &str| serde_json::json!({"oneOf": [reference(name), {"type": "null"}]});
+    if let Some(props) = v.get_mut("properties").and_then(|p| p.as_object_mut()) {
+        for (key, name) in [
+            ("gates", "Gate"),
+            ("notifications", "Notification"),
+            ("issueTrackers", "IssueTracker"),
+        ] {
+            if let Some(p) = props.get_mut(key) {
+                p["items"] = reference(name);
+            }
+        }
+        props.insert("fastmock".into(), nullable("FastMockSettings"));
+        props.insert("vcs".into(), nullable("VcsSettings"));
+    }
+    if let Ok(schema) = serde_json::from_value(v) {
+        c.schemas.insert("ProjectSettings".into(), schema);
+    }
+}
+
 #[derive(OpenApi)]
 #[openapi(
     info(title = "FastProof API", description = "Test reporting server: projects, launches, uploads, results and attachments.", license(name = "Apache-2.0")),
     modifiers(&BearerAuth),
     security(("bearer" = [])),
-    components(schemas(ErrorBody, fastproof_model::ReportResult, logs::LogStreamBatch, logs::LogGap)),
+    components(schemas(ErrorBody, fastproof_model::ReportResult, logs::LogStreamBatch, logs::LogGap,
+        crate::integrations::settings::Gate, crate::integrations::settings::Notification,
+        crate::integrations::settings::NotificationFilter, crate::integrations::settings::VcsSettings,
+        crate::integrations::settings::IssueTracker, crate::integrations::settings::FastMockSettings)),
     tags(
         (name = "projects"), (name = "launches"), (name = "uploads"), (name = "results"),
         (name = "attachments"), (name = "events"), (name = "admin"), (name = "integrations"),

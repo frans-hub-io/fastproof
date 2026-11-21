@@ -15,7 +15,7 @@ import { StatusBadge } from '../components/Status';
 import { formatDuration } from '../lib/format';
 import { useLaunchList } from '../lib/launches';
 
-type Section = Exclude<keyof LaunchComparison, 'durationChanges'>;
+type Section = Exclude<keyof LaunchComparison, 'durationChanges' | 'truncated'>;
 
 const SECTIONS: { key: Section | 'durationChanges'; label: string; color: string; empty: string }[] = [
   { key: 'newFailures', label: 'New failures', color: 'red', empty: 'Nothing that passed in A fails in B.' },
@@ -154,6 +154,11 @@ function Result({ project, data }: { project: string; data: LaunchComparison }) 
           </Tabs.Panel>
         ))}
       </Tabs>
+      {data.truncated && (
+        <Text size="xs" c="dimmed" data-testid="compare-truncated">
+          Some lists were cut at their limit.
+        </Text>
+      )}
     </Stack>
   );
 }

@@ -152,6 +152,7 @@ struct Registered {
 #[derive(Default)]
 pub struct Scheduler {
     jobs: Vec<Registered>,
+    registered: bool,
 }
 
 /// Lease of a running job; renewed every third of it.
@@ -186,30 +187,31 @@ impl Scheduler {
         self.jobs.iter().map(|j| j.name.clone()).collect()
     }
 
-    /// Registers the jobs in the database and runs them when due, until `stop`.
-    pub async fn run(self, s: AppState, stop: CancellationToken) {
-        let jobs: Arc<Vec<Registered>> = Arc::new(self.jobs);
-        loop {
-            let mut ok = true;
-            for j in jobs.iter() {
-                if let Err(e) = s
-                    .store
-                    .register_scheduled_job(&j.name, &j.text, Utc::now())
-                    .await
-                {
-                    tracing::warn!(job = %j.name, error = %format!("{e:#}"), "registering a scheduled job failed");
-                    ok = false;
-                    break;
+    /// Upserts every job into `scheduled_jobs`, so they are listed before the first tick.
+    pub async fn register_all(&mut self, store: &fastproof_store::Store) -> anyhow::Result<()> {
+        for j in &self.jobs {
+            store
+                .register_scheduled_job(&j.name, &j.text, Utc::now())
+                .await
+                .with_context(|| format!("registering scheduled job {}", j.name))?;
+        }
+        self.registered = true;
+        Ok(())
+    }
+
+    /// Registers the jobs in the database (unless [`Scheduler::register_all`] did) and runs them
+    /// when due, until `stop`.
+    pub async fn run(mut self, s: AppState, stop: CancellationToken) {
+        while !self.registered {
+            if let Err(e) = self.register_all(&s.store).await {
+                tracing::warn!(error = %format!("{e:#}"), "registering scheduled jobs failed");
+                tokio::select! {
+                    _ = stop.cancelled() => return,
+                    _ = tokio::time::sleep(TICK) => {}
                 }
             }
-            if ok {
-                break;
-            }
-            tokio::select! {
-                _ = stop.cancelled() => return,
-                _ = tokio::time::sleep(TICK) => {}
-            }
         }
+        let jobs: Arc<Vec<Registered>> = Arc::new(self.jobs);
         let names: Vec<String> = jobs.iter().map(|j| j.name.clone()).collect();
         let owner = format!("{}-sched", s.instance);
         loop {

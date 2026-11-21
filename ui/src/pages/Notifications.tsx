@@ -2,7 +2,7 @@ import { ActionIcon, Anchor, Badge, Button, Card, Checkbox, Group, Modal, Select
 import { EmptyState, useCan } from '@franshub/ui-shell';
 import { useMediaQuery } from '@mantine/hooks';
 import { notifications } from '@mantine/notifications';
-import { IconBrandSlack, IconBrandTelegram, IconEdit, IconMail, IconPlus, IconTrash, IconWebhook } from '@tabler/icons-react';
+import { IconBrandGithub, IconBrandGitlab, IconBrandSlack, IconBrandTelegram, IconEdit, IconMail, IconPlus, IconTrash, IconWebhook } from '@tabler/icons-react';
 import { useState } from 'react';
 import { Link, useParams } from 'react-router';
 import { errorMessage } from '../api/client';
@@ -28,7 +28,18 @@ const EVENTS: { value: NotificationEvent; label: string }[] = [
 
 const EVENT_LABEL: Record<NotificationEvent, string> = { launchFinished: 'Launch finished', gateFailed: 'Gate failed', newFailures: 'New failures' };
 
-const STATUS_COLOR: Record<Delivery['status'], string> = { delivered: 'green', failed: 'red', retrying: 'yellow', pending: 'gray' };
+const STATUS_COLOR: Record<Delivery['status'], string> = { delivered: 'green', failed: 'red', sending: 'yellow', pending: 'gray' };
+
+function eventsText(events: string[]): string {
+  return events.map((e) => (e in EVENT_LABEL ? EVENT_LABEL[e as NotificationEvent] : e)).join(', ') || '—';
+}
+
+/** Icon of a delivery channel: a notification kind, or the VCS provider for `vcs` deliveries. */
+function ChannelIcon({ kind, size = 14 }: { kind: string; size?: number }) {
+  if (kind === 'gitlab') return <IconBrandGitlab size={size} />;
+  if (kind === 'github') return <IconBrandGithub size={size} />;
+  return <KindIcon kind={kind as NotificationKind} size={size} />;
+}
 
 function KindIcon({ kind, size = 18 }: { kind: NotificationKind; size?: number }) {
   switch (kind) {
@@ -61,7 +72,7 @@ const PATTERN = /^[A-Za-z0-9._/*-]{1,200}$/;
 function NotificationEditor({ initial, secrets, onSave, onDelete, onCancel, saving }: { initial: NotificationTarget; secrets: string[]; onSave: (n: NotificationTarget) => void; onDelete?: () => void; onCancel: () => void; saving: boolean }) {
   const [n, setN] = useState<NotificationTarget>(initial);
   const kind = KINDS.find((k) => k.value === n.kind) ?? KINDS[0];
-  const tError = targetError(n.kind, n.target);
+  const tError = targetError(n.kind, n.target ?? '');
   const branches = n.filter?.branches ?? [];
   const environments = n.filter?.environments ?? [];
   const filterError = [...branches, ...environments].some((p) => !PATTERN.test(p)) ? 'Use names or globs like release/*' : null;
@@ -70,7 +81,7 @@ function NotificationEditor({ initial, secrets, onSave, onDelete, onCancel, savi
   const submit = () => {
     if (!valid) return;
     const filter = branches.length || environments.length ? { branches, environments } : null;
-    onSave({ ...n, target: n.target.trim(), filter, secretRef: n.secretRef ?? null });
+    onSave({ ...n, target: (n.target ?? '').trim(), filter, secretRef: n.secretRef ?? null });
   };
   return (
     <Stack gap="sm">
@@ -87,7 +98,7 @@ function NotificationEditor({ initial, secrets, onSave, onDelete, onCancel, savi
           comboboxProps={{ withinPortal: true }}
         />
       </SimpleGrid>
-      <TextInput label={kind?.target} placeholder={kind?.placeholder} value={n.target} onChange={(e) => setN({ ...n, target: e.currentTarget.value })} error={tError} maxLength={500} data-testid="notification-target" data-autofocus />
+      <TextInput label={kind?.target} placeholder={kind?.placeholder} value={n.target ?? ''} onChange={(e) => setN({ ...n, target: e.currentTarget.value })} error={tError} maxLength={500} data-testid="notification-target" data-autofocus />
       <Checkbox.Group label="Send on" value={n.on} onChange={(v) => setN({ ...n, on: v })} error={n.on.length ? null : 'Pick at least one event'}>
         <Group gap="md" mt={6}>
           {EVENTS.map((e) => (
@@ -179,7 +190,7 @@ function Deliveries({ project, settings }: { project: string; settings: ProjectS
                       <Table.Th w={100}>Status</Table.Th>
                       <Table.Th>When</Table.Th>
                       <Table.Th>Event</Table.Th>
-                      <Table.Th>Target</Table.Th>
+                      <Table.Th>Channel</Table.Th>
                       <Table.Th>Attempts</Table.Th>
                       <Table.Th>Response</Table.Th>
                       <Table.Th>Last error</Table.Th>
@@ -199,21 +210,23 @@ function Deliveries({ project, settings }: { project: string; settings: ProjectS
                         <Table.Td style={{ whiteSpace: 'nowrap' }}>
                           {d.launchId ? (
                             <Anchor component={Link} to={`/p/${project}/launches/${d.launchId}`} size="sm" underline="hover">
-                              {EVENT_LABEL[d.event]}
+                              {eventsText(d.events)}
                             </Anchor>
                           ) : (
-                            EVENT_LABEL[d.event]
+                            eventsText(d.events)
                           )}
                         </Table.Td>
                         <Table.Td style={{ maxWidth: 260 }}>
                           <Group gap={6} wrap="nowrap">
-                            <KindIcon kind={byId.get(d.notificationId)?.kind ?? d.kind} size={14} />
-                            <Text size="sm" className="fh-truncate fp-mono" title={d.target}>
-                              {d.target}
+                            <ChannelIcon kind={d.kind} />
+                            <Text size="sm" className="fh-truncate fp-mono" title={byId.get(d.notificationId)?.target ?? d.notificationId}>
+                              {d.notificationId === 'vcs' ? `${d.kind} (VCS)` : d.notificationId}
                             </Text>
                           </Group>
                         </Table.Td>
-                        <Table.Td>{d.attempts}</Table.Td>
+                        <Table.Td title={d.nextAttemptAt ? `Next attempt ${formatDateTime(d.nextAttemptAt)}` : undefined}>
+                          {d.attempts}/{d.maxAttempts}
+                        </Table.Td>
                         <Table.Td className="fp-mono">{d.responseStatus ?? '—'}</Table.Td>
                         <Table.Td c={d.lastError ? 'var(--mantine-color-error)' : 'dimmed'} style={{ maxWidth: 280 }}>
                           <Text size="sm" className="fh-truncate" title={d.lastError ?? ''} c="inherit">

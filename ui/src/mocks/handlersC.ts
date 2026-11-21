@@ -49,6 +49,16 @@ function hasProject(key: string): boolean {
 }
 
 const NAME = /^[a-z0-9][a-z0-9._-]{0,62}$/;
+
+/** Open mock live log streams; `window.__fastproofMockLogs(n)` pushes `n` batches into each. */
+const livePushers = new Set<(batches: number) => void>();
+
+if (typeof window !== 'undefined') {
+  (window as unknown as { __fastproofMockLogs?: (n?: number) => number }).__fastproofMockLogs = (n = 1) => {
+    for (const push of livePushers) push(n);
+    return livePushers.size;
+  };
+}
 const MAX_REGEX = 1000;
 
 export function stageCHandlers({ role, error, audit }: Helpers) {
@@ -95,7 +105,7 @@ export function stageCHandlers({ role, error, audit }: Helpers) {
       if (!body.resultIds?.length && !(body.launchId && body.fingerprint)) return error(400, 'invalid_body', 'give resultIds, or launchId and fingerprint', { field: 'resultIds' });
       if ((body.resultIds?.length ?? 0) > 1000) return error(400, 'invalid_body', 'at most 1000 results per request', { field: 'resultIds' });
       if (body.comment && body.comment.length > 4000) return error(400, 'invalid_body', 'comment is longer than 4000 characters', { field: 'comment' });
-      if (body.issue && !/^https?:\/\//.test(body.issue.url)) return error(400, 'invalid_body', 'issue url must be http(s)', { field: 'issue.url' });
+      if (body.issue && !/^https?:\/\//.test(body.issue.url ?? '')) return error(400, 'invalid_body', 'issue url must be http(s)', { field: 'issue.url' });
       if (body.defectTypeId && !defectTypes().some((t) => t.id === body.defectTypeId)) return error(400, 'invalid_body', 'unknown defect type', { field: 'defectTypeId' });
       if (body.mute && !body.mute.reason.trim()) return error(400, 'invalid_body', 'a mute needs a reason', { field: 'mute.reason' });
       const updated = triage(String(params.key), body);
@@ -295,6 +305,11 @@ export function stageCHandlers({ role, error, audit }: Helpers) {
       const q = u.get('q');
       const encoder = new TextEncoder();
       let timer: ReturnType<typeof setInterval> | undefined;
+      let pusher: ((batches: number) => void) | undefined;
+      const stop = () => {
+        clearInterval(timer);
+        if (pusher) livePushers.delete(pusher);
+      };
       const running = def.launch.id === RUNNING_LAUNCH_ID;
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {
@@ -304,20 +319,25 @@ export function stageCHandlers({ role, error, audit }: Helpers) {
             return;
           }
           let tick = 0;
-          timer = setInterval(() => {
+          const emit = (gapEvery: boolean) => {
             tick++;
             try {
               const lines = filterLogs(liveBatch(def.launch.id, resultId, tick), level, q);
               if (lines.length) controller.enqueue(encoder.encode(`event: log\ndata: ${JSON.stringify({ lines })}\n\n`));
-              if (tick % 12 === 6) controller.enqueue(encoder.encode(`event: gap\ndata: ${JSON.stringify({ skipped: 120 + tick })}\n\n`));
+              if (gapEvery && tick % 12 === 6) controller.enqueue(encoder.encode(`event: gap\ndata: ${JSON.stringify({ skipped: 120 + tick })}\n\n`));
             } catch {
-              clearInterval(timer);
+              stop();
             }
-          }, 250);
-          request.signal.addEventListener('abort', () => clearInterval(timer));
+          };
+          pusher = (batches: number) => {
+            for (let i = 0; i < batches; i++) emit(false);
+          };
+          livePushers.add(pusher);
+          timer = setInterval(() => emit(true), 250);
+          request.signal.addEventListener('abort', stop);
         },
         cancel() {
-          clearInterval(timer);
+          stop();
         },
       });
       return new HttpResponse(stream, { headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store' } });

@@ -34,6 +34,8 @@ pub struct LaunchFilter {
     pub status: Option<String>,
     pub attr: Option<(String, String)>,
     pub q: Option<String>,
+    /// Exact external id.
+    pub external_id: Option<String>,
     pub debug: bool,
     pub before: Option<i64>,
     pub limit: i64,
@@ -254,6 +256,9 @@ impl Store {
         if let Some(q) = &f.q {
             qb.push(" and l.name ilike ")
                 .push_bind(format!("%{}%", like_escape(q)));
+        }
+        if let Some(e) = &f.external_id {
+            qb.push(" and l.external_id = ").push_bind(no_nul(e));
         }
         if let Some(b) = f.before {
             qb.push(" and l.number < ").push_bind(b);

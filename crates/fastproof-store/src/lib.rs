@@ -13,6 +13,7 @@ pub mod codec;
 pub mod events;
 pub mod history;
 pub mod ingest;
+pub mod integrations;
 pub mod launches;
 pub mod maintenance;
 pub mod projects;

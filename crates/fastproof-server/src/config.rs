@@ -48,6 +48,8 @@ pub struct Config {
     pub limits: Limits,
     /// Days of outbox events kept (`FASTPROOF_OUTBOX_RETENTION_DAYS`).
     pub outbox_retention_days: i64,
+    /// Gates, notifications, VCS, secrets, egress (`crate::integrations::config`).
+    pub integrations: crate::integrations::config::IntegrationsConfig,
 }
 
 fn redact_url(u: &str) -> String {
@@ -102,6 +104,7 @@ impl fmt::Debug for Config {
             )
             .field("retain_uploads", &self.retain_uploads)
             .field("outbox_retention_days", &self.outbox_retention_days)
+            .field("integrations", &self.integrations)
             .finish_non_exhaustive()
     }
 }
@@ -326,6 +329,7 @@ impl Config {
             retain_uploads: env.bool("FASTPROOF_RETAIN_UPLOADS", false)?,
             limits,
             outbox_retention_days: env.parse("FASTPROOF_OUTBOX_RETENTION_DAYS", 7)?,
+            integrations: crate::integrations::config::IntegrationsConfig::from_env(&env)?,
         })
     }
 }

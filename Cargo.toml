@@ -66,3 +66,7 @@ time = { version = "0.3.55", features = ["parsing", "formatting", "macros"] }
 unicode-normalization = "0.1.26"
 utoipa = { version = "6.0.0", features = ["axum_extras", "uuid", "chrono"] }
 zip = { version = "=9.4.2", default-features = false, features = ["deflate-flate2"] }
+lettre = { version = "=0.11.23", default-features = false, features = ["smtp-transport", "tokio1", "tokio1-rustls", "ring", "builder", "webpki-roots"] }
+ring = "0.17.14"
+rmcp = { version = "=3.9.0", default-features = false, features = ["server", "macros", "transport-streamable-http-server"] }
+schemars = { version = "1", features = ["uuid1"] }

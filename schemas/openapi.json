@@ -503,6 +503,15 @@
             }
           },
           {
+            "name": "externalId",
+            "in": "query",
+            "description": "Exact external id.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "debug",
             "in": "query",
             "description": "`false` (default): regular launches; `true`: debug launches only.",
@@ -886,6 +895,73 @@
             }
           },
           "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/launches/{id}/gate": {
+      "get": {
+        "tags": [
+          "integrations"
+        ],
+        "description": "Evaluates the project's quality gates for the launch now. `pending` while the launch runs or has unprocessed uploads; `failed` when a rule of an enabled gate that applies to the launch branch does not hold. A rule holds when `actual op value`.",
+        "operationId": "gate",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GateReport"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "the gate settings are invalid",
             "content": {
               "application/json": {
                 "schema": {
@@ -1341,6 +1417,100 @@
         }
       }
     },
+    "/api/v1/projects/{key}/notifications/deliveries": {
+      "get": {
+        "tags": [
+          "integrations"
+        ],
+        "description": "Notification and VCS deliveries, newest first (without targets or payloads).",
+        "operationId": "deliveries",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "description": "`pending`, `sending`, `delivered` or `failed`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "launchId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "description": "Cursor from `next`.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_DeliveryView"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{key}/results/{id}": {
       "get": {
         "tags": [
@@ -1376,6 +1546,277 @@
               }
             }
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/results/{id}/mock-interactions": {
+      "get": {
+        "tags": [
+          "integrations"
+        ],
+        "description": "Requests the project's FastMock answered during an attempt: by the attempt's trace id, else by its time window (and the `fastmock.space` label or launch attribute).",
+        "operationId": "mock_interactions",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "attempt",
+            "in": "query",
+            "description": "Attempt number, 1-based (default: the last attempt).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MockInteractions"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "FastMock is not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "FastMock is unreachable or refused",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/secrets": {
+      "get": {
+        "tags": [
+          "integrations"
+        ],
+        "description": "Names of the project's secrets; values are write-only.",
+        "operationId": "secrets",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SecretList"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/secrets/{name}": {
+      "put": {
+        "tags": [
+          "integrations"
+        ],
+        "description": "Creates or replaces a secret, encrypted at rest with `FASTPROOF_SECRETS_KEY_FILE`. Settings refer to it by name (`secretRef`, `tokenSecretRef`).",
+        "operationId": "put_secret",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SecretValue"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "created"
+          },
+          "204": {
+            "description": "replaced"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "FASTPROOF_SECRETS_KEY_FILE is not set",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "integrations"
+        ],
+        "operationId": "delete_secret",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
           "403": {
             "content": {
               "application/json": {
@@ -1776,6 +2217,90 @@
           }
         }
       },
+      "DeliveryView": {
+        "type": "object",
+        "description": "A delivery as the API shows it (no target, no payload).",
+        "required": [
+          "id",
+          "notificationId",
+          "kind",
+          "events",
+          "status",
+          "attempts",
+          "maxAttempts",
+          "createdAt"
+        ],
+        "properties": {
+          "attempts": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "deliveredAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "type": "string",
+            "description": "`webhook`, `slack`, `email`, `telegram`, `gitlab` or `github`."
+          },
+          "lastError": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "launchId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "maxAttempts": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "nextAttemptAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "notificationId": {
+            "type": "string",
+            "description": "The notification id, or `vcs`."
+          },
+          "responseStatus": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "status": {
+            "type": "string",
+            "description": "`pending`, `sending`, `delivered` or `failed`."
+          }
+        }
+      },
       "ErrorBody": {
         "type": "object",
         "description": "The uniform error body (`franshub_http::ErrorBody`), for the documentation.",
@@ -1836,6 +2361,72 @@
           }
         },
         "additionalProperties": false
+      },
+      "GateReport": {
+        "type": "object",
+        "description": "The gate result of a launch: `pending` while the launch runs or uploads are processed,\notherwise `failed` when a rule of an enabled gate that applies to the branch does not hold.",
+        "required": [
+          "status",
+          "results",
+          "launchId",
+          "evaluatedAt"
+        ],
+        "properties": {
+          "evaluatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "launchId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RuleResult"
+            }
+          },
+          "status": {
+            "$ref": "#/components/schemas/GateStatus"
+          }
+        }
+      },
+      "GateRule": {
+        "type": "object",
+        "description": "A rule: it holds when `metric op value`. With `baseline`, `newFailures` compares with the\nnewest finished launch of that branch and the other metrics become the difference to it.",
+        "required": [
+          "metric",
+          "op",
+          "value"
+        ],
+        "properties": {
+          "baseline": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "metric": {
+            "$ref": "#/components/schemas/Metric"
+          },
+          "op": {
+            "$ref": "#/components/schemas/Op"
+          },
+          "value": {
+            "type": "number",
+            "format": "double"
+          }
+        },
+        "additionalProperties": false
+      },
+      "GateStatus": {
+        "type": "string",
+        "description": "`passed`, `failed` or `pending`.",
+        "enum": [
+          "passed",
+          "failed",
+          "pending"
+        ]
       },
       "HistoryEntry": {
         "type": "object",
@@ -2138,6 +2729,14 @@
             ],
             "default": null
           },
+          "mergeRequest": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Merge request IID (GitLab) or pull request number (GitHub) of the pipeline.",
+            "default": null
+          },
           "pipelineId": {
             "type": [
               "string",
@@ -2332,6 +2931,127 @@
           }
         }
       },
+      "Metric": {
+        "type": "string",
+        "description": "A metric a gate rule checks.",
+        "enum": [
+          "failed",
+          "broken",
+          "newFailures",
+          "passRate",
+          "flaky",
+          "duration"
+        ]
+      },
+      "MockInteraction": {
+        "type": "object",
+        "description": "One request FastMock answered.",
+        "required": [
+          "at",
+          "method",
+          "url",
+          "status",
+          "durationMs"
+        ],
+        "properties": {
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "durationMs": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "fault": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A fault FastMock injected (not recorded in the journal of FastMock 0.1)."
+          },
+          "matchedStub": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Id of the stub that answered."
+          },
+          "method": {
+            "type": "string"
+          },
+          "nearMiss": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "`true` when no stub matched (see FastMock's near misses for the closest ones)."
+          },
+          "space": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "traceId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "url": {
+            "type": "string",
+            "description": "Path and query."
+          }
+        }
+      },
+      "MockInteractions": {
+        "type": "object",
+        "description": "The requests correlated with an attempt.",
+        "required": [
+          "source",
+          "confidence",
+          "items",
+          "attempt",
+          "truncated"
+        ],
+        "properties": {
+          "attempt": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "confidence": {
+            "type": "number",
+            "format": "double",
+            "description": "0 to 1: how likely the items belong to this attempt."
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MockInteraction"
+            }
+          },
+          "source": {
+            "type": "string",
+            "description": "`traceId` or `timeWindow`."
+          },
+          "space": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "More journal entries than were read could belong to the window."
+          }
+        }
+      },
       "NewProject": {
         "type": "object",
         "description": "Body of `POST /api/v1/projects`.",
@@ -2355,6 +3075,119 @@
           }
         },
         "additionalProperties": false
+      },
+      "Op": {
+        "type": "string",
+        "description": "A comparison.",
+        "enum": [
+          "gt",
+          "gte",
+          "lt",
+          "lte"
+        ]
+      },
+      "Page_DeliveryView": {
+        "type": "object",
+        "description": "A page of a list.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "A delivery as the API shows it (no target, no payload).",
+              "required": [
+                "id",
+                "notificationId",
+                "kind",
+                "events",
+                "status",
+                "attempts",
+                "maxAttempts",
+                "createdAt"
+              ],
+              "properties": {
+                "attempts": {
+                  "type": "integer",
+                  "format": "int32"
+                },
+                "createdAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "deliveredAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "events": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "kind": {
+                  "type": "string",
+                  "description": "`webhook`, `slack`, `email`, `telegram`, `gitlab` or `github`."
+                },
+                "lastError": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "launchId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "uuid"
+                },
+                "maxAttempts": {
+                  "type": "integer",
+                  "format": "int32"
+                },
+                "nextAttemptAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "notificationId": {
+                  "type": "string",
+                  "description": "The notification id, or `vcs`."
+                },
+                "responseStatus": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int32"
+                },
+                "status": {
+                  "type": "string",
+                  "description": "`pending`, `sending`, `delivered` or `failed`."
+                }
+              }
+            }
+          },
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Opaque cursor for the next page (`before=`), `null` on the last page."
+          }
+        }
       },
       "Page_Launch": {
         "type": "object",
@@ -3215,6 +4048,53 @@
           }
         }
       },
+      "RuleResult": {
+        "type": "object",
+        "description": "Outcome of one rule.",
+        "required": [
+          "gate",
+          "rule",
+          "expected",
+          "ok"
+        ],
+        "properties": {
+          "actual": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "The measured value (a difference to the baseline for metrics other than\n`newFailures` when the rule has a baseline); `null` when it cannot be measured."
+          },
+          "baselineLaunchId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "expected": {
+            "type": "number",
+            "format": "double",
+            "description": "The rule's value."
+          },
+          "gate": {
+            "type": "string"
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "rule": {
+            "$ref": "#/components/schemas/GateRule"
+          }
+        }
+      },
       "ScheduledJob": {
         "type": "object",
         "description": "A periodic job of the scheduler.",
@@ -3291,6 +4171,63 @@
             "type": "string"
           }
         }
+      },
+      "SecretList": {
+        "type": "object",
+        "description": "Names of the project's secrets.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SecretMeta"
+            }
+          }
+        }
+      },
+      "SecretMeta": {
+        "type": "object",
+        "description": "A secret as listed: the name only, never the value.",
+        "required": [
+          "name",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "name": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedBy": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "SecretValue": {
+        "type": "object",
+        "description": "Body of `PUT .../secrets/{name}`.",
+        "required": [
+          "value"
+        ],
+        "properties": {
+          "value": {
+            "type": "string",
+            "description": "At most 8 KiB. Never returned by the API."
+          }
+        },
+        "additionalProperties": false
       },
       "SeriesPoint": {
         "type": "object",
@@ -3652,6 +4589,9 @@
     },
     {
       "name": "admin"
+    },
+    {
+      "name": "integrations"
     }
   ]
 }

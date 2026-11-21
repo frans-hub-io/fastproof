@@ -1,0 +1,139 @@
+{{- if include "fastproof.migrationJob" . }}
+{{- $fullname := include "fastproof.fullname" . -}}
+{{- $job := .Values.migrations.job -}}
+{{- $hooks := ternary "pre-upgrade" "pre-install,pre-upgrade" (not (empty (include "fastproof.bundledDatabase" .))) -}}
+{{- $db := include "fastproof.databaseSecret" . | fromJson -}}
+{{- $inline := and (not (empty .Values.database.url)) (empty .Values.database.existingSecret) -}}
+{{- $dbCa := include "fastproof.databaseCa" . -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $fullname }}-migrate
+  labels:
+    {{- include "fastproof.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migrate
+  annotations:
+    helm.sh/hook: {{ $hooks }}
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation
+automountServiceAccountToken: false
+{{- if $inline }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $fullname }}-migrate
+  labels:
+    {{- include "fastproof.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migrate
+  annotations:
+    helm.sh/hook: {{ $hooks }}
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+type: Opaque
+stringData:
+  database-url: {{ .Values.database.url | quote }}
+{{- end }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $fullname }}-migrate
+  labels:
+    {{- include "fastproof.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migrate
+  annotations:
+    helm.sh/hook: {{ $hooks }}
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ $job.backoffLimit }}
+  activeDeadlineSeconds: {{ $job.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "fastproof.labels" . | nindent 8 }}
+        app.kubernetes.io/component: migrate
+        {{- with $job.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with $job.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ $fullname }}-migrate
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: migrate
+          image: {{ include "fastproof.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["migrate"]
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          env:
+            - name: FASTPROOF_DATABASE_URL_FILE
+              value: /etc/fastproof/secrets/database-url
+            {{- if $dbCa }}
+            - name: FASTPROOF_DATABASE_CA_FILE
+              value: /etc/fastproof/ca/database.crt
+            {{- end }}
+            {{- with include "fastproof.databaseSslMode" . }}
+            - name: PGSSLMODE
+              value: {{ . | quote }}
+            {{- end }}
+            - name: FASTPROOF_LOG_FORMAT
+              value: {{ .Values.server.logFormat | quote }}
+            - name: RUST_LOG
+              value: {{ .Values.server.logFilter | quote }}
+          resources:
+            {{- toYaml $job.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: secrets
+              mountPath: /etc/fastproof/secrets
+              readOnly: true
+            {{- if $dbCa }}
+            - name: ca
+              mountPath: /etc/fastproof/ca
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+        - name: secrets
+          secret:
+            secretName: {{ ternary (printf "%s-migrate" $fullname) $db.name $inline }}
+            defaultMode: 0440
+            items:
+              - key: {{ ternary "database-url" $db.key $inline }}
+                path: database-url
+        {{- with $dbCa }}
+        - name: ca
+          projected:
+            defaultMode: 0444
+            sources:
+              {{- include "fastproof.caSource" (dict "ca" (. | fromJson) "path" "database.crt") | nindent 14 }}
+        {{- end }}
+{{- end }}

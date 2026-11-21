@@ -1,0 +1,32 @@
+publicUrl: https://fastproof.example.com
+
+postgresql:
+  enabled: true
+
+garage:
+  enabled: true
+
+blob:
+  backend: s3
+
+auth:
+  adminTokens:
+    generate: true
+
+httpRoute:
+  enabled: true
+  parentRefs:
+    - name: gateway
+      namespace: gateway-system
+  hostnames:
+    - fastproof.example.com
+  timeouts:
+    request: 300s
+
+networkPolicy:
+  enabled: true
+  ingress:
+    from:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: gateway-system

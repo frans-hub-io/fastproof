@@ -1,0 +1,34 @@
+apiVersion: v2
+name: fastproof
+description: FastProof self-hosted test reporting server with PostgreSQL, S3-compatible or filesystem storage and optional Valkey
+type: application
+version: 0.1.0
+appVersion: "0.1.0-dev1"
+kubeVersion: ">=1.30.0-0"
+home: https://fastproof.franshub.io/
+icon: https://fastproof.franshub.io/assets/brand/favicon.svg
+sources:
+  - https://github.com/frans-hub-io/fastproof
+keywords:
+  - test-reporting
+  - allure
+  - junit
+  - ctrf
+  - playwright
+annotations:
+  artifacthub.io/license: Apache-2.0
+dependencies:
+  - name: postgres
+    alias: postgresql
+    version: 0.22.0
+    repository: oci://registry-1.docker.io/cloudpirates
+    condition: postgresql.enabled
+  - name: cluster
+    alias: cnpg
+    version: 0.9.0
+    repository: https://cloudnative-pg.github.io/charts
+    condition: cnpg.enabled
+  - name: valkey
+    version: 0.12.1
+    repository: https://valkey.io/valkey-helm/
+    condition: valkey.enabled

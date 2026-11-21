@@ -1,0 +1,112 @@
+site_name: FastProof
+site_description: Self-hosted test reporting server for allure-results, JUnit XML, CTRF and Playwright reports, with history, flaky detection and triage
+site_url: https://fastproof.franshub.io/
+repo_url: https://github.com/frans-hub-io/fastproof
+repo_name: frans-hub-io/fastproof
+edit_uri: edit/main/docs/
+copyright: FastProof by <a href="https://franshub.io/">FransHub</a> is licensed under the Apache License 2.0
+docs_dir: docs
+exclude_docs: |
+  overrides/
+  prepare.sh
+site_dir: site
+strict: true
+
+theme:
+  name: material
+  custom_dir: docs/overrides
+  language: en
+  palette:
+    - scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+    - scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+  logo: assets/brand/FransHub_monogram_light.svg
+  favicon: assets/brand/favicon.svg
+  font: false
+  features:
+    - navigation.path
+    - navigation.indexes
+    - navigation.top
+    - navigation.footer
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.tabs.link
+    - content.action.edit
+    - toc.follow
+
+plugins:
+  - search
+
+extra:
+  generator: false
+  social:
+    - icon: material/web
+      link: https://franshub.io/
+      name: FransHub
+    - icon: fontawesome/brands/github
+      link: https://github.com/frans-hub-io/fastproof
+      name: FastProof on GitHub
+    - icon: fontawesome/brands/docker
+      link: https://hub.docker.com/r/franshub/fastproof
+      name: franshub/fastproof on Docker Hub
+
+extra_css:
+  - stylesheets/brand-tokens.css
+  - stylesheets/fonts.css
+  - stylesheets/mkdocs-material.css
+  - stylesheets/fastproof.css
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - def_list
+  - footnotes
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+
+validation:
+  links:
+    absolute_links: relative_to_docs
+    anchors: warn
+    unrecognized_links: warn
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - guide/getting-started.md
+      - guide/concepts.md
+      - guide/ci-recipes.md
+  - Reports:
+      - guide/formats.md
+      - guide/migrating-from-allure.md
+  - Operations:
+      - operations/configuration.md
+      - operations/helm.md
+      - operations/security.md
+      - operations/limits.md
+  - Reference:
+      - reference/api.md
+      - API reference (Swagger UI): /api/swagger/
+  - Roadmap: roadmap.md

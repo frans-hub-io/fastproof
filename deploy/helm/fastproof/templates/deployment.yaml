@@ -1,0 +1,273 @@
+{{- include "fastproof.validate" . -}}
+{{- $fullname := include "fastproof.fullname" . -}}
+{{- $backend := include "fastproof.blobBackend" . -}}
+{{- $db := include "fastproof.databaseSecret" . | fromJson -}}
+{{- $dbCa := include "fastproof.databaseCa" . -}}
+{{- $valkey := include "fastproof.valkeyUrlSecret" . -}}
+{{- $recreate := and (include "fastproof.fsPvc" .) (not (has "ReadWriteMany" .Values.blob.fs.persistence.accessModes)) -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "fastproof.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      {{- include "fastproof.selector" . | nindent 6 }}
+  strategy:
+    {{- if $recreate }}
+    type: Recreate
+    {{- else }}
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+    {{- end }}
+  template:
+    metadata:
+      labels:
+        {{- include "fastproof.labels" . | nindent 8 }}
+        app.kubernetes.io/component: server
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "fastproof.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      containers:
+        - name: fastproof
+          image: {{ include "fastproof.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["serve"]
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          envFrom:
+            - configMapRef:
+                name: {{ $fullname }}
+            {{- with .Values.server.extraEnvFrom }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          env:
+            - name: FASTPROOF_MIGRATE
+              value: {{ include "fastproof.migrateEnv" . | quote }}
+            {{- with $valkey }}
+            {{- $v := . | fromJson }}
+            - name: FASTPROOF_VALKEY_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $v.name }}
+                  key: {{ $v.key }}
+            {{- end }}
+            {{- with .Values.server.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            - name: ops
+              containerPort: 9090
+              protocol: TCP
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: ops
+            periodSeconds: {{ .Values.startupProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.startupProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.startupProbe.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: ops
+            periodSeconds: {{ .Values.readinessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.readinessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.readinessProbe.failureThreshold }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: ops
+            periodSeconds: {{ .Values.livenessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.livenessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.livenessProbe.failureThreshold }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: secrets
+              mountPath: /etc/fastproof/secrets
+              readOnly: true
+            {{- if include "fastproof.needsCa" . }}
+            - name: ca
+              mountPath: /etc/fastproof/ca
+              readOnly: true
+            {{- end }}
+            {{- if include "fastproof.accessEnabled" . }}
+            - name: access
+              mountPath: /etc/fastproof/access
+              readOnly: true
+            {{- end }}
+            {{- if .Values.tls.existingSecret }}
+            - name: tls
+              mountPath: /etc/fastproof/tls
+              readOnly: true
+            {{- end }}
+            {{- if eq $backend "fs" }}
+            - name: blobs
+              mountPath: /var/lib/fastproof/blobs
+            {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir:
+            {{- with .Values.spool.medium }}
+            medium: {{ . }}
+            {{- end }}
+            sizeLimit: {{ .Values.spool.sizeLimit }}
+        - name: secrets
+          projected:
+            defaultMode: 0440
+            sources:
+              - secret:
+                  name: {{ $db.name }}
+                  items:
+                    - key: {{ $db.key }}
+                      path: database-url
+              {{- if eq $backend "s3" }}
+              {{- $s3 := include "fastproof.s3CredentialsSecret" . | fromJson }}
+              - secret:
+                  name: {{ $s3.name }}
+                  items:
+                    - key: {{ $s3.accessKey }}
+                      path: s3-access-key
+                    - key: {{ $s3.secretKey }}
+                      path: s3-secret-key
+              {{- end }}
+              {{- if include "fastproof.adminTokensEnabled" . }}
+              {{- $t := include "fastproof.adminTokensSecret" . | fromJson }}
+              - secret:
+                  name: {{ $t.name }}
+                  items:
+                    - key: {{ $t.key }}
+                      path: admin-tokens
+              {{- end }}
+              {{- if .Values.oidc.issuer }}
+              {{- $o := include "fastproof.oidcSecret" . | fromJson }}
+              - secret:
+                  name: {{ $o.name }}
+                  items:
+                    - key: {{ $o.key }}
+                      path: oidc-client-secret
+              {{- end }}
+        {{- if include "fastproof.needsCa" . }}
+        - name: ca
+          projected:
+            defaultMode: 0444
+            sources:
+              {{- with $dbCa }}
+              {{- include "fastproof.caSource" (dict "ca" (. | fromJson) "path" "database.crt") | nindent 14 }}
+              {{- end }}
+              {{- if and (eq $backend "s3") (not .Values.garage.enabled) (or .Values.blob.s3.ca.existingSecret .Values.blob.s3.ca.existingConfigMap) }}
+              {{- include "fastproof.caSource" (dict "ca" (dict "secret" .Values.blob.s3.ca.existingSecret "configMap" .Values.blob.s3.ca.existingConfigMap "key" .Values.blob.s3.ca.key) "path" "s3.crt") | nindent 14 }}
+              {{- end }}
+              {{- if and .Values.oidc.issuer (or .Values.oidc.ca.existingSecret .Values.oidc.ca.existingConfigMap) }}
+              {{- include "fastproof.caSource" (dict "ca" (dict "secret" .Values.oidc.ca.existingSecret "configMap" .Values.oidc.ca.existingConfigMap "key" .Values.oidc.ca.key) "path" "oidc.crt") | nindent 14 }}
+              {{- end }}
+              {{- if and .Values.tls.existingSecret (or .Values.tls.clientCa.existingSecret .Values.tls.clientCa.existingConfigMap) }}
+              {{- include "fastproof.caSource" (dict "ca" (dict "secret" .Values.tls.clientCa.existingSecret "configMap" .Values.tls.clientCa.existingConfigMap "key" .Values.tls.clientCa.key) "path" "tls-client.crt") | nindent 14 }}
+              {{- end }}
+        {{- end }}
+        {{- if include "fastproof.accessEnabled" . }}
+        - name: access
+          configMap:
+            name: {{ default (printf "%s-access" $fullname) .Values.auth.access.existingConfigMap }}
+            items:
+              - key: {{ ternary .Values.auth.access.key "access.yaml" (not (empty .Values.auth.access.existingConfigMap)) }}
+                path: access.yaml
+        {{- end }}
+        {{- if .Values.tls.existingSecret }}
+        - name: tls
+          secret:
+            secretName: {{ .Values.tls.existingSecret }}
+            defaultMode: 0440
+            items:
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
+        {{- end }}
+        {{- if eq $backend "fs" }}
+        - name: blobs
+          {{- if .Values.blob.fs.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ default (printf "%s-blobs" $fullname) .Values.blob.fs.persistence.existingClaim }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- if and (include "fastproof.fsPvc" .) (not .Values.blob.fs.persistence.existingClaim) }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $fullname }}-blobs
+  labels:
+    {{- include "fastproof.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
+    {{- with .Values.blob.fs.persistence.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  accessModes:
+    {{- toYaml .Values.blob.fs.persistence.accessModes | nindent 4 }}
+  {{- with .Values.blob.fs.persistence.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.blob.fs.persistence.size }}
+{{- end }}

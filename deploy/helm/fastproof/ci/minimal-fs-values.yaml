@@ -1,0 +1,12 @@
+database:
+  existingSecret: fastproof-database
+
+auth:
+  adminTokens:
+    existingSecret: fastproof-admin-tokens
+
+blob:
+  backend: fs
+  fs:
+    persistence:
+      size: 5Gi

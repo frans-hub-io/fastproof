@@ -1,0 +1,72 @@
+suite: network policies
+templates:
+  - templates/networkpolicy.yaml
+release:
+  name: fp
+  namespace: qa
+values:
+  - ../ci/cloudpirates-garage-values.yaml
+tests:
+  - it: lets only the monitoring namespace reach the ops port
+    documentIndex: 0
+    asserts:
+      - contains:
+          path: spec.ingress
+          content:
+            ports:
+              - port: ops
+                protocol: TCP
+            from:
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: monitoring
+                podSelector: {}
+      - contains:
+          path: spec.policyTypes
+          content: Egress
+
+  - it: never selects CloudNativePG pods in the storage policy
+    documentIndex: 1
+    asserts:
+      - contains:
+          path: spec.podSelector.matchExpressions
+          content:
+            key: cnpg.io/cluster
+            operator: DoesNotExist
+      - equal:
+          path: spec.podSelector.matchExpressions[0].values
+          value:
+            - postgresql
+            - garage
+
+  - it: allows egress to the CloudNativePG cluster by its own label
+    capabilities:
+      apiVersions:
+        - postgresql.cnpg.io/v1
+    values:
+      - ../ci/cnpg-external-s3-values.yaml
+    set:
+      postgresql.enabled: false
+      garage.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 1
+      - contains:
+          path: spec.egress
+          content:
+            to:
+              - podSelector:
+                  matchLabels:
+                    cnpg.io/cluster: fp-cnpg
+            ports:
+              - port: 5432
+                protocol: TCP
+      - contains:
+          path: spec.egress
+          content:
+            to:
+              - ipBlock:
+                  cidr: 198.51.100.0/24
+            ports:
+              - port: 443
+                protocol: TCP

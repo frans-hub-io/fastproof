@@ -1,0 +1,412 @@
+image:
+  repository: docker.io/franshub/fastproof
+  tag: ""
+  digest: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+replicaCount: 1
+
+publicUrl: ""
+
+server:
+  logFormat: json
+  logFilter: info
+  ui: true
+  maxUploadBytes: 1073741824
+  ingestWorkers: 2
+  retainUploads: false
+  outboxRetentionDays: 7
+  extraEnv: []
+  extraEnvFrom: []
+
+database:
+  existingSecret: ""
+  secretKey: database-url
+  url: ""
+  maxConnections: 20
+  sslMode: ""
+  ca:
+    existingSecret: ""
+    existingConfigMap: ""
+    key: ca.crt
+
+migrations:
+  mode: job
+  job:
+    backoffLimit: 3
+    activeDeadlineSeconds: 900
+    podAnnotations: {}
+    podLabels: {}
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+
+blob:
+  backend: fs
+  fs:
+    persistence:
+      enabled: true
+      existingClaim: ""
+      storageClass: ""
+      accessModes:
+        - ReadWriteOnce
+      size: 20Gi
+      annotations: {}
+  s3:
+    endpoint: ""
+    region: us-east-1
+    bucket: ""
+    pathStyle: true
+    credentials:
+      existingSecret: ""
+      accessKeyKey: access-key
+      secretKeyKey: secret-key
+      accessKey: ""
+      secretKey: ""
+    ca:
+      existingSecret: ""
+      existingConfigMap: ""
+      key: ca.crt
+
+spool:
+  sizeLimit: 4Gi
+  medium: ""
+
+auth:
+  adminTokens:
+    existingSecret: ""
+    key: tokens
+    tokens: []
+    generate: false
+  access:
+    existingConfigMap: ""
+    key: access.yaml
+    roles: []
+    bindings: []
+
+oidc:
+  issuer: ""
+  clientId: ""
+  clientSecret:
+    existingSecret: ""
+    key: client-secret
+    value: ""
+  redirectUrl: ""
+  scopes: []
+  usernameClaim: ""
+  groupsClaim: ""
+  allowedAlgs: []
+  apiAudience: ""
+  allowedHosts: []
+  sessionTtl: ""
+  sessionIdle: ""
+  cookieName: ""
+  postLogoutRedirect: ""
+  ca:
+    existingSecret: ""
+    existingConfigMap: ""
+    key: ca.crt
+
+tls:
+  existingSecret: ""
+  clientCa:
+    existingSecret: ""
+    existingConfigMap: ""
+    key: ca.crt
+
+externalValkey:
+  existingSecret: ""
+  key: url
+
+otel:
+  endpoint: ""
+  protocol: ""
+  serviceName: fastproof
+  resourceAttributes: ""
+
+service:
+  type: ClusterIP
+  port: 8080
+  opsPort: 9090
+  annotations: {}
+  labels: {}
+
+httpRoute:
+  enabled: false
+  annotations: {}
+  parentRefs: []
+  hostnames: []
+  timeouts: {}
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts: []
+  tls: []
+
+metrics:
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    scrapeTimeout: 10s
+    labels: {}
+
+networkPolicy:
+  enabled: false
+  ingress:
+    from: []
+    metrics:
+      namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: monitoring
+      podSelector: {}
+  egress:
+    enabled: true
+    dns:
+      namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    database:
+      to: []
+      ports:
+        - 5432
+    s3:
+      to: []
+      ports:
+        - 443
+    oidc:
+      to: []
+      ports:
+        - 443
+    valkey:
+      to: []
+      ports:
+        - 6379
+    otlp:
+      to: []
+      ports:
+        - 4317
+        - 4318
+    extraRules: []
+  storage: true
+
+pdb:
+  enabled: true
+  maxUnavailable: 1
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 0
+
+startupProbe:
+  periodSeconds: 2
+  timeoutSeconds: 2
+  failureThreshold: 60
+readinessProbe:
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 3
+livenessProbe:
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 6
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+    ephemeral-storage: 256Mi
+  limits:
+    cpu: "2"
+    memory: 1Gi
+    ephemeral-storage: 6Gi
+
+terminationGracePeriodSeconds: 60
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+podAnnotations: {}
+podLabels: {}
+priorityClassName: ""
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
+extraVolumes: []
+extraVolumeMounts: []
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  fsGroupChangePolicy: OnRootMismatch
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  runAsNonRoot: true
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+postgresql:
+  enabled: false
+  image:
+    registry: docker.io
+    repository: postgres
+    tag: "18.7-trixie@sha256:eb63372c1e05c755f55fa30cbd07aecc443676fc6c0fa90b9002d01537841e1a"
+    imagePullPolicy: IfNotPresent
+  customUser:
+    name: fastproof
+    database: fastproof
+    existingSecret: "{{ .Release.Name }}-fastproof-db"
+  persistence:
+    size: 10Gi
+    storageClass: ""
+  serviceAccount:
+    create: true
+    automountServiceAccountToken: false
+  podSecurityContext:
+    fsGroup: 999
+    seccompProfile:
+      type: RuntimeDefault
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+cnpg:
+  enabled: false
+  type: postgresql
+  mode: standalone
+  version:
+    postgresql: "18"
+  cluster:
+    instances: 3
+    imageName: ghcr.io/cloudnative-pg/postgresql:18.7-standard-trixie
+    storage:
+      size: 10Gi
+      storageClass: ""
+    enableSuperuserAccess: false
+    postgresql:
+      parameters:
+        max_connections: "200"
+    initdb:
+      database: fastproof
+      owner: fastproof
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: "1"
+        memory: 1Gi
+  backups:
+    enabled: false
+
+valkey:
+  enabled: false
+  image:
+    registry: docker.io
+    repository: valkey/valkey
+    tag: "9.1.4-trixie"
+  auth:
+    enabled: true
+    usersExistingSecret: "{{ .Release.Name }}-fastproof-valkey"
+    aclUsers:
+      default:
+        permissions: "~* &* +@all"
+        passwordKey: password
+  valkeyConfig: |
+    maxmemory 128mb
+    maxmemory-policy allkeys-lru
+    save ""
+    appendonly no
+  readinessProbe:
+    enabled: true
+  dataStorage:
+    enabled: false
+  initResources:
+    requests:
+      cpu: 10m
+      memory: 16Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+garage:
+  enabled: false
+  image:
+    repository: docker.io/dxflrs/garage
+    tag: v2.5.0
+    digest: sha256:677e5b758e4425a325b811c425c026bf35a4bf42f7ddbaa773de3f4fd779a5a5
+    pullPolicy: IfNotPresent
+  bucket: fastproof
+  region: garage
+  dbEngine: sqlite
+  credentials:
+    existingSecret: ""
+    accessKeyKey: access-key
+    secretKeyKey: secret-key
+    rpcSecretKey: rpc-secret
+  persistence:
+    enabled: true
+    storageClass: ""
+    metaSize: 1Gi
+    dataSize: 20Gi
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    fsGroupChangePolicy: OnRootMismatch
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    runAsNonRoot: true
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+        - ALL
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}

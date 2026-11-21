@@ -1,0 +1,283 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  RUST_TOOLCHAIN: 1.99.1
+  NODE_VERSION: 24.22.3
+  PLATFORM_REPOSITORY: frans-hub-io/franshub-platform
+  PLATFORM_REF: main
+  GARAGE_IMAGE: docker.io/dxflrs/garage:v2.5.0@sha256:677e5b758e4425a325b811c425c026bf35a4bf42f7ddbaa773de3f4fd779a5a5
+  HELM_VERSION: v3.22.1
+  HELM_UNITTEST_VERSION: v1.2.1
+  KUBECONFORM_VERSION: v0.8.0
+  KUBECONFORM_SHA256: 9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883
+  MKDOCS_MATERIAL_VERSION: 9.8.1
+  SWAGGER_UI_VERSION: 5.34.1
+  NO_MKDOCS_2_WARNING: "1"
+
+jobs:
+  ui:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: fastproof/ui
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: fastproof
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ env.PLATFORM_REPOSITORY }}
+          ref: ${{ env.PLATFORM_REF }}
+          token: ${{ secrets.PLATFORM_REPO_TOKEN }}
+          path: franshub-platform
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: |
+            fastproof/ui/package-lock.json
+            franshub-platform/packages/ui-shell/package-lock.json
+      - name: build ui-shell
+        working-directory: franshub-platform/packages/ui-shell
+        run: |
+          npm ci
+          npm run build
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - name: install playwright browsers
+        run: npx playwright install --with-deps chromium
+      - name: end-to-end tests with mocked API
+        run: npm run e2e
+      - if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: playwright-report
+          path: |
+            fastproof/ui/playwright-report
+            fastproof/ui/test-results
+          retention-days: 7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: ui-dist
+          path: fastproof/ui/dist
+          retention-days: 1
+
+  rust:
+    name: rust (postgres ${{ matrix.postgres }}, valkey ${{ matrix.valkey }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    needs: ui
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - postgres: 18.7-trixie
+            valkey: 9.1.4-trixie
+            lint: true
+            experimental: false
+          - postgres: 16.16-trixie
+            valkey: 8.1.12-trixie
+            lint: false
+            experimental: false
+          - postgres: 15.20-trixie
+            valkey: 9.1.4-trixie
+            lint: false
+            experimental: false
+          - postgres: 19.0-trixie
+            valkey: 9.1.4-trixie
+            lint: false
+            experimental: true
+    services:
+      postgres:
+        image: docker.io/library/postgres:${{ matrix.postgres }}
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      valkey:
+        image: docker.io/valkey/valkey:${{ matrix.valkey }}
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      FASTPROOF_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+      FASTPROOF_TEST_VALKEY_URL: redis://localhost:6379/0
+      FASTPROOF_TEST_S3_ENDPOINT: http://localhost:3900
+      FASTPROOF_TEST_S3_REGION: garage
+      FASTPROOF_TEST_S3_BUCKET: fastproof-test
+    defaults:
+      run:
+        working-directory: fastproof
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: fastproof
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ env.PLATFORM_REPOSITORY }}
+          ref: ${{ env.PLATFORM_REF }}
+          token: ${{ secrets.PLATFORM_REPO_TOKEN }}
+          path: franshub-platform
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: ui-dist
+          path: fastproof/ui/dist
+      - name: start garage
+        run: |
+          access_key="GK$(openssl rand -hex 12)"
+          secret_key="$(openssl rand -hex 32)"
+          echo "::add-mask::${secret_key}"
+          printf 'FASTPROOF_TEST_S3_ACCESS_KEY=%s\nFASTPROOF_TEST_S3_SECRET_KEY=%s\n' "$access_key" "$secret_key" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/garage"
+          cat > "$RUNNER_TEMP/garage/garage.toml" <<'EOF'
+          metadata_dir = "/var/lib/garage/meta"
+          data_dir = "/var/lib/garage/data"
+          db_engine = "sqlite"
+          replication_factor = 1
+          rpc_bind_addr = "0.0.0.0:3901"
+          rpc_public_addr = "127.0.0.1:3901"
+
+          [s3_api]
+          s3_region = "garage"
+          api_bind_addr = "0.0.0.0:3900"
+
+          [admin]
+          api_bind_addr = "0.0.0.0:3903"
+          EOF
+          docker run -d --name garage \
+            -p 3900:3900 -p 3903:3903 \
+            --tmpfs /var/lib/garage:rw,mode=1777 \
+            -v "$RUNNER_TEMP/garage/garage.toml:/etc/garage.toml:ro" \
+            -e GARAGE_RPC_SECRET="$(openssl rand -hex 32)" \
+            -e GARAGE_DEFAULT_ACCESS_KEY="$access_key" \
+            -e GARAGE_DEFAULT_SECRET_KEY="$secret_key" \
+            -e GARAGE_DEFAULT_BUCKET="$FASTPROOF_TEST_S3_BUCKET" \
+            "$GARAGE_IMAGE" /garage server --single-node --default-bucket
+          for _ in $(seq 1 60); do
+            if curl -fsS http://localhost:3903/health >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs garage
+          exit 1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+        with:
+          workspaces: fastproof
+          key: pg-${{ matrix.postgres }}
+      - if: matrix.lint
+        run: cargo fmt --all -- --check
+      - if: matrix.lint
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked --no-fail-fast
+      - if: failure()
+        run: docker logs garage
+
+  helm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: deploy/helm/fastproof
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310
+        with:
+          version: ${{ env.HELM_VERSION }}
+      - name: fetch chart dependencies
+        run: |
+          helm repo add cnpg https://cloudnative-pg.github.io/charts
+          helm repo add valkey https://valkey.io/valkey-helm/
+          helm dependency build .
+      - name: lint
+        run: |
+          for f in ci/*.yaml; do
+            echo "::group::helm lint $f"
+            helm lint --strict . -f "$f"
+            echo "::endgroup::"
+          done
+      - name: unit tests
+        run: |
+          helm plugin install https://github.com/helm-unittest/helm-unittest.git --version "$HELM_UNITTEST_VERSION"
+          helm unittest .
+      - name: install kubeconform
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/kubeconform.tar.gz" "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          echo "${KUBECONFORM_SHA256}  $RUNNER_TEMP/kubeconform.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/kubeconform.tar.gz" -C "$RUNNER_TEMP" kubeconform
+      - name: render and validate
+        run: |
+          mkdir -p "$RUNNER_TEMP/render"
+          for f in ci/*.yaml; do
+            out="$RUNNER_TEMP/render/$(basename "$f")"
+            helm template fastproof . --namespace qa -f "$f" \
+              --api-versions postgresql.cnpg.io/v1 \
+              --api-versions monitoring.coreos.com/v1 \
+              --api-versions gateway.networking.k8s.io/v1 > "$out"
+            for k in 1.30.0 1.36.0; do
+              echo "::group::kubeconform $f kubernetes $k"
+              "$RUNNER_TEMP/kubeconform" -strict -summary -kubernetes-version "$k" \
+                -schema-location default \
+                -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+                "$out"
+              echo "::endgroup::"
+            done
+          done
+
+  docs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - run: pip install "mkdocs-material==${MKDOCS_MATERIAL_VERSION}"
+      - run: docs/prepare.sh
+      - run: mkdocs build --strict

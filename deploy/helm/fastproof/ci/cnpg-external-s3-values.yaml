@@ -1,0 +1,47 @@
+publicUrl: https://fastproof.example.com
+
+cnpg:
+  enabled: true
+  cluster:
+    instances: 3
+
+blob:
+  backend: s3
+  s3:
+    endpoint: https://s3.example.com
+    region: eu-central-1
+    bucket: fastproof-attachments
+    credentials:
+      existingSecret: fastproof-s3
+    ca:
+      existingConfigMap: corporate-ca
+      key: ca.crt
+
+auth:
+  adminTokens:
+    tokens:
+      - ops:admin:sha256:5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: 1g
+  hosts:
+    - fastproof.example.com
+  tls:
+    - secretName: fastproof-tls
+      hosts:
+        - fastproof.example.com
+
+metrics:
+  serviceMonitor:
+    enabled: true
+
+networkPolicy:
+  enabled: true
+  egress:
+    s3:
+      to:
+        - ipBlock:
+            cidr: 198.51.100.0/24

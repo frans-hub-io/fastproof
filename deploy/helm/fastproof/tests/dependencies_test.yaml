@@ -1,0 +1,83 @@
+suite: bundled services
+templates:
+  - templates/garage.yaml
+  - templates/secrets.yaml
+  - templates/availability.yaml
+release:
+  name: fp
+  namespace: qa
+values:
+  - ../ci/cloudpirates-garage-values.yaml
+tests:
+  - it: runs Garage as a hardened single node with a default bucket
+    template: templates/garage.yaml
+    documentSelector:
+      path: kind
+      value: StatefulSet
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].args
+          value: ["server", "--single-node", "--default-bucket"]
+      - equal:
+          path: spec.template.spec.securityContext.seccompProfile.type
+          value: RuntimeDefault
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem
+          value: true
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.httpGet.path
+          value: /health
+      - isNotEmpty:
+          path: spec.template.spec.containers[0].resources.limits.memory
+      - equal:
+          path: spec.template.spec.serviceAccountName
+          value: fp-garage
+      - matchRegex:
+          path: spec.template.spec.containers[0].image
+          pattern: "^docker.io/dxflrs/garage:v2.5.0@sha256:[a-f0-9]{64}$"
+
+  - it: creates the database, Garage and bootstrap token secrets
+    template: templates/secrets.yaml
+    asserts:
+      - hasDocuments:
+          count: 3
+      - documentIndex: 0
+        equal:
+          path: metadata.name
+          value: fp-fastproof-db
+      - documentIndex: 0
+        exists:
+          path: data["database-url"]
+      - documentIndex: 1
+        equal:
+          path: metadata.name
+          value: fp-garage-credentials
+      - documentIndex: 2
+        exists:
+          path: data["bootstrap-token"]
+
+  - it: adds a PodDisruptionBudget only with more than one replica
+    template: templates/availability.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: adds a PodDisruptionBudget and a HorizontalPodAutoscaler for HA
+    template: templates/availability.yaml
+    values:
+      - ../ci/ha-values.yaml
+    set:
+      postgresql.enabled: false
+      garage.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 3
+      - documentIndex: 0
+        isKind:
+          of: PodDisruptionBudget
+      - documentIndex: 1
+        isKind:
+          of: HorizontalPodAutoscaler
+      - documentIndex: 2
+        isKind:
+          of: ServiceMonitor

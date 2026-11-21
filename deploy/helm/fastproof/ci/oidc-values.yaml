@@ -1,0 +1,86 @@
+publicUrl: https://fastproof.example.com
+
+database:
+  url: postgres://fastproof:change-me@db.example.com:5432/fastproof?sslmode=verify-full
+  maxConnections: 30
+  ca:
+    existingSecret: database-ca
+
+blob:
+  backend: s3
+  s3:
+    endpoint: https://s3.example.com
+    bucket: fastproof
+    credentials:
+      accessKey: fastproof-access
+      secretKey: fastproof-secret-value
+
+oidc:
+  issuer: https://idp.example.com/realms/qa
+  clientId: fastproof
+  clientSecret:
+    existingSecret: fastproof-oidc
+  scopes:
+    - openid
+    - profile
+    - email
+  groupsClaim: groups
+  apiAudience: fastproof-api
+  sessionTtl: 8h
+  sessionIdle: 1h
+  ca:
+    existingConfigMap: idp-ca
+
+auth:
+  access:
+    roles:
+      - name: release-manager
+        permissions:
+          - "launches:*"
+          - results:triage
+    bindings:
+      - subject: group:qa
+        role: editor
+        scopes:
+          - web
+          - mobile
+      - subject: group:platform
+        role: admin
+        global: true
+      - subject: group:developers
+        role: viewer
+        scopes:
+          - "*"
+
+tls:
+  existingSecret: fastproof-listener-tls
+  clientCa:
+    existingSecret: fastproof-client-ca
+
+otel:
+  endpoint: http://otel-collector.observability:4318
+  protocol: http/protobuf
+  resourceAttributes: deployment.environment=ci
+
+networkPolicy:
+  enabled: true
+  egress:
+    database:
+      to:
+        - ipBlock:
+            cidr: 198.51.100.10/32
+    s3:
+      to:
+        - ipBlock:
+            cidr: 198.51.100.20/32
+    oidc:
+      to:
+        - ipBlock:
+            cidr: 203.0.113.0/24
+    otlp:
+      to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+      ports:
+        - 4318

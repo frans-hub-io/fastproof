@@ -1,0 +1,125 @@
+{{- $backend := include "fastproof.blobBackend" . -}}
+{{- $o := .Values.oidc -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "fastproof.fullname" . }}
+  labels:
+    {{- include "fastproof.labels" . | nindent 4 }}
+data:
+  FASTPROOF_LISTEN: "0.0.0.0:8080"
+  FASTPROOF_OPS_LISTEN: "0.0.0.0:9090"
+  {{- with .Values.publicUrl }}
+  FASTPROOF_PUBLIC_URL: {{ . | quote }}
+  {{- end }}
+  FASTPROOF_DATABASE_URL_FILE: /etc/fastproof/secrets/database-url
+  FASTPROOF_DATABASE_MAX_CONNECTIONS: {{ .Values.database.maxConnections | quote }}
+  {{- if include "fastproof.databaseCa" . }}
+  FASTPROOF_DATABASE_CA_FILE: /etc/fastproof/ca/database.crt
+  {{- end }}
+  {{- with include "fastproof.databaseSslMode" . }}
+  PGSSLMODE: {{ . | quote }}
+  {{- end }}
+  FASTPROOF_BLOB_BACKEND: {{ $backend | quote }}
+  {{- if eq $backend "fs" }}
+  FASTPROOF_BLOB_DIR: /var/lib/fastproof/blobs
+  {{- else }}
+  {{- if .Values.garage.enabled }}
+  FASTPROOF_S3_ENDPOINT: {{ printf "http://%s:3900" (include "fastproof.garageName" .) | quote }}
+  FASTPROOF_S3_REGION: {{ .Values.garage.region | quote }}
+  FASTPROOF_S3_BUCKET: {{ .Values.garage.bucket | quote }}
+  FASTPROOF_S3_PATH_STYLE: "true"
+  {{- else }}
+  FASTPROOF_S3_ENDPOINT: {{ .Values.blob.s3.endpoint | quote }}
+  FASTPROOF_S3_REGION: {{ .Values.blob.s3.region | quote }}
+  FASTPROOF_S3_BUCKET: {{ .Values.blob.s3.bucket | quote }}
+  FASTPROOF_S3_PATH_STYLE: {{ .Values.blob.s3.pathStyle | quote }}
+  {{- if or .Values.blob.s3.ca.existingSecret .Values.blob.s3.ca.existingConfigMap }}
+  FASTPROOF_S3_CA_FILE: /etc/fastproof/ca/s3.crt
+  {{- end }}
+  {{- end }}
+  FASTPROOF_S3_ACCESS_KEY_FILE: /etc/fastproof/secrets/s3-access-key
+  FASTPROOF_S3_SECRET_KEY_FILE: /etc/fastproof/secrets/s3-secret-key
+  {{- end }}
+  FASTPROOF_SPOOL_DIR: /tmp/fastproof
+  FASTPROOF_MAX_UPLOAD_BYTES: {{ .Values.server.maxUploadBytes | int64 | quote }}
+  FASTPROOF_INGEST_WORKERS: {{ .Values.server.ingestWorkers | quote }}
+  FASTPROOF_RETAIN_UPLOADS: {{ .Values.server.retainUploads | quote }}
+  FASTPROOF_OUTBOX_RETENTION_DAYS: {{ .Values.server.outboxRetentionDays | quote }}
+  {{- if include "fastproof.accessEnabled" . }}
+  FASTPROOF_ACCESS_FILE: /etc/fastproof/access/access.yaml
+  {{- end }}
+  {{- if include "fastproof.adminTokensEnabled" . }}
+  FASTPROOF_ADMIN_TOKENS_FILE: /etc/fastproof/secrets/admin-tokens
+  {{- end }}
+  {{- if $o.issuer }}
+  FASTPROOF_OIDC_ISSUER: {{ $o.issuer | quote }}
+  FASTPROOF_OIDC_CLIENT_ID: {{ $o.clientId | quote }}
+  FASTPROOF_OIDC_CLIENT_SECRET_FILE: /etc/fastproof/secrets/oidc-client-secret
+  FASTPROOF_OIDC_REDIRECT_URL: {{ include "fastproof.oidcRedirectUrl" . | quote }}
+  {{- with $o.scopes }}
+  FASTPROOF_OIDC_SCOPES: {{ join " " . | quote }}
+  {{- end }}
+  {{- with $o.usernameClaim }}
+  FASTPROOF_OIDC_USERNAME_CLAIM: {{ . | quote }}
+  {{- end }}
+  {{- with $o.groupsClaim }}
+  FASTPROOF_OIDC_GROUPS_CLAIM: {{ . | quote }}
+  {{- end }}
+  {{- with $o.allowedAlgs }}
+  FASTPROOF_OIDC_ALLOWED_ALGS: {{ join "," . | quote }}
+  {{- end }}
+  {{- with $o.apiAudience }}
+  FASTPROOF_OIDC_API_AUDIENCE: {{ . | quote }}
+  {{- end }}
+  {{- with $o.allowedHosts }}
+  FASTPROOF_OIDC_ALLOWED_HOSTS: {{ join "," . | quote }}
+  {{- end }}
+  {{- with $o.sessionTtl }}
+  FASTPROOF_OIDC_SESSION_TTL: {{ . | quote }}
+  {{- end }}
+  {{- with $o.sessionIdle }}
+  FASTPROOF_OIDC_SESSION_IDLE: {{ . | quote }}
+  {{- end }}
+  {{- with $o.cookieName }}
+  FASTPROOF_OIDC_COOKIE_NAME: {{ . | quote }}
+  {{- end }}
+  {{- with $o.postLogoutRedirect }}
+  FASTPROOF_OIDC_POST_LOGOUT_REDIRECT: {{ . | quote }}
+  {{- end }}
+  {{- if or $o.ca.existingSecret $o.ca.existingConfigMap }}
+  FASTPROOF_OIDC_CA_FILE: /etc/fastproof/ca/oidc.crt
+  {{- end }}
+  {{- end }}
+  {{- if .Values.tls.existingSecret }}
+  FASTPROOF_TLS_CERT_FILE: /etc/fastproof/tls/tls.crt
+  FASTPROOF_TLS_KEY_FILE: /etc/fastproof/tls/tls.key
+  {{- if or .Values.tls.clientCa.existingSecret .Values.tls.clientCa.existingConfigMap }}
+  FASTPROOF_TLS_CLIENT_CA_FILE: /etc/fastproof/ca/tls-client.crt
+  {{- end }}
+  {{- end }}
+  FASTPROOF_LOG_FORMAT: {{ .Values.server.logFormat | quote }}
+  RUST_LOG: {{ .Values.server.logFilter | quote }}
+  FASTPROOF_UI: {{ ternary "on" "off" .Values.server.ui | quote }}
+  {{- with .Values.otel.endpoint }}
+  OTEL_EXPORTER_OTLP_ENDPOINT: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.otel.protocol }}
+  OTEL_EXPORTER_OTLP_PROTOCOL: {{ . | quote }}
+  {{- end }}
+  OTEL_SERVICE_NAME: {{ .Values.otel.serviceName | quote }}
+  {{- with .Values.otel.resourceAttributes }}
+  OTEL_RESOURCE_ATTRIBUTES: {{ . | quote }}
+  {{- end }}
+{{- if and (include "fastproof.accessEnabled" .) (not .Values.auth.access.existingConfigMap) }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "fastproof.fullname" . }}-access
+  labels:
+    {{- include "fastproof.labels" . | nindent 4 }}
+data:
+  access.yaml: |
+    {{- toYaml (dict "roles" .Values.auth.access.roles "bindings" .Values.auth.access.bindings) | nindent 4 }}
+{{- end }}

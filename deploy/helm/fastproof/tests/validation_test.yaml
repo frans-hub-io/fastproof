@@ -1,0 +1,74 @@
+suite: validation
+templates:
+  - templates/deployment.yaml
+release:
+  name: fp
+  namespace: qa
+tests:
+  - it: requires a database
+    set:
+      auth.adminTokens.generate: true
+    asserts:
+      - failedTemplate:
+          errorPattern: "FastProof needs PostgreSQL"
+
+  - it: refuses two databases
+    set:
+      auth.adminTokens.generate: true
+      postgresql.enabled: true
+      database.existingSecret: db
+    asserts:
+      - failedTemplate:
+          errorPattern: "set only one of"
+
+  - it: requires authentication
+    set:
+      database.existingSecret: db
+    asserts:
+      - failedTemplate:
+          errorPattern: "never runs without authentication"
+
+  - it: requires the CloudNativePG operator for cnpg.enabled
+    set:
+      auth.adminTokens.generate: true
+      cnpg.enabled: true
+    asserts:
+      - failedTemplate:
+          errorPattern: "needs the CloudNativePG operator"
+
+  - it: refuses several replicas on a ReadWriteOnce blob volume
+    set:
+      auth.adminTokens.generate: true
+      database.existingSecret: db
+      replicaCount: 2
+    asserts:
+      - failedTemplate:
+          errorPattern: "needs a shared volume"
+
+  - it: requires the public URL with OIDC
+    set:
+      database.existingSecret: db
+      oidc.issuer: https://idp.example.com/realms/qa
+      oidc.clientId: fastproof
+      oidc.clientSecret.existingSecret: oidc
+    asserts:
+      - failedTemplate:
+          errorPattern: "publicUrl is required with OIDC"
+
+  - it: requires egress peers for external services when the egress policy is on
+    set:
+      auth.adminTokens.generate: true
+      database.existingSecret: db
+      networkPolicy.enabled: true
+    asserts:
+      - failedTemplate:
+          errorPattern: "networkPolicy.egress.database.to is required"
+
+  - it: requires S3 settings for the s3 backend
+    set:
+      auth.adminTokens.generate: true
+      database.existingSecret: db
+      blob.backend: s3
+    asserts:
+      - failedTemplate:
+          errorPattern: "blob.s3.endpoint is required"

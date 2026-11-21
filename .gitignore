@@ -8,3 +8,4 @@
 /tests/fixtures/generators/junit5/target/
 .DS_Store
 *.swp
+/site

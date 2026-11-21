@@ -1,0 +1,201 @@
+{{- if .Values.garage.enabled }}
+{{- $g := .Values.garage -}}
+{{- $name := include "fastproof.garageName" . -}}
+{{- $secret := include "fastproof.garageSecretName" . -}}
+{{- $image := printf "%s:%s" $g.image.repository $g.image.tag -}}
+{{- if $g.image.digest }}{{ $image = printf "%s@%s" $image $g.image.digest }}{{ end -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "fastproof.labels" . | nindent 4 }}
+    app.kubernetes.io/component: garage
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "fastproof.labels" . | nindent 4 }}
+    app.kubernetes.io/component: garage
+data:
+  garage.toml: |
+    metadata_dir = "/var/lib/garage/meta"
+    data_dir = "/var/lib/garage/data"
+    db_engine = {{ $g.dbEngine | quote }}
+    replication_factor = 1
+    rpc_bind_addr = "0.0.0.0:3901"
+    rpc_public_addr = "127.0.0.1:3901"
+
+    [s3_api]
+    s3_region = {{ $g.region | quote }}
+    api_bind_addr = "0.0.0.0:3900"
+
+    [admin]
+    api_bind_addr = "0.0.0.0:3903"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "fastproof.labels" . | nindent 4 }}
+    app.kubernetes.io/component: garage
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: garage
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - name: s3
+      port: 3900
+      targetPort: s3
+      protocol: TCP
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "fastproof.labels" . | nindent 4 }}
+    app.kubernetes.io/component: garage
+spec:
+  replicas: 1
+  serviceName: {{ $name }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: garage
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: garage
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: s3
+        app.kubernetes.io/part-of: fastproof
+        app.kubernetes.io/version: {{ $g.image.tag | quote }}
+      annotations:
+        checksum/config: {{ $g | toJson | sha256sum }}
+    spec:
+      serviceAccountName: {{ $name }}
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml $g.podSecurityContext | nindent 8 }}
+      containers:
+        - name: garage
+          image: {{ $image | quote }}
+          imagePullPolicy: {{ $g.image.pullPolicy }}
+          command: ["/garage"]
+          args: ["server", "--single-node", "--default-bucket"]
+          securityContext:
+            {{- toYaml $g.securityContext | nindent 12 }}
+          env:
+            - name: GARAGE_CONFIG_FILE
+              value: /etc/garage/garage.toml
+            - name: RUST_LOG
+              value: garage=info
+            - name: GARAGE_RPC_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: {{ $g.credentials.rpcSecretKey }}
+            - name: GARAGE_DEFAULT_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: {{ $g.credentials.accessKeyKey }}
+            - name: GARAGE_DEFAULT_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: {{ $g.credentials.secretKeyKey }}
+            - name: GARAGE_DEFAULT_BUCKET
+              value: {{ $g.bucket | quote }}
+          ports:
+            - name: s3
+              containerPort: 3900
+              protocol: TCP
+            - name: admin
+              containerPort: 3903
+              protocol: TCP
+          startupProbe:
+            httpGet:
+              path: /health
+              port: admin
+            periodSeconds: 2
+            failureThreshold: 90
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: admin
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            tcpSocket:
+              port: admin
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 6
+          resources:
+            {{- toYaml $g.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/garage
+              readOnly: true
+            - name: meta
+              mountPath: /var/lib/garage/meta
+            - name: data
+              mountPath: /var/lib/garage/data
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $name }}
+        {{- if not $g.persistence.enabled }}
+        - name: meta
+          emptyDir: {}
+        - name: data
+          emptyDir: {}
+        {{- end }}
+      {{- with $g.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $g.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $g.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  {{- if $g.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: meta
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- with $g.persistence.storageClass }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ $g.persistence.metaSize }}
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- with $g.persistence.storageClass }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ $g.persistence.dataSize }}
+  {{- end }}
+{{- end }}

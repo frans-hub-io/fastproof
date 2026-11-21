@@ -1,0 +1,235 @@
+suite: deployment
+templates:
+  - templates/deployment.yaml
+  - templates/configmap.yaml
+release:
+  name: fp
+  namespace: qa
+values:
+  - ../ci/minimal-fs-values.yaml
+tests:
+  - it: runs as non-root with a read-only root filesystem and no service account token
+    template: templates/deployment.yaml
+    documentSelector:
+      path: kind
+      value: Deployment
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext.runAsNonRoot
+          value: true
+      - equal:
+          path: spec.template.spec.securityContext.seccompProfile.type
+          value: RuntimeDefault
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem
+          value: true
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.allowPrivilegeEscalation
+          value: false
+      - contains:
+          path: spec.template.spec.containers[0].securityContext.capabilities.drop
+          content: ALL
+      - equal:
+          path: spec.template.spec.automountServiceAccountToken
+          value: false
+      - equal:
+          path: spec.template.spec.serviceAccountName
+          value: fp-fastproof
+      - isNotEmpty:
+          path: spec.template.spec.containers[0].resources.limits.memory
+
+  - it: probes the ops port
+    template: templates/deployment.yaml
+    documentSelector:
+      path: kind
+      value: Deployment
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.httpGet
+          value:
+            path: /healthz
+            port: ops
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.httpGet
+          value:
+            path: /readyz
+            port: ops
+      - equal:
+          path: spec.template.spec.containers[0].startupProbe.httpGet.path
+          value: /healthz
+      - contains:
+          path: spec.template.spec.containers[0].ports
+          content:
+            name: ops
+            containerPort: 9090
+            protocol: TCP
+
+  - it: mounts secrets as files and the spool as an emptyDir
+    template: templates/deployment.yaml
+    documentSelector:
+      path: kind
+      value: Deployment
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes[1].projected.sources
+          content:
+            secret:
+              name: fastproof-database
+              items:
+                - key: database-url
+                  path: database-url
+      - contains:
+          path: spec.template.spec.volumes[1].projected.sources
+          content:
+            secret:
+              name: fastproof-admin-tokens
+              items:
+                - key: tokens
+                  path: admin-tokens
+      - equal:
+          path: spec.template.spec.volumes[0].emptyDir.sizeLimit
+          value: 4Gi
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: FASTPROOF_DATABASE_URL
+          any: true
+
+  - it: lets the migration Job migrate an external database
+    template: templates/deployment.yaml
+    documentSelector:
+      path: kind
+      value: Deployment
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: FASTPROOF_MIGRATE
+            value: "off"
+
+  - it: migrates on first install with a bundled database and through the Job on upgrades
+    template: templates/deployment.yaml
+    documentSelector:
+      path: kind
+      value: Deployment
+    set:
+      database.existingSecret: ""
+      postgresql.enabled: true
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: FASTPROOF_MIGRATE
+            value: auto
+
+  - it: switches migrations off in the server after an upgrade with a bundled database
+    template: templates/deployment.yaml
+    documentSelector:
+      path: kind
+      value: Deployment
+    release:
+      upgrade: true
+    set:
+      database.existingSecret: ""
+      postgresql.enabled: true
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: FASTPROOF_MIGRATE
+            value: "off"
+
+  - it: recreates the pod when blobs live on a ReadWriteOnce volume
+    template: templates/deployment.yaml
+    documentSelector:
+      path: kind
+      value: Deployment
+    asserts:
+      - equal:
+          path: spec.strategy.type
+          value: Recreate
+
+  - it: rolls without downtime with S3 and reads the credentials from files
+    template: templates/deployment.yaml
+    documentSelector:
+      path: kind
+      value: Deployment
+    set:
+      blob.backend: s3
+      blob.s3.endpoint: https://s3.example.com
+      blob.s3.bucket: reports
+      blob.s3.credentials.existingSecret: s3-creds
+    asserts:
+      - equal:
+          path: spec.strategy.rollingUpdate.maxUnavailable
+          value: 0
+      - contains:
+          path: spec.template.spec.volumes[1].projected.sources
+          content:
+            secret:
+              name: s3-creds
+              items:
+                - key: access-key
+                  path: s3-access-key
+                - key: secret-key
+                  path: s3-secret-key
+
+  - it: reads the Valkey URL from the chart-created secret
+    template: templates/deployment.yaml
+    documentSelector:
+      path: kind
+      value: Deployment
+    set:
+      valkey.enabled: true
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: FASTPROOF_VALKEY_URL
+            valueFrom:
+              secretKeyRef:
+                name: fp-fastproof-valkey
+                key: url
+
+  - it: pins the image by digest when given
+    template: templates/deployment.yaml
+    documentSelector:
+      path: kind
+      value: Deployment
+    set:
+      image.digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: docker.io/franshub/fastproof:0.1.0-dev1@sha256:0000000000000000000000000000000000000000000000000000000000000000
+
+  - it: mounts the CloudNativePG CA and verifies the server certificate
+    capabilities:
+      apiVersions:
+        - postgresql.cnpg.io/v1
+    set:
+      database.existingSecret: ""
+      cnpg.enabled: true
+    asserts:
+      - template: templates/configmap.yaml
+        documentIndex: 0
+        equal:
+          path: data.PGSSLMODE
+          value: verify-full
+      - template: templates/configmap.yaml
+        documentIndex: 0
+        equal:
+          path: data.FASTPROOF_DATABASE_CA_FILE
+          value: /etc/fastproof/ca/database.crt
+      - template: templates/deployment.yaml
+        documentSelector:
+          path: kind
+          value: Deployment
+        contains:
+          path: spec.template.spec.volumes[1].projected.sources
+          content:
+            secret:
+              name: fp-cnpg-app
+              items:
+                - key: uri
+                  path: database-url

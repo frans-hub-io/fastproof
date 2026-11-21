@@ -1,0 +1,56 @@
+publicUrl: https://fastproof.example.com
+
+replicaCount: 2
+
+database:
+  existingSecret: fastproof-database
+  maxConnections: 15
+
+blob:
+  backend: s3
+  s3:
+    endpoint: https://s3.example.com
+    bucket: fastproof
+    credentials:
+      existingSecret: fastproof-s3
+
+valkey:
+  enabled: true
+
+auth:
+  adminTokens:
+    existingSecret: fastproof-admin-tokens
+
+server:
+  ingestWorkers: 4
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 4
+  targetMemoryUtilizationPercentage: 80
+
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: ScheduleAnyway
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/name: fastproof
+        app.kubernetes.io/component: server
+
+metrics:
+  serviceMonitor:
+    enabled: true
+
+networkPolicy:
+  enabled: true
+  egress:
+    database:
+      to:
+        - ipBlock:
+            cidr: 198.51.100.10/32
+    s3:
+      to:
+        - ipBlock:
+            cidr: 198.51.100.20/32

@@ -1,0 +1,67 @@
+suite: migrations
+templates:
+  - templates/migrate-job.yaml
+release:
+  name: fp
+  namespace: qa
+values:
+  - ../ci/minimal-fs-values.yaml
+tests:
+  - it: runs fastproof migrate before install and upgrade for an external database
+    documentSelector:
+      path: kind
+      value: Job
+    asserts:
+      - equal:
+          path: metadata.annotations["helm.sh/hook"]
+          value: pre-install,pre-upgrade
+      - equal:
+          path: spec.template.spec.containers[0].args
+          value: ["migrate"]
+      - equal:
+          path: spec.template.spec.serviceAccountName
+          value: fp-fastproof-migrate
+      - equal:
+          path: spec.template.spec.securityContext.seccompProfile.type
+          value: RuntimeDefault
+      - isNotEmpty:
+          path: spec.template.spec.containers[0].resources.limits.cpu
+
+  - it: runs only before upgrades when the database is installed with the release
+    documentSelector:
+      path: kind
+      value: Job
+    set:
+      database.existingSecret: ""
+      postgresql.enabled: true
+    asserts:
+      - equal:
+          path: metadata.annotations["helm.sh/hook"]
+          value: pre-upgrade
+
+  - it: copies an inline database URL into a hook secret that exists before install
+    set:
+      database.existingSecret: ""
+      database.url: postgres://fastproof:pw@db.example.com/fastproof
+    asserts:
+      - hasDocuments:
+          count: 3
+      - documentSelector:
+          path: kind
+          value: Secret
+        equal:
+          path: metadata.annotations["helm.sh/hook-delete-policy"]
+          value: before-hook-creation,hook-succeeded
+      - documentSelector:
+          path: kind
+          value: Job
+        equal:
+          path: spec.template.spec.volumes[1].secret.secretName
+          value: fp-fastproof-migrate
+
+  - it: is not rendered when the server migrates itself
+    set:
+      migrations.mode: auto
+    asserts:
+      - hasDocuments:
+          count: 0

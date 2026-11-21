@@ -1,0 +1,29 @@
+FastProof {{ .Chart.AppVersion }} is installed as release {{ .Release.Name }} in namespace {{ .Release.Namespace }}.
+
+Service: {{ include "fastproof.fullname" . }} (http {{ .Values.service.port }}, ops {{ .Values.service.opsPort }}: /metrics, /healthz, /readyz)
+{{- with .Values.publicUrl }}
+Public URL: {{ . }}
+{{- end }}
+
+Try it locally:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "fastproof.fullname" . }} 8080:{{ .Values.service.port }}
+  open http://localhost:8080/
+{{- if and .Values.auth.adminTokens.generate (not .Values.auth.adminTokens.existingSecret) }}
+
+Bootstrap admin token (store it, then create managed tokens and turn generate off):
+  kubectl -n {{ .Release.Namespace }} get secret {{ include "fastproof.fullname" . }}-admin-tokens -o jsonpath='{.data.bootstrap-token}' | base64 -d
+{{- end }}
+{{- if .Values.garage.enabled }}
+
+Attachments are stored in the bundled single-node Garage ({{ include "fastproof.garageName" . }}). It is meant for
+evaluation and small installations; use an external S3-compatible service for production.
+{{- end }}
+{{- if eq (include "fastproof.blobBackend" .) "fs" }}
+
+Attachments are stored on the volume {{ default (printf "%s-blobs" (include "fastproof.fullname" .)) .Values.blob.fs.persistence.existingClaim }}; it is kept when the release is uninstalled.
+{{- end }}
+
+Upload a report:
+  FASTPROOF_URL=http://localhost:8080 FASTPROOF_TOKEN=<token> FASTPROOF_PROJECT=<key> fastproof upload ./allure-results
+
+Documentation: https://fastproof.franshub.io/

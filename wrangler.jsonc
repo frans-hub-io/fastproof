@@ -1,0 +1,14 @@
+{
+  "name": "fastproof-docs",
+  "compatibility_date": "2026-11-01",
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [
+    { "pattern": "fastproof.franshub.io", "custom_domain": true }
+  ],
+  "assets": {
+    "directory": "./site",
+    "not_found_handling": "404-page",
+    "html_handling": "auto-trailing-slash"
+  }
+}

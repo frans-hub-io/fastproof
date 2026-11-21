@@ -1,11 +1,18 @@
+// API types. Everything served by FastProof comes from `schema.gen.ts`, generated from
+// `schemas/openapi.json` with `npm run gen:api`; the aliases below only narrow string fields that
+// the spec documents as fixed sets (statuses, kinds) and give the UI short names. Platform routes
+// that are not part of the FastProof OpenAPI (`/me`, `/tokens`) and client-side formats
+// (Allure HTTP exchanges and image diffs) are written by hand at the end. Specified but not yet
+// published endpoints live in `types-next.ts`.
+import type { components } from './schema.gen';
+import type { DefectInfo, ResultAnalysis } from './types-next';
+
+type S = components['schemas'];
+
 export type Uuid = string;
 export type IsoDateTime = string;
 
-export interface ErrorBody {
-  code: string;
-  message: string;
-  details?: unknown;
-}
+export type ErrorBody = S['ErrorBody'];
 
 export interface Page<T> {
   items: T[];
@@ -16,114 +23,47 @@ export interface ItemList<T> {
   items: T[];
 }
 
-export interface LastLaunch {
-  id: Uuid;
-  number: number;
-  name: string;
-  status: LaunchStatus;
-  startedAt: IsoDateTime;
-  counts: Counts;
-}
-
-export interface Project {
-  key: string;
-  name: string;
-  description: string | null;
-  createdAt: IsoDateTime;
-  lastLaunchAt: IsoDateTime | null;
-  launchCount: number;
-  lastLaunch?: LastLaunch | null;
-}
-
-export interface ProjectCreate {
-  key: string;
-  name: string;
-  description?: string;
-}
-
-export interface ProjectPatch {
-  name?: string;
-  description?: string;
-}
-
 export type LaunchStatus = 'running' | 'finished' | 'interrupted';
 
-export type ResultStatus = 'passed' | 'failed' | 'broken' | 'skipped' | 'unknown';
+export type ResultStatus = S['Status'];
 
 export const RESULT_STATUSES: readonly ResultStatus[] = ['passed', 'failed', 'broken', 'skipped', 'unknown'];
 
-export interface Attribute {
-  key: string;
-  value: string;
-}
+export type Counts = S['Counts'];
+export type Attribute = S['Attribute'];
+export type LaunchCi = S['LaunchCi'];
+export type LaunchVcs = S['LaunchVcs'];
+export type LaunchEnvironment = S['LaunchEnvironment'];
+export type UploadCounters = S['UploadCounts'];
+export type LaunchStart = S['LaunchStart'];
+export type LaunchFinish = S['FinishLaunch'];
+export type ResultsAccepted = S['IngestSummary'];
+export type AttachmentCreated = S['AttachmentCreated'];
+export type Label = S['LabelView'];
+export type Parameter = S['ParameterView'];
+export type Link = S['LinkView'];
+export type StatusError = S['ErrorView'];
+export type ProjectCreate = S['NewProject'];
+export type ProjectPatch = S['PatchProject'];
+export type ScheduledJob = S['ScheduledJob'];
+export type AuditEvent = S['AuditItem'];
+export type AuditPage = S['AuditList'];
+export type TestCaseView = S['TestCaseView'];
 
-export interface LaunchCi {
-  provider: string;
-  pipelineId: string | null;
-  jobId: string | null;
-  url: string | null;
-  buildOrder: number | null;
-}
+export type LastLaunch = Omit<S['LastLaunch'], 'status'> & { status: LaunchStatus };
 
-export interface LaunchVcs {
-  repository: string | null;
-  branch: string | null;
-  commit: string | null;
-  commitUrl?: string | null;
-}
+export type Project = Omit<S['Project'], 'lastLaunch' | 'description'> & {
+  description: string | null;
+  lastLaunch?: LastLaunch | null;
+  /** Stage C: kept from retention (`PATCH /launches/{id}`). */
+  important?: boolean;
+};
 
-export interface LaunchEnvironment {
-  key: string;
-  values: Record<string, string>;
-}
-
-export interface Counts {
-  total: number;
-  passed: number;
-  failed: number;
-  broken: number;
-  skipped: number;
-  unknown: number;
-  flaky: number;
-  muted: number;
-}
-
-export interface UploadCounters {
-  queued: number;
-  processing: number;
-  failed: number;
-}
-
-export interface LaunchStart {
-  externalId?: string;
-  name: string;
-  attributes?: Attribute[];
-  ci?: LaunchCi;
-  vcs?: LaunchVcs;
-  environment?: LaunchEnvironment;
-  debug?: boolean;
-}
-
-export interface Launch {
-  id: Uuid;
-  number: number;
-  name: string;
+export type Launch = Omit<S['Launch'], 'status'> & {
   status: LaunchStatus;
-  debug: boolean;
-  startedAt: IsoDateTime;
-  finishedAt: IsoDateTime | null;
-  durationMs: number | null;
-  ci: LaunchCi | null;
-  vcs: LaunchVcs | null;
-  environment: LaunchEnvironment | null;
-  attributes: Attribute[];
-  counts: Counts;
-  uploads: UploadCounters;
-}
-
-export interface LaunchFinish {
-  status?: LaunchStatus;
-}
+  /** Stage C: kept from retention. */
+  important?: boolean;
+};
 
 export interface LaunchFilters {
   branch?: string;
@@ -138,64 +78,18 @@ export type UploadFormat = 'auto' | 'allure' | 'junit' | 'ctrf' | 'playwright';
 
 export type UploadStatus = 'queued' | 'processing' | 'done' | 'failed';
 
-export interface UploadError {
-  code: string;
-  message: string;
-  limit?: number | string | null;
-}
+export type UploadError = S['UploadError'];
 
-export interface Upload {
-  id: Uuid;
-  format: string;
-  status: UploadStatus;
-  sizeBytes: number;
-  counts: { results: number; attachments: number; ignored: number };
-  warnings: string[];
-  error?: UploadError | null;
-  createdAt: IsoDateTime;
-  finishedAt: IsoDateTime | null;
-}
+export type Upload = Omit<S['Upload'], 'status'> & { status: UploadStatus };
 
-export interface ResultsAccepted {
-  accepted: number;
-  duplicates: number;
-  rejected: { index: number; message: string }[];
-}
+/** Stage B `defect` (`{type, comment, issueUrl}`) widened with the stage C fields. */
+export type Defect = DefectInfo;
 
-export interface AttachmentCreated {
-  id: Uuid;
-  sha256: string;
-  size: number;
-}
-
-export interface Label {
-  name: string;
-  value: string;
-}
-
-export interface Defect {
-  type: string;
-  comment: string | null;
-  issueUrl: string | null;
-}
-
-export interface ResultSummary {
-  id: Uuid;
-  testCaseId: string;
-  seriesKey: string;
-  name: string;
-  fullName: string;
-  suitePath: string[];
-  status: ResultStatus;
-  flakyInRun: boolean;
-  attemptCount: number;
-  durationMs: number | null;
-  labels: Label[];
-  muted: boolean;
-  fingerprint: string | null;
-  defect?: Defect | null;
-  message?: string | null;
-}
+export type ResultSummary = Omit<S['ResultSummary'], 'status' | 'defect'> &
+  ResultAnalysis & {
+    status: ResultStatus;
+    defect?: Defect | null;
+  };
 
 export interface ResultFilters {
   status?: string;
@@ -208,34 +102,14 @@ export interface ResultFilters {
 
 export type TreeGroupBy = 'suite' | 'feature' | 'package';
 
-export interface TreeNode {
-  name: string;
-  path: string[];
-  counts: Counts;
-  children: TreeNode[];
-  resultIds?: Uuid[];
-}
-
-export interface Parameter {
-  name: string;
-  value: string;
-}
-
-export interface Link {
-  name: string | null;
-  url: string;
-  type: string | null;
-}
-
-export interface StatusError {
-  message: string | null;
-  trace: string | null;
-  actual: string | null;
-  expected: string | null;
-}
+export type TreeNode = S['TreeNode'];
 
 export type AttachmentKind = 'image' | 'video' | 'trace' | 'imageDiff' | 'httpExchange' | 'text' | 'log' | 'json' | 'other';
 
+/** An attachment as the server references it; `id` is null when the file was not uploaded. */
+export type AttachmentRef = S['AttachmentView'];
+
+/** An attachment that can be fetched (see `toAttachment`). */
 export interface Attachment {
   id: Uuid;
   name: string;
@@ -246,61 +120,28 @@ export interface Attachment {
 
 export type StepKind = 'step' | 'fixture';
 
-export interface Step {
-  name: string;
+export type Step = Omit<S['StepView'], 'status' | 'kind' | 'steps'> & {
   status: ResultStatus;
   kind: StepKind;
-  startedAt: IsoDateTime | null;
-  stoppedAt: IsoDateTime | null;
-  durationMs: number | null;
-  error?: StatusError | null;
-  parameters: Parameter[];
-  attachments: Attachment[];
   steps: Step[];
-}
+};
 
-export interface Attempt {
-  no: number;
+export type Attempt = Omit<S['AttemptView'], 'status' | 'steps'> & {
   status: ResultStatus;
-  startedAt: IsoDateTime | null;
-  stoppedAt: IsoDateTime | null;
-  durationMs: number | null;
-  error?: StatusError | null;
   steps: Step[];
-  attachments: Attachment[];
-  stdout?: string | null;
-  stderr?: string | null;
-  traceId?: string | null;
-}
+};
 
-export interface SeriesHistoryItem {
-  launchId: Uuid;
-  launchNumber: number;
-  status: ResultStatus;
-  startedAt: IsoDateTime;
-  resultId?: Uuid;
-}
+export type SeriesHistoryItem = Omit<S['SeriesPoint'], 'status'> & { status: ResultStatus };
 
-export interface ResultDetail extends ResultSummary {
-  description: string | null;
-  parameters: Parameter[];
-  links: Link[];
-  attempts: Attempt[];
-  history: SeriesHistoryItem[];
-  launchId?: Uuid;
-  launchNumber?: number;
-}
+export type ResultDetail = ResultSummary &
+  Omit<S['ResultDetail'], keyof S['ResultSummary'] | 'attempts' | 'history'> & {
+    attempts: Attempt[];
+    history: SeriesHistoryItem[];
+  };
 
-export interface TestCaseHistoryItem {
-  launchId: Uuid;
-  launchNumber: number;
-  resultId: Uuid;
-  status: ResultStatus;
-  startedAt: IsoDateTime;
-  durationMs: number | null;
-  branch: string | null;
-  environment: string | null;
-}
+export type TestCaseHistoryItem = Omit<S['HistoryEntry'], 'status'> & { status: ResultStatus };
+
+export type TestCaseHistory = Omit<S['HistoryList'], 'items'> & { items: TestCaseHistoryItem[] };
 
 export interface TestCaseHistoryFilters {
   branch?: string;
@@ -316,6 +157,14 @@ export interface UploadUpdatedEvent {
   launchId: Uuid;
   id: Uuid;
 }
+
+export interface AuditFilters {
+  action?: string;
+  principal?: string;
+  scope?: string;
+}
+
+// Platform routes (`@franshub` access layer), not part of the FastProof OpenAPI.
 
 export type TokenStatus = 'active' | 'expired' | 'revoked';
 
@@ -369,29 +218,7 @@ export interface TokenOptions {
   roles: GrantableRole[];
 }
 
-export interface AuditEvent {
-  id: number;
-  at: IsoDateTime;
-  principal: string;
-  principalKind?: string;
-  roles: string;
-  scope?: string;
-  action: string;
-  detail: unknown;
-}
-
-export interface AuditPage {
-  items?: AuditEvent[];
-  next?: string | null;
-  events?: AuditEvent[];
-  nextBefore?: number | null;
-}
-
-export interface AuditFilters {
-  action?: string;
-  principal?: string;
-  scope?: string;
-}
+// Attachment formats parsed in the browser.
 
 export interface HttpExchangeBody {
   encoding?: string;

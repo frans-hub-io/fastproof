@@ -22,7 +22,7 @@ test('projects → launches → launch → result', async ({ page, baseURL }) =>
   await expect(page.getByTestId('result-row').first()).toContainText('Failed');
 
   await page.getByRole('tab', { name: /Failures/ }).click();
-  await expect(page.getByTestId('failure-group').first()).toBeVisible();
+  await expect(page.getByTestId('cluster').first()).toBeVisible();
 
   await page.getByRole('tab', { name: 'Tree' }).click();
   await page.getByTestId('tree-node').filter({ hasText: 'checkout.spec.ts' }).getByRole('button', { name: /checkout\.spec\.ts/ }).last().click();
@@ -61,7 +61,7 @@ test('steps, error diff and logs on the result page', async ({ page }) => {
   await expect(page.getByTestId('step-tree')).toBeVisible();
   await expect(page.locator('[data-testid="step"][data-status="failed"]').first()).toBeVisible();
   await expect(page.getByTestId('diff-view').first()).toBeVisible();
-  await page.getByRole('tab', { name: 'Logs' }).click();
+  await page.getByRole('tab', { name: 'Output' }).click();
   const stdout = page.getByTestId('stdout');
   await expect(stdout).toContainText('BAD GATEWAY');
   const colored = stdout.locator('span[style*="--fp-ansi"]');

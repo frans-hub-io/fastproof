@@ -700,6 +700,7 @@ function buildResults(def: LaunchDef): StoredResult[] {
     const muted = t.index === 22 && failing;
     const summary: ResultSummary = {
       id,
+      launchId: def.launch.id,
       testCaseId: t.testCaseId,
       seriesKey: `${t.testCaseId}.${hex(`params:${JSON.stringify(t.parameters)}`, 32)}`,
       name: t.name,
@@ -711,8 +712,21 @@ function buildResults(def: LaunchDef): StoredResult[] {
       durationMs: duration,
       labels: labelsOf(t, def.project),
       muted,
-      fingerprint: failing ? hex(`fp:${t.failure}`, 16) : null,
-      defect: muted ? { type: 'automation_bug', comment: 'Cart badge race, fix in progress', issueUrl: 'https://issues.example.com/browse/SHOP-1180' } : null,
+      fingerprint: failing ? hex(`fp:${t.failure}${t.failure === 'null' && def.seed >= 40 ? ':v2' : ''}`, 16) : null,
+      defect: muted
+        ? {
+            typeId: 'automationBug',
+            group: 'automationBug',
+            name: 'Automation bug',
+            comment: 'Cart badge race, fix in progress',
+            issueUrl: 'https://issues.example.com/browse/SHOP-1180',
+            issueKey: 'SHOP-1180',
+            source: 'user',
+            at: iso(start),
+            by: 'sam@example.com',
+          }
+        : null,
+      muteUntil: muted ? iso(NOW + 9 * DAY) : null,
       message: error?.message ?? (flaky ? null : null),
     };
     const owner = id;
@@ -779,6 +793,15 @@ export function projectLaunches(project: string): LaunchDef[] {
   return (launchOrder.get(project) ?? []).map((id) => launches.get(id)).filter((d): d is LaunchDef => !!d);
 }
 
+export function testKind(resultId: string): 'ui' | 'api' | null {
+  let stored = resultsById.get(resultId);
+  if (!stored) {
+    for (const def of launches.values()) buildResults(def);
+    stored = resultsById.get(resultId);
+  }
+  return stored?.def.kind ?? null;
+}
+
 export function launchDef(id: string): LaunchDef | undefined {
   return launches.get(id);
 }
@@ -815,7 +838,7 @@ export function resultDetail(id: string): ResultDetail | undefined {
     attempts: stored.attempts(),
     history,
     launchId: stored.launchId,
-    launchNumber: def?.launch.number,
+    launchNumber: def?.launch.number ?? 0,
   };
 }
 
@@ -867,6 +890,7 @@ export function uploadsOf(def: LaunchDef): Upload[] {
   const created = new Date(def.launch.startedAt).getTime();
   const base = (i: number, extra: Partial<Upload>): Upload => ({
     id: uuid(`upload:${def.launch.id}:${String(i)}`),
+    launchId: def.launch.id,
     format: 'allure',
     status: 'done',
     sizeBytes: 3_400_000 + i * 811_000,
@@ -896,7 +920,7 @@ export function uploadsOf(def: LaunchDef): Upload[] {
         status: 'failed',
         sizeBytes: 812_000_000,
         counts: { results: 0, attachments: 0, ignored: 0 },
-        error: { code: 'limit_exceeded', message: 'The archive has more than 10000 entries', limit: 10000 },
+        error: { code: 'limit_exceeded', message: 'The archive has more than 10000 entries', limit: '10000' },
       }),
     );
   }

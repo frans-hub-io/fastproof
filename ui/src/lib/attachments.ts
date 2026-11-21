@@ -1,5 +1,5 @@
 import { normalizeKind } from '../api/client';
-import type { Attachment } from '../api/types';
+import type { Attachment, AttachmentRef } from '../api/types';
 
 export interface PlaywrightDiff {
   kind: 'playwrightDiff';
@@ -19,6 +19,12 @@ export function isActiveContent(a: Pick<Attachment, 'contentType' | 'name'>): bo
   const ct = a.contentType.split(';')[0]?.trim().toLowerCase() ?? '';
   if (ACTIVE_TYPES.includes(ct)) return true;
   return /\.(html?|svg|xhtml|xml)$/i.test(a.name);
+}
+
+/** The fetchable form of a reference; `null` when the file is not stored (no id). */
+export function toAttachment(a: AttachmentRef): Attachment | null {
+  if (!a.id) return null;
+  return { id: a.id, name: a.name, contentType: a.contentType ?? 'application/octet-stream', kind: normalizeKind(a.kind), size: a.size ?? 0 };
 }
 
 export function attachmentKind(a: Attachment): Attachment['kind'] {

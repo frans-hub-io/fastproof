@@ -1,25 +1,32 @@
-import { Accordion, Anchor, Badge, Card, Chip, Group, SegmentedControl, SimpleGrid, Stack, Switch, Tabs, Text, TextInput, Tooltip, UnstyledButton } from '@mantine/core';
+import { Accordion, ActionIcon, Anchor, Badge, Button, Card, Chip, Group, SegmentedControl, SimpleGrid, Stack, Switch, Tabs, Text, TextInput, Tooltip, UnstyledButton } from '@mantine/core';
 import { DonutChart } from '@mantine/charts';
-import { EmptyState } from '@franshub/ui-shell';
+import { EmptyState, useCan } from '@franshub/ui-shell';
 import { useDebouncedValue } from '@mantine/hooks';
-import { IconAlertTriangle, IconBrandGithub, IconBrandGitlab, IconChevronDown, IconChevronRight, IconExternalLink, IconGitBranch, IconGitCommit, IconSearch, IconUpload, IconX } from '@tabler/icons-react';
+import { IconAlertTriangle, IconBrandGithub, IconBrandGitlab, IconChevronDown, IconChevronRight, IconExternalLink, IconGitBranch, IconGitCommit, IconGitCompare, IconListCheck, IconSearch, IconStar, IconStarFilled, IconUpload, IconX } from '@tabler/icons-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
 import { useProjectEvents } from '../api/events';
 import { flatItems, useLaunch, useProject, useResults, useTree, useUploads } from '../api/hooks';
+import { useDefectTypeMap, usePatchLaunch } from '../api/stageC';
 import type { Counts, Launch, ResultFilters, ResultStatus, ResultSummary, TreeGroupBy, TreeNode, Upload } from '../api/types';
+import type { DefectType } from '../api/types-next';
 import { RESULT_STATUSES } from '../api/types';
+import { DefectChip } from '../components/Defect';
+import { GateBadge } from '../components/GateBadge';
 import { LoadMore } from '../components/LoadMore';
+import { LogConsole } from '../components/LogConsole';
 import { PageHeader } from '../components/PageHeader';
 import { passRate } from '../lib/counts';
-import { Loading, QueryState } from '../components/QueryState';
+import { QueryState } from '../components/QueryState';
 import { LaunchStatusBadge, StatusBadge, StatusBar, StatusDot } from '../components/Status';
 import { ciLabel, commitUrl, repoLabel } from '../lib/ci';
-import { groupFailures } from '../lib/errorGroups';
 import { formatBytes, formatDateTime, formatDuration, formatRelative, isHttpUrl, percent, shortSha } from '../lib/format';
 import { useListKeys } from '../lib/keys';
 import { rememberLaunch } from '../lib/recent';
 import { STATUS_LABEL, statusVar, uploadStatusColor } from '../lib/status';
+import { Clusters } from './launch/Clusters';
+import { TestPlanModal } from './launch/TestPlanModal';
+import { TransitionBadge } from './launch/TransitionBadge';
 import { LaunchProgress, LiveBadge } from './Launches';
 
 function Meta({ launch }: { launch: Launch }) {
@@ -68,7 +75,7 @@ function Meta({ launch }: { launch: Launch }) {
       <Text size="sm" c="dimmed">
         Started {formatDateTime(launch.startedAt)} ({formatRelative(launch.startedAt)})
       </Text>
-      {launch.durationMs !== null && (
+      {typeof launch.durationMs === 'number' && (
         <Text size="sm" c="dimmed">
           took {formatDuration(launch.durationMs)}
         </Text>
@@ -88,7 +95,7 @@ function Chips({ launch }: { launch: Launch }) {
         </Badge>
       )}
       {env &&
-        Object.entries(env.values).map(([k, v]) => (
+        Object.entries(env.values ?? {}).map(([k, v]) => (
           <Badge key={k} variant="outline" color="gray" radius="sm" style={{ textTransform: 'none' }}>
             {k}={v}
           </Badge>
@@ -115,14 +122,16 @@ function Summary({ launch }: { launch: Launch }) {
           ) : (
             <div style={{ width: 150, height: 150, borderRadius: '50%', border: '18px solid var(--fh-ui-hairline)' }} />
           )}
-          <Stack gap={0} align="center" justify="center" style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}>
-            <Text fw={800} size="xl">
-              {Math.round(passRate(c) * 100)}%
-            </Text>
-            <Text size="xs" c="dimmed">
-              passed
-            </Text>
-          </Stack>
+          <Tooltip label={`Pass rate = passed / (total − skipped) = ${String(c.passed)} / (${String(c.total)} − ${String(c.skipped)})`} multiline maw={260}>
+            <Stack gap={0} align="center" justify="center" style={{ position: 'absolute', inset: 30, borderRadius: '50%', cursor: 'help' }} data-testid="pass-rate" tabIndex={0}>
+              <Text fw={800} size="xl" lh={1.1}>
+                {Math.round(passRate(c) * 100)}%
+              </Text>
+              <Text size="xs" c="dimmed">
+                pass rate
+              </Text>
+            </Stack>
+          </Tooltip>
         </div>
         <Stack gap="sm" style={{ flex: '1 1 260px', minWidth: 0 }}>
           {launch.status === 'running' ? <LaunchProgress launch={launch} /> : <StatusBar counts={c} height={12} />}
@@ -189,7 +198,7 @@ function UploadRow({ u }: { u: Upload }) {
           <IconAlertTriangle size={14} style={{ verticalAlign: -2 }} /> {u.error.message}{' '}
           <Text span size="xs" c="dimmed" className="fp-mono">
             ({u.error.code}
-            {u.error.limit !== undefined && u.error.limit !== null ? `, limit ${String(u.error.limit)}` : ''})
+            {u.error.limit ? `, limit ${u.error.limit}` : ''})
           </Text>
         </Text>
       )}
@@ -230,7 +239,7 @@ function Uploads({ project, launch }: { project: string; launch: Launch }) {
   );
 }
 
-function ResultRow({ project, r, index, selected, onHover }: { project: string; r: ResultSummary; index: number; selected: boolean; onHover: (i: number) => void }) {
+function ResultRow({ project, r, index, selected, onHover, types }: { project: string; r: ResultSummary; index: number; selected: boolean; onHover: (i: number) => void; types: Map<string, DefectType> }) {
   return (
     <UnstyledButton
       component={Link}
@@ -253,10 +262,13 @@ function ResultRow({ project, r, index, selected, onHover }: { project: string; 
             </Text>
             {r.flakyInRun && <StatusBadge status="flaky" size="xs" />}
             {r.muted && (
-              <Badge size="xs" variant="outline" color="gray">
-                muted
-              </Badge>
+              <Tooltip label={r.muteUntil ? `Muted until ${formatDateTime(r.muteUntil)}` : 'Muted'}>
+                <Badge size="xs" variant="outline" color="gray" style={{ flex: 'none' }}>
+                  muted
+                </Badge>
+              </Tooltip>
             )}
+            <TransitionBadge transition={r.transition} />
             {r.attemptCount > 1 && (
               <Tooltip label={`${String(r.attemptCount)} attempts`}>
                 <Badge size="xs" variant="light" color="gray">
@@ -265,9 +277,12 @@ function ResultRow({ project, r, index, selected, onHover }: { project: string; 
               </Tooltip>
             )}
           </Group>
-          <Text size="xs" c="dimmed" className="fh-truncate">
-            {r.suitePath.join(' › ')}
-          </Text>
+          <Group gap={6} wrap="nowrap" style={{ minWidth: 0 }}>
+            {r.defect && (r.status === 'failed' || r.status === 'broken' || r.defect.source) && <DefectChip defect={r.defect} types={types} size="xs" />}
+            <Text size="xs" c="dimmed" className="fh-truncate">
+              {r.suitePath.join(' › ')}
+            </Text>
+          </Group>
           {r.message && (r.status === 'failed' || r.status === 'broken') && (
             <Text size="xs" className="fp-mono fh-truncate" c="var(--mantine-color-error)">
               {r.message.split('\n')[0]}
@@ -307,6 +322,7 @@ function Results({ project, launch, selection, onClearSelection }: { project: st
     [statusParam, debounced, flaky, label],
   );
   const q = useResults(project, launch.id, filters);
+  const types = useDefectTypeMap(project);
   const all = flatItems(q.data);
   const items = selection ? all.filter((r) => selection.ids.has(r.id)) : all;
   const [selected, setSelected] = useState(-1);
@@ -374,7 +390,7 @@ function Results({ project, launch, selection, onClearSelection }: { project: st
           ) : (
             <Card withBorder radius="md" padding={0} data-testid="results-list">
               {items.map((r, i) => (
-                <ResultRow key={r.id} project={project} r={r} index={i} selected={i === selected} onHover={setSelected} />
+                <ResultRow key={r.id} project={project} r={r} index={i} selected={i === selected} onHover={setSelected} types={types} />
               ))}
               <LoadMore hasMore={q.hasNextPage} loading={q.isFetchingNextPage} onLoad={() => void q.fetchNextPage()} />
             </Card>
@@ -454,54 +470,31 @@ function Tree({ project, launch, onPick, selectedKey }: { project: string; launc
   );
 }
 
-function Failures({ project, launch }: { project: string; launch: Launch }) {
-  const q = useResults(project, launch.id, { status: 'failed,broken' });
-  const groups = useMemo(() => groupFailures(flatItems(q.data)), [q.data]);
-  if (q.isPending) return <Loading />;
+function LaunchLogs({ project, launch }: { project: string; launch: Launch }) {
+  const q = useResults(project, launch.id, {});
+  const results = useMemo(() => flatItems(q.data).map((r) => ({ id: r.id, name: r.name })), [q.data]);
+  return <LogConsole project={project} launchId={launch.id} live={launch.status === 'running'} results={results} fileName={`${launch.name}-${String(launch.number)}-logs.txt`} />;
+}
+
+function ImportantToggle({ project, launch }: { project: string; launch: Launch }) {
+  const canWrite = useCan('launches:write', project);
+  const patch = usePatchLaunch(project, launch.id);
+  const important = !!launch.important;
+  if (!canWrite) {
+    return important ? (
+      <Tooltip label="Kept by retention">
+        <Badge size="sm" variant="light" color="yellow" leftSection={<IconStarFilled size={11} />} style={{ textTransform: 'none' }}>
+          important
+        </Badge>
+      </Tooltip>
+    ) : null;
+  }
   return (
-    <QueryState query={q}>
-      {() =>
-        groups.length === 0 ? (
-          <EmptyState title="No failures" description="Every executed test passed in this launch." />
-        ) : (
-          <Stack gap="xs">
-            <Text size="sm" c="dimmed">
-              {groups.length} groups by error message, largest first. Clustering by fingerprint comes with failure analysis.
-            </Text>
-            <Accordion variant="separated" radius="md" multiple data-testid="failure-groups">
-              {groups.map((g) => (
-                <Accordion.Item key={g.key} value={g.key} data-testid="failure-group">
-                  <Accordion.Control>
-                    <Group gap="sm" wrap="nowrap">
-                      <Badge variant="filled" color="red" radius="sm" style={{ flex: 'none' }}>
-                        {g.results.length}
-                      </Badge>
-                      <Text size="sm" className="fp-mono" style={{ wordBreak: 'break-word' }}>
-                        {g.title}
-                      </Text>
-                    </Group>
-                  </Accordion.Control>
-                  <Accordion.Panel>
-                    <Stack gap={0}>
-                      {g.results.map((r) => (
-                        <Anchor key={r.id} component={Link} to={`/p/${project}/results/${r.id}`} size="sm" py={4} c="inherit">
-                          <Group gap="xs" wrap="nowrap">
-                            <StatusDot status={r.status} />
-                            <Text size="sm" className="fh-truncate">
-                              {r.fullName}
-                            </Text>
-                          </Group>
-                        </Anchor>
-                      ))}
-                    </Stack>
-                  </Accordion.Panel>
-                </Accordion.Item>
-              ))}
-            </Accordion>
-          </Stack>
-        )
-      }
-    </QueryState>
+    <Tooltip label={important ? 'Important: retention keeps it. Click to unmark' : 'Mark as important so retention keeps it'}>
+      <ActionIcon variant="subtle" color={important ? 'yellow' : 'gray'} onClick={() => patch.mutate({ important: !important })} loading={patch.isPending} aria-label={important ? 'Unmark important' : 'Mark important'} aria-pressed={important} data-testid="important-toggle">
+        {important ? <IconStarFilled size={18} /> : <IconStar size={18} />}
+      </ActionIcon>
+    </Tooltip>
   );
 }
 
@@ -513,6 +506,8 @@ export default function LaunchPage() {
   const [sp, setSp] = useSearchParams();
   const tab = sp.get('tab') ?? 'results';
   const [selection, setSelection] = useState<(TreeSelection & { key: string }) | null>(null);
+  const [planOpen, setPlanOpen] = useState(false);
+  const canPlan = useCan('launches:write', key);
 
   useEffect(() => {
     if (q.data) rememberLaunch({ project: key, id: q.data.id, number: q.data.number, name: q.data.name });
@@ -548,6 +543,8 @@ export default function LaunchPage() {
                 <>
                   <LaunchStatusBadge status={l.status} />
                   {l.status === 'running' && <LiveBadge state={live} />}
+                  <GateBadge project={key} launch={l} />
+                  <ImportantToggle project={key} launch={l} />
                   {l.debug && (
                     <Badge variant="outline" color="gray" size="sm">
                       debug
@@ -556,7 +553,20 @@ export default function LaunchPage() {
                 </>
               }
               subtitle={<Meta launch={l} />}
+              actions={
+                <>
+                  <Button component={Link} to={`/p/${key}/compare?b=${l.id}`} variant="default" size="xs" leftSection={<IconGitCompare size={14} />}>
+                    Compare
+                  </Button>
+                  {canPlan && (
+                    <Button variant="default" size="xs" leftSection={<IconListCheck size={14} />} onClick={() => setPlanOpen(true)} data-testid="open-test-plan">
+                      Test plan
+                    </Button>
+                  )}
+                </>
+              }
             />
+            {planOpen && <TestPlanModal project={key} launch={l} opened={planOpen} onClose={() => setPlanOpen(false)} initialStatuses={(sp.get('status') ?? '').split(',').filter((x): x is ResultStatus => (RESULT_STATUSES as readonly string[]).includes(x))} />}
             <Stack gap="md">
               <Chips launch={l} />
               <Summary launch={l} />
@@ -568,6 +578,9 @@ export default function LaunchPage() {
                   <Tabs.Tab value="failures" rightSection={l.counts.failed + l.counts.broken > 0 ? <Badge size="xs" color="red" variant="light">{l.counts.failed + l.counts.broken}</Badge> : undefined}>
                     Failures
                   </Tabs.Tab>
+                  <Tabs.Tab value="logs" leftSection={l.status === 'running' ? <span className="fp-live-dot" aria-hidden /> : undefined} data-testid="tab-logs">
+                    {l.status === 'running' ? 'Live' : 'Logs'}
+                  </Tabs.Tab>
                 </Tabs.List>
                 <Tabs.Panel value="results" pt="md">
                   <Results project={key} launch={l} selection={selection} onClearSelection={() => setSelection(null)} />
@@ -576,7 +589,10 @@ export default function LaunchPage() {
                   <Tree project={key} launch={l} onPick={pick} selectedKey={selection?.key ?? null} />
                 </Tabs.Panel>
                 <Tabs.Panel value="failures" pt="md">
-                  <Failures project={key} launch={l} />
+                  <Clusters project={key} launch={l} />
+                </Tabs.Panel>
+                <Tabs.Panel value="logs" pt="md">
+                  <LaunchLogs project={key} launch={l} />
                 </Tabs.Panel>
               </Tabs>
             </Stack>

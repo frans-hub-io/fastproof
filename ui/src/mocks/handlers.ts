@@ -19,6 +19,8 @@ import {
   uploadsOf,
   type MockRole,
 } from './fixtures';
+import { stageCHandlers } from './handlersC';
+import { analyze, analyzeDetail, isImportant, resetStageC } from './stageC';
 
 const API = '/api/v1';
 export const MOCK_ROLE_KEY = 'fastproof-mock-role';
@@ -53,6 +55,7 @@ export function resetMockState(): void {
   state.tokens = initialTokens();
   state.audit = initialAudit();
   roleOverride = null;
+  resetStageC();
 }
 
 function error(status: number, code: string, message: string, details?: unknown) {
@@ -140,6 +143,11 @@ function randomHex(bytes: number): string {
   return Array.from(a, (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+function withImportant(def: Parameters<typeof launchView>[0]): Launch {
+  const l = launchView(def);
+  return { ...l, important: isImportant(l.id, l.number % 10 === 0) };
+}
+
 const ACTIVE = /^(text\/html|application\/xhtml\+xml|image\/svg\+xml|application\/xml|text\/xml)/i;
 
 export const handlers = [
@@ -166,14 +174,14 @@ export const handlers = [
     const key = String(params.key);
     if (!hasProject(key)) return error(404, 'not_found', 'project not found');
     const url = new URL(request.url);
-    const list = filterLaunches(projectLaunches(key).map(launchView), url);
+    const list = filterLaunches(projectLaunches(key).map(withImportant), url);
     return HttpResponse.json(page(list, url, (l) => l.id));
   }),
 
   http.get(`${API}/projects/:key/launches/:id`, ({ params }) => {
     const def = launchDef(String(params.id));
     if (!def || def.project !== params.key) return error(404, 'not_found', 'launch not found');
-    return HttpResponse.json(launchView(def));
+    return HttpResponse.json(withImportant(def));
   }),
 
   http.get(`${API}/projects/:key/launches/:id/uploads`, ({ params }) => {
@@ -186,7 +194,8 @@ export const handlers = [
     const def = launchDef(String(params.id));
     if (!def || def.project !== params.key) return error(404, 'not_found', 'launch not found');
     const url = new URL(request.url);
-    return HttpResponse.json(page(filterResults(launchResults(def.launch.id), url), url, (r) => r.id));
+    const key = def.project;
+    return HttpResponse.json(page(filterResults(launchResults(def.launch.id).map((r) => analyze(key, r)), url), url, (r) => r.id));
   }),
 
   http.get(`${API}/projects/:key/launches/:id/tree`, ({ params, request }) => {
@@ -200,7 +209,7 @@ export const handlers = [
   http.get(`${API}/projects/:key/results/:id`, ({ params }) => {
     const r = resultDetail(String(params.id));
     if (!r) return error(404, 'not_found', 'result not found');
-    return HttpResponse.json(r);
+    return HttpResponse.json(analyzeDetail(String(params.key), r));
   }),
 
   http.get(`${API}/projects/:key/test-cases/:id/history`, ({ params, request }) => {
@@ -310,6 +319,8 @@ export const handlers = [
     );
     return HttpResponse.json(page(list, url, (e) => String(e.id), 100));
   }),
+
+  ...stageCHandlers({ role: currentRole, error, audit }),
 
   http.all(`${API}/*`, () => error(404, 'not_found', 'no such endpoint')),
 ];

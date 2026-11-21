@@ -43,7 +43,7 @@ describe('pages', () => {
     await user.click(screen.getByTestId('chip-failed'));
     await waitFor(() => expect(screen.getAllByTestId('result-row').length).toBeLessThan(30));
     await user.click(screen.getByRole('tab', { name: /Failures/ }));
-    const groups = await screen.findAllByTestId('failure-group');
+    const groups = await screen.findAllByTestId('cluster');
     expect(groups.length).toBeGreaterThan(1);
   });
 
@@ -58,7 +58,7 @@ describe('pages', () => {
     expect(screen.getAllByTestId('diff-view').length).toBeGreaterThan(0);
     await user.click(screen.getByRole('tab', { name: /Attachments/ }));
     expect(screen.getAllByTestId('attachment-item').length).toBeGreaterThan(10);
-    await user.click(screen.getByRole('tab', { name: /Logs/ }));
+    await user.click(screen.getByRole('tab', { name: /Output/ }));
     expect(screen.getByTestId('stdout')).toHaveTextContent('Starting browser chromium');
   });
 

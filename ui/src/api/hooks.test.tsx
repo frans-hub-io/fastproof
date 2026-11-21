@@ -56,7 +56,7 @@ describe('query hooks', () => {
     const node = { name: 'a', path: ['a'], counts: { total: 0, passed: 0, failed: 0, broken: 0, skipped: 0, unknown: 0, flaky: 0, muted: 0 }, children: [] };
     expect(treeRoots({ ...node, children: [node] })).toEqual([node]);
     expect(treeRoots([node])).toEqual([node]);
-    expect(auditChunk({ events: [], nextBefore: 5 })).toEqual({ items: [], next: '5' });
+    expect(auditChunk({ items: [], next: '5' })).toEqual({ items: [], next: '5' });
     expect(auditChunk({ items: [], next: null })).toEqual({ items: [], next: null });
   });
 });

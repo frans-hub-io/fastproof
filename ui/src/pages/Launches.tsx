@@ -100,7 +100,7 @@ function LaunchRow({ project, launch, index, selected, onSelect }: { project: st
             <Text size="xs" c="dimmed">
               {formatRelative(launch.startedAt)}
             </Text>
-            {launch.durationMs !== null && (
+            {typeof launch.durationMs === 'number' && (
               <Text size="xs" c="dimmed">
                 {formatDuration(launch.durationMs)}
               </Text>

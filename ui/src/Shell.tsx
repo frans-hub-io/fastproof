@@ -1,5 +1,5 @@
 import { AppShellLayout, type CommandItem, type NavItem } from '@franshub/ui-shell';
-import { IconFlask2, IconKey, IconListDetails, IconShieldSearch } from '@tabler/icons-react';
+import { IconAdjustments, IconBell, IconChartLine, IconClockCog, IconFlask2, IconGitCompare, IconKey, IconListDetails, IconShieldCheck, IconShieldSearch, IconWand, IconWaveSine } from '@tabler/icons-react';
 import { useQueryClient, type InfiniteData } from '@tanstack/react-query';
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { matchPath, useLocation, useNavigate } from 'react-router';
@@ -46,10 +46,21 @@ export function Shell({ children }: { children: ReactNode }) {
     const items: NavItem[] = [{ label: 'Projects', href: '/', icon: <IconFlask2 size={18} />, active: path === '/' }];
     if (projectKey) {
       const name = projects.data?.find((p) => p.key === projectKey)?.name ?? projectKey;
-      items.push({ label: `${name}: launches`, href: `/p/${projectKey}`, icon: <IconListDetails size={18} />, active: path.startsWith(`/p/${projectKey}`) });
+      const base = `/p/${projectKey}`;
+      const section = (s: string) => path === `${base}/${s}` || path.startsWith(`${base}/${s}/`);
+      const sections = ['dashboard', 'flaky', 'compare', 'rules', 'gates', 'notifications', 'settings'];
+      items.push({ label: `${name}: launches`, href: base, icon: <IconListDetails size={18} />, active: path.startsWith(base) && !sections.some(section) });
+      items.push({ label: 'Dashboard', href: `${base}/dashboard`, icon: <IconChartLine size={18} />, active: section('dashboard') });
+      items.push({ label: 'Flaky tests', href: `${base}/flaky`, icon: <IconWaveSine size={18} />, active: section('flaky') });
+      items.push({ label: 'Compare launches', href: `${base}/compare`, icon: <IconGitCompare size={18} />, active: section('compare') });
+      items.push({ label: 'Rules', href: `${base}/rules`, icon: <IconWand size={18} />, active: section('rules') });
+      items.push({ label: 'Quality gates', href: `${base}/gates`, icon: <IconShieldCheck size={18} />, active: section('gates') });
+      items.push({ label: 'Notifications', href: `${base}/notifications`, icon: <IconBell size={18} />, active: section('notifications') });
+      items.push({ label: 'Project settings', href: `${base}/settings`, icon: <IconAdjustments size={18} />, active: section('settings') });
     }
     items.push({ label: 'API tokens', href: '/settings/tokens', icon: <IconKey size={18} />, active: path === '/settings/tokens' });
     items.push({ label: 'Audit log', href: '/settings/audit', icon: <IconShieldSearch size={18} />, active: path === '/settings/audit', permission: 'audit:read' });
+    items.push({ label: 'Scheduler jobs', href: '/admin/jobs', icon: <IconClockCog size={18} />, active: path === '/admin/jobs', permission: 'settings:write' });
     return items;
   }, [path, projectKey, projects.data]);
 

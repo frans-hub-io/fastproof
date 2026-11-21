@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites tests="16" failures="6" errors="0" time="0.006477">
+	<testsuite tests="12" failures="3" skipped="2" time="0.002000" name="example.com/fastproof-samples/checkout" timestamp="2026-11-21T08:19:08Z">
+		<properties>
+			<property name="go.version" value="go1.27.3 linux/arm64"></property>
+		</properties>
+		<testcase classname="example.com/fastproof-samples/checkout" name="TestDiscountApplied" time="0.000000">
+			<failure message="Failed" type="">=== RUN   TestDiscountApplied&#xA;    checkout_test.go:24: total with discount WELCOME10: got 20, want 18&#xA;--- FAIL: TestDiscountApplied (0.00s)&#xA;</failure>
+		</testcase>
+		<testcase classname="example.com/fastproof-samples/checkout" name="TestCardValidation/unknown" time="0.000000">
+			<failure message="Failed" type="">=== RUN   TestCardValidation/unknown&#xA;    checkout_test.go:45: valid(&#34;0000&#34;) = false, want true&#xA;--- FAIL: TestCardValidation/unknown (0.00s)&#xA;</failure>
+		</testcase>
+		<testcase classname="example.com/fastproof-samples/checkout" name="TestCardValidation" time="0.000000">
+			<failure message="Failed" type="">=== RUN   TestCardValidation&#xA;--- FAIL: TestCardValidation (0.00s)&#xA;</failure>
+		</testcase>
+		<testcase classname="example.com/fastproof-samples/checkout" name="TestGiftCardsSkipped" time="0.000000">
+			<skipped message="=== RUN   TestGiftCardsSkipped&#xA;    checkout_test.go:29: gift cards are not enabled in this environment&#xA;--- SKIP: TestGiftCardsSkipped (0.00s)&#xA;"></skipped>
+		</testcase>
+		<testcase classname="example.com/fastproof-samples/checkout" name="TestShipping/domestic/express" time="0.000000">
+			<skipped message="=== RUN   TestShipping/domestic/express&#xA;    checkout_test.go:55: express shipping disabled&#xA;--- SKIP: TestShipping/domestic/express (0.00s)&#xA;"></skipped>
+		</testcase>
+		<testcase classname="example.com/fastproof-samples/checkout" name="TestCheckoutPasses" time="0.000000"></testcase>
+		<testcase classname="example.com/fastproof-samples/checkout" name="TestCardValidation/visa" time="0.000000"></testcase>
+		<testcase classname="example.com/fastproof-samples/checkout" name="TestCardValidation/mastercard" time="0.000000"></testcase>
+		<testcase classname="example.com/fastproof-samples/checkout" name="TestShipping/domestic/standard" time="0.000000"></testcase>
+		<testcase classname="example.com/fastproof-samples/checkout" name="TestShipping/domestic" time="0.000000"></testcase>
+		<testcase classname="example.com/fastproof-samples/checkout" name="TestShipping/international" time="0.000000"></testcase>
+		<testcase classname="example.com/fastproof-samples/checkout" name="TestShipping" time="0.000000"></testcase>
+	</testsuite>
+	<testsuite tests="1" failures="1" time="0.005000" name="example.com/fastproof-samples/inventory" timestamp="2026-11-21T08:19:08Z">
+		<properties>
+			<property name="go.version" value="go1.27.3 linux/arm64"></property>
+		</properties>
+		<testcase classname="example.com/fastproof-samples/inventory" name="TestStockLevel" time="0.000000">
+			<failure message="Failed" type="">=== RUN   TestStockLevel&#xA;--- FAIL: TestStockLevel (0.00s)&#xA;panic: runtime error: invalid memory address or nil pointer dereference [recovered, repanicked]&#xA;[signal SIGSEGV: segmentation violation code=0x1 addr=0x0 pc=0x1382d0]&#xA;&#xA;goroutine 6 [running]:&#xA;testing.tRunner.func1.2({0x2ac738, 0x2e9210})&#xA;&#x9;/usr/local/go/src/testing/testing.go:2125 +0x1a0&#xA;testing.tRunner.func1()&#xA;&#x9;/usr/local/go/src/testing/testing.go:2128 +0x2c8&#xA;panic({0x2ac738?, 0x2e9210?})&#xA;&#x9;/usr/local/go/src/runtime/panic.go:859 +0x120&#xA;example.com/fastproof-samples/inventory.TestStockLevel(0x22ad0c15e248)&#xA;&#x9;/builds/example/fastproof-samples/inventory/inventory_test.go:9 +0x20&#xA;testing.tRunner(0x22ad0c15e248, 0x2ca188)&#xA;&#x9;/usr/local/go/src/testing/testing.go:2195 +0xc4&#xA;created by testing.(*T).Run in goroutine 1&#xA;&#x9;/usr/local/go/src/testing/testing.go:2260 +0x3b8&#xA;</failure>
+		</testcase>
+	</testsuite>
+	<testsuite tests="3" failures="2" time="0.002000" name="example.com/fastproof-samples/payments" timestamp="2026-11-21T08:19:08Z">
+		<properties>
+			<property name="go.version" value="go1.27.3 linux/arm64"></property>
+		</properties>
+		<testcase classname="example.com/fastproof-samples/payments" name="TestPaymentGatewayFlaky" time="0.000000">
+			<failure message="Failed" type="">=== RUN   TestPaymentGatewayFlaky&#xA;    payments_test.go:29: attempt 1&#xA;    payments_test.go:31: gateway timeout on attempt 1&#xA;--- FAIL: TestPaymentGatewayFlaky (0.00s)&#xA;</failure>
+		</testcase>
+		<testcase classname="example.com/fastproof-samples/payments" name="TestRefundAlwaysFails" time="0.000000">
+			<failure message="Failed" type="">=== RUN   TestRefundAlwaysFails&#xA;    payments_test.go:37: refund rejected on attempt 1: got status &#34;DECLINED&#34;, want &#34;APPROVED&#34;&#xA;--- FAIL: TestRefundAlwaysFails (0.00s)&#xA;</failure>
+		</testcase>
+		<testcase classname="example.com/fastproof-samples/payments" name="TestCurrencyRounding" time="0.000000"></testcase>
+	</testsuite>
+</testsuites>

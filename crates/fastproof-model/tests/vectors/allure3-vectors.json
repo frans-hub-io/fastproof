@@ -1,0 +1,1099 @@
+{
+ "source": "allure3 v3.33.0 packages/core-api/src/utils/{identity,flaky}.ts, packages/core/src/utils/new.ts",
+ "identity": [
+  {
+   "name": "full name only",
+   "testCaseId": null,
+   "fullName": "tests.test_sample#test_pass",
+   "params": [],
+   "testCaseHash": "58d393f4f30c56a4e85a5b656d03e848",
+   "parametersString": "",
+   "parametersHash": "d41d8cd98f00b204e9800998ecf8427e",
+   "environmentHash": null,
+   "retryHash": "58d393f4f30c56a4e85a5b656d03e848.d41d8cd98f00b204e9800998ecf8427e"
+  },
+  {
+   "name": "testCaseId wins",
+   "testCaseId": "a1b2c3",
+   "fullName": "tests.test_sample#test_pass",
+   "params": [],
+   "testCaseHash": "3c086f596b4aee58e1d71b3626fefc87",
+   "parametersString": "",
+   "parametersHash": "d41d8cd98f00b204e9800998ecf8427e",
+   "environmentHash": null,
+   "retryHash": "3c086f596b4aee58e1d71b3626fefc87.d41d8cd98f00b204e9800998ecf8427e"
+  },
+  {
+   "name": "empty testCaseId falls back",
+   "testCaseId": "",
+   "fullName": "com.example.CalcTest.adds",
+   "params": [],
+   "testCaseHash": "5285de9371edba582ddc2dcb03c1657f",
+   "parametersString": "",
+   "parametersHash": "d41d8cd98f00b204e9800998ecf8427e",
+   "environmentHash": null,
+   "retryHash": "5285de9371edba582ddc2dcb03c1657f.d41d8cd98f00b204e9800998ecf8427e"
+  },
+  {
+   "name": "unicode NFC full name",
+   "testCaseId": null,
+   "fullName": "suite › Привіт café",
+   "params": [
+    {
+     "name": "lang",
+     "value": "uk"
+    }
+   ],
+   "testCaseHash": "6e8b97aab51f5b64a47d8055a2e48d7c",
+   "parametersString": "lang:uk",
+   "parametersHash": "213d913c92e0a05ba504adc63132ca39",
+   "environmentHash": null,
+   "retryHash": "6e8b97aab51f5b64a47d8055a2e48d7c.213d913c92e0a05ba504adc63132ca39"
+  },
+  {
+   "name": "sorted by utf8 and dedup",
+   "testCaseId": null,
+   "fullName": "p#t",
+   "params": [
+    {
+     "name": "b",
+     "value": "2"
+    },
+    {
+     "name": "a",
+     "value": "1"
+    },
+    {
+     "name": "a",
+     "value": "1"
+    },
+    {
+     "name": "Z",
+     "value": "z"
+    },
+    {
+     "name": "é",
+     "value": "x"
+    },
+    {
+     "name": "a",
+     "value": "0"
+    }
+   ],
+   "testCaseHash": "d61891fe285be9fc8c693e36f995ff0f",
+   "parametersString": "Z:z,a:0,a:1,b:2,é:x",
+   "parametersHash": "c8b5a696f93be742eb44749ea1e06144",
+   "environmentHash": null,
+   "retryHash": "d61891fe285be9fc8c693e36f995ff0f.c8b5a696f93be742eb44749ea1e06144"
+  },
+  {
+   "name": "excluded, missing value, empty name",
+   "testCaseId": null,
+   "fullName": "p#t",
+   "params": [
+    {
+     "name": "user",
+     "value": "alice"
+    },
+    {
+     "name": "ts",
+     "value": "123",
+     "excluded": true
+    },
+    {
+     "name": "opt"
+    },
+    {
+     "name": "opt2",
+     "value": null
+    },
+    {
+     "name": "",
+     "value": "ignored"
+    }
+   ],
+   "testCaseHash": "d61891fe285be9fc8c693e36f995ff0f",
+   "parametersString": "opt:#___unknown_value___#,opt2:#___unknown_value___#,user:alice",
+   "parametersHash": "4766cf36ce454d747cb42ce6bd987088",
+   "environmentHash": null,
+   "retryHash": "d61891fe285be9fc8c693e36f995ff0f.4766cf36ce454d747cb42ce6bd987088"
+  },
+  {
+   "name": "masked/hidden still counted",
+   "testCaseId": null,
+   "fullName": "p#t",
+   "params": [
+    {
+     "name": "password",
+     "value": "s3cret",
+     "mode": "masked"
+    },
+    {
+     "name": "token",
+     "value": "t0k",
+     "mode": "hidden"
+    }
+   ],
+   "testCaseHash": "d61891fe285be9fc8c693e36f995ff0f",
+   "parametersString": "password:s3cret,token:t0k",
+   "parametersHash": "6b64f3a9bb34bd10e99c75fc673916e3",
+   "environmentHash": null,
+   "retryHash": "d61891fe285be9fc8c693e36f995ff0f.6b64f3a9bb34bd10e99c75fc673916e3"
+  },
+  {
+   "name": "astral vs BMP ordering",
+   "testCaseId": null,
+   "fullName": "p#t",
+   "params": [
+    {
+     "name": "k",
+     "value": "｡"
+    },
+    {
+     "name": "k",
+     "value": "😀"
+    }
+   ],
+   "testCaseHash": "d61891fe285be9fc8c693e36f995ff0f",
+   "parametersString": "k:｡,k:😀",
+   "parametersHash": "b6b8b4a0a1b2ee4c1583c4d5cf699ff7",
+   "environmentHash": null,
+   "retryHash": "d61891fe285be9fc8c693e36f995ff0f.b6b8b4a0a1b2ee4c1583c4d5cf699ff7"
+  },
+  {
+   "name": "env hash",
+   "testCaseId": null,
+   "fullName": "tests/login.spec.ts > login > works",
+   "params": [
+    {
+     "name": "browser",
+     "value": "chromium"
+    }
+   ],
+   "env": "staging",
+   "testCaseHash": "5e9317e39e0fd555bb0adb58683aed4c",
+   "parametersString": "browser:chromium",
+   "parametersHash": "38c30e90a0651a4216650e47869a0118",
+   "environmentHash": "830f78e090fe8aec00891405dfc14824",
+   "retryHash": "5e9317e39e0fd555bb0adb58683aed4c.38c30e90a0651a4216650e47869a0118.830f78e090fe8aec00891405dfc14824"
+  },
+  {
+   "name": "default env ignored",
+   "testCaseId": null,
+   "fullName": "tests/login.spec.ts > login > works",
+   "params": [],
+   "env": "default",
+   "testCaseHash": "5e9317e39e0fd555bb0adb58683aed4c",
+   "parametersString": "",
+   "parametersHash": "d41d8cd98f00b204e9800998ecf8427e",
+   "environmentHash": null,
+   "retryHash": "5e9317e39e0fd555bb0adb58683aed4c.d41d8cd98f00b204e9800998ecf8427e"
+  }
+ ],
+ "flaky": [
+  {
+   "chronological": [
+    "passed"
+   ],
+   "options": {},
+   "result": null,
+   "detector": false,
+   "detectorIncludePassed": false
+  },
+  {
+   "chronological": [
+    "passed"
+   ],
+   "options": {
+    "historyDepth": 3,
+    "stabilizationPeriod": 2
+   },
+   "result": null,
+   "detector": false,
+   "detectorIncludePassed": false
+  },
+  {
+   "chronological": [
+    "passed"
+   ],
+   "options": {
+    "historyDepth": 0
+   },
+   "result": null,
+   "detector": false,
+   "detectorIncludePassed": false
+  },
+  {
+   "chronological": [
+    "passed"
+   ],
+   "options": {
+    "historyDepth": -1
+   },
+   "result": null,
+   "detector": false,
+   "detectorIncludePassed": false
+  },
+  {
+   "chronological": [
+    "passed",
+    "passed"
+   ],
+   "options": {},
+   "result": false,
+   "detector": false,
+   "detectorIncludePassed": false
+  },
+  {
+   "chronological": [
+    "passed",
+    "passed"
+   ],
+   "options": {
+    "historyDepth": 3,
+    "stabilizationPeriod": 2
+   },
+   "result": false,
+   "detector": false,
+   "detectorIncludePassed": false
+  },
+  {
+   "chronological": [
+    "passed",
+    "passed"
+   ],
+   "options": {
+    "historyDepth": 0
+   },
+   "result": false,
+   "detector": false,
+   "detectorIncludePassed": false
+  },
+  {
+   "chronological": [
+    "passed",
+    "passed"
+   ],
+   "options": {
+    "historyDepth": -1
+   },
+   "result": null,
+   "detector": false,
+   "detectorIncludePassed": false
+  },
+  {
+   "chronological": [
+    "failed",
+    "passed"
+   ],
+   "options": {},
+   "result": false,
+   "detector": false,
+   "detectorIncludePassed": false
+  },
+  {
+   "chronological": [
+    "failed",
+    "passed"
+   ],
+   "options": {
+    "historyDepth": 3,
+    "stabilizationPeriod": 2
+   },
+   "result": false,
+   "detector": false,
+   "detectorIncludePassed": false
+  },
+  {
+   "chronological": [
+    "failed",
+    "passed"
+   ],
+   "options": {
+    "historyDepth": 0
+   },
+   "result": false,
+   "detector": false,
+   "detectorIncludePassed": false
+  },
+  {
+   "chronological": [
+    "failed",
+    "passed"
+   ],
+   "options": {
+    "historyDepth": -1
+   },
+   "result": null,
+   "detector": false,
+   "detectorIncludePassed": false
+  },
+  {
+   "chronological": [
+    "passed",
+    "failed",
+    "passed"
+   ],
+   "options": {},
+   "result": false,
+   "detector": false,
+   "detectorIncludePassed": false
+  },
+  {
+   "chronological": [
+    "passed",
+    "failed",
+    "passed"
+   ],
+   "options": {
+    "historyDepth": 3,
+    "stabilizationPeriod": 2
+   },
+   "result": false,
+   "detector": false,
+   "detectorIncludePassed": false
+  },
+  {
+   "chronological": [
+    "passed",
+    "failed",
+    "passed"
+   ],
+   "options": {
+    "historyDepth": 0
+   },
+   "result": false,
+   "detector": false,
+   "detectorIncludePassed": false
+  },
+  {
+   "chronological": [
+    "passed",
+    "failed",
+    "passed"
+   ],
+   "options": {
+    "historyDepth": -1
+   },
+   "result": null,
+   "detector": false,
+   "detectorIncludePassed": false
+  },
+  {
+   "chronological": [
+    "passed",
+    "failed",
+    "passed",
+    "failed"
+   ],
+   "options": {},
+   "result": true,
+   "detector": true,
+   "detectorIncludePassed": true
+  },
+  {
+   "chronological": [
+    "passed",
+    "failed",
+    "passed",
+    "failed"
+   ],
+   "options": {
+    "historyDepth": 3,
+    "stabilizationPeriod": 2
+   },
+   "result": true,
+   "detector": true,
+   "detectorIncludePassed": true
+  },
+  {
+   "chronological": [
+    "passed",
+    "failed",
+    "passed",
+    "failed"
+   ],
+   "options": {
+    "historyDepth": 0
+   },
+   "result": true,
+   "detector": true,
+   "detectorIncludePassed": true
+  },
+  {
+   "chronological": [
+    "passed",
+    "failed",
+    "passed",
+    "failed"
+   ],
+   "options": {
+    "historyDepth": -1
+   },
+   "result": null,
+   "detector": false,
+   "detectorIncludePassed": false
+  },
+  {
+   "chronological": [
+    "failed",
+    "failed",
+    "failed",
+    "failed",
+    "failed",
+    "passed",
+    "failed"
+   ],
+   "options": {},
+   "result": true,
+   "detector": true,
+   "detectorIncludePassed": true
+  },
+  {
+   "chronological": [
+    "failed",
+    "failed",
+    "failed",
+    "failed",
+    "failed",
+    "passed",
+    "failed"
+   ],
+   "options": {
+    "historyDepth": 3,
+    "stabilizationPeriod": 2
+   },
+   "result": true,
+   "detector": true,
+   "detectorIncludePassed": true
+  },
+  {
+   "chronological": [
+    "failed",
+    "failed",
+    "failed",
+    "failed",
+    "failed",
+    "passed",
+    "failed"
+   ],
+   "options": {
+    "historyDepth": 0
+   },
+   "result": true,
+   "detector": true,
+   "detectorIncludePassed": true
+  },
+  {
+   "chronological": [
+    "failed",
+    "failed",
+    "failed",
+    "failed",
+    "failed",
+    "passed",
+    "failed"
+   ],
+   "options": {
+    "historyDepth": -1
+   },
+   "result": null,
+   "detector": false,
+   "detectorIncludePassed": false
+  },
+  {
+   "chronological": [
+    "passed",
+    "passed",
+    "passed",
+    "passed",
+    "passed",
+    "failed",
+    "passed"
+   ],
+   "options": {},
+   "result": false,
+   "detector": false,
+   "detectorIncludePassed": false
+  },
+  {
+   "chronological": [
+    "passed",
+    "passed",
+    "passed",
+    "passed",
+    "passed",
+    "failed",
+    "passed"
+   ],
+   "options": {
+    "historyDepth": 3,
+    "stabilizationPeriod": 2
+   },
+   "result": false,
+   "detector": false,
+   "detectorIncludePassed": false
+  },
+  {
+   "chronological": [
+    "passed",
+    "passed",
+    "passed",
+    "passed",
+    "passed",
+    "failed",
+    "passed"
+   ],
+   "options": {
+    "historyDepth": 0
+   },
+   "result": false,
+   "detector": false,
+   "detectorIncludePassed": false
+  },
+  {
+   "chronological": [
+    "passed",
+    "passed",
+    "passed",
+    "passed",
+    "passed",
+    "failed",
+    "passed"
+   ],
+   "options": {
+    "historyDepth": -1
+   },
+   "result": null,
+   "detector": false,
+   "detectorIncludePassed": false
+  },
+  {
+   "chronological": [
+    "passed",
+    "broken",
+    "passed"
+   ],
+   "options": {},
+   "result": false,
+   "detector": false,
+   "detectorIncludePassed": false
+  },
+  {
+   "chronological": [
+    "passed",
+    "broken",
+    "passed"
+   ],
+   "options": {
+    "historyDepth": 3,
+    "stabilizationPeriod": 2
+   },
+   "result": false,
+   "detector": false,
+   "detectorIncludePassed": false
+  },
+  {
+   "chronological": [
+    "passed",
+    "broken",
+    "passed"
+   ],
+   "options": {
+    "historyDepth": 0
+   },
+   "result": false,
+   "detector": false,
+   "detectorIncludePassed": false
+  },
+  {
+   "chronological": [
+    "passed",
+    "broken",
+    "passed"
+   ],
+   "options": {
+    "historyDepth": -1
+   },
+   "result": null,
+   "detector": false,
+   "detectorIncludePassed": false
+  },
+  {
+   "chronological": [
+    "failed",
+    "passed",
+    "failed"
+   ],
+   "options": {},
+   "result": true,
+   "detector": true,
+   "detectorIncludePassed": true
+  },
+  {
+   "chronological": [
+    "failed",
+    "passed",
+    "failed"
+   ],
+   "options": {
+    "historyDepth": 3,
+    "stabilizationPeriod": 2
+   },
+   "result": true,
+   "detector": true,
+   "detectorIncludePassed": true
+  },
+  {
+   "chronological": [
+    "failed",
+    "passed",
+    "failed"
+   ],
+   "options": {
+    "historyDepth": 0
+   },
+   "result": true,
+   "detector": true,
+   "detectorIncludePassed": true
+  },
+  {
+   "chronological": [
+    "failed",
+    "passed",
+    "failed"
+   ],
+   "options": {
+    "historyDepth": -1
+   },
+   "result": null,
+   "detector": false,
+   "detectorIncludePassed": false
+  },
+  {
+   "chronological": [
+    "skipped",
+    "passed",
+    "failed",
+    "passed"
+   ],
+   "options": {},
+   "result": false,
+   "detector": false,
+   "detectorIncludePassed": false
+  },
+  {
+   "chronological": [
+    "skipped",
+    "passed",
+    "failed",
+    "passed"
+   ],
+   "options": {
+    "historyDepth": 3,
+    "stabilizationPeriod": 2
+   },
+   "result": false,
+   "detector": false,
+   "detectorIncludePassed": false
+  },
+  {
+   "chronological": [
+    "skipped",
+    "passed",
+    "failed",
+    "passed"
+   ],
+   "options": {
+    "historyDepth": 0
+   },
+   "result": false,
+   "detector": false,
+   "detectorIncludePassed": false
+  },
+  {
+   "chronological": [
+    "skipped",
+    "passed",
+    "failed",
+    "passed"
+   ],
+   "options": {
+    "historyDepth": -1
+   },
+   "result": null,
+   "detector": false,
+   "detectorIncludePassed": false
+  },
+  {
+   "chronological": [
+    "passed",
+    "failed",
+    "passed",
+    "failed",
+    "passed",
+    "failed",
+    "passed",
+    "failed",
+    "passed",
+    "failed",
+    "passed",
+    "passed",
+    "passed",
+    "passed",
+    "passed",
+    "passed"
+   ],
+   "options": {},
+   "result": false,
+   "detector": false,
+   "detectorIncludePassed": false
+  },
+  {
+   "chronological": [
+    "passed",
+    "failed",
+    "passed",
+    "failed",
+    "passed",
+    "failed",
+    "passed",
+    "failed",
+    "passed",
+    "failed",
+    "passed",
+    "passed",
+    "passed",
+    "passed",
+    "passed",
+    "passed"
+   ],
+   "options": {
+    "historyDepth": 3,
+    "stabilizationPeriod": 2
+   },
+   "result": false,
+   "detector": false,
+   "detectorIncludePassed": false
+  },
+  {
+   "chronological": [
+    "passed",
+    "failed",
+    "passed",
+    "failed",
+    "passed",
+    "failed",
+    "passed",
+    "failed",
+    "passed",
+    "failed",
+    "passed",
+    "passed",
+    "passed",
+    "passed",
+    "passed",
+    "passed"
+   ],
+   "options": {
+    "historyDepth": 0
+   },
+   "result": false,
+   "detector": false,
+   "detectorIncludePassed": false
+  },
+  {
+   "chronological": [
+    "passed",
+    "failed",
+    "passed",
+    "failed",
+    "passed",
+    "failed",
+    "passed",
+    "failed",
+    "passed",
+    "failed",
+    "passed",
+    "passed",
+    "passed",
+    "passed",
+    "passed",
+    "passed"
+   ],
+   "options": {
+    "historyDepth": -1
+   },
+   "result": null,
+   "detector": false,
+   "detectorIncludePassed": false
+  },
+  {
+   "chronological": [
+    "broken",
+    "failed",
+    "broken"
+   ],
+   "options": {},
+   "result": true,
+   "detector": true,
+   "detectorIncludePassed": true
+  },
+  {
+   "chronological": [
+    "broken",
+    "failed",
+    "broken"
+   ],
+   "options": {
+    "historyDepth": 3,
+    "stabilizationPeriod": 2
+   },
+   "result": true,
+   "detector": true,
+   "detectorIncludePassed": true
+  },
+  {
+   "chronological": [
+    "broken",
+    "failed",
+    "broken"
+   ],
+   "options": {
+    "historyDepth": 0
+   },
+   "result": true,
+   "detector": true,
+   "detectorIncludePassed": true
+  },
+  {
+   "chronological": [
+    "broken",
+    "failed",
+    "broken"
+   ],
+   "options": {
+    "historyDepth": -1
+   },
+   "result": null,
+   "detector": false,
+   "detectorIncludePassed": false
+  },
+  {
+   "chronological": [
+    "passed",
+    "unknown",
+    "failed",
+    "passed"
+   ],
+   "options": {},
+   "result": false,
+   "detector": false,
+   "detectorIncludePassed": false
+  },
+  {
+   "chronological": [
+    "passed",
+    "unknown",
+    "failed",
+    "passed"
+   ],
+   "options": {
+    "historyDepth": 3,
+    "stabilizationPeriod": 2
+   },
+   "result": false,
+   "detector": false,
+   "detectorIncludePassed": false
+  },
+  {
+   "chronological": [
+    "passed",
+    "unknown",
+    "failed",
+    "passed"
+   ],
+   "options": {
+    "historyDepth": 0
+   },
+   "result": false,
+   "detector": false,
+   "detectorIncludePassed": false
+  },
+  {
+   "chronological": [
+    "passed",
+    "unknown",
+    "failed",
+    "passed"
+   ],
+   "options": {
+    "historyDepth": -1
+   },
+   "result": null,
+   "detector": false,
+   "detectorIncludePassed": false
+  },
+  {
+   "chronological": [
+    "failed",
+    "passed",
+    "failed",
+    "passed",
+    "failed",
+    "passed",
+    "passed",
+    "passed",
+    "passed",
+    "passed",
+    "failed"
+   ],
+   "options": {},
+   "result": false,
+   "detector": false,
+   "detectorIncludePassed": false
+  },
+  {
+   "chronological": [
+    "failed",
+    "passed",
+    "failed",
+    "passed",
+    "failed",
+    "passed",
+    "passed",
+    "passed",
+    "passed",
+    "passed",
+    "failed"
+   ],
+   "options": {
+    "historyDepth": 3,
+    "stabilizationPeriod": 2
+   },
+   "result": false,
+   "detector": false,
+   "detectorIncludePassed": false
+  },
+  {
+   "chronological": [
+    "failed",
+    "passed",
+    "failed",
+    "passed",
+    "failed",
+    "passed",
+    "passed",
+    "passed",
+    "passed",
+    "passed",
+    "failed"
+   ],
+   "options": {
+    "historyDepth": 0
+   },
+   "result": false,
+   "detector": false,
+   "detectorIncludePassed": false
+  },
+  {
+   "chronological": [
+    "failed",
+    "passed",
+    "failed",
+    "passed",
+    "failed",
+    "passed",
+    "passed",
+    "passed",
+    "passed",
+    "passed",
+    "failed"
+   ],
+   "options": {
+    "historyDepth": -1
+   },
+   "result": null,
+   "detector": false,
+   "detectorIncludePassed": false
+  },
+  {
+   "chronological": [
+    "passed",
+    "failed",
+    "GAP",
+    "passed",
+    "failed",
+    "passed"
+   ],
+   "note": "GAP=undefined in history",
+   "result": false,
+   "withoutGap": true
+  }
+ ],
+ "transitions": [
+  {
+   "current": "passed",
+   "historyNewestFirst": [],
+   "transition": "new"
+  },
+  {
+   "current": "passed",
+   "historyNewestFirst": [
+    "failed"
+   ],
+   "transition": "fixed"
+  },
+  {
+   "current": "failed",
+   "historyNewestFirst": [
+    "passed"
+   ],
+   "transition": "regressed"
+  },
+  {
+   "current": "broken",
+   "historyNewestFirst": [
+    "passed"
+   ],
+   "transition": "malfunctioned"
+  },
+  {
+   "current": "broken",
+   "historyNewestFirst": [
+    "broken"
+   ],
+   "transition": null
+  },
+  {
+   "current": "skipped",
+   "historyNewestFirst": [
+    "passed"
+   ],
+   "transition": null
+  },
+  {
+   "current": "passed",
+   "historyNewestFirst": [
+    "skipped",
+    "failed"
+   ],
+   "transition": "fixed"
+  },
+  {
+   "current": "failed",
+   "historyNewestFirst": [
+    "unknown",
+    "skipped"
+   ],
+   "transition": "regressed"
+  },
+  {
+   "current": "passed",
+   "historyNewestFirst": [
+    "skipped"
+   ],
+   "transition": "fixed"
+  }
+ ]
+}

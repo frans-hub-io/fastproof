@@ -1,0 +1,122 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="https://maven.apache.org/surefire/maven-surefire-plugin/xsd/surefire-test-report.xsd" version="3.0.2" name="com.example.samples.RetryTest" time="0.009" tests="3" errors="1" skipped="0" failures="1" flakes="1">
+  <properties>
+    <property name="java.specification.version" value="25"/>
+    <property name="sun.jnu.encoding" value="ANSI_X3.4-1968"/>
+    <property name="java.class.path" value="/builds/example/fastproof-samples/target/test-classes:/builds/example/fastproof-samples/target/classes:/builds/example/.m2/repository/org/junit/jupiter/junit-jupiter/6.1.3/junit-jupiter-6.1.3.jar:/builds/example/.m2/repository/org/junit/jupiter/junit-jupiter-api/6.1.3/junit-jupiter-api-6.1.3.jar:/builds/example/.m2/repository/org/opentest4j/opentest4j/1.3.0/opentest4j-1.3.0.jar:/builds/example/.m2/repository/org/junit/platform/junit-platform-commons/6.1.3/junit-platform-commons-6.1.3.jar:/builds/example/.m2/repository/org/junit/jupiter/junit-jupiter-engine/6.1.3/junit-jupiter-engine-6.1.3.jar:/builds/example/.m2/repository/org/junit/jupiter/junit-jupiter-params/6.1.3/junit-jupiter-params-6.1.3.jar:/builds/example/.m2/repository/org/apiguardian/apiguardian-api/1.1.2/apiguardian-api-1.1.2.jar:/builds/example/.m2/repository/org/jspecify/jspecify/1.0.0/jspecify-1.0.0.jar:/builds/example/.m2/repository/org/junit/platform/junit-platform-launcher/6.1.3/junit-platform-launcher-6.1.3.jar:/builds/example/.m2/repository/org/junit/platform/junit-platform-engine/6.1.3/junit-platform-engine-6.1.3.jar:/builds/example/.m2/repository/io/qameta/allure/allure-jupiter/3.1.1/allure-jupiter-3.1.1.jar:/builds/example/.m2/repository/io/qameta/allure/allure-java-commons/3.1.1/allure-java-commons-3.1.1.jar:/builds/example/.m2/repository/io/qameta/allure/allure-model/3.1.1/allure-model-3.1.1.jar:/builds/example/.m2/repository/io/qameta/allure/allure-junit-platform/3.1.1/allure-junit-platform-3.1.1.jar:/builds/example/.m2/repository/org/slf4j/slf4j-nop/2.0.20/slf4j-nop-2.0.20.jar:/builds/example/.m2/repository/org/slf4j/slf4j-api/2.0.20/slf4j-api-2.0.20.jar"/>
+    <property name="java.vm.vendor" value="Eclipse Adoptium"/>
+    <property name="sun.arch.data.model" value="64"/>
+    <property name="java.vendor.url" value="https://adoptium.net/"/>
+    <property name="user.timezone" value="Etc/UTC"/>
+    <property name="os.name" value="Linux"/>
+    <property name="java.vm.specification.version" value="25"/>
+    <property name="sun.java.launcher" value="SUN_STANDARD"/>
+    <property name="user.country" value="US"/>
+    <property name="sun.boot.library.path" value="/opt/java/openjdk/lib"/>
+    <property name="sun.java.command" value="/builds/example/fastproof-samples/target/surefire/surefirebooter-20261121082127634_3.jar /builds/example/fastproof-samples/target/surefire 2026-11-21T08-21-27_576-jvmRun1 surefire-20261121082127634_1tmp surefire_0-20261121082127634_2tmp"/>
+    <property name="jdk.debug" value="release"/>
+    <property name="surefire.test.class.path" value="/builds/example/fastproof-samples/target/test-classes:/builds/example/fastproof-samples/target/classes:/builds/example/.m2/repository/org/junit/jupiter/junit-jupiter/6.1.3/junit-jupiter-6.1.3.jar:/builds/example/.m2/repository/org/junit/jupiter/junit-jupiter-api/6.1.3/junit-jupiter-api-6.1.3.jar:/builds/example/.m2/repository/org/opentest4j/opentest4j/1.3.0/opentest4j-1.3.0.jar:/builds/example/.m2/repository/org/junit/platform/junit-platform-commons/6.1.3/junit-platform-commons-6.1.3.jar:/builds/example/.m2/repository/org/junit/jupiter/junit-jupiter-engine/6.1.3/junit-jupiter-engine-6.1.3.jar:/builds/example/.m2/repository/org/junit/jupiter/junit-jupiter-params/6.1.3/junit-jupiter-params-6.1.3.jar:/builds/example/.m2/repository/org/apiguardian/apiguardian-api/1.1.2/apiguardian-api-1.1.2.jar:/builds/example/.m2/repository/org/jspecify/jspecify/1.0.0/jspecify-1.0.0.jar:/builds/example/.m2/repository/org/junit/platform/junit-platform-launcher/6.1.3/junit-platform-launcher-6.1.3.jar:/builds/example/.m2/repository/org/junit/platform/junit-platform-engine/6.1.3/junit-platform-engine-6.1.3.jar:/builds/example/.m2/repository/io/qameta/allure/allure-jupiter/3.1.1/allure-jupiter-3.1.1.jar:/builds/example/.m2/repository/io/qameta/allure/allure-java-commons/3.1.1/allure-java-commons-3.1.1.jar:/builds/example/.m2/repository/io/qameta/allure/allure-model/3.1.1/allure-model-3.1.1.jar:/builds/example/.m2/repository/io/qameta/allure/allure-junit-platform/3.1.1/allure-junit-platform-3.1.1.jar:/builds/example/.m2/repository/org/slf4j/slf4j-nop/2.0.20/slf4j-nop-2.0.20.jar:/builds/example/.m2/repository/org/slf4j/slf4j-api/2.0.20/slf4j-api-2.0.20.jar"/>
+    <property name="allure.results.directory" value="/builds/example/fastproof-samples/target/allure-results"/>
+    <property name="sun.cpu.endian" value="little"/>
+    <property name="user.home" value="/root"/>
+    <property name="user.language" value="en"/>
+    <property name="java.specification.vendor" value="Oracle Corporation"/>
+    <property name="java.version.date" value="2026-10-20"/>
+    <property name="java.home" value="/opt/java/openjdk"/>
+    <property name="file.separator" value="/"/>
+    <property name="basedir" value="/builds/example/fastproof-samples"/>
+    <property name="java.vm.compressedOopsMode" value="Zero based"/>
+    <property name="line.separator" value="&#10;"/>
+    <property name="java.vm.specification.vendor" value="Oracle Corporation"/>
+    <property name="java.specification.name" value="Java Platform API Specification"/>
+    <property name="surefire.real.class.path" value="/builds/example/fastproof-samples/target/surefire/surefirebooter-20261121082127634_3.jar"/>
+    <property name="sun.management.compiler" value="HotSpot 64-Bit Tiered Compilers"/>
+    <property name="java.runtime.version" value="25.0.5+8-LTS"/>
+    <property name="user.name" value="runner"/>
+    <property name="stdout.encoding" value="ANSI_X3.4-1968"/>
+    <property name="path.separator" value=":"/>
+    <property name="os.version" value="7.0.14-linuxkit"/>
+    <property name="java.runtime.name" value="OpenJDK Runtime Environment"/>
+    <property name="file.encoding" value="UTF-8"/>
+    <property name="java.vm.name" value="OpenJDK 64-Bit Server VM"/>
+    <property name="java.vendor.version" value="Temurin-25.0.5+8"/>
+    <property name="localRepository" value="/builds/example/.m2/repository"/>
+    <property name="java.vendor.url.bug" value="https://github.com/adoptium/adoptium-support/issues"/>
+    <property name="java.io.tmpdir" value="/tmp"/>
+    <property name="java.version" value="25.0.5"/>
+    <property name="user.dir" value="/builds/example/fastproof-samples"/>
+    <property name="os.arch" value="aarch64"/>
+    <property name="java.vm.specification.name" value="Java Virtual Machine Specification"/>
+    <property name="native.encoding" value="ANSI_X3.4-1968"/>
+    <property name="java.library.path" value="/usr/java/packages/lib:/usr/lib64:/lib64:/lib:/usr/lib"/>
+    <property name="java.vm.info" value="mixed mode, sharing"/>
+    <property name="stderr.encoding" value="ANSI_X3.4-1968"/>
+    <property name="java.vendor" value="Eclipse Adoptium"/>
+    <property name="java.vm.version" value="25.0.5+8-LTS"/>
+    <property name="stdin.encoding" value="ANSI_X3.4-1968"/>
+    <property name="sun.io.unicode.encoding" value="UnicodeLittle"/>
+    <property name="maven.repo.local" value="/builds/example/.m2/repository"/>
+    <property name="java.class.version" value="69.0"/>
+  </properties>
+  <testcase name="cardVaultUnreachable" classname="com.example.samples.RetryTest" time="0.004">
+    <error message="Card vault connection refused (attempt 1)" type="java.lang.IllegalStateException"><![CDATA[java.lang.IllegalStateException: Card vault connection refused (attempt 1)
+	at com.example.samples.RetryTest.cardVaultUnreachable(RetryTest.java:55)
+]]></error>
+    <system-err><![CDATA[cardVaultUnreachable attempt 1
+]]></system-err>
+    <rerunError message="Card vault connection refused (attempt 2)" type="java.lang.IllegalStateException">
+      <stackTrace><![CDATA[java.lang.IllegalStateException: Card vault connection refused (attempt 2)
+	at com.example.samples.RetryTest.cardVaultUnreachable(RetryTest.java:55)
+]]></stackTrace>
+      <system-err><![CDATA[cardVaultUnreachable attempt 2
+]]></system-err>
+    </rerunError>
+    <rerunError message="Card vault connection refused (attempt 3)" type="java.lang.IllegalStateException">
+      <stackTrace><![CDATA[java.lang.IllegalStateException: Card vault connection refused (attempt 3)
+	at com.example.samples.RetryTest.cardVaultUnreachable(RetryTest.java:55)
+]]></stackTrace>
+      <system-err><![CDATA[cardVaultUnreachable attempt 3
+]]></system-err>
+    </rerunError>
+  </testcase>
+  <testcase name="flakyGateway" classname="com.example.samples.RetryTest" time="0.001">
+    <flakyFailure message="expected: &lt;OK&gt; but was: &lt;TIMEOUT&gt;" type="org.opentest4j.AssertionFailedError">
+      <stackTrace><![CDATA[org.opentest4j.AssertionFailedError: expected: <OK> but was: <TIMEOUT>
+	at org.junit.jupiter.api.Assertions.assertEquals(Assertions.java:1199)
+	at com.example.samples.RetryTest.lambda$flakyGateway$0(RetryTest.java:37)
+	at io.qameta.allure.Allure.lambda$step$0(Allure.java:113)
+	at io.qameta.allure.Allure.lambda$step$1(Allure.java:127)
+	at io.qameta.allure.Allure.step(Allure.java:181)
+	at io.qameta.allure.Allure.step(Allure.java:125)
+	at io.qameta.allure.Allure.step(Allure.java:112)
+	at com.example.samples.RetryTest.flakyGateway(RetryTest.java:37)
+]]></stackTrace>
+      <system-out><![CDATA[flakyGateway attempt 1
+]]></system-out>
+    </flakyFailure>
+  </testcase>
+  <testcase name="refundRejected" classname="com.example.samples.RetryTest" time="0.001">
+    <failure message="refund status ==&gt; expected: &lt;APPROVED&gt; but was: &lt;REJECTED&gt;" type="org.opentest4j.AssertionFailedError"><![CDATA[org.opentest4j.AssertionFailedError: refund status ==> expected: <APPROVED> but was: <REJECTED>
+	at org.junit.jupiter.api.Assertions.assertEquals(Assertions.java:1210)
+	at com.example.samples.RetryTest.refundRejected(RetryTest.java:46)
+]]></failure>
+    <system-out><![CDATA[refundRejected attempt 1
+]]></system-out>
+    <rerunFailure message="refund status ==&gt; expected: &lt;APPROVED&gt; but was: &lt;REJECTED&gt;" type="org.opentest4j.AssertionFailedError">
+      <stackTrace><![CDATA[org.opentest4j.AssertionFailedError: refund status ==> expected: <APPROVED> but was: <REJECTED>
+	at org.junit.jupiter.api.Assertions.assertEquals(Assertions.java:1210)
+	at com.example.samples.RetryTest.refundRejected(RetryTest.java:46)
+]]></stackTrace>
+      <system-out><![CDATA[refundRejected attempt 2
+]]></system-out>
+    </rerunFailure>
+    <rerunFailure message="refund status ==&gt; expected: &lt;APPROVED&gt; but was: &lt;REJECTED&gt;" type="org.opentest4j.AssertionFailedError">
+      <stackTrace><![CDATA[org.opentest4j.AssertionFailedError: refund status ==> expected: <APPROVED> but was: <REJECTED>
+	at org.junit.jupiter.api.Assertions.assertEquals(Assertions.java:1210)
+	at com.example.samples.RetryTest.refundRejected(RetryTest.java:46)
+]]></stackTrace>
+      <system-out><![CDATA[refundRejected attempt 3
+]]></system-out>
+    </rerunFailure>
+  </testcase>
+</testsuite>

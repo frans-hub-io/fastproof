@@ -1,0 +1,599 @@
+{
+  "reportFormat": "CTRF",
+  "specVersion": "0.2.0",
+  "reportId": "ff7ed263-acde-453d-9a77-4ee0631946c9",
+  "timestamp": "2026-11-21T08:21:38.315Z",
+  "generatedBy": "playwright-ctrf-json-reporter",
+  "results": {
+    "tool": {
+      "name": "playwright",
+      "version": "1.65.0"
+    },
+    "summary": {
+      "tests": 12,
+      "passed": 7,
+      "failed": 2,
+      "pending": 0,
+      "skipped": 3,
+      "other": 0,
+      "start": 1795249298387,
+      "stop": 1795249301523,
+      "duration": 3136,
+      "suites": 11
+    },
+    "tests": [
+      {
+        "testId": "1981448f0b79506fb670-69753f488c9d464ae301",
+        "executionId": "ae0408f7-d61b-42d0-8cbf-d59d447e35c2",
+        "attemptId": "80458936-c045-4335-88eb-56f5bb54f643",
+        "name": "adds item to cart",
+        "status": "passed",
+        "duration": 61,
+        "start": 1795249298673,
+        "stop": 1795249298734,
+        "rawStatus": "passed",
+        "tags": [
+          "@cart",
+          "@regression"
+        ],
+        "type": "api",
+        "filePath": "/builds/example/fastproof-samples/tests/cart.spec.ts",
+        "retries": 0,
+        "flaky": false,
+        "steps": [
+          {
+            "name": "open cart",
+            "status": "passed"
+          },
+          {
+            "name": "request empty cart",
+            "status": "passed"
+          },
+          {
+            "name": "check cart is empty",
+            "status": "passed"
+          },
+          {
+            "name": "add item",
+            "status": "passed"
+          },
+          {
+            "name": "verify total",
+            "status": "passed"
+          }
+        ],
+        "suite": [
+          "staging",
+          "cart.spec.ts",
+          "Cart"
+        ],
+        "attachments": [
+          {
+            "attachmentId": "f21539c2-3466-4a7d-8ebf-aaffa9668e24",
+            "name": "cart.png",
+            "contentType": "image/png",
+            "path": "/builds/example/fastproof-samples/test-results/cart-Cart-adds-item-to-cart-staging/attachments/cart-png-338ae8e712047d10656997b387686a92c84a1a6e.png"
+          }
+        ],
+        "stdout": [
+          "cart service at https://staging.example.com\n"
+        ],
+        "stderr": [
+          "warning: cart cache is cold\n"
+        ],
+        "extra": {
+          "annotations": [
+            {
+              "type": "issue",
+              "description": "https://issues.example.com/browse/SHOP-101",
+              "location": {
+                "file": "/builds/example/fastproof-samples/tests/cart.spec.ts",
+                "line": 10,
+                "column": 3
+              }
+            },
+            {
+              "type": "note",
+              "description": "covers the happy path",
+              "location": {
+                "file": "/builds/example/fastproof-samples/tests/cart.spec.ts",
+                "line": 10,
+                "column": 3
+              }
+            }
+          ]
+        }
+      },
+      {
+        "testId": "30aa42b97d8966d0c2dc-9be92f9b4dbc3d3052fb",
+        "executionId": "02ac7463-f1a7-4630-8c73-8d57672b15b3",
+        "attemptId": "be44f4ca-238c-4c6c-a8b7-3fcf46515d90",
+        "name": "search for laptop",
+        "status": "passed",
+        "duration": 4,
+        "start": 1795249298853,
+        "stop": 1795249298857,
+        "rawStatus": "passed",
+        "tags": [],
+        "type": "api",
+        "filePath": "/builds/example/fastproof-samples/tests/catalog.spec.ts",
+        "retries": 0,
+        "flaky": false,
+        "steps": [],
+        "suite": [
+          "staging",
+          "catalog.spec.ts",
+          "Catalog"
+        ],
+        "attachments": [],
+        "stdout": [],
+        "stderr": [],
+        "extra": {
+          "annotations": []
+        }
+      },
+      {
+        "testId": "30aa42b97d8966d0c2dc-9a5da67c2116bbea47ad",
+        "executionId": "3178f63b-a043-47e1-a43d-fd0b6c73ff41",
+        "attemptId": "bf8dd2e3-8950-4a02-86cd-e75f2d53e2d9",
+        "name": "search for phone",
+        "status": "passed",
+        "duration": 3,
+        "start": 1795249298875,
+        "stop": 1795249298878,
+        "rawStatus": "passed",
+        "tags": [],
+        "type": "api",
+        "filePath": "/builds/example/fastproof-samples/tests/catalog.spec.ts",
+        "retries": 0,
+        "flaky": false,
+        "steps": [],
+        "suite": [
+          "staging",
+          "catalog.spec.ts",
+          "Catalog"
+        ],
+        "attachments": [],
+        "stdout": [],
+        "stderr": [],
+        "extra": {
+          "annotations": []
+        }
+      },
+      {
+        "testId": "30aa42b97d8966d0c2dc-c48d035eaa181a07f380",
+        "executionId": "b4c3608b-59c4-45af-abf2-512563b19f8b",
+        "attemptId": "b0dd950a-517b-4899-85ea-11fad7193863",
+        "name": "search for tablet",
+        "status": "passed",
+        "duration": 8,
+        "start": 1795249298887,
+        "stop": 1795249298895,
+        "rawStatus": "passed",
+        "tags": [],
+        "type": "api",
+        "filePath": "/builds/example/fastproof-samples/tests/catalog.spec.ts",
+        "retries": 0,
+        "flaky": false,
+        "steps": [],
+        "suite": [
+          "staging",
+          "catalog.spec.ts",
+          "Catalog"
+        ],
+        "attachments": [],
+        "stdout": [],
+        "stderr": [],
+        "extra": {
+          "annotations": []
+        }
+      },
+      {
+        "testId": "30aa42b97d8966d0c2dc-f097c57c0b2db5c4057a",
+        "executionId": "fabb4599-fa25-4051-ba58-c4235918809e",
+        "attemptId": "3a4be456-89c5-4862-b874-8de5e7370161",
+        "name": "legacy export",
+        "status": "skipped",
+        "duration": 1,
+        "start": 1795249298906,
+        "stop": 1795249298907,
+        "rawStatus": "skipped",
+        "tags": [],
+        "type": "api",
+        "filePath": "/builds/example/fastproof-samples/tests/catalog.spec.ts",
+        "retries": 0,
+        "flaky": false,
+        "steps": [],
+        "suite": [
+          "staging",
+          "catalog.spec.ts",
+          "Catalog"
+        ],
+        "attachments": [],
+        "stdout": [],
+        "stderr": [],
+        "extra": {
+          "annotations": [
+            {
+              "type": "skip",
+              "description": "export endpoint is retired",
+              "location": {
+                "file": "/builds/example/fastproof-samples/tests/catalog.spec.ts",
+                "line": 13,
+                "column": 10
+              }
+            }
+          ]
+        }
+      },
+      {
+        "testId": "30aa42b97d8966d0c2dc-f8c62a3500a3abc93e3f",
+        "executionId": "21e21e2d-2348-4bd4-a981-2bb248552f1c",
+        "attemptId": "6e885f3f-7cec-4eea-9631-e052c235b414",
+        "name": "bulk import",
+        "status": "skipped",
+        "duration": 0,
+        "start": 1795249298915,
+        "stop": 1795249298915,
+        "rawStatus": "skipped",
+        "tags": [],
+        "type": "api",
+        "filePath": "/builds/example/fastproof-samples/tests/catalog.spec.ts",
+        "retries": 0,
+        "flaky": false,
+        "steps": [],
+        "suite": [
+          "staging",
+          "catalog.spec.ts",
+          "Catalog"
+        ],
+        "attachments": [],
+        "stdout": [],
+        "stderr": [],
+        "extra": {
+          "annotations": [
+            {
+              "type": "skip",
+              "location": {
+                "file": "/builds/example/fastproof-samples/tests/catalog.spec.ts",
+                "line": 16,
+                "column": 8
+              }
+            }
+          ]
+        }
+      },
+      {
+        "testId": "30aa42b97d8966d0c2dc-70f3583be581c7d7e6af",
+        "executionId": "e39616a3-afdd-40a2-9cc5-415f99c1fb3b",
+        "attemptId": "f7c628a0-5f91-4d41-941c-e4cf86aeb597",
+        "name": "price history chart",
+        "status": "skipped",
+        "duration": 0,
+        "start": 1795249298915,
+        "stop": 1795249298915,
+        "rawStatus": "skipped",
+        "tags": [],
+        "type": "api",
+        "filePath": "/builds/example/fastproof-samples/tests/catalog.spec.ts",
+        "retries": 0,
+        "flaky": false,
+        "steps": [],
+        "suite": [
+          "staging",
+          "catalog.spec.ts",
+          "Catalog"
+        ],
+        "attachments": [],
+        "stdout": [],
+        "stderr": [],
+        "extra": {
+          "annotations": [
+            {
+              "type": "fixme",
+              "location": {
+                "file": "/builds/example/fastproof-samples/tests/catalog.spec.ts",
+                "line": 18,
+                "column": 8
+              }
+            }
+          ]
+        }
+      },
+      {
+        "testId": "30aa42b97d8966d0c2dc-c8235fc46cc5be7f277b",
+        "executionId": "a17ba2d4-e3a1-43c1-a0e8-842aa71bb2a8",
+        "attemptId": "b450f284-864c-467b-abc6-9fc124e87bc6",
+        "name": "rounding bug",
+        "status": "passed",
+        "duration": 2,
+        "start": 1795249298915,
+        "stop": 1795249298917,
+        "message": "Error: expect(received).toBe(expected) // Object.is equality\n\nExpected: 0.3\nReceived: 0.30000000000000004",
+        "trace": "Error: expect(received).toBe(expected) // Object.is equality\n\nExpected: 0.3\nReceived: 0.30000000000000004\n    at /builds/example/fastproof-samples/tests/catalog.spec.ts:22:23",
+        "snippet": "  20 |   test(\"rounding bug\", async () => {\n  21 |     test.fail(true, \"https://issues.example.com/browse/SHOP-77\");\n> 22 |     expect(0.1 + 0.2).toBe(0.3);\n     |                       ^\n  23 |   });\n  24 | });\n  25 |",
+        "rawStatus": "failed",
+        "tags": [],
+        "type": "api",
+        "filePath": "/builds/example/fastproof-samples/tests/catalog.spec.ts",
+        "retries": 0,
+        "flaky": false,
+        "steps": [],
+        "suite": [
+          "staging",
+          "catalog.spec.ts",
+          "Catalog"
+        ],
+        "attachments": [
+          {
+            "attachmentId": "7d391142-5391-4300-bdcb-97a36f45bcb4",
+            "name": "error-context",
+            "contentType": "text/markdown",
+            "path": "/builds/example/fastproof-samples/test-results/catalog-Catalog-rounding-bug-staging/error-context.md"
+          }
+        ],
+        "stdout": [],
+        "stderr": [],
+        "extra": {
+          "annotations": [
+            {
+              "type": "fail",
+              "description": "https://issues.example.com/browse/SHOP-77",
+              "location": {
+                "file": "/builds/example/fastproof-samples/tests/catalog.spec.ts",
+                "line": 21,
+                "column": 10
+              }
+            }
+          ]
+        }
+      },
+      {
+        "testId": "25ab1bfc84c57e3e3a45-12da95c9917b4240239c",
+        "executionId": "8e96e868-208f-4483-8206-9d8cd12324cd",
+        "attemptId": "cd945caa-45b8-4e23-9cb1-de256657d01d",
+        "name": "applies discount code",
+        "status": "failed",
+        "duration": 40,
+        "start": 1795249299625,
+        "stop": 1795249299665,
+        "message": "Error: expect(received).toBe(expected) // Object.is equality\n\nExpected: 90\nReceived: 95",
+        "trace": "Error: expect(received).toBe(expected) // Object.is equality\n\nExpected: 90\nReceived: 95\n    at /builds/example/fastproof-samples/tests/checkout.spec.ts:8:23\n    at /builds/example/fastproof-samples/tests/checkout.spec.ts:7:5",
+        "snippet": "   6 |     await allure.feature(\"Checkout\");\n   7 |     await test.step(\"apply SAVE10\", async () => {\n>  8 |       expect(100 - 5).toBe(90);\n     |                       ^\n   9 |     });\n  10 |   });\n  11 |",
+        "rawStatus": "failed",
+        "tags": [
+          "@checkout"
+        ],
+        "type": "api",
+        "filePath": "/builds/example/fastproof-samples/tests/checkout.spec.ts",
+        "retries": 2,
+        "flaky": false,
+        "steps": [
+          {
+            "name": "apply SAVE10",
+            "status": "failed"
+          }
+        ],
+        "suite": [
+          "staging",
+          "checkout.spec.ts",
+          "Checkout"
+        ],
+        "attachments": [
+          {
+            "attachmentId": "aa9e1bdb-c98f-47e3-94dc-1ec246f4f26a",
+            "name": "error-context",
+            "contentType": "text/markdown",
+            "path": "/builds/example/fastproof-samples/test-results/checkout-Checkout-applies-discount-code-staging-retry2/error-context.md"
+          }
+        ],
+        "stdout": [],
+        "stderr": [],
+        "extra": {
+          "annotations": []
+        },
+        "retryAttempts": [
+          {
+            "attempt": 1,
+            "attemptId": "9958e2c7-f1c2-4543-901e-6428e8946d40",
+            "status": "failed",
+            "duration": 5,
+            "message": "Error: expect(received).toBe(expected) // Object.is equality\n\nExpected: 90\nReceived: 95",
+            "trace": "Error: expect(received).toBe(expected) // Object.is equality\n\nExpected: 90\nReceived: 95\n    at /builds/example/fastproof-samples/tests/checkout.spec.ts:8:23\n    at /builds/example/fastproof-samples/tests/checkout.spec.ts:7:5",
+            "snippet": "   6 |     await allure.feature(\"Checkout\");\n   7 |     await test.step(\"apply SAVE10\", async () => {\n>  8 |       expect(100 - 5).toBe(90);\n     |                       ^\n   9 |     });\n  10 |   });\n  11 |",
+            "attachments": [
+              {
+                "attachmentId": "4b99cddd-fcaa-4b70-b697-ba72d1fcc2cd",
+                "name": "error-context",
+                "contentType": "text/markdown",
+                "path": "/builds/example/fastproof-samples/test-results/checkout-Checkout-applies-discount-code-staging/error-context.md"
+              }
+            ]
+          },
+          {
+            "attempt": 2,
+            "attemptId": "cd904106-f59a-4d89-99da-d5d2e2ff503d",
+            "status": "failed",
+            "duration": 38,
+            "message": "Error: expect(received).toBe(expected) // Object.is equality\n\nExpected: 90\nReceived: 95",
+            "trace": "Error: expect(received).toBe(expected) // Object.is equality\n\nExpected: 90\nReceived: 95\n    at /builds/example/fastproof-samples/tests/checkout.spec.ts:8:23\n    at /builds/example/fastproof-samples/tests/checkout.spec.ts:7:5",
+            "snippet": "   6 |     await allure.feature(\"Checkout\");\n   7 |     await test.step(\"apply SAVE10\", async () => {\n>  8 |       expect(100 - 5).toBe(90);\n     |                       ^\n   9 |     });\n  10 |   });\n  11 |",
+            "attachments": [
+              {
+                "attachmentId": "6e3ba45c-1dcd-466f-8eb9-761f02fa1d7d",
+                "name": "error-context",
+                "contentType": "text/markdown",
+                "path": "/builds/example/fastproof-samples/test-results/checkout-Checkout-applies-discount-code-staging-retry1/error-context.md"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "testId": "25ab1bfc84c57e3e3a45-a610a831c977b2bf2270",
+        "executionId": "c660a5fb-c90d-4628-b9a9-98f74c165c5e",
+        "attemptId": "e5ab37cf-9efb-493d-8ccf-bf4b31a397a0",
+        "name": "pays via gateway",
+        "status": "passed",
+        "duration": 37,
+        "start": 1795249300730,
+        "stop": 1795249300767,
+        "rawStatus": "passed",
+        "tags": [
+          "@smoke",
+          "@payments"
+        ],
+        "type": "api",
+        "filePath": "/builds/example/fastproof-samples/tests/checkout.spec.ts",
+        "retries": 1,
+        "flaky": true,
+        "steps": [
+          {
+            "name": "call gateway",
+            "status": "passed"
+          }
+        ],
+        "suite": [
+          "staging",
+          "checkout.spec.ts",
+          "Checkout"
+        ],
+        "attachments": [],
+        "stdout": [
+          "attempt 1\n"
+        ],
+        "stderr": [],
+        "extra": {
+          "annotations": []
+        },
+        "retryAttempts": [
+          {
+            "attempt": 1,
+            "attemptId": "1fe11a72-b7fa-4274-a763-399c9e409649",
+            "status": "failed",
+            "duration": 41,
+            "message": "Error: gateway timed out\n\nexpect(received).toBeGreaterThan(expected)\n\nExpected: > 0\nReceived:   0",
+            "trace": "Error: gateway timed out\n\nexpect(received).toBeGreaterThan(expected)\n\nExpected: > 0\nReceived:   0\n    at /builds/example/fastproof-samples/tests/checkout.spec.ts:25:51\n    at /builds/example/fastproof-samples/tests/checkout.spec.ts:24:5",
+            "snippet": "  23 |     console.log(`attempt ${testInfo.retry}`);\n  24 |     await test.step(\"call gateway\", async () => {\n> 25 |       expect(testInfo.retry, \"gateway timed out\").toBeGreaterThan(0);\n     |                                                   ^\n  26 |     });\n  27 |   });\n  28 | });",
+            "attachments": [
+              {
+                "attachmentId": "1c60a73d-48c9-4aff-bb17-e2c51899a5c8",
+                "name": "error-context",
+                "contentType": "text/markdown",
+                "path": "/builds/example/fastproof-samples/test-results/checkout-Checkout-pays-via-gateway-staging/error-context.md"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "testId": "25ab1bfc84c57e3e3a45-52b175f382ab0354d770",
+        "executionId": "a9850ea4-ae46-4631-94b2-4c4867fa659e",
+        "attemptId": "0ef8b83f-ea18-4abd-a24e-1b91375d7dcc",
+        "name": "calculates tax",
+        "status": "failed",
+        "duration": 2,
+        "start": 1795249300000,
+        "stop": 1795249300002,
+        "message": "TypeError: Cannot read properties of null (reading 'tax')",
+        "trace": "TypeError: Cannot read properties of null (reading 'tax')\n    at /builds/example/fastproof-samples/tests/checkout.spec.ts:17:20",
+        "snippet": "  15 |     test(\"calculates tax\", async () => {\n  16 |       const order = JSON.parse(\"null\") as { tax: number };\n> 17 |       expect(order.tax).toBe(20);\n     |                    ^\n  18 |     });\n  19 |   });\n  20 |",
+        "rawStatus": "failed",
+        "tags": [],
+        "type": "api",
+        "filePath": "/builds/example/fastproof-samples/tests/checkout.spec.ts",
+        "retries": 0,
+        "flaky": false,
+        "steps": [],
+        "suite": [
+          "staging",
+          "checkout.spec.ts",
+          "Checkout",
+          "Tax"
+        ],
+        "attachments": [
+          {
+            "attachmentId": "813e8184-6f99-437d-94d8-81d962503aae",
+            "name": "error-context",
+            "contentType": "text/markdown",
+            "path": "/builds/example/fastproof-samples/test-results/checkout-Checkout-Tax-calculates-tax-staging/error-context.md"
+          }
+        ],
+        "stdout": [],
+        "stderr": [],
+        "extra": {
+          "annotations": []
+        }
+      },
+      {
+        "testId": "25ab1bfc84c57e3e3a45-c0156cd2ded6b046296d",
+        "executionId": "b2475bba-9f3d-45c6-a97d-8fe60f31f4a8",
+        "attemptId": "dfe43178-c2c4-4952-942f-94c96fceed6f",
+        "name": "pays via gateway",
+        "status": "passed",
+        "duration": 33,
+        "start": 1795249301431,
+        "stop": 1795249301464,
+        "rawStatus": "passed",
+        "tags": [
+          "@smoke",
+          "@payments"
+        ],
+        "type": "api",
+        "filePath": "/builds/example/fastproof-samples/tests/checkout.spec.ts",
+        "retries": 1,
+        "flaky": true,
+        "steps": [
+          {
+            "name": "call gateway",
+            "status": "passed"
+          }
+        ],
+        "suite": [
+          "production",
+          "checkout.spec.ts",
+          "Checkout"
+        ],
+        "attachments": [],
+        "stdout": [
+          "attempt 1\n"
+        ],
+        "stderr": [],
+        "extra": {
+          "annotations": []
+        },
+        "retryAttempts": [
+          {
+            "attempt": 1,
+            "attemptId": "63880eee-9f0d-4bd9-b8b8-94288fbbec8d",
+            "status": "failed",
+            "duration": 35,
+            "message": "Error: gateway timed out\n\nexpect(received).toBeGreaterThan(expected)\n\nExpected: > 0\nReceived:   0",
+            "trace": "Error: gateway timed out\n\nexpect(received).toBeGreaterThan(expected)\n\nExpected: > 0\nReceived:   0\n    at /builds/example/fastproof-samples/tests/checkout.spec.ts:25:51\n    at /builds/example/fastproof-samples/tests/checkout.spec.ts:24:5",
+            "snippet": "  23 |     console.log(`attempt ${testInfo.retry}`);\n  24 |     await test.step(\"call gateway\", async () => {\n> 25 |       expect(testInfo.retry, \"gateway timed out\").toBeGreaterThan(0);\n     |                                                   ^\n  26 |     });\n  27 |   });\n  28 | });",
+            "attachments": [
+              {
+                "attachmentId": "86b4b468-41f4-467a-8c96-9edd60c42eac",
+                "name": "error-context",
+                "contentType": "text/markdown",
+                "path": "/builds/example/fastproof-samples/test-results/checkout-Checkout-pays-via-gateway-production/error-context.md"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "environment": {
+      "appName": "fastproof-samples",
+      "appVersion": "1.0.0",
+      "buildName": "fastproof-samples",
+      "buildNumber": 42,
+      "buildUrl": "https://ci.example.com/builds/42",
+      "repositoryName": "fastproof-samples",
+      "repositoryUrl": "https://git.example.com/example/fastproof-samples",
+      "branchName": "main",
+      "commit": "0123456789abcdef0123456789abcdef01234567",
+      "testEnvironment": "staging"
+    }
+  }
+}

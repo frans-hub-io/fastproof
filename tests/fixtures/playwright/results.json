@@ -1,0 +1,1320 @@
+{
+  "config": {
+    "argv": [
+      "/usr/local/bin/node",
+      "/builds/example/fastproof-samples/node_modules/.bin/playwright",
+      "test"
+    ],
+    "configFile": "/builds/example/fastproof-samples/playwright.config.ts",
+    "rootDir": "/builds/example/fastproof-samples/tests",
+    "failOnFlakyTests": false,
+    "forbidOnly": false,
+    "fullyParallel": false,
+    "globalSetup": null,
+    "globalTeardown": null,
+    "globalTimeout": 0,
+    "grep": {},
+    "grepInvert": null,
+    "maxFailures": 0,
+    "metadata": {
+      "actualWorkers": 1
+    },
+    "preserveOutput": "always",
+    "projects": [
+      {
+        "outputDir": "/builds/example/fastproof-samples/test-results",
+        "repeatEach": 1,
+        "retries": 2,
+        "metadata": {
+          "actualWorkers": 1
+        },
+        "id": "staging",
+        "name": "staging",
+        "testDir": "/builds/example/fastproof-samples/tests",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 30000
+      },
+      {
+        "outputDir": "/builds/example/fastproof-samples/test-results",
+        "repeatEach": 1,
+        "retries": 2,
+        "metadata": {
+          "actualWorkers": 1
+        },
+        "id": "production",
+        "name": "production",
+        "testDir": "/builds/example/fastproof-samples/tests",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 30000
+      }
+    ],
+    "filteredProjects": [
+      {
+        "grep": {},
+        "grepInvert": null,
+        "outputDir": "/builds/example/fastproof-samples/test-results",
+        "repeatEach": 1,
+        "retries": 2,
+        "metadata": {
+          "actualWorkers": 1
+        },
+        "name": "staging",
+        "testDir": "/builds/example/fastproof-samples/tests",
+        "snapshotDir": "/builds/example/fastproof-samples/tests",
+        "testIgnore": [],
+        "testMatch": "**/*.@(spec|test).?(c|m)[jt]s?(x)",
+        "timeout": 30000,
+        "use": {
+          "baseURL": "https://staging.example.com"
+        },
+        "dependencies": [],
+        "ignoreSnapshots": false,
+        "__projectId": "staging"
+      },
+      {
+        "grep": {},
+        "grepInvert": null,
+        "outputDir": "/builds/example/fastproof-samples/test-results",
+        "repeatEach": 1,
+        "retries": 2,
+        "metadata": {
+          "actualWorkers": 1
+        },
+        "name": "production",
+        "testDir": "/builds/example/fastproof-samples/tests",
+        "snapshotDir": "/builds/example/fastproof-samples/tests",
+        "testIgnore": [],
+        "testMatch": "**/*.@(spec|test).?(c|m)[jt]s?(x)",
+        "timeout": 30000,
+        "use": {
+          "baseURL": "https://www.example.com"
+        },
+        "dependencies": [],
+        "ignoreSnapshots": false,
+        "__projectId": "production"
+      }
+    ],
+    "quiet": false,
+    "reporter": [
+      [
+        "list",
+        null
+      ],
+      [
+        "/builds/example/fastproof-samples/node_modules/allure-playwright/dist/cjs/index.js",
+        {
+          "resultsDir": "allure-results",
+          "detail": true,
+          "suiteTitle": true,
+          "environmentInfo": {
+            "app": "fastproof-samples",
+            "stage": "ci"
+          },
+          "categories": [
+            {
+              "name": "Assertion failures",
+              "matchedStatuses": [
+                "failed"
+              ]
+            },
+            {
+              "name": "Unexpected errors",
+              "matchedStatuses": [
+                "broken"
+              ]
+            }
+          ]
+        }
+      ],
+      [
+        "json",
+        {
+          "outputFile": "results.json"
+        }
+      ],
+      [
+        "junit",
+        {
+          "outputFile": "junit.xml"
+        }
+      ],
+      [
+        "/builds/example/fastproof-samples/node_modules/playwright-ctrf-json-reporter/dist/index.cjs",
+        {
+          "outputDir": "ctrf",
+          "outputFile": "ctrf-report.json",
+          "annotations": true,
+          "testType": "api",
+          "appName": "fastproof-samples",
+          "appVersion": "1.0.0",
+          "testEnvironment": "staging",
+          "buildName": "fastproof-samples",
+          "buildNumber": 42,
+          "buildUrl": "https://ci.example.com/builds/42",
+          "repositoryName": "fastproof-samples",
+          "repositoryUrl": "https://git.example.com/example/fastproof-samples",
+          "branchName": "main",
+          "commit": "0123456789abcdef0123456789abcdef01234567"
+        }
+      ]
+    ],
+    "reportSlowTests": {
+      "max": 5,
+      "threshold": 300000
+    },
+    "shard": null,
+    "tags": [],
+    "updateSnapshots": "default",
+    "updateSourceMethod": "patch",
+    "version": "1.65.0",
+    "workers": 1,
+    "webServer": null
+  },
+  "suites": [
+    {
+      "title": "cart.spec.ts",
+      "file": "cart.spec.ts",
+      "column": 0,
+      "line": 0,
+      "specs": [],
+      "suites": [
+        {
+          "title": "Cart",
+          "file": "cart.spec.ts",
+          "line": 9,
+          "column": 6,
+          "specs": [
+            {
+              "title": "adds item to cart",
+              "ok": true,
+              "tags": [
+                "cart",
+                "regression"
+              ],
+              "tests": [
+                {
+                  "timeout": 30000,
+                  "annotations": [
+                    {
+                      "type": "issue",
+                      "description": "https://issues.example.com/browse/SHOP-101",
+                      "location": {
+                        "file": "/builds/example/fastproof-samples/tests/cart.spec.ts",
+                        "line": 10,
+                        "column": 3
+                      }
+                    },
+                    {
+                      "type": "note",
+                      "description": "covers the happy path",
+                      "location": {
+                        "file": "/builds/example/fastproof-samples/tests/cart.spec.ts",
+                        "line": 10,
+                        "column": 3
+                      }
+                    }
+                  ],
+                  "expectedStatus": "passed",
+                  "projectId": "staging",
+                  "projectName": "staging",
+                  "results": [
+                    {
+                      "workerIndex": 0,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 61,
+                      "errors": [],
+                      "stdout": [
+                        {
+                          "text": "cart service at https://staging.example.com\n"
+                        }
+                      ],
+                      "stderr": [
+                        {
+                          "text": "warning: cart cache is cold\n"
+                        }
+                      ],
+                      "retry": 0,
+                      "steps": [
+                        {
+                          "title": "open cart",
+                          "duration": 6,
+                          "steps": [
+                            {
+                              "title": "request empty cart",
+                              "duration": 2
+                            },
+                            {
+                              "title": "check cart is empty",
+                              "duration": 4
+                            }
+                          ]
+                        },
+                        {
+                          "title": "add item",
+                          "duration": 7,
+                          "steps": [
+                            {
+                              "title": "verify total",
+                              "duration": 1
+                            }
+                          ]
+                        }
+                      ],
+                      "startTime": "2026-11-21T08:21:38.673Z",
+                      "annotations": [
+                        {
+                          "type": "issue",
+                          "description": "https://issues.example.com/browse/SHOP-101",
+                          "location": {
+                            "file": "/builds/example/fastproof-samples/tests/cart.spec.ts",
+                            "line": 10,
+                            "column": 3
+                          }
+                        },
+                        {
+                          "type": "note",
+                          "description": "covers the happy path",
+                          "location": {
+                            "file": "/builds/example/fastproof-samples/tests/cart.spec.ts",
+                            "line": 10,
+                            "column": 3
+                          }
+                        }
+                      ],
+                      "attachments": [
+                        {
+                          "name": "Allure Metadata (metadata)",
+                          "contentType": "application/vnd.allure.message+json",
+                          "body": "eyJ0eXBlIjoibWV0YWRhdGEiLCJkYXRhIjp7ImRlc2NyaXB0aW9uIjoiQWRkcyBhIHNpbmdsZSBpdGVtIHRvIGFuIGVtcHR5IGNhcnQgYW5kIGNoZWNrcyB0aGUgdG90YWwuIn19"
+                        },
+                        {
+                          "name": "Allure Metadata (metadata)",
+                          "contentType": "application/vnd.allure.message+json",
+                          "body": "eyJ0eXBlIjoibWV0YWRhdGEiLCJkYXRhIjp7ImxhYmVscyI6W3sibmFtZSI6ImVwaWMiLCJ2YWx1ZSI6IldlYiBzaG9wIn1dfX0="
+                        },
+                        {
+                          "name": "Allure Metadata (metadata)",
+                          "contentType": "application/vnd.allure.message+json",
+                          "body": "eyJ0eXBlIjoibWV0YWRhdGEiLCJkYXRhIjp7ImxhYmVscyI6W3sibmFtZSI6ImZlYXR1cmUiLCJ2YWx1ZSI6IkNhcnQifV19fQ=="
+                        },
+                        {
+                          "name": "Allure Metadata (metadata)",
+                          "contentType": "application/vnd.allure.message+json",
+                          "body": "eyJ0eXBlIjoibWV0YWRhdGEiLCJkYXRhIjp7ImxhYmVscyI6W3sibmFtZSI6InN0b3J5IiwidmFsdWUiOiJBZGQgaXRlbSJ9XX19"
+                        },
+                        {
+                          "name": "Allure Metadata (metadata)",
+                          "contentType": "application/vnd.allure.message+json",
+                          "body": "eyJ0eXBlIjoibWV0YWRhdGEiLCJkYXRhIjp7ImxhYmVscyI6W3sibmFtZSI6InNldmVyaXR5IiwidmFsdWUiOiJjcml0aWNhbCJ9XX19"
+                        },
+                        {
+                          "name": "Allure Metadata (metadata)",
+                          "contentType": "application/vnd.allure.message+json",
+                          "body": "eyJ0eXBlIjoibWV0YWRhdGEiLCJkYXRhIjp7ImxhYmVscyI6W3sibmFtZSI6Im93bmVyIiwidmFsdWUiOiJhbGljZSJ9XX19"
+                        },
+                        {
+                          "name": "Allure Metadata (metadata)",
+                          "contentType": "application/vnd.allure.message+json",
+                          "body": "eyJ0eXBlIjoibWV0YWRhdGEiLCJkYXRhIjp7ImxhYmVscyI6W3sibmFtZSI6InRhZyIsInZhbHVlIjoicmVncmVzc2lvbiJ9XX19"
+                        },
+                        {
+                          "name": "Allure Metadata (metadata)",
+                          "contentType": "application/vnd.allure.message+json",
+                          "body": "eyJ0eXBlIjoibWV0YWRhdGEiLCJkYXRhIjp7ImxhYmVscyI6W3sibmFtZSI6IkFMTFVSRV9JRCIsInZhbHVlIjoiMTAwMSJ9XX19"
+                        },
+                        {
+                          "name": "Allure Metadata (metadata)",
+                          "contentType": "application/vnd.allure.message+json",
+                          "body": "eyJ0eXBlIjoibWV0YWRhdGEiLCJkYXRhIjp7ImxpbmtzIjpbeyJ1cmwiOiJodHRwczovL2lzc3Vlcy5leGFtcGxlLmNvbS9icm93c2UvU0hPUC0xMDEiLCJ0eXBlIjoiaXNzdWUiLCJuYW1lIjoiU0hPUC0xMDEifV19fQ=="
+                        },
+                        {
+                          "name": "Allure Metadata (metadata)",
+                          "contentType": "application/vnd.allure.message+json",
+                          "body": "eyJ0eXBlIjoibWV0YWRhdGEiLCJkYXRhIjp7ImxpbmtzIjpbeyJ1cmwiOiJodHRwczovL3Rtcy5leGFtcGxlLmNvbS9jYXNlcy9UQy0xMDAxIiwidHlwZSI6InRtcyIsIm5hbWUiOiJUQy0xMDAxIn1dfX0="
+                        },
+                        {
+                          "name": "Allure Metadata (metadata)",
+                          "contentType": "application/vnd.allure.message+json",
+                          "body": "eyJ0eXBlIjoibWV0YWRhdGEiLCJkYXRhIjp7ImxpbmtzIjpbeyJ1cmwiOiJodHRwczovL2RvY3MuZXhhbXBsZS5jb20vY2FydCIsIm5hbWUiOiJDYXJ0IGRvY3MifV19fQ=="
+                        },
+                        {
+                          "name": "Allure Metadata (metadata)",
+                          "contentType": "application/vnd.allure.message+json",
+                          "body": "eyJ0eXBlIjoibWV0YWRhdGEiLCJkYXRhIjp7InBhcmFtZXRlcnMiOlt7Im5hbWUiOiJiYXNlVVJMIiwidmFsdWUiOiJodHRwczovL3N0YWdpbmcuZXhhbXBsZS5jb20ifV19fQ=="
+                        },
+                        {
+                          "name": "Allure Metadata (metadata)",
+                          "contentType": "application/vnd.allure.message+json",
+                          "body": "eyJ0eXBlIjoibWV0YWRhdGEiLCJkYXRhIjp7InBhcmFtZXRlcnMiOlt7Im5hbWUiOiJhcGlUb2tlbiIsInZhbHVlIjoiczNjcjN0LXRva2VuIiwibW9kZSI6Im1hc2tlZCJ9XX19"
+                        },
+                        {
+                          "name": "Allure Metadata (metadata)",
+                          "contentType": "application/vnd.allure.message+json",
+                          "body": "eyJ0eXBlIjoibWV0YWRhdGEiLCJkYXRhIjp7InBhcmFtZXRlcnMiOlt7Im5hbWUiOiJyZXF1ZXN0SWQiLCJ2YWx1ZSI6InJlcS0wMDAxIiwibW9kZSI6ImhpZGRlbiJ9XX19"
+                        },
+                        {
+                          "name": "request.txt",
+                          "contentType": "text/plain",
+                          "body": "R0VUIC9hcGkvY2FydApBY2NlcHQ6IGFwcGxpY2F0aW9uL2pzb24K"
+                        },
+                        {
+                          "name": "cart.json",
+                          "contentType": "application/json",
+                          "body": "eyJpdGVtcyI6W10sInRvdGFsIjowfQ=="
+                        },
+                        {
+                          "name": "cart.png",
+                          "contentType": "image/png",
+                          "path": "/builds/example/fastproof-samples/test-results/cart-Cart-adds-item-to-cart-staging/attachments/cart-png-338ae8e712047d10656997b387686a92c84a1a6e.png"
+                        },
+                        {
+                          "name": "Allure Step Metadata",
+                          "contentType": "application/vnd.allure.message+json",
+                          "body": "eyJ0eXBlIjoic3RlcF9tZXRhZGF0YSIsImRhdGEiOnsicGFyYW1ldGVycyI6W3sibmFtZSI6ImN1cnJlbmN5IiwidmFsdWUiOiJFVVIifV19fQ=="
+                        }
+                      ]
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "1981448f0b79506fb670-69753f488c9d464ae301",
+              "file": "cart.spec.ts",
+              "line": 10,
+              "column": 3
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "catalog.spec.ts",
+      "file": "catalog.spec.ts",
+      "column": 0,
+      "line": 0,
+      "specs": [],
+      "suites": [
+        {
+          "title": "Catalog",
+          "file": "catalog.spec.ts",
+          "line": 4,
+          "column": 6,
+          "specs": [
+            {
+              "title": "search for laptop",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 30000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "staging",
+                  "projectName": "staging",
+                  "results": [
+                    {
+                      "workerIndex": 0,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 4,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-11-21T08:21:38.853Z",
+                      "annotations": [],
+                      "attachments": [
+                        {
+                          "name": "Allure Metadata (metadata)",
+                          "contentType": "application/vnd.allure.message+json",
+                          "body": "eyJ0eXBlIjoibWV0YWRhdGEiLCJkYXRhIjp7InBhcmFtZXRlcnMiOlt7Im5hbWUiOiJxdWVyeSIsInZhbHVlIjoibGFwdG9wIn1dfX0="
+                        }
+                      ]
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "30aa42b97d8966d0c2dc-9be92f9b4dbc3d3052fb",
+              "file": "catalog.spec.ts",
+              "line": 6,
+              "column": 5
+            },
+            {
+              "title": "search for phone",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 30000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "staging",
+                  "projectName": "staging",
+                  "results": [
+                    {
+                      "workerIndex": 0,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 3,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-11-21T08:21:38.875Z",
+                      "annotations": [],
+                      "attachments": [
+                        {
+                          "name": "Allure Metadata (metadata)",
+                          "contentType": "application/vnd.allure.message+json",
+                          "body": "eyJ0eXBlIjoibWV0YWRhdGEiLCJkYXRhIjp7InBhcmFtZXRlcnMiOlt7Im5hbWUiOiJxdWVyeSIsInZhbHVlIjoicGhvbmUifV19fQ=="
+                        }
+                      ]
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "30aa42b97d8966d0c2dc-9a5da67c2116bbea47ad",
+              "file": "catalog.spec.ts",
+              "line": 6,
+              "column": 5
+            },
+            {
+              "title": "search for tablet",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 30000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "staging",
+                  "projectName": "staging",
+                  "results": [
+                    {
+                      "workerIndex": 0,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 8,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-11-21T08:21:38.887Z",
+                      "annotations": [],
+                      "attachments": [
+                        {
+                          "name": "Allure Metadata (metadata)",
+                          "contentType": "application/vnd.allure.message+json",
+                          "body": "eyJ0eXBlIjoibWV0YWRhdGEiLCJkYXRhIjp7InBhcmFtZXRlcnMiOlt7Im5hbWUiOiJxdWVyeSIsInZhbHVlIjoidGFibGV0In1dfX0="
+                        }
+                      ]
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "30aa42b97d8966d0c2dc-c48d035eaa181a07f380",
+              "file": "catalog.spec.ts",
+              "line": 6,
+              "column": 5
+            },
+            {
+              "title": "legacy export",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 30000,
+                  "annotations": [
+                    {
+                      "type": "skip",
+                      "description": "export endpoint is retired",
+                      "location": {
+                        "file": "/builds/example/fastproof-samples/tests/catalog.spec.ts",
+                        "line": 13,
+                        "column": 10
+                      }
+                    }
+                  ],
+                  "expectedStatus": "skipped",
+                  "projectId": "staging",
+                  "projectName": "staging",
+                  "results": [
+                    {
+                      "workerIndex": 0,
+                      "parallelIndex": 0,
+                      "status": "skipped",
+                      "duration": 1,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-11-21T08:21:38.906Z",
+                      "annotations": [
+                        {
+                          "type": "skip",
+                          "description": "export endpoint is retired",
+                          "location": {
+                            "file": "/builds/example/fastproof-samples/tests/catalog.spec.ts",
+                            "line": 13,
+                            "column": 10
+                          }
+                        }
+                      ],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "skipped"
+                }
+              ],
+              "id": "30aa42b97d8966d0c2dc-f097c57c0b2db5c4057a",
+              "file": "catalog.spec.ts",
+              "line": 12,
+              "column": 3
+            },
+            {
+              "title": "bulk import",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 30000,
+                  "annotations": [
+                    {
+                      "type": "skip",
+                      "location": {
+                        "file": "/builds/example/fastproof-samples/tests/catalog.spec.ts",
+                        "line": 16,
+                        "column": 8
+                      }
+                    }
+                  ],
+                  "expectedStatus": "skipped",
+                  "projectId": "staging",
+                  "projectName": "staging",
+                  "results": [
+                    {
+                      "workerIndex": 0,
+                      "parallelIndex": 0,
+                      "status": "skipped",
+                      "duration": 0,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-11-21T08:21:38.915Z",
+                      "annotations": [
+                        {
+                          "type": "skip",
+                          "location": {
+                            "file": "/builds/example/fastproof-samples/tests/catalog.spec.ts",
+                            "line": 16,
+                            "column": 8
+                          }
+                        }
+                      ],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "skipped"
+                }
+              ],
+              "id": "30aa42b97d8966d0c2dc-f8c62a3500a3abc93e3f",
+              "file": "catalog.spec.ts",
+              "line": 16,
+              "column": 8
+            },
+            {
+              "title": "price history chart",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 30000,
+                  "annotations": [
+                    {
+                      "type": "fixme",
+                      "location": {
+                        "file": "/builds/example/fastproof-samples/tests/catalog.spec.ts",
+                        "line": 18,
+                        "column": 8
+                      }
+                    }
+                  ],
+                  "expectedStatus": "skipped",
+                  "projectId": "staging",
+                  "projectName": "staging",
+                  "results": [
+                    {
+                      "workerIndex": 0,
+                      "parallelIndex": 0,
+                      "status": "skipped",
+                      "duration": 0,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-11-21T08:21:38.915Z",
+                      "annotations": [
+                        {
+                          "type": "fixme",
+                          "location": {
+                            "file": "/builds/example/fastproof-samples/tests/catalog.spec.ts",
+                            "line": 18,
+                            "column": 8
+                          }
+                        }
+                      ],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "skipped"
+                }
+              ],
+              "id": "30aa42b97d8966d0c2dc-70f3583be581c7d7e6af",
+              "file": "catalog.spec.ts",
+              "line": 18,
+              "column": 8
+            },
+            {
+              "title": "rounding bug",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 30000,
+                  "annotations": [
+                    {
+                      "type": "fail",
+                      "description": "https://issues.example.com/browse/SHOP-77",
+                      "location": {
+                        "file": "/builds/example/fastproof-samples/tests/catalog.spec.ts",
+                        "line": 21,
+                        "column": 10
+                      }
+                    }
+                  ],
+                  "expectedStatus": "failed",
+                  "projectId": "staging",
+                  "projectName": "staging",
+                  "results": [
+                    {
+                      "workerIndex": 0,
+                      "parallelIndex": 0,
+                      "status": "failed",
+                      "duration": 2,
+                      "error": {
+                        "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBe\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // Object.is equality\u001b[22m\n\nExpected: \u001b[32m0.3\u001b[39m\nReceived: \u001b[31m0.30000000000000004\u001b[39m",
+                        "stack": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBe\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // Object.is equality\u001b[22m\n\nExpected: \u001b[32m0.3\u001b[39m\nReceived: \u001b[31m0.30000000000000004\u001b[39m\n    at /builds/example/fastproof-samples/tests/catalog.spec.ts:22:23",
+                        "location": {
+                          "file": "/builds/example/fastproof-samples/tests/catalog.spec.ts",
+                          "column": 23,
+                          "line": 22
+                        },
+                        "snippet": "  20 |   test(\"rounding bug\", async () => {\n  21 |     test.fail(true, \"https://issues.example.com/browse/SHOP-77\");\n> 22 |     expect(0.1 + 0.2).toBe(0.3);\n     |                       ^\n  23 |   });\n  24 | });\n  25 |"
+                      },
+                      "errors": [
+                        {
+                          "location": {
+                            "file": "/builds/example/fastproof-samples/tests/catalog.spec.ts",
+                            "column": 23,
+                            "line": 22
+                          },
+                          "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBe\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // Object.is equality\u001b[22m\n\nExpected: \u001b[32m0.3\u001b[39m\nReceived: \u001b[31m0.30000000000000004\u001b[39m\n\n  20 |   test(\"rounding bug\", async () => {\n  21 |     test.fail(true, \"https://issues.example.com/browse/SHOP-77\");\n> 22 |     expect(0.1 + 0.2).toBe(0.3);\n     |                       ^\n  23 |   });\n  24 | });\n  25 |\n    at /builds/example/fastproof-samples/tests/catalog.spec.ts:22:23"
+                        }
+                      ],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-11-21T08:21:38.915Z",
+                      "annotations": [
+                        {
+                          "type": "fail",
+                          "description": "https://issues.example.com/browse/SHOP-77",
+                          "location": {
+                            "file": "/builds/example/fastproof-samples/tests/catalog.spec.ts",
+                            "line": 21,
+                            "column": 10
+                          }
+                        }
+                      ],
+                      "attachments": [
+                        {
+                          "name": "error-context",
+                          "contentType": "text/markdown",
+                          "path": "/builds/example/fastproof-samples/test-results/catalog-Catalog-rounding-bug-staging/error-context.md"
+                        }
+                      ],
+                      "errorLocation": {
+                        "file": "/builds/example/fastproof-samples/tests/catalog.spec.ts",
+                        "column": 23,
+                        "line": 22
+                      }
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "30aa42b97d8966d0c2dc-c8235fc46cc5be7f277b",
+              "file": "catalog.spec.ts",
+              "line": 20,
+              "column": 3
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "checkout.spec.ts",
+      "file": "checkout.spec.ts",
+      "column": 0,
+      "line": 0,
+      "specs": [],
+      "suites": [
+        {
+          "title": "Checkout",
+          "file": "checkout.spec.ts",
+          "line": 4,
+          "column": 6,
+          "specs": [
+            {
+              "title": "applies discount code",
+              "ok": false,
+              "tags": [
+                "checkout"
+              ],
+              "tests": [
+                {
+                  "timeout": 30000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "staging",
+                  "projectName": "staging",
+                  "results": [
+                    {
+                      "workerIndex": 0,
+                      "parallelIndex": 0,
+                      "status": "failed",
+                      "duration": 5,
+                      "error": {
+                        "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBe\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // Object.is equality\u001b[22m\n\nExpected: \u001b[32m90\u001b[39m\nReceived: \u001b[31m95\u001b[39m",
+                        "stack": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBe\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // Object.is equality\u001b[22m\n\nExpected: \u001b[32m90\u001b[39m\nReceived: \u001b[31m95\u001b[39m\n    at /builds/example/fastproof-samples/tests/checkout.spec.ts:8:23\n    at /builds/example/fastproof-samples/tests/checkout.spec.ts:7:5",
+                        "location": {
+                          "file": "/builds/example/fastproof-samples/tests/checkout.spec.ts",
+                          "column": 23,
+                          "line": 8
+                        },
+                        "snippet": "   6 |     await allure.feature(\"Checkout\");\n   7 |     await test.step(\"apply SAVE10\", async () => {\n>  8 |       expect(100 - 5).toBe(90);\n     |                       ^\n   9 |     });\n  10 |   });\n  11 |"
+                      },
+                      "errors": [
+                        {
+                          "location": {
+                            "file": "/builds/example/fastproof-samples/tests/checkout.spec.ts",
+                            "column": 23,
+                            "line": 8
+                          },
+                          "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBe\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // Object.is equality\u001b[22m\n\nExpected: \u001b[32m90\u001b[39m\nReceived: \u001b[31m95\u001b[39m\n\n   6 |     await allure.feature(\"Checkout\");\n   7 |     await test.step(\"apply SAVE10\", async () => {\n>  8 |       expect(100 - 5).toBe(90);\n     |                       ^\n   9 |     });\n  10 |   });\n  11 |\n    at /builds/example/fastproof-samples/tests/checkout.spec.ts:8:23\n    at /builds/example/fastproof-samples/tests/checkout.spec.ts:7:5"
+                        }
+                      ],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "steps": [
+                        {
+                          "title": "apply SAVE10",
+                          "duration": 1,
+                          "error": {
+                            "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBe\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // Object.is equality\u001b[22m\n\nExpected: \u001b[32m90\u001b[39m\nReceived: \u001b[31m95\u001b[39m",
+                            "stack": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBe\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // Object.is equality\u001b[22m\n\nExpected: \u001b[32m90\u001b[39m\nReceived: \u001b[31m95\u001b[39m\n    at /builds/example/fastproof-samples/tests/checkout.spec.ts:8:23\n    at /builds/example/fastproof-samples/tests/checkout.spec.ts:7:5",
+                            "location": {
+                              "file": "/builds/example/fastproof-samples/tests/checkout.spec.ts",
+                              "column": 23,
+                              "line": 8
+                            },
+                            "snippet": "   6 |     await allure.feature(\"Checkout\");\n   7 |     await test.step(\"apply SAVE10\", async () => {\n>  8 |       expect(100 - 5).toBe(90);\n     |                       ^\n   9 |     });\n  10 |   });\n  11 |"
+                          }
+                        }
+                      ],
+                      "startTime": "2026-11-21T08:21:38.937Z",
+                      "annotations": [],
+                      "attachments": [
+                        {
+                          "name": "Allure Metadata (metadata)",
+                          "contentType": "application/vnd.allure.message+json",
+                          "body": "eyJ0eXBlIjoibWV0YWRhdGEiLCJkYXRhIjp7ImxhYmVscyI6W3sibmFtZSI6ImZlYXR1cmUiLCJ2YWx1ZSI6IkNoZWNrb3V0In1dfX0="
+                        },
+                        {
+                          "name": "error-context",
+                          "contentType": "text/markdown",
+                          "path": "/builds/example/fastproof-samples/test-results/checkout-Checkout-applies-discount-code-staging/error-context.md"
+                        }
+                      ],
+                      "errorLocation": {
+                        "file": "/builds/example/fastproof-samples/tests/checkout.spec.ts",
+                        "column": 23,
+                        "line": 8
+                      }
+                    },
+                    {
+                      "workerIndex": 1,
+                      "parallelIndex": 0,
+                      "status": "failed",
+                      "duration": 38,
+                      "error": {
+                        "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBe\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // Object.is equality\u001b[22m\n\nExpected: \u001b[32m90\u001b[39m\nReceived: \u001b[31m95\u001b[39m",
+                        "stack": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBe\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // Object.is equality\u001b[22m\n\nExpected: \u001b[32m90\u001b[39m\nReceived: \u001b[31m95\u001b[39m\n    at /builds/example/fastproof-samples/tests/checkout.spec.ts:8:23\n    at /builds/example/fastproof-samples/tests/checkout.spec.ts:7:5",
+                        "location": {
+                          "file": "/builds/example/fastproof-samples/tests/checkout.spec.ts",
+                          "column": 23,
+                          "line": 8
+                        },
+                        "snippet": "   6 |     await allure.feature(\"Checkout\");\n   7 |     await test.step(\"apply SAVE10\", async () => {\n>  8 |       expect(100 - 5).toBe(90);\n     |                       ^\n   9 |     });\n  10 |   });\n  11 |"
+                      },
+                      "errors": [
+                        {
+                          "location": {
+                            "file": "/builds/example/fastproof-samples/tests/checkout.spec.ts",
+                            "column": 23,
+                            "line": 8
+                          },
+                          "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBe\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // Object.is equality\u001b[22m\n\nExpected: \u001b[32m90\u001b[39m\nReceived: \u001b[31m95\u001b[39m\n\n   6 |     await allure.feature(\"Checkout\");\n   7 |     await test.step(\"apply SAVE10\", async () => {\n>  8 |       expect(100 - 5).toBe(90);\n     |                       ^\n   9 |     });\n  10 |   });\n  11 |\n    at /builds/example/fastproof-samples/tests/checkout.spec.ts:8:23\n    at /builds/example/fastproof-samples/tests/checkout.spec.ts:7:5"
+                        }
+                      ],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 1,
+                      "steps": [
+                        {
+                          "title": "apply SAVE10",
+                          "duration": 5,
+                          "error": {
+                            "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBe\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // Object.is equality\u001b[22m\n\nExpected: \u001b[32m90\u001b[39m\nReceived: \u001b[31m95\u001b[39m",
+                            "stack": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBe\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // Object.is equality\u001b[22m\n\nExpected: \u001b[32m90\u001b[39m\nReceived: \u001b[31m95\u001b[39m\n    at /builds/example/fastproof-samples/tests/checkout.spec.ts:8:23\n    at /builds/example/fastproof-samples/tests/checkout.spec.ts:7:5",
+                            "location": {
+                              "file": "/builds/example/fastproof-samples/tests/checkout.spec.ts",
+                              "column": 23,
+                              "line": 8
+                            },
+                            "snippet": "   6 |     await allure.feature(\"Checkout\");\n   7 |     await test.step(\"apply SAVE10\", async () => {\n>  8 |       expect(100 - 5).toBe(90);\n     |                       ^\n   9 |     });\n  10 |   });\n  11 |"
+                          }
+                        }
+                      ],
+                      "startTime": "2026-11-21T08:21:39.252Z",
+                      "annotations": [],
+                      "attachments": [
+                        {
+                          "name": "Allure Metadata (metadata)",
+                          "contentType": "application/vnd.allure.message+json",
+                          "body": "eyJ0eXBlIjoibWV0YWRhdGEiLCJkYXRhIjp7ImxhYmVscyI6W3sibmFtZSI6ImZlYXR1cmUiLCJ2YWx1ZSI6IkNoZWNrb3V0In1dfX0="
+                        },
+                        {
+                          "name": "error-context",
+                          "contentType": "text/markdown",
+                          "path": "/builds/example/fastproof-samples/test-results/checkout-Checkout-applies-discount-code-staging-retry1/error-context.md"
+                        }
+                      ],
+                      "errorLocation": {
+                        "file": "/builds/example/fastproof-samples/tests/checkout.spec.ts",
+                        "column": 23,
+                        "line": 8
+                      }
+                    },
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "failed",
+                      "duration": 40,
+                      "error": {
+                        "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBe\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // Object.is equality\u001b[22m\n\nExpected: \u001b[32m90\u001b[39m\nReceived: \u001b[31m95\u001b[39m",
+                        "stack": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBe\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // Object.is equality\u001b[22m\n\nExpected: \u001b[32m90\u001b[39m\nReceived: \u001b[31m95\u001b[39m\n    at /builds/example/fastproof-samples/tests/checkout.spec.ts:8:23\n    at /builds/example/fastproof-samples/tests/checkout.spec.ts:7:5",
+                        "location": {
+                          "file": "/builds/example/fastproof-samples/tests/checkout.spec.ts",
+                          "column": 23,
+                          "line": 8
+                        },
+                        "snippet": "   6 |     await allure.feature(\"Checkout\");\n   7 |     await test.step(\"apply SAVE10\", async () => {\n>  8 |       expect(100 - 5).toBe(90);\n     |                       ^\n   9 |     });\n  10 |   });\n  11 |"
+                      },
+                      "errors": [
+                        {
+                          "location": {
+                            "file": "/builds/example/fastproof-samples/tests/checkout.spec.ts",
+                            "column": 23,
+                            "line": 8
+                          },
+                          "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBe\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // Object.is equality\u001b[22m\n\nExpected: \u001b[32m90\u001b[39m\nReceived: \u001b[31m95\u001b[39m\n\n   6 |     await allure.feature(\"Checkout\");\n   7 |     await test.step(\"apply SAVE10\", async () => {\n>  8 |       expect(100 - 5).toBe(90);\n     |                       ^\n   9 |     });\n  10 |   });\n  11 |\n    at /builds/example/fastproof-samples/tests/checkout.spec.ts:8:23\n    at /builds/example/fastproof-samples/tests/checkout.spec.ts:7:5"
+                        }
+                      ],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 2,
+                      "steps": [
+                        {
+                          "title": "apply SAVE10",
+                          "duration": 6,
+                          "error": {
+                            "message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBe\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // Object.is equality\u001b[22m\n\nExpected: \u001b[32m90\u001b[39m\nReceived: \u001b[31m95\u001b[39m",
+                            "stack": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBe\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // Object.is equality\u001b[22m\n\nExpected: \u001b[32m90\u001b[39m\nReceived: \u001b[31m95\u001b[39m\n    at /builds/example/fastproof-samples/tests/checkout.spec.ts:8:23\n    at /builds/example/fastproof-samples/tests/checkout.spec.ts:7:5",
+                            "location": {
+                              "file": "/builds/example/fastproof-samples/tests/checkout.spec.ts",
+                              "column": 23,
+                              "line": 8
+                            },
+                            "snippet": "   6 |     await allure.feature(\"Checkout\");\n   7 |     await test.step(\"apply SAVE10\", async () => {\n>  8 |       expect(100 - 5).toBe(90);\n     |                       ^\n   9 |     });\n  10 |   });\n  11 |"
+                          }
+                        }
+                      ],
+                      "startTime": "2026-11-21T08:21:39.625Z",
+                      "annotations": [],
+                      "attachments": [
+                        {
+                          "name": "Allure Metadata (metadata)",
+                          "contentType": "application/vnd.allure.message+json",
+                          "body": "eyJ0eXBlIjoibWV0YWRhdGEiLCJkYXRhIjp7ImxhYmVscyI6W3sibmFtZSI6ImZlYXR1cmUiLCJ2YWx1ZSI6IkNoZWNrb3V0In1dfX0="
+                        },
+                        {
+                          "name": "error-context",
+                          "contentType": "text/markdown",
+                          "path": "/builds/example/fastproof-samples/test-results/checkout-Checkout-applies-discount-code-staging-retry2/error-context.md"
+                        }
+                      ],
+                      "errorLocation": {
+                        "file": "/builds/example/fastproof-samples/tests/checkout.spec.ts",
+                        "column": 23,
+                        "line": 8
+                      }
+                    }
+                  ],
+                  "status": "unexpected"
+                }
+              ],
+              "id": "25ab1bfc84c57e3e3a45-12da95c9917b4240239c",
+              "file": "checkout.spec.ts",
+              "line": 5,
+              "column": 3
+            },
+            {
+              "title": "pays via gateway",
+              "ok": true,
+              "tags": [
+                "smoke",
+                "payments"
+              ],
+              "tests": [
+                {
+                  "timeout": 30000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "staging",
+                  "projectName": "staging",
+                  "results": [
+                    {
+                      "workerIndex": 4,
+                      "parallelIndex": 0,
+                      "status": "failed",
+                      "duration": 41,
+                      "error": {
+                        "message": "Error: gateway timed out\n\n\u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBeGreaterThan\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m\n\nExpected: > \u001b[32m0\u001b[39m\nReceived:   \u001b[31m0\u001b[39m",
+                        "stack": "Error: gateway timed out\n\n\u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBeGreaterThan\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m\n\nExpected: > \u001b[32m0\u001b[39m\nReceived:   \u001b[31m0\u001b[39m\n    at /builds/example/fastproof-samples/tests/checkout.spec.ts:25:51\n    at /builds/example/fastproof-samples/tests/checkout.spec.ts:24:5",
+                        "location": {
+                          "file": "/builds/example/fastproof-samples/tests/checkout.spec.ts",
+                          "column": 51,
+                          "line": 25
+                        },
+                        "snippet": "  23 |     console.log(`attempt ${testInfo.retry}`);\n  24 |     await test.step(\"call gateway\", async () => {\n> 25 |       expect(testInfo.retry, \"gateway timed out\").toBeGreaterThan(0);\n     |                                                   ^\n  26 |     });\n  27 |   });\n  28 | });"
+                      },
+                      "errors": [
+                        {
+                          "location": {
+                            "file": "/builds/example/fastproof-samples/tests/checkout.spec.ts",
+                            "column": 51,
+                            "line": 25
+                          },
+                          "message": "Error: gateway timed out\n\n\u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBeGreaterThan\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m\n\nExpected: > \u001b[32m0\u001b[39m\nReceived:   \u001b[31m0\u001b[39m\n\n  23 |     console.log(`attempt ${testInfo.retry}`);\n  24 |     await test.step(\"call gateway\", async () => {\n> 25 |       expect(testInfo.retry, \"gateway timed out\").toBeGreaterThan(0);\n     |                                                   ^\n  26 |     });\n  27 |   });\n  28 | });\n    at /builds/example/fastproof-samples/tests/checkout.spec.ts:25:51\n    at /builds/example/fastproof-samples/tests/checkout.spec.ts:24:5"
+                        }
+                      ],
+                      "stdout": [
+                        {
+                          "text": "attempt 0\n"
+                        }
+                      ],
+                      "stderr": [],
+                      "retry": 0,
+                      "steps": [
+                        {
+                          "title": "call gateway",
+                          "duration": 4,
+                          "error": {
+                            "message": "Error: gateway timed out\n\n\u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBeGreaterThan\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m\n\nExpected: > \u001b[32m0\u001b[39m\nReceived:   \u001b[31m0\u001b[39m",
+                            "stack": "Error: gateway timed out\n\n\u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBeGreaterThan\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m\n\nExpected: > \u001b[32m0\u001b[39m\nReceived:   \u001b[31m0\u001b[39m\n    at /builds/example/fastproof-samples/tests/checkout.spec.ts:25:51\n    at /builds/example/fastproof-samples/tests/checkout.spec.ts:24:5",
+                            "location": {
+                              "file": "/builds/example/fastproof-samples/tests/checkout.spec.ts",
+                              "column": 51,
+                              "line": 25
+                            },
+                            "snippet": "  23 |     console.log(`attempt ${testInfo.retry}`);\n  24 |     await test.step(\"call gateway\", async () => {\n> 25 |       expect(testInfo.retry, \"gateway timed out\").toBeGreaterThan(0);\n     |                                                   ^\n  26 |     });\n  27 |   });\n  28 | });"
+                          }
+                        }
+                      ],
+                      "startTime": "2026-11-21T08:21:40.345Z",
+                      "annotations": [],
+                      "attachments": [
+                        {
+                          "name": "Allure Metadata (metadata)",
+                          "contentType": "application/vnd.allure.message+json",
+                          "body": "eyJ0eXBlIjoibWV0YWRhdGEiLCJkYXRhIjp7ImxhYmVscyI6W3sibmFtZSI6ImZlYXR1cmUiLCJ2YWx1ZSI6IlBheW1lbnRzIn1dfX0="
+                        },
+                        {
+                          "name": "error-context",
+                          "contentType": "text/markdown",
+                          "path": "/builds/example/fastproof-samples/test-results/checkout-Checkout-pays-via-gateway-staging/error-context.md"
+                        }
+                      ],
+                      "errorLocation": {
+                        "file": "/builds/example/fastproof-samples/tests/checkout.spec.ts",
+                        "column": 51,
+                        "line": 25
+                      }
+                    },
+                    {
+                      "workerIndex": 5,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 37,
+                      "errors": [],
+                      "stdout": [
+                        {
+                          "text": "attempt 1\n"
+                        }
+                      ],
+                      "stderr": [],
+                      "retry": 1,
+                      "steps": [
+                        {
+                          "title": "call gateway",
+                          "duration": 3
+                        }
+                      ],
+                      "startTime": "2026-11-21T08:21:40.730Z",
+                      "annotations": [],
+                      "attachments": [
+                        {
+                          "name": "Allure Metadata (metadata)",
+                          "contentType": "application/vnd.allure.message+json",
+                          "body": "eyJ0eXBlIjoibWV0YWRhdGEiLCJkYXRhIjp7ImxhYmVscyI6W3sibmFtZSI6ImZlYXR1cmUiLCJ2YWx1ZSI6IlBheW1lbnRzIn1dfX0="
+                        }
+                      ]
+                    }
+                  ],
+                  "status": "flaky"
+                },
+                {
+                  "timeout": 30000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "production",
+                  "projectName": "production",
+                  "results": [
+                    {
+                      "workerIndex": 6,
+                      "parallelIndex": 0,
+                      "status": "failed",
+                      "duration": 35,
+                      "error": {
+                        "message": "Error: gateway timed out\n\n\u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBeGreaterThan\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m\n\nExpected: > \u001b[32m0\u001b[39m\nReceived:   \u001b[31m0\u001b[39m",
+                        "stack": "Error: gateway timed out\n\n\u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBeGreaterThan\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m\n\nExpected: > \u001b[32m0\u001b[39m\nReceived:   \u001b[31m0\u001b[39m\n    at /builds/example/fastproof-samples/tests/checkout.spec.ts:25:51\n    at /builds/example/fastproof-samples/tests/checkout.spec.ts:24:5",
+                        "location": {
+                          "file": "/builds/example/fastproof-samples/tests/checkout.spec.ts",
+                          "column": 51,
+                          "line": 25
+                        },
+                        "snippet": "  23 |     console.log(`attempt ${testInfo.retry}`);\n  24 |     await test.step(\"call gateway\", async () => {\n> 25 |       expect(testInfo.retry, \"gateway timed out\").toBeGreaterThan(0);\n     |                                                   ^\n  26 |     });\n  27 |   });\n  28 | });"
+                      },
+                      "errors": [
+                        {
+                          "location": {
+                            "file": "/builds/example/fastproof-samples/tests/checkout.spec.ts",
+                            "column": 51,
+                            "line": 25
+                          },
+                          "message": "Error: gateway timed out\n\n\u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBeGreaterThan\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m\n\nExpected: > \u001b[32m0\u001b[39m\nReceived:   \u001b[31m0\u001b[39m\n\n  23 |     console.log(`attempt ${testInfo.retry}`);\n  24 |     await test.step(\"call gateway\", async () => {\n> 25 |       expect(testInfo.retry, \"gateway timed out\").toBeGreaterThan(0);\n     |                                                   ^\n  26 |     });\n  27 |   });\n  28 | });\n    at /builds/example/fastproof-samples/tests/checkout.spec.ts:25:51\n    at /builds/example/fastproof-samples/tests/checkout.spec.ts:24:5"
+                        }
+                      ],
+                      "stdout": [
+                        {
+                          "text": "attempt 0\n"
+                        }
+                      ],
+                      "stderr": [],
+                      "retry": 0,
+                      "steps": [
+                        {
+                          "title": "call gateway",
+                          "duration": 4,
+                          "error": {
+                            "message": "Error: gateway timed out\n\n\u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBeGreaterThan\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m\n\nExpected: > \u001b[32m0\u001b[39m\nReceived:   \u001b[31m0\u001b[39m",
+                            "stack": "Error: gateway timed out\n\n\u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBeGreaterThan\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m\n\nExpected: > \u001b[32m0\u001b[39m\nReceived:   \u001b[31m0\u001b[39m\n    at /builds/example/fastproof-samples/tests/checkout.spec.ts:25:51\n    at /builds/example/fastproof-samples/tests/checkout.spec.ts:24:5",
+                            "location": {
+                              "file": "/builds/example/fastproof-samples/tests/checkout.spec.ts",
+                              "column": 51,
+                              "line": 25
+                            },
+                            "snippet": "  23 |     console.log(`attempt ${testInfo.retry}`);\n  24 |     await test.step(\"call gateway\", async () => {\n> 25 |       expect(testInfo.retry, \"gateway timed out\").toBeGreaterThan(0);\n     |                                                   ^\n  26 |     });\n  27 |   });\n  28 | });"
+                          }
+                        }
+                      ],
+                      "startTime": "2026-11-21T08:21:41.077Z",
+                      "annotations": [],
+                      "attachments": [
+                        {
+                          "name": "Allure Metadata (metadata)",
+                          "contentType": "application/vnd.allure.message+json",
+                          "body": "eyJ0eXBlIjoibWV0YWRhdGEiLCJkYXRhIjp7ImxhYmVscyI6W3sibmFtZSI6ImZlYXR1cmUiLCJ2YWx1ZSI6IlBheW1lbnRzIn1dfX0="
+                        },
+                        {
+                          "name": "error-context",
+                          "contentType": "text/markdown",
+                          "path": "/builds/example/fastproof-samples/test-results/checkout-Checkout-pays-via-gateway-production/error-context.md"
+                        }
+                      ],
+                      "errorLocation": {
+                        "file": "/builds/example/fastproof-samples/tests/checkout.spec.ts",
+                        "column": 51,
+                        "line": 25
+                      }
+                    },
+                    {
+                      "workerIndex": 7,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 33,
+                      "errors": [],
+                      "stdout": [
+                        {
+                          "text": "attempt 1\n"
+                        }
+                      ],
+                      "stderr": [],
+                      "retry": 1,
+                      "steps": [
+                        {
+                          "title": "call gateway",
+                          "duration": 3
+                        }
+                      ],
+                      "startTime": "2026-11-21T08:21:41.431Z",
+                      "annotations": [],
+                      "attachments": [
+                        {
+                          "name": "Allure Metadata (metadata)",
+                          "contentType": "application/vnd.allure.message+json",
+                          "body": "eyJ0eXBlIjoibWV0YWRhdGEiLCJkYXRhIjp7ImxhYmVscyI6W3sibmFtZSI6ImZlYXR1cmUiLCJ2YWx1ZSI6IlBheW1lbnRzIn1dfX0="
+                        }
+                      ]
+                    }
+                  ],
+                  "status": "flaky"
+                }
+              ],
+              "id": "25ab1bfc84c57e3e3a45-a610a831c977b2bf2270",
+              "file": "checkout.spec.ts",
+              "line": 21,
+              "column": 3
+            }
+          ],
+          "suites": [
+            {
+              "title": "Tax",
+              "file": "checkout.spec.ts",
+              "line": 12,
+              "column": 8,
+              "specs": [
+                {
+                  "title": "calculates tax",
+                  "ok": false,
+                  "tags": [],
+                  "tests": [
+                    {
+                      "timeout": 30000,
+                      "annotations": [],
+                      "expectedStatus": "passed",
+                      "projectId": "staging",
+                      "projectName": "staging",
+                      "results": [
+                        {
+                          "workerIndex": 3,
+                          "parallelIndex": 0,
+                          "status": "failed",
+                          "duration": 2,
+                          "error": {
+                            "message": "TypeError: Cannot read properties of null (reading 'tax')",
+                            "stack": "TypeError: Cannot read properties of null (reading 'tax')\n    at /builds/example/fastproof-samples/tests/checkout.spec.ts:17:20",
+                            "location": {
+                              "file": "/builds/example/fastproof-samples/tests/checkout.spec.ts",
+                              "column": 20,
+                              "line": 17
+                            },
+                            "snippet": "  15 |     test(\"calculates tax\", async () => {\n  16 |       const order = JSON.parse(\"null\") as { tax: number };\n> 17 |       expect(order.tax).toBe(20);\n     |                    ^\n  18 |     });\n  19 |   });\n  20 |"
+                          },
+                          "errors": [
+                            {
+                              "location": {
+                                "file": "/builds/example/fastproof-samples/tests/checkout.spec.ts",
+                                "column": 20,
+                                "line": 17
+                              },
+                              "message": "TypeError: Cannot read properties of null (reading 'tax')\n\n  15 |     test(\"calculates tax\", async () => {\n  16 |       const order = JSON.parse(\"null\") as { tax: number };\n> 17 |       expect(order.tax).toBe(20);\n     |                    ^\n  18 |     });\n  19 |   });\n  20 |\n    at /builds/example/fastproof-samples/tests/checkout.spec.ts:17:20"
+                            }
+                          ],
+                          "stdout": [],
+                          "stderr": [],
+                          "retry": 0,
+                          "startTime": "2026-11-21T08:21:40.000Z",
+                          "annotations": [],
+                          "attachments": [
+                            {
+                              "name": "error-context",
+                              "contentType": "text/markdown",
+                              "path": "/builds/example/fastproof-samples/test-results/checkout-Checkout-Tax-calculates-tax-staging/error-context.md"
+                            }
+                          ],
+                          "errorLocation": {
+                            "file": "/builds/example/fastproof-samples/tests/checkout.spec.ts",
+                            "column": 20,
+                            "line": 17
+                          }
+                        }
+                      ],
+                      "status": "unexpected"
+                    }
+                  ],
+                  "id": "25ab1bfc84c57e3e3a45-52b175f382ab0354d770",
+                  "file": "checkout.spec.ts",
+                  "line": 15,
+                  "column": 5
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "errors": [],
+  "stats": {
+    "startTime": "2026-11-21T08:21:38.316Z",
+    "duration": 3196.054,
+    "expected": 5,
+    "skipped": 3,
+    "unexpected": 2,
+    "flaky": 2
+  }
+}

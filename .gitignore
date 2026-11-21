@@ -1,0 +1,10 @@
+/target
+**/node_modules/
+**/.venv/
+**/venv/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+/tests/fixtures/generators/junit5/target/
+.DS_Store
+*.swp

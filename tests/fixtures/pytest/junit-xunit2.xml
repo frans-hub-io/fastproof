@@ -1,0 +1,156 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="fastproof-samples" errors="1" failures="3" skipped="3" tests="13" time="0.061" timestamp="2026-11-21T08:17:55.953262+00:00" hostname="runner.example.com"><testcase classname="tests.test_checkout" name="test_checkout_passes" time="0.002"><system-out>--------------------------------- Captured Log ---------------------------------
+
+--------------------------------- Captured Out ---------------------------------
+checkout started
+
+</system-out><system-err>--------------------------------- Captured Err ---------------------------------
+
+</system-err></testcase><testcase classname="tests.test_checkout" name="test_discount_is_applied" time="0.001"><properties><property name="discount_code" value="WELCOME10" /></properties><failure message="AssertionError: discount must reduce the total by 10%&#10;assert 20 == 18">cart = [{'sku': 'A-1', 'qty': 2, 'price': 10}]
+record_property = &lt;function record_property.&lt;locals&gt;.append_property at 0xffffad21c540&gt;
+
+    @allure.epic("Web shop")
+    @allure.feature("Checkout")
+    @allure.story("Discounts")
+    @allure.severity(allure.severity_level.NORMAL)
+    @allure.issue("SHOP-34")
+    def test_discount_is_applied(cart, record_property):
+        record_property("discount_code", "WELCOME10")
+        with allure.step("Apply discount WELCOME10"):
+            total = sum(i["qty"] * i["price"] for i in cart)
+&gt;       assert total == 18, "discount must reduce the total by 10%"
+E       AssertionError: discount must reduce the total by 10%
+E       assert 20 == 18
+
+tests/test_checkout.py:47: AssertionError</failure><system-out>--------------------------------- Captured Log ---------------------------------
+
+--------------------------------- Captured Out ---------------------------------
+
+</system-out><system-err>--------------------------------- Captured Err ---------------------------------
+
+</system-err></testcase><testcase classname="tests.test_checkout" name="test_tax_service_broken" time="0.000"><failure message="TypeError: unsupported operand type(s) for *: 'int' and 'NoneType'">@allure.epic("Web shop")
+    @allure.feature("Checkout")
+    @allure.severity(allure.severity_level.BLOCKER)
+    def test_tax_service_broken():
+        with allure.step("Call tax service"):
+            rate = None
+&gt;           return 100 * rate
+                   ^^^^^^^^^^
+E           TypeError: unsupported operand type(s) for *: 'int' and 'NoneType'
+
+tests/test_checkout.py:56: TypeError</failure><system-out>--------------------------------- Captured Log ---------------------------------
+
+--------------------------------- Captured Out ---------------------------------
+
+</system-out><system-err>--------------------------------- Captured Err ---------------------------------
+
+</system-err></testcase><testcase classname="tests.test_checkout" name="test_gift_cards_skipped" time="0.000"><skipped type="pytest.skip" message="gift cards are not enabled in this environment">/builds/example/fastproof-samples/tests/test_checkout.py:61: gift cards are not enabled in this environment</skipped><system-out>--------------------------------- Captured Log ---------------------------------
+
+--------------------------------- Captured Out ---------------------------------
+
+</system-out><system-err>--------------------------------- Captured Err ---------------------------------
+
+</system-err><system-out>--------------------------------- Captured Log ---------------------------------
+
+--------------------------------- Captured Out ---------------------------------
+
+</system-out><system-err>--------------------------------- Captured Err ---------------------------------
+
+</system-err></testcase><testcase classname="tests.test_checkout" name="test_checkout_v3" time="0.000"><skipped type="pytest.skip" message="feature flag CHECKOUT_V3 is off">/builds/example/fastproof-samples/tests/test_checkout.py:64: feature flag CHECKOUT_V3 is off</skipped><system-out>--------------------------------- Captured Log ---------------------------------
+
+--------------------------------- Captured Out ---------------------------------
+
+</system-out><system-err>--------------------------------- Captured Err ---------------------------------
+
+</system-err><system-out>--------------------------------- Captured Log ---------------------------------
+
+--------------------------------- Captured Out ---------------------------------
+
+</system-out><system-err>--------------------------------- Captured Err ---------------------------------
+
+</system-err></testcase><testcase classname="tests.test_checkout" name="test_card_validation[visa-4111111111111111-True]" time="0.001"><system-out>--------------------------------- Captured Log ---------------------------------
+
+--------------------------------- Captured Out ---------------------------------
+
+</system-out><system-err>--------------------------------- Captured Err ---------------------------------
+
+</system-err></testcase><testcase classname="tests.test_checkout" name="test_card_validation[mastercard-5500000000000004-True]" time="0.001"><system-out>--------------------------------- Captured Log ---------------------------------
+
+--------------------------------- Captured Out ---------------------------------
+
+</system-out><system-err>--------------------------------- Captured Err ---------------------------------
+
+</system-err></testcase><testcase classname="tests.test_checkout" name="test_card_validation[unknown-0000-False]" time="0.001"><system-out>--------------------------------- Captured Log ---------------------------------
+
+--------------------------------- Captured Out ---------------------------------
+
+</system-out><system-err>--------------------------------- Captured Err ---------------------------------
+
+</system-err></testcase><testcase classname="tests.test_checkout" name="test_payment_gateway_flaky" time="0.001"><system-out>--------------------------------- Captured Log ---------------------------------
+
+--------------------------------- Captured Out ---------------------------------
+attempt 1
+
+</system-out><system-err>--------------------------------- Captured Err ---------------------------------
+
+</system-err></testcase><testcase classname="tests.test_checkout" name="test_payment_gateway_flaky" time="0.001"><system-out>--------------------------------- Captured Log ---------------------------------
+
+--------------------------------- Captured Out ---------------------------------
+attempt 1
+attempt 2
+
+</system-out><system-err>--------------------------------- Captured Err ---------------------------------
+
+</system-err></testcase><testcase classname="tests.test_checkout" name="test_refund_always_fails" time="0.001"><system-out>--------------------------------- Captured Log ---------------------------------
+
+--------------------------------- Captured Out ---------------------------------
+
+</system-out><system-err>--------------------------------- Captured Err ---------------------------------
+
+</system-err></testcase><testcase classname="tests.test_checkout" name="test_refund_always_fails" time="0.001"><system-out>--------------------------------- Captured Log ---------------------------------
+
+--------------------------------- Captured Out ---------------------------------
+
+</system-out><system-err>--------------------------------- Captured Err ---------------------------------
+
+</system-err></testcase><testcase classname="tests.test_checkout" name="test_refund_always_fails" time="0.001"><failure message="AssertionError: refund rejected on attempt 3&#10;assert 3 == 0">attempt_counter = &lt;function attempt_counter.&lt;locals&gt;.bump at 0xffffad192d40&gt;
+
+    @allure.feature("Payments")
+    @allure.story("Retries")
+    @pytest.mark.flaky(reruns=2)
+    def test_refund_always_fails(attempt_counter):
+        attempt = attempt_counter("test_refund_always_fails")
+&gt;       assert attempt == 0, f"refund rejected on attempt {attempt}"
+E       AssertionError: refund rejected on attempt 3
+E       assert 3 == 0
+
+tests/test_checkout.py:98: AssertionError</failure><system-out>--------------------------------- Captured Log ---------------------------------
+
+--------------------------------- Captured Out ---------------------------------
+
+</system-out><system-err>--------------------------------- Captured Err ---------------------------------
+
+</system-err></testcase><testcase classname="tests.test_checkout" name="test_currency_rounding_xfail" time="0.000"><skipped type="pytest.xfail" message="SHOP-56 rounding bug" /><system-out>--------------------------------- Captured Log ---------------------------------
+
+--------------------------------- Captured Out ---------------------------------
+
+</system-out><system-err>--------------------------------- Captured Err ---------------------------------
+
+</system-err></testcase><testcase classname="tests.test_checkout" name="test_currency_symbol_xpass" time="0.000"><system-out>--------------------------------- Captured Log ---------------------------------
+
+--------------------------------- Captured Out ---------------------------------
+
+</system-out><system-err>--------------------------------- Captured Err ---------------------------------
+
+</system-err></testcase><testcase classname="tests.test_checkout" name="test_order_history_setup_broken" time="0.001"><error message="failed on setup with &quot;RuntimeError: database unavailable: connection refused (198.51.100.10:5432)&quot;">@pytest.fixture
+    def database():
+        with allure.step("Connect to database at 198.51.100.10"):
+&gt;           raise RuntimeError("database unavailable: connection refused (198.51.100.10:5432)")
+E           RuntimeError: database unavailable: connection refused (198.51.100.10:5432)
+
+tests/conftest.py:40: RuntimeError</error><system-out>--------------------------------- Captured Log ---------------------------------
+
+--------------------------------- Captured Out ---------------------------------
+
+</system-out><system-err>--------------------------------- Captured Err ---------------------------------
+
+</system-err></testcase></testsuite></testsuites>

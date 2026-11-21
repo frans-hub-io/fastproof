@@ -1,0 +1,19 @@
+[package]
+name = "fastproof-model"
+description = "Normalized test result model and Allure-compatible identity for FastProof"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+openapi = ["dep:utoipa"]
+
+[dependencies]
+md-5.workspace = true
+serde.workspace = true
+unicode-normalization.workspace = true
+utoipa = { workspace = true, optional = true }
+
+[dev-dependencies]
+serde_json.workspace = true

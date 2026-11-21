@@ -1,0 +1,181 @@
+<testsuites id="" name="" tests="12" failures="1" skipped="3" errors="1" time="3.196054">
+<testsuite name="cart.spec.ts" timestamp="2026-11-21T08:21:38.387Z" hostname="staging" tests="1" failures="0" skipped="0" time="0.061" errors="0">
+<testcase name="Cart › adds item to cart" classname="cart.spec.ts" time="0.061">
+<properties>
+<property name="issue" value="https://issues.example.com/browse/SHOP-101">
+</property>
+<property name="note" value="covers the happy path">
+</property>
+</properties>
+<system-out>
+<![CDATA[cart service at https://staging.example.com
+
+[[ATTACHMENT|test-results/cart-Cart-adds-item-to-cart-staging/attachments/cart-png-338ae8e712047d10656997b387686a92c84a1a6e.png]]
+]]>
+</system-out>
+<system-err>
+<![CDATA[warning: cart cache is cold
+]]>
+</system-err>
+</testcase>
+</testsuite>
+<testsuite name="catalog.spec.ts" timestamp="2026-11-21T08:21:38.387Z" hostname="staging" tests="7" failures="0" skipped="3" time="0.018" errors="0">
+<testcase name="Catalog › search for laptop" classname="catalog.spec.ts" time="0.004">
+</testcase>
+<testcase name="Catalog › search for phone" classname="catalog.spec.ts" time="0.003">
+</testcase>
+<testcase name="Catalog › search for tablet" classname="catalog.spec.ts" time="0.008">
+</testcase>
+<testcase name="Catalog › legacy export" classname="catalog.spec.ts">
+<properties>
+<property name="skip" value="export endpoint is retired">
+</property>
+</properties>
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Catalog › bulk import" classname="catalog.spec.ts">
+<properties>
+<property name="skip" value="">
+</property>
+</properties>
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Catalog › price history chart" classname="catalog.spec.ts">
+<properties>
+<property name="fixme" value="">
+</property>
+</properties>
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Catalog › rounding bug" classname="catalog.spec.ts" time="0.002">
+<properties>
+<property name="fail" value="https://issues.example.com/browse/SHOP-77">
+</property>
+</properties>
+<system-out>
+<![CDATA[
+[[ATTACHMENT|test-results/catalog-Catalog-rounding-bug-staging/error-context.md]]
+]]>
+</system-out>
+</testcase>
+</testsuite>
+<testsuite name="checkout.spec.ts" timestamp="2026-11-21T08:21:38.387Z" hostname="staging" tests="3" failures="1" skipped="0" time="0.163" errors="1">
+<testcase name="Checkout › applies discount code" classname="checkout.spec.ts" time="0.083">
+<system-out>
+<![CDATA[
+[[ATTACHMENT|test-results/checkout-Checkout-applies-discount-code-staging/error-context.md]]
+
+[[ATTACHMENT|test-results/checkout-Checkout-applies-discount-code-staging-retry1/error-context.md]]
+
+[[ATTACHMENT|test-results/checkout-Checkout-applies-discount-code-staging-retry2/error-context.md]]
+]]>
+</system-out>
+<failure message="expect(received).toBe(expected) // Object.is equality" type="expect.toBe">
+<![CDATA[  [staging] › checkout.spec.ts:5:3 › Checkout › applies discount code @checkout › apply SAVE10 ─────
+
+    Error: expect(received).toBe(expected) // Object.is equality
+
+    Expected: 90
+    Received: 95
+
+       6 |     await allure.feature("Checkout");
+       7 |     await test.step("apply SAVE10", async () => {
+    >  8 |       expect(100 - 5).toBe(90);
+         |                       ^
+       9 |     });
+      10 |   });
+      11 |
+        at /builds/example/fastproof-samples/tests/checkout.spec.ts:8:23
+        at /builds/example/fastproof-samples/tests/checkout.spec.ts:7:5
+
+    Error Context: ../test-results/checkout-Checkout-applies-discount-code-staging/error-context.md
+
+    Retry #1 ───────────────────────────────────────────────────────────────────────────────────────
+
+    Error: expect(received).toBe(expected) // Object.is equality
+
+    Expected: 90
+    Received: 95
+
+       6 |     await allure.feature("Checkout");
+       7 |     await test.step("apply SAVE10", async () => {
+    >  8 |       expect(100 - 5).toBe(90);
+         |                       ^
+       9 |     });
+      10 |   });
+      11 |
+        at /builds/example/fastproof-samples/tests/checkout.spec.ts:8:23
+        at /builds/example/fastproof-samples/tests/checkout.spec.ts:7:5
+
+    Error Context: ../test-results/checkout-Checkout-applies-discount-code-staging-retry1/error-context.md
+
+    Retry #2 ───────────────────────────────────────────────────────────────────────────────────────
+
+    Error: expect(received).toBe(expected) // Object.is equality
+
+    Expected: 90
+    Received: 95
+
+       6 |     await allure.feature("Checkout");
+       7 |     await test.step("apply SAVE10", async () => {
+    >  8 |       expect(100 - 5).toBe(90);
+         |                       ^
+       9 |     });
+      10 |   });
+      11 |
+        at /builds/example/fastproof-samples/tests/checkout.spec.ts:8:23
+        at /builds/example/fastproof-samples/tests/checkout.spec.ts:7:5
+
+    Error Context: ../test-results/checkout-Checkout-applies-discount-code-staging-retry2/error-context.md
+]]>
+</failure>
+</testcase>
+<testcase name="Checkout › Tax › calculates tax" classname="checkout.spec.ts" time="0.002">
+<system-out>
+<![CDATA[
+[[ATTACHMENT|test-results/checkout-Checkout-Tax-calculates-tax-staging/error-context.md]]
+]]>
+</system-out>
+<error message="Cannot read properties of null (reading &apos;tax&apos;)" type="TypeError">
+<![CDATA[  [staging] › checkout.spec.ts:15:5 › Checkout › Tax › calculates tax ──────────────────────────────
+
+    TypeError: Cannot read properties of null (reading 'tax')
+
+      15 |     test("calculates tax", async () => {
+      16 |       const order = JSON.parse("null") as { tax: number };
+    > 17 |       expect(order.tax).toBe(20);
+         |                    ^
+      18 |     });
+      19 |   });
+      20 |
+        at /builds/example/fastproof-samples/tests/checkout.spec.ts:17:20
+
+    Error Context: ../test-results/checkout-Checkout-Tax-calculates-tax-staging/error-context.md
+]]>
+</error>
+</testcase>
+<testcase name="Checkout › pays via gateway" classname="checkout.spec.ts" time="0.078">
+<system-out>
+<![CDATA[attempt 0
+
+[[ATTACHMENT|test-results/checkout-Checkout-pays-via-gateway-staging/error-context.md]]
+attempt 1
+]]>
+</system-out>
+</testcase>
+</testsuite>
+<testsuite name="checkout.spec.ts" timestamp="2026-11-21T08:21:38.387Z" hostname="production" tests="1" failures="0" skipped="0" time="0.068" errors="0">
+<testcase name="Checkout › pays via gateway" classname="checkout.spec.ts" time="0.068">
+<system-out>
+<![CDATA[attempt 0
+
+[[ATTACHMENT|test-results/checkout-Checkout-pays-via-gateway-production/error-context.md]]
+attempt 1
+]]>
+</system-out>
+</testcase>
+</testsuite>
+</testsuites>

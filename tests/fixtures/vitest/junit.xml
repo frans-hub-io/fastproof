@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<testsuites name="fastproof-samples" tests="11" failures="2" errors="0" time="0.026088833">
+    <testsuite name="tests/cart.test.ts" timestamp="2026-11-21T08:22:51.836Z" hostname="runner.example.com" tests="3" failures="2" errors="0" skipped="0" time="0.015258625">
+        <testcase classname="tests/cart.test.ts" file="tests/cart.test.ts" name="Cart &gt; adds item to cart" time="0.007508667">
+            <system-out>
+cart service at https://staging.example.com
+
+            </system-out>
+            <system-err>
+warning: cart cache is cold
+
+            </system-err>
+            <properties>
+                <property name="issue" value="https://issues.example.com/browse/SHOP-101">
+                </property>
+            </properties>
+        </testcase>
+        <testcase classname="tests/cart.test.ts" file="tests/cart.test.ts" name="Cart &gt; applies discount code" time="0.00507925">
+            <failure message="expected 95 to be 90 // Object.is equality" type="AssertionError">
+AssertionError: expected 95 to be 90 // Object.is equality
+
+- Expected
++ Received
+
+- 90
++ 95
+
+ ❯ node_modules/allure-vitest/src/matchers.ts:510:71
+ ❯ runWithNestedMatcherStepsSuppressed node_modules/allure-vitest/src/matchers.ts:395:20
+ ❯ node_modules/allure-vitest/src/matchers.ts:510:7
+ ❯ runMatcherStep node_modules/allure-vitest/src/matchers.ts:461:20
+ ❯ Proxy.&lt;anonymous&gt; node_modules/allure-vitest/src/matchers.ts:509:12
+ ❯ tests/cart.test.ts:50:23
+ ❯ body node_modules/allure-js-commons/src/facade.ts:134:48
+ ❯ body node_modules/allure-js-commons/src/sdk/runtime/MessageTestRuntime.ts:218:28
+ ❯ asyncGeneratorStep node_modules/allure-js-commons/dist/esm/sdk/runtime/MessageTestRuntime.js:3:70
+            </failure>
+            <failure message="expected 95 to be 90 // Object.is equality" type="AssertionError">
+AssertionError: expected 95 to be 90 // Object.is equality
+
+- Expected
++ Received
+
+- 90
++ 95
+
+ ❯ node_modules/allure-vitest/src/matchers.ts:510:71
+ ❯ runWithNestedMatcherStepsSuppressed node_modules/allure-vitest/src/matchers.ts:395:20
+ ❯ node_modules/allure-vitest/src/matchers.ts:510:7
+ ❯ runMatcherStep node_modules/allure-vitest/src/matchers.ts:461:20
+ ❯ Proxy.&lt;anonymous&gt; node_modules/allure-vitest/src/matchers.ts:509:12
+ ❯ tests/cart.test.ts:50:23
+ ❯ body node_modules/allure-js-commons/src/facade.ts:134:48
+ ❯ body node_modules/allure-js-commons/src/sdk/runtime/MessageTestRuntime.ts:218:28
+ ❯ asyncGeneratorStep node_modules/allure-js-commons/dist/esm/sdk/runtime/MessageTestRuntime.js:3:70
+            </failure>
+            <failure message="expected 95 to be 90 // Object.is equality" type="AssertionError">
+AssertionError: expected 95 to be 90 // Object.is equality
+
+- Expected
++ Received
+
+- 90
++ 95
+
+ ❯ node_modules/allure-vitest/src/matchers.ts:510:71
+ ❯ runWithNestedMatcherStepsSuppressed node_modules/allure-vitest/src/matchers.ts:395:20
+ ❯ node_modules/allure-vitest/src/matchers.ts:510:7
+ ❯ runMatcherStep node_modules/allure-vitest/src/matchers.ts:461:20
+ ❯ Proxy.&lt;anonymous&gt; node_modules/allure-vitest/src/matchers.ts:509:12
+ ❯ tests/cart.test.ts:50:23
+ ❯ body node_modules/allure-js-commons/src/facade.ts:134:48
+ ❯ body node_modules/allure-js-commons/src/sdk/runtime/MessageTestRuntime.ts:218:28
+ ❯ asyncGeneratorStep node_modules/allure-js-commons/dist/esm/sdk/runtime/MessageTestRuntime.js:3:70
+            </failure>
+        </testcase>
+        <testcase classname="tests/cart.test.ts" file="tests/cart.test.ts" name="Cart &gt; calculates tax" time="0.000444875">
+            <failure message="Cannot read properties of null (reading &apos;tax&apos;)" type="TypeError">
+TypeError: Cannot read properties of null (reading &apos;tax&apos;)
+ ❯ tests/cart.test.ts:56:18
+            </failure>
+        </testcase>
+    </testsuite>
+    <testsuite name="tests/checkout.test.ts" timestamp="2026-11-21T08:22:51.839Z" hostname="runner.example.com" tests="8" failures="0" errors="0" skipped="3" time="0.010830208">
+        <testcase classname="tests/checkout.test.ts" file="tests/checkout.test.ts" name="Checkout &gt; pays via gateway" time="0.00476225">
+            <system-out>
+attempt 1
+
+attempt 2
+
+            </system-out>
+        </testcase>
+        <testcase classname="tests/checkout.test.ts" file="tests/checkout.test.ts" name="Checkout &gt; formats EUR with 2 decimals" time="0.000548458">
+        </testcase>
+        <testcase classname="tests/checkout.test.ts" file="tests/checkout.test.ts" name="Checkout &gt; formats USD with 2 decimals" time="0.000360083">
+        </testcase>
+        <testcase classname="tests/checkout.test.ts" file="tests/checkout.test.ts" name="Checkout &gt; formats JPY with 0 decimals" time="0.000306291">
+        </testcase>
+        <testcase classname="tests/checkout.test.ts" file="tests/checkout.test.ts" name="Checkout &gt; bulk import" time="0">
+            <skipped/>
+        </testcase>
+        <testcase classname="tests/checkout.test.ts" file="tests/checkout.test.ts" name="Checkout &gt; legacy export" time="0.000239875">
+            <skipped/>
+        </testcase>
+        <testcase classname="tests/checkout.test.ts" file="tests/checkout.test.ts" name="Checkout &gt; refund flow" time="0">
+            <skipped/>
+        </testcase>
+        <testcase classname="tests/checkout.test.ts" file="tests/checkout.test.ts" name="Checkout &gt; rounding bug" time="0.002248625">
+        </testcase>
+    </testsuite>
+</testsuites>

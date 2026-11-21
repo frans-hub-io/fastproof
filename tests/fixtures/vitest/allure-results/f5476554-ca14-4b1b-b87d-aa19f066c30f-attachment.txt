@@ -1,0 +1,2 @@
+GET /api/cart
+Accept: application/json

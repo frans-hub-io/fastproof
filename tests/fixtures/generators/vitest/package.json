@@ -1,0 +1,16 @@
+{
+  "name": "fastproof-samples-vitest",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@vitest/runner": "4.1.12",
+    "allure-js-commons": "3.14.0",
+    "allure-vitest": "3.14.0",
+    "vitest": "5.1.0",
+    "vite": "8.3.6"
+  }
+}

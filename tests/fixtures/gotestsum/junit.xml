@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites tests="24" failures="13" errors="0" time="0.883586">
+	<testsuite tests="18" failures="9" skipped="2" time="0.002000" name="example.com/fastproof-samples/checkout" timestamp="2026-11-21T08:19:07Z">
+		<properties>
+			<property name="go.version" value="go1.27.3 linux/arm64"></property>
+		</properties>
+		<testcase classname="example.com/fastproof-samples/checkout" name="TestDiscountApplied" time="0.000000">
+			<failure message="Failed" type="">=== RUN   TestDiscountApplied&#xA;    checkout_test.go:24: total with discount WELCOME10: got 20, want 18&#xA;--- FAIL: TestDiscountApplied (0.00s)&#xA;</failure>
+		</testcase>
+		<testcase classname="example.com/fastproof-samples/checkout" name="TestCardValidation/unknown" time="0.000000">
+			<failure message="Failed" type="">=== RUN   TestCardValidation/unknown&#xA;    checkout_test.go:45: valid(&#34;0000&#34;) = false, want true&#xA;--- FAIL: TestCardValidation/unknown (0.00s)&#xA;</failure>
+		</testcase>
+		<testcase classname="example.com/fastproof-samples/checkout" name="TestCardValidation" time="0.000000">
+			<failure message="Failed" type="">=== RUN   TestCardValidation&#xA;--- FAIL: TestCardValidation (0.00s)&#xA;</failure>
+		</testcase>
+		<testcase classname="example.com/fastproof-samples/checkout" name="TestDiscountApplied" time="0.000000">
+			<failure message="Failed" type="">=== RUN   TestDiscountApplied&#xA;    checkout_test.go:24: total with discount WELCOME10: got 20, want 18&#xA;--- FAIL: TestDiscountApplied (0.00s)&#xA;</failure>
+		</testcase>
+		<testcase classname="example.com/fastproof-samples/checkout" name="TestCardValidation/unknown" time="0.000000">
+			<failure message="Failed" type="">=== RUN   TestCardValidation/unknown&#xA;    checkout_test.go:45: valid(&#34;0000&#34;) = false, want true&#xA;--- FAIL: TestCardValidation/unknown (0.00s)&#xA;</failure>
+		</testcase>
+		<testcase classname="example.com/fastproof-samples/checkout" name="TestCardValidation" time="0.000000">
+			<failure message="Failed" type="">=== RUN   TestCardValidation&#xA;--- FAIL: TestCardValidation (0.00s)&#xA;</failure>
+		</testcase>
+		<testcase classname="example.com/fastproof-samples/checkout" name="TestDiscountApplied" time="0.000000">
+			<failure message="Failed" type="">=== RUN   TestDiscountApplied&#xA;    checkout_test.go:24: total with discount WELCOME10: got 20, want 18&#xA;--- FAIL: TestDiscountApplied (0.00s)&#xA;</failure>
+		</testcase>
+		<testcase classname="example.com/fastproof-samples/checkout" name="TestCardValidation/unknown" time="0.000000">
+			<failure message="Failed" type="">=== RUN   TestCardValidation/unknown&#xA;    checkout_test.go:45: valid(&#34;0000&#34;) = false, want true&#xA;--- FAIL: TestCardValidation/unknown (0.00s)&#xA;</failure>
+		</testcase>
+		<testcase classname="example.com/fastproof-samples/checkout" name="TestCardValidation" time="0.000000">
+			<failure message="Failed" type="">=== RUN   TestCardValidation&#xA;--- FAIL: TestCardValidation (0.00s)&#xA;</failure>
+		</testcase>
+		<testcase classname="example.com/fastproof-samples/checkout" name="TestGiftCardsSkipped" time="0.000000">
+			<skipped message="=== RUN   TestGiftCardsSkipped&#xA;    checkout_test.go:29: gift cards are not enabled in this environment&#xA;--- SKIP: TestGiftCardsSkipped (0.00s)&#xA;"></skipped>
+		</testcase>
+		<testcase classname="example.com/fastproof-samples/checkout" name="TestShipping/domestic/express" time="0.000000">
+			<skipped message="=== RUN   TestShipping/domestic/express&#xA;    checkout_test.go:55: express shipping disabled&#xA;--- SKIP: TestShipping/domestic/express (0.00s)&#xA;"></skipped>
+		</testcase>
+		<testcase classname="example.com/fastproof-samples/checkout" name="TestCheckoutPasses" time="0.000000"></testcase>
+		<testcase classname="example.com/fastproof-samples/checkout" name="TestCardValidation/visa" time="0.000000"></testcase>
+		<testcase classname="example.com/fastproof-samples/checkout" name="TestCardValidation/mastercard" time="0.000000"></testcase>
+		<testcase classname="example.com/fastproof-samples/checkout" name="TestShipping/domestic/standard" time="0.000000"></testcase>
+		<testcase classname="example.com/fastproof-samples/checkout" name="TestShipping/domestic" time="0.000000"></testcase>
+		<testcase classname="example.com/fastproof-samples/checkout" name="TestShipping/international" time="0.000000"></testcase>
+		<testcase classname="example.com/fastproof-samples/checkout" name="TestShipping" time="0.000000"></testcase>
+	</testsuite>
+	<testsuite tests="6" failures="4" time="0.003000" name="example.com/fastproof-samples/payments" timestamp="2026-11-21T08:19:07Z">
+		<properties>
+			<property name="go.version" value="go1.27.3 linux/arm64"></property>
+		</properties>
+		<testcase classname="example.com/fastproof-samples/payments" name="TestPaymentGatewayFlaky" time="0.000000">
+			<failure message="Failed" type="">=== RUN   TestPaymentGatewayFlaky&#xA;    payments_test.go:29: attempt 1&#xA;    payments_test.go:31: gateway timeout on attempt 1&#xA;--- FAIL: TestPaymentGatewayFlaky (0.00s)&#xA;</failure>
+		</testcase>
+		<testcase classname="example.com/fastproof-samples/payments" name="TestRefundAlwaysFails" time="0.000000">
+			<failure message="Failed" type="">=== RUN   TestRefundAlwaysFails&#xA;    payments_test.go:37: refund rejected on attempt 1: got status &#34;DECLINED&#34;, want &#34;APPROVED&#34;&#xA;--- FAIL: TestRefundAlwaysFails (0.00s)&#xA;</failure>
+		</testcase>
+		<testcase classname="example.com/fastproof-samples/payments" name="TestRefundAlwaysFails" time="0.000000">
+			<failure message="Failed" type="">=== RUN   TestRefundAlwaysFails&#xA;    payments_test.go:37: refund rejected on attempt 2: got status &#34;DECLINED&#34;, want &#34;APPROVED&#34;&#xA;--- FAIL: TestRefundAlwaysFails (0.00s)&#xA;</failure>
+		</testcase>
+		<testcase classname="example.com/fastproof-samples/payments" name="TestRefundAlwaysFails" time="0.000000">
+			<failure message="Failed" type="">=== RUN   TestRefundAlwaysFails&#xA;    payments_test.go:37: refund rejected on attempt 3: got status &#34;DECLINED&#34;, want &#34;APPROVED&#34;&#xA;--- FAIL: TestRefundAlwaysFails (0.00s)&#xA;</failure>
+		</testcase>
+		<testcase classname="example.com/fastproof-samples/payments" name="TestCurrencyRounding" time="0.000000"></testcase>
+		<testcase classname="example.com/fastproof-samples/payments" name="TestPaymentGatewayFlaky" time="0.000000"></testcase>
+	</testsuite>
+</testsuites>

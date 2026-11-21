@@ -2,7 +2,7 @@
 //! installations later. The trait uses plain types only: no sqlx in its signatures.
 
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Postgres, QueryBuilder};
 use utoipa::ToSchema;
@@ -62,6 +62,23 @@ pub struct TrendPoint {
     pub flaky: i64,
 }
 
+/// Daily aggregates of a test case (launches that were rolled up).
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DailyEntry {
+    pub day: NaiveDate,
+    pub branch: Option<String>,
+    pub environment: Option<String>,
+    pub runs: i64,
+    pub passed: i64,
+    pub failed: i64,
+    pub broken: i64,
+    pub skipped: i64,
+    pub flaky: i64,
+    pub duration_min_ms: Option<i64>,
+    pub duration_max_ms: Option<i64>,
+}
+
 /// History queries, newest first.
 #[async_trait]
 pub trait HistoryStore: Send + Sync {
@@ -80,6 +97,18 @@ pub trait HistoryStore: Send + Sync {
         series_id: Uuid,
         limit: i64,
     ) -> anyhow::Result<Vec<SeriesHistoryEntry>>;
+
+    /// Daily aggregates of a test case before `before` (exclusive), newest first, for history
+    /// beyond the raw window.
+    async fn test_case_daily(
+        &self,
+        _project_id: Uuid,
+        _test_case_id: Uuid,
+        _filter: &HistoryFilter,
+        _before: Option<NaiveDate>,
+    ) -> anyhow::Result<Vec<DailyEntry>> {
+        Ok(Vec::new())
+    }
 
     /// Launch-level status counts over the last `limit` launches.
     async fn launch_trend(
@@ -183,6 +212,61 @@ impl HistoryStore for PgHistoryStore {
                 started_at: r.4,
                 duration_ms: r.5,
                 flaky_in_run: r.6,
+            })
+            .collect())
+    }
+
+    async fn test_case_daily(
+        &self,
+        project_id: Uuid,
+        test_case_id: Uuid,
+        f: &HistoryFilter,
+        before: Option<NaiveDate>,
+    ) -> anyhow::Result<Vec<DailyEntry>> {
+        type Row = (
+            NaiveDate,
+            String,
+            String,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            Option<i64>,
+            Option<i64>,
+        );
+        let rows: Vec<Row> = sqlx::query_as(
+            "select sd.day, sd.branch, sd.env_key, sum(sd.runs)::bigint, sum(sd.passed)::bigint, \
+               sum(sd.failed)::bigint, sum(sd.broken)::bigint, sum(sd.skipped)::bigint, sum(sd.flaky)::bigint, \
+               min(sd.duration_min_ms), max(sd.duration_max_ms) \
+             from series_daily sd join series s on s.id = sd.series_id \
+             where sd.project_id = $1 and s.test_case_id = $2 and ($3::date is null or sd.day < $3) \
+               and ($4::text is null or sd.branch = $4) and ($5::text is null or sd.env_key = $5) \
+             group by 1, 2, 3 order by 1 desc, 2, 3 limit $6",
+        )
+        .bind(project_id)
+        .bind(test_case_id)
+        .bind(before)
+        .bind(f.branch.as_deref().map(no_nul))
+        .bind(f.environment.as_deref().map(no_nul))
+        .bind(f.limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| DailyEntry {
+                day: r.0,
+                branch: (!r.1.is_empty()).then_some(r.1),
+                environment: (!r.2.is_empty()).then_some(r.2),
+                runs: r.3,
+                passed: r.4,
+                failed: r.5,
+                broken: r.6,
+                skipped: r.7,
+                flaky: r.8,
+                duration_min_ms: r.9,
+                duration_max_ms: r.10,
             })
             .collect())
     }

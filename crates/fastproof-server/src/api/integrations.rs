@@ -30,7 +30,7 @@ pub async fn gate(
 ) -> ApiResult<Json<GateReport>> {
     let project = s.project_for(&auth, &key, &s.perms.launches_read).await?;
     let launch = s.launch_of(&project, id).await?;
-    let doc = s.store.project_settings(project.id).await?;
+    let doc = s.store.project_settings_json(project.id).await?;
     let settings = IntegrationSettings::parse(&doc)
         .map_err(|e| ApiError::conflict(format!("invalid project settings: {e}")))?;
     let ev = gates::evaluate_launch(&s, &project, &launch, &settings.gates).await?;

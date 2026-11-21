@@ -277,7 +277,10 @@ impl Store {
     }
 
     /// The settings document of a project (`{}` when unset).
-    pub async fn project_settings(&self, project_id: Uuid) -> anyhow::Result<serde_json::Value> {
+    pub async fn project_settings_json(
+        &self,
+        project_id: Uuid,
+    ) -> anyhow::Result<serde_json::Value> {
         let v: Option<serde_json::Value> =
             sqlx::query_scalar("select settings from projects where id = $1")
                 .bind(project_id)

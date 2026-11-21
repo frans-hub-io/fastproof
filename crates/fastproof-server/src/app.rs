@@ -48,7 +48,11 @@ pub fn api_router() -> (Router<AppState>, utoipa::openapi::OpenApi) {
             api::projects::delete
         ))
         .routes(routes!(api::launches::create, api::launches::list))
-        .routes(routes!(api::launches::get, api::launches::delete))
+        .routes(routes!(
+            api::launches::get,
+            api::launches::delete,
+            api::analysis::patch_launch
+        ))
         .routes(routes!(api::launches::finish))
         .routes(routes!(api::results::ingest, api::results::list))
         .routes(routes!(api::results::tree))
@@ -67,6 +71,35 @@ pub fn api_router() -> (Router<AppState>, utoipa::openapi::OpenApi) {
         ))
         .routes(routes!(api::integrations::deliveries))
         .routes(routes!(api::integrations::mock_interactions))
+        .routes(routes!(
+            api::analysis::defect_types,
+            api::analysis::create_defect_type
+        ))
+        .routes(routes!(
+            api::analysis::patch_defect_type,
+            api::analysis::delete_defect_type
+        ))
+        .routes(routes!(api::analysis::triage))
+        .routes(routes!(api::analysis::clusters))
+        .routes(routes!(api::analysis::similar))
+        .routes(routes!(api::analysis::rules, api::analysis::create_rule))
+        .routes(routes!(api::analysis::test_rule))
+        .routes(routes!(
+            api::analysis::patch_rule,
+            api::analysis::delete_rule
+        ))
+        .routes(routes!(api::analysis::apply_rule))
+        .routes(routes!(api::analysis::task))
+        .routes(routes!(api::analysis::flaky))
+        .routes(routes!(
+            api::analysis::get_settings,
+            api::analysis::put_settings
+        ))
+        .routes(routes!(api::analysis::retention_preview))
+        .routes(routes!(api::analysis::compare))
+        .routes(routes!(api::analysis::dashboard))
+        .routes(routes!(api::analysis::create_test_plan))
+        .routes(routes!(api::analysis::testplan_json))
         .merge(uploads)
         .split_for_parts()
 }
@@ -276,7 +309,7 @@ pub async fn start_with_pool(
         sse: Arc::new(Semaphore::new(MAX_SSE)),
         instance,
         egress: crate::integrations::egress::Egress::new(cfg.integrations.egress.clone())?,
-        analysis: Arc::new(crate::integrations::analysis::Fallback),
+        analysis: Arc::new(crate::integrations::analysis::Full),
         cfg: Arc::new(cfg),
     }));
     let stop = CancellationToken::new();

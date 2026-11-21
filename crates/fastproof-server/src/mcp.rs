@@ -476,7 +476,7 @@ impl McpServer {
                     if i.url.is_none()
                         && let Some(k) = &i.key
                     {
-                        let doc = s.store.project_settings(p.id).await?;
+                        let doc = s.store.project_settings_json(p.id).await?;
                         let trackers = IntegrationSettings::parse(&doc)
                             .map(|t| t.issue_trackers)
                             .unwrap_or_default();

@@ -300,3 +300,84 @@ impl AnalysisOps for Fallback {
         anyhow::bail!("rules are not available in this build")
     }
 }
+
+/// The analysis module of the server: the same functions the HTTP API uses.
+pub struct Full;
+
+#[async_trait]
+impl AnalysisOps for Full {
+    async fn clusters(
+        &self,
+        s: &AppState,
+        _project: &Project,
+        launch: &Launch,
+    ) -> anyhow::Result<Value> {
+        Ok(json!({ "items": s.store.clusters(launch).await? }))
+    }
+
+    async fn similar(
+        &self,
+        s: &AppState,
+        project: &Project,
+        result_id: Uuid,
+        limit: i64,
+    ) -> anyhow::Result<Value> {
+        let items = s
+            .store
+            .similar_results(project.id, result_id, limit, None)
+            .await?
+            .unwrap_or_default();
+        Ok(json!({ "items": items }))
+    }
+
+    async fn flaky(
+        &self,
+        s: &AppState,
+        project: &Project,
+        branch: Option<&str>,
+        environment: Option<&str>,
+        limit: i64,
+    ) -> anyhow::Result<Value> {
+        let settings = s.store.project_settings(project.id).await?;
+        let f = fastproof_store::analysis::flaky::FlakyFilter {
+            branch: branch.map(str::to_owned),
+            environment: environment.map(str::to_owned),
+            limit,
+        };
+        Ok(json!({ "items": s.store.flaky_tests(project.id, &settings, &f).await? }))
+    }
+
+    async fn compare(
+        &self,
+        s: &AppState,
+        _project: &Project,
+        a: &Launch,
+        b: &Launch,
+    ) -> anyhow::Result<Value> {
+        Ok(serde_json::to_value(s.store.compare(a, b).await?)?)
+    }
+
+    async fn triage(
+        &self,
+        s: &AppState,
+        project: &Project,
+        by: &str,
+        req: &TriageRequest,
+    ) -> anyhow::Result<Value> {
+        let req: fastproof_store::analysis::triage::TriageRequest =
+            serde_json::from_value(serde_json::to_value(req)?)?;
+        let (out, _) = crate::api::analysis::apply_triage(s, project, by, req).await?;
+        Ok(json!({ "updated": out.updated }))
+    }
+
+    async fn create_rule_draft(
+        &self,
+        s: &AppState,
+        project: &Project,
+        by: &str,
+        rule: &Value,
+    ) -> anyhow::Result<Value> {
+        let r = crate::api::analysis::create_rule_draft(s, project, by, rule.clone()).await?;
+        Ok(serde_json::to_value(r)?)
+    }
+}

@@ -117,6 +117,41 @@ impl Client {
             .collect()
     }
 
+    /// Creates a test plan and returns its id.
+    pub async fn create_test_plan(
+        &self,
+        project: &str,
+        body: &serde_json::Value,
+    ) -> anyhow::Result<Uuid> {
+        let rb = self
+            .request(
+                Method::POST,
+                &format!("api/v1/projects/{}/test-plans", Self::enc(project)),
+            )?
+            .json(body);
+        let v: serde_json::Value = self.send(rb).await?;
+        v["id"]
+            .as_str()
+            .and_then(|i| i.parse().ok())
+            .ok_or_else(|| anyhow!("the server did not return a plan id"))
+    }
+
+    /// A test plan as Allure `testplan.json`.
+    pub async fn testplan_json(
+        &self,
+        project: &str,
+        id: Uuid,
+    ) -> anyhow::Result<serde_json::Value> {
+        let rb = self.request(
+            Method::GET,
+            &format!(
+                "api/v1/projects/{}/test-plans/{id}/testplan.json",
+                Self::enc(project)
+            ),
+        )?;
+        self.send(rb).await
+    }
+
     /// Starts or joins a launch.
     pub async fn start_launch(&self, project: &str, start: &LaunchStart) -> anyhow::Result<Launch> {
         let rb = self

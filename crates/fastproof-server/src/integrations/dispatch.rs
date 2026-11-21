@@ -143,7 +143,7 @@ async fn process_launch(
     if gates::is_pending(&launch) && waited < MAX_UPLOAD_WAIT {
         return Ok(());
     }
-    let doc = s.store.project_settings(project_id).await?;
+    let doc = s.store.project_settings_json(project_id).await?;
     let settings = IntegrationSettings::parse(&doc).unwrap_or_else(|e| {
         tracing::warn!(project = %key, error = %e, "integration settings are invalid; skipping gates and notifications");
         IntegrationSettings::default()

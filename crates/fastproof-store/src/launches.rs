@@ -44,7 +44,7 @@ pub struct LaunchFilter {
 pub(crate) const LAUNCH_SELECT: &str = "select l.id, l.project_id, l.number, l.name, l.status, l.debug, \
     l.external_id, l.created_at, l.started_at, l.finished_at, l.first_result_at, l.last_result_at, \
     l.ci, l.vcs, l.environment, l.attributes, l.count_total, l.count_passed, l.count_failed, \
-    l.count_broken, l.count_skipped, l.count_unknown, l.count_flaky, l.count_muted, \
+    l.count_broken, l.count_skipped, l.count_unknown, l.count_flaky, l.count_muted, l.important, \
     coalesce(u.queued, 0) as uploads_queued, coalesce(u.processing, 0) as uploads_processing, \
     coalesce(u.failed, 0) as uploads_failed \
     from launches l left join lateral (select count(*) filter (where status = 'queued') as queued, \
@@ -105,6 +105,7 @@ pub(crate) fn launch_row(r: &PgRow) -> Result<Launch, sqlx::Error> {
             processing: r.try_get("uploads_processing")?,
             failed: r.try_get("uploads_failed")?,
         },
+        important: r.try_get("important")?,
     })
 }
 

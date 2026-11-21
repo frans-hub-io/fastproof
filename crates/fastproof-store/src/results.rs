@@ -55,12 +55,12 @@ pub const MAX_FIXTURE_STEPS: usize = 10_000;
 /// Largest tree the tree endpoint builds.
 pub const MAX_TREE_RESULTS: i64 = 200_000;
 
-const SUMMARY_SELECT: &str = "select r.id, r.launch_id, r.launch_created_at, r.test_case_id, r.series_id, \
+pub(crate) const SUMMARY_SELECT: &str = "select r.id, r.launch_id, r.launch_created_at, r.test_case_id, r.series_id, \
     s.series_key, r.name, r.full_name, r.suite_path, r.status, r.flaky_in_run, r.attempt_count, r.duration_ms, \
-    r.started_at, r.labels, r.muted, r.fingerprint, r.defect, r.message \
+    r.started_at, r.labels, r.muted, r.mute_until, r.fingerprint, r.defect, r.message, r.transition, r.flaky \
     from results r join series s on s.id = r.series_id ";
 
-fn summary_row(r: &PgRow) -> Result<ResultSummary, sqlx::Error> {
+pub(crate) fn summary_row(r: &PgRow) -> Result<ResultSummary, sqlx::Error> {
     let labels: serde_json::Value = r.try_get("labels")?;
     let defect: Option<serde_json::Value> = r.try_get("defect")?;
     Ok(ResultSummary {
@@ -80,8 +80,11 @@ fn summary_row(r: &PgRow) -> Result<ResultSummary, sqlx::Error> {
         started_at: r.try_get("started_at")?,
         labels: serde_json::from_value::<Vec<LabelView>>(labels).unwrap_or_default(),
         muted: r.try_get("muted")?,
+        mute_until: r.try_get("mute_until")?,
         fingerprint: r.try_get("fingerprint")?,
         defect: defect.and_then(|d| serde_json::from_value::<Defect>(d).ok()),
+        transition: r.try_get("transition")?,
+        flaky: r.try_get("flaky")?,
         message: r
             .try_get::<Option<String>, _>("message")?
             .map(|m| truncate_chars(&m, MESSAGE_CHARS)),

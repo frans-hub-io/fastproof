@@ -8,6 +8,7 @@
 //!
 //! Every query lists its columns explicitly.
 
+pub mod analysis;
 pub mod attachments;
 pub mod codec;
 pub mod events;
@@ -29,7 +30,9 @@ use std::time::Duration;
 use sqlx::PgPool;
 use sqlx::migrate::Migrator;
 
-pub use history::{HistoryEntry, HistoryFilter, HistoryStore, PgHistoryStore, SeriesHistoryEntry};
+pub use history::{
+    DailyEntry, HistoryEntry, HistoryFilter, HistoryStore, PgHistoryStore, SeriesHistoryEntry,
+};
 pub use types::*;
 
 /// The table that records which FastProof migrations ran.

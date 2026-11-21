@@ -139,7 +139,7 @@ pub async fn interactions(
     result_id: Uuid,
     attempt: Option<i32>,
 ) -> Result<MockInteractions, ApiError> {
-    let doc = s.store.project_settings(project.id).await?;
+    let doc = s.store.project_settings_json(project.id).await?;
     let settings = IntegrationSettings::parse(&doc)
         .map_err(|e| ApiError::conflict(format!("invalid project settings: {e}")))?;
     let Some(fm) = settings.fastmock else {

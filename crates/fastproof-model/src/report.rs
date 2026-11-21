@@ -80,6 +80,50 @@ pub struct ReportStep {
     pub steps: Vec<ReportStep>,
 }
 
+/// Status of a reported result: a final status, or `running` for a result opened before its
+/// test finished (sent again later with the same `id` and a final status).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum ReportStatus {
+    Passed,
+    Failed,
+    Broken,
+    Skipped,
+    #[default]
+    Unknown,
+    Running,
+}
+
+impl ReportStatus {
+    /// The final status (`unknown` while running).
+    pub fn status(self) -> Status {
+        match self {
+            ReportStatus::Passed => Status::Passed,
+            ReportStatus::Failed => Status::Failed,
+            ReportStatus::Broken => Status::Broken,
+            ReportStatus::Skipped => Status::Skipped,
+            ReportStatus::Unknown | ReportStatus::Running => Status::Unknown,
+        }
+    }
+
+    pub fn is_running(self) -> bool {
+        self == ReportStatus::Running
+    }
+}
+
+impl From<Status> for ReportStatus {
+    fn from(s: Status) -> Self {
+        match s {
+            Status::Passed => ReportStatus::Passed,
+            Status::Failed => ReportStatus::Failed,
+            Status::Broken => ReportStatus::Broken,
+            Status::Skipped => ReportStatus::Skipped,
+            Status::Unknown => ReportStatus::Unknown,
+        }
+    }
+}
+
 /// One attempt of one test, the unit of `POST /api/v1/projects/{key}/launches/{id}/results`.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -96,7 +140,8 @@ pub struct ReportResult {
     /// Explicit stable test case id (takes precedence over the full name).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub test_case_id: Option<String>,
-    pub status: Status,
+    /// A final status, or `running` while the test runs.
+    pub status: ReportStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<ReportError>,
     /// Start, milliseconds since the Unix epoch.

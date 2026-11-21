@@ -6,6 +6,7 @@ members = [
     "crates/fastproof-blob",
     "crates/fastproof-store",
     "crates/fastproof-server",
+    "crates/fastproof-stream",
 ]
 
 [workspace.package]
@@ -19,6 +20,7 @@ fastproof-model = { path = "crates/fastproof-model" }
 fastproof-ingest = { path = "crates/fastproof-ingest" }
 fastproof-blob = { path = "crates/fastproof-blob" }
 fastproof-store = { path = "crates/fastproof-store" }
+fastproof-stream = { path = "crates/fastproof-stream" }
 franshub-access = { path = "../franshub-platform/crates/franshub-access" }
 franshub-auth = { path = "../franshub-platform/crates/franshub-auth" }
 franshub-oidc = { path = "../franshub-platform/crates/franshub-oidc" }
@@ -34,12 +36,14 @@ chrono = { version = "0.4.45", features = ["serde"] }
 clap = { version = "=4.6.7", features = ["derive", "env"] }
 futures = "0.3.34"
 hex = "0.4.3"
+hmac = "0.13.0"
 metrics = "0.24.6"
 metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
 object_store = { version = "=0.14.2", default-features = false, features = ["fs", "aws-base", "reqwest", "ring"] }
 rand = "0.9"
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider", "json", "stream", "query"] }
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+rskafka = { version = "=0.6.0", default-features = false, features = ["transport-tls", "compression-gzip", "compression-lz4", "compression-snappy", "compression-zstd"] }
 rust-embed = { version = "=8.13.0", features = ["debug-embed"] }
 sha2 = "0.11.1"
 sqlx = { version = "=0.9.0", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json", "migrate", "macros"] }
@@ -50,6 +54,7 @@ tracing = "0.1.44"
 url = "2"
 utoipa-axum = "0.3.0"
 utoipa-swagger-ui = { version = "10.0.2", features = ["axum", "vendored"] }
+webpki-roots = "1.0.11"
 uuid = { version = "=1.29.1", features = ["v4", "v7", "serde"] }
 zstd = "=0.14.3"
 ammonia = "4.2.5"

@@ -2,6 +2,7 @@
 //! `version`.
 
 pub mod archive;
+pub mod bench;
 pub mod ci;
 pub mod client;
 pub mod gate;
@@ -50,6 +51,8 @@ pub enum Command {
     /// Print an Allure `testplan.json` of chosen tests (e.g. the failed ones of a launch), so
     /// Allure adapters run only those (`ALLURE_TESTPLAN_PATH=testplan.json`).
     Testplan(TestplanArgs),
+    /// Generate launches, results and log lines and measure throughput and end-to-end lag.
+    Bench(bench::BenchArgs),
     /// Print the version.
     Version,
 }
@@ -313,6 +316,22 @@ pub async fn run(cli: Cli) -> anyhow::Result<i32> {
         Command::Gate(g) => Ok(gate::run(g).await),
         Command::Testplan(t) => testplan(t).await,
         Command::Watch(w) => watch::run(w).await,
+        Command::Bench(b) => {
+            let r = bench::run(b).await?;
+            println!(
+                "launches {}, results {}, log lines {}: sent in {:.1}s ({:.0} results/s, {:.0} log lines/s); queryable {:.2}s after the last request; total {:.1}s",
+                r.launches,
+                r.results_sent,
+                r.log_lines_sent,
+                r.send_seconds,
+                r.results_per_second,
+                r.log_lines_per_second,
+                r.lag_seconds,
+                r.total_seconds
+            );
+            println!("{}", serde_json::to_string(&r)?);
+            Ok(0)
+        }
     }
 }
 

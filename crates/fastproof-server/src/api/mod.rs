@@ -6,8 +6,10 @@ pub mod attachments;
 pub mod events;
 pub mod integrations;
 pub mod launches;
+pub mod logs;
 pub mod projects;
 pub mod results;
+pub mod search;
 pub mod uploads;
 
 use axum::extract::{FromRequestParts, Path, Query};
@@ -54,11 +56,11 @@ impl Modify for BearerAuth {
     info(title = "FastProof API", description = "Test reporting server: projects, launches, uploads, results and attachments.", license(name = "Apache-2.0")),
     modifiers(&BearerAuth),
     security(("bearer" = [])),
-    components(schemas(ErrorBody, fastproof_model::ReportResult)),
+    components(schemas(ErrorBody, fastproof_model::ReportResult, logs::LogStreamBatch, logs::LogGap)),
     tags(
         (name = "projects"), (name = "launches"), (name = "uploads"), (name = "results"),
         (name = "attachments"), (name = "events"), (name = "admin"), (name = "integrations"),
-        (name = "analysis")
+        (name = "analysis"), (name = "logs")
     )
 )]
 pub struct ApiDoc;

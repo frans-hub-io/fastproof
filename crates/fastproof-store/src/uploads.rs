@@ -12,7 +12,7 @@ use crate::{JOBS_CHANNEL, Store, Upload, UploadError, UploadItemCounts, json_no_
 const UPLOAD_COLUMNS: &str =
     "id, launch_id, format, status, size_bytes, counts, warnings, error, created_at, finished_at";
 
-fn upload_row(r: &PgRow) -> Result<Upload, sqlx::Error> {
+pub(crate) fn upload_row(r: &PgRow) -> Result<Upload, sqlx::Error> {
     let counts: serde_json::Value = r.try_get("counts")?;
     let warnings: serde_json::Value = r.try_get("warnings")?;
     let error: Option<serde_json::Value> = r.try_get("error")?;

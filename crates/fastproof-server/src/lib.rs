@@ -14,6 +14,7 @@ pub mod ops;
 pub mod scheduler;
 pub mod schema;
 pub mod state;
+pub mod stream;
 pub mod trace;
 pub mod ui;
 

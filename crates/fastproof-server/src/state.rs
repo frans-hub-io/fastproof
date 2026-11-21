@@ -122,6 +122,12 @@ pub struct Inner {
     pub egress: crate::integrations::egress::Egress,
     /// Analysis operations used by the MCP tools.
     pub analysis: Arc<dyn crate::integrations::analysis::AnalysisOps>,
+    /// Live log fan-out of this replica.
+    pub logs: crate::stream::live::LogHub,
+    /// Kafka (Kafka ingest mode only).
+    pub kafka: Option<Arc<fastproof_stream::Kafka>>,
+    /// The search backend; `None` searches PostgreSQL.
+    pub search: Option<Arc<dyn fastproof_stream::sink::SearchBackend>>,
 }
 
 /// The axum state.

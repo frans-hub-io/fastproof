@@ -27,6 +27,7 @@ fastproof-blob.workspace = true
 fastproof-ingest.workspace = true
 fastproof-model = { workspace = true, features = ["openapi"] }
 fastproof-store.workspace = true
+fastproof-stream.workspace = true
 flate2.workspace = true
 franshub-access.workspace = true
 franshub-auth.workspace = true

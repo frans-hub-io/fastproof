@@ -173,6 +173,17 @@ impl Server {
         }
     }
 
+    /// A client of a server started elsewhere (for requests from another task).
+    pub fn client_only(base: &str) -> Self {
+        Self {
+            running: None,
+            base: base.to_string(),
+            ops: String::new(),
+            dir: tempfile::tempdir().unwrap(),
+            http: reqwest::Client::new(),
+        }
+    }
+
     pub async fn stop(&mut self) {
         if let Some(r) = self.running.take() {
             r.shutdown().await;

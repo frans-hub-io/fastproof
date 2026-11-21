@@ -61,6 +61,10 @@ pub fn api_router() -> (Router<AppState>, utoipa::openapi::OpenApi) {
         .routes(routes!(api::attachments::upload))
         .routes(routes!(api::attachments::content))
         .routes(routes!(api::events::stream))
+        .routes(routes!(api::logs::ingest, api::logs::list))
+        .routes(routes!(api::logs::stream))
+        .routes(routes!(api::search::logs))
+        .routes(routes!(api::search::similar))
         .routes(routes!(api::admin::audit))
         .routes(routes!(api::admin::jobs))
         .routes(routes!(api::integrations::gate))
@@ -81,7 +85,6 @@ pub fn api_router() -> (Router<AppState>, utoipa::openapi::OpenApi) {
         ))
         .routes(routes!(api::analysis::triage))
         .routes(routes!(api::analysis::clusters))
-        .routes(routes!(api::analysis::similar))
         .routes(routes!(api::analysis::rules, api::analysis::create_rule))
         .routes(routes!(api::analysis::test_rule))
         .routes(routes!(
@@ -296,6 +299,10 @@ pub async fn start_with_pool(
         rand::random::<u32>()
     );
     let limits = cfg.limits.clone();
+    let kafka = crate::stream::connect_kafka(&cfg, &store)
+        .await
+        .context("FASTPROOF_KAFKA_*")?;
+    let search = crate::stream::search_backend(&cfg)?;
     let state = AppState(Arc::new(Inner {
         perms: Perms::new(&platform),
         platform,
@@ -310,6 +317,9 @@ pub async fn start_with_pool(
         instance,
         egress: crate::integrations::egress::Egress::new(cfg.integrations.egress.clone())?,
         analysis: Arc::new(crate::integrations::analysis::Full),
+        logs: crate::stream::live::LogHub::new(),
+        kafka,
+        search,
         cfg: Arc::new(cfg),
     }));
     let stop = CancellationToken::new();
@@ -328,7 +338,7 @@ pub async fn start_with_pool(
         None => None,
     };
     let app = router(state.clone());
-    {
+    if state.cfg.roles.api {
         let stop = stop.clone();
         tasks.push(tokio::spawn(async move {
             franshub_http::serve(
@@ -340,6 +350,8 @@ pub async fn start_with_pool(
             )
             .await;
         }));
+    } else {
+        drop(listener);
     }
     {
         let ops = crate::ops::router(state.clone(), prometheus);
@@ -361,19 +373,24 @@ pub async fn start_with_pool(
         state.wake.clone(),
         stop.clone(),
     )));
-    for n in 0..state.cfg.ingest_workers {
-        tasks.push(tokio::spawn(crate::ingest::worker(
+    if state.cfg.roles.ingest && state.kafka.is_none() {
+        for n in 0..state.cfg.ingest_workers {
+            tasks.push(tokio::spawn(crate::ingest::worker(
+                state.clone(),
+                n,
+                stop.clone(),
+            )));
+        }
+    }
+    if state.cfg.roles.scheduler {
+        tasks.push(tokio::spawn(crate::integrations::dispatch::run(
             state.clone(),
-            n,
             stop.clone(),
         )));
+        let sched = crate::scheduler::standard_jobs()?;
+        tasks.push(tokio::spawn(sched.run(state.clone(), stop.clone())));
     }
-    tasks.push(tokio::spawn(crate::integrations::dispatch::run(
-        state.clone(),
-        stop.clone(),
-    )));
-    let sched = crate::scheduler::standard_jobs()?;
-    tasks.push(tokio::spawn(sched.run(state.clone(), stop.clone())));
+    tasks.extend(crate::stream::start(&state, &stop).await?);
     {
         let s = state.clone();
         let stop = stop.clone();
@@ -381,7 +398,8 @@ pub async fn start_with_pool(
             async move { local_maintenance(s, stop).await },
         ));
     }
-    tracing::info!(%addr, %ops_addr, ui = crate::ui::embedded(), blobs = state.blobs.backend(), workers = state.cfg.ingest_workers, "FastProof is serving");
+    tracing::info!(%addr, %ops_addr, ui = crate::ui::embedded(), blobs = state.blobs.backend(), workers = state.cfg.ingest_workers,
+        mode = ?state.cfg.ingest_mode, roles = ?state.cfg.roles, "FastProof is serving");
     Ok(Running {
         addr,
         ops_addr,

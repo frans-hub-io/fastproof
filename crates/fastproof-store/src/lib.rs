@@ -16,11 +16,13 @@ pub mod history;
 pub mod ingest;
 pub mod integrations;
 pub mod launches;
+pub mod logs;
 pub mod maintenance;
 pub mod projects;
 pub mod results;
 pub mod scheduler;
 pub mod search;
+pub mod stream;
 pub mod types;
 pub mod uploads;
 

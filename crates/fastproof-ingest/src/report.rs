@@ -162,16 +162,21 @@ pub fn report_to_parsed(r: ReportResult, o: &ReportOptions<'_>) -> Result<Parsed
         steps.push(w.step(s, 1)?);
     }
     let max_log = o.limits.max_log_bytes;
-    let interrupted = r.stop.is_none() && r.start.is_some() && r.duration_ms.is_none();
+    let running = r.status.is_running();
+    let interrupted = !running && r.stop.is_none() && r.start.is_some() && r.duration_ms.is_none();
     let mut out = ParsedResult {
         source_uuid: Some(id.to_string()),
         identity,
         name: r.name,
         full_name,
-        status: r.status,
+        status: r.status.status(),
         raw_status: None,
         status_details: w.details(r.error)?,
-        stage: Stage::Finished,
+        stage: if running {
+            Stage::Running
+        } else {
+            Stage::Finished
+        },
         interrupted,
         start: r.start,
         stop: r.stop,
@@ -210,7 +215,7 @@ mod tests {
             id: "r-1".into(),
             name: "pays".into(),
             full_name: Some("shop.Checkout#pays".into()),
-            status: Status::Passed,
+            status: Status::Passed.into(),
             ..Default::default()
         }
     }

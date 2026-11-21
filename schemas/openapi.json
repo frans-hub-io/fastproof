@@ -1600,6 +1600,327 @@
         }
       }
     },
+    "/api/v1/projects/{key}/launches/{id}/logs": {
+      "get": {
+        "tags": [
+          "logs"
+        ],
+        "operationId": "list",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "resultId",
+            "in": "query",
+            "description": "Client id of a result.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "attempt",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "level",
+            "in": "query",
+            "description": "Lowest level shown: `trace`, `debug`, `info`, `warn` or `error`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Case-insensitive text in the message.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "description": "Cursor from `next`: older lines.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "1..=5000, default 500.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The newest matching lines before the cursor, oldest first; `next` pages to older lines",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_LogLine"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "logs"
+        ],
+        "operationId": "ingest",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "A JSON array of lines or NDJSON (application/x-ndjson), one line per object",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/LogLine"
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LogIngestSummary"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/launches/{id}/logs/stream": {
+      "get": {
+        "tags": [
+          "logs"
+        ],
+        "operationId": "stream",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "resultId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "level",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "text/event-stream: `ready` first; `log` events carry `LogStreamBatch` {lines} (at most 20 events per second); `gap` events carry `LogGap` {skipped} when the oldest buffered lines were dropped because the client was slow",
+            "content": {
+              "text/event-stream": {}
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{key}/launches/{id}/results": {
       "get": {
         "tags": [
@@ -2293,7 +2614,7 @@
     "/api/v1/projects/{key}/results/{id}/similar": {
       "get": {
         "tags": [
-          "analysis"
+          "results"
         ],
         "operationId": "similar",
         "parameters": [
@@ -2317,7 +2638,7 @@
           {
             "name": "limit",
             "in": "query",
-            "description": "1..=50, default 10.",
+            "description": "1..=100, default 20.",
             "required": false,
             "schema": {
               "type": "integer",
@@ -2327,6 +2648,7 @@
         ],
         "responses": {
           "200": {
+            "description": "The same fingerprint first (the normalized message hash while results carry no fingerprint), then text similarity",
             "content": {
               "application/json": {
                 "schema": {
@@ -2354,6 +2676,15 @@
             }
           },
           "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
             "content": {
               "application/json": {
                 "schema": {
@@ -2783,6 +3114,126 @@
             }
           },
           "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/search/logs": {
+      "get": {
+        "tags": [
+          "logs"
+        ],
+        "operationId": "logs",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Text to find (1..=256 bytes; a substring in PostgreSQL and ClickHouse, a phrase in OpenSearch).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "launchId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "RFC 3339; default 7 days before `to`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "RFC 3339; default now.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "level",
+            "in": "query",
+            "description": "Lowest level: `trace`, `debug`, `info`, `warn` or `error`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "1..=1000, default 100.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LogHits"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
             "content": {
               "application/json": {
                 "schema": {
@@ -5101,6 +5552,177 @@
           }
         }
       },
+      "LogEntry": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/LogLine"
+          },
+          {
+            "type": "object",
+            "required": [
+              "launchId"
+            ],
+            "properties": {
+              "launchId": {
+                "type": "string",
+                "format": "uuid"
+              }
+            }
+          }
+        ],
+        "description": "A log line with its launch, as reads and searches return it."
+      },
+      "LogGap": {
+        "type": "object",
+        "description": "Data of a `gap` event of `GET .../logs/stream`: lines dropped because the client was slow.",
+        "required": [
+          "skipped"
+        ],
+        "properties": {
+          "skipped": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "LogHits": {
+        "type": "object",
+        "description": "Matching log lines of a search.",
+        "required": [
+          "items",
+          "partial"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LogEntry"
+            }
+          },
+          "partial": {
+            "type": "boolean",
+            "description": "True when the scan stopped at its budget before the time range was covered."
+          }
+        }
+      },
+      "LogIngestSummary": {
+        "type": "object",
+        "description": "Outcome of `POST .../logs`.",
+        "required": [
+          "accepted",
+          "duplicates",
+          "rejected"
+        ],
+        "properties": {
+          "accepted": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "duplicates": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Lines already stored (direct mode; in Kafka mode the writer drops them).",
+            "minimum": 0
+          },
+          "rejected": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Rejected"
+            }
+          }
+        }
+      },
+      "LogLevel": {
+        "type": "string",
+        "description": "Severity of a log line.",
+        "enum": [
+          "trace",
+          "debug",
+          "info",
+          "warn",
+          "error"
+        ]
+      },
+      "LogLine": {
+        "type": "object",
+        "description": "One log line as clients send it and as the API returns it.",
+        "required": [
+          "resultId",
+          "attempt",
+          "seq",
+          "ts",
+          "level",
+          "stream",
+          "message"
+        ],
+        "properties": {
+          "attempt": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Zero-based retry number.",
+            "minimum": 0
+          },
+          "level": {
+            "$ref": "#/components/schemas/LogLevel"
+          },
+          "message": {
+            "type": "string"
+          },
+          "resultId": {
+            "type": "string",
+            "description": "Client id of the result (the `id` of its `ReportResult`)."
+          },
+          "seq": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Sequence number within the attempt; a line sent again with the same number is a no-op.",
+            "minimum": 0
+          },
+          "step": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Name of the step the line belongs to."
+          },
+          "stream": {
+            "$ref": "#/components/schemas/LogStream"
+          },
+          "ts": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Time, milliseconds since the Unix epoch (an RFC 3339 string is accepted too)."
+          }
+        },
+        "additionalProperties": false
+      },
+      "LogStream": {
+        "type": "string",
+        "description": "Where a line came from.",
+        "enum": [
+          "stdout",
+          "stderr",
+          "log",
+          "step"
+        ]
+      },
+      "LogStreamBatch": {
+        "type": "object",
+        "description": "Data of a `log` event of `GET .../logs/stream`: lines in order.",
+        "required": [
+          "lines"
+        ],
+        "properties": {
+          "lines": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LogLine"
+            }
+          }
+        }
+      },
       "Metric": {
         "type": "string",
         "description": "A metric a gate rule checks.",
@@ -5615,6 +6237,78 @@
                   ]
                 }
               }
+            }
+          },
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Opaque cursor for the next page (`before=`), `null` on the last page."
+          }
+        }
+      },
+      "Page_LogLine": {
+        "type": "object",
+        "description": "A page of a list.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One log line as clients send it and as the API returns it.",
+              "required": [
+                "resultId",
+                "attempt",
+                "seq",
+                "ts",
+                "level",
+                "stream",
+                "message"
+              ],
+              "properties": {
+                "attempt": {
+                  "type": "integer",
+                  "format": "int32",
+                  "description": "Zero-based retry number.",
+                  "minimum": 0
+                },
+                "level": {
+                  "$ref": "#/components/schemas/LogLevel"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "resultId": {
+                  "type": "string",
+                  "description": "Client id of the result (the `id` of its `ReportResult`)."
+                },
+                "seq": {
+                  "type": "integer",
+                  "format": "int64",
+                  "description": "Sequence number within the attempt; a line sent again with the same number is a no-op.",
+                  "minimum": 0
+                },
+                "step": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Name of the step the line belongs to."
+                },
+                "stream": {
+                  "$ref": "#/components/schemas/LogStream"
+                },
+                "ts": {
+                  "type": "integer",
+                  "format": "int64",
+                  "description": "Time, milliseconds since the Unix epoch (an RFC 3339 string is accepted too)."
+                }
+              },
+              "additionalProperties": false
             }
           },
           "next": {
@@ -6170,7 +6864,8 @@
             "description": "Start, milliseconds since the Unix epoch."
           },
           "status": {
-            "$ref": "#/components/schemas/Status"
+            "$ref": "#/components/schemas/ReportStatus",
+            "description": "A final status, or `running` while the test runs."
           },
           "stderr": {
             "type": [
@@ -6235,6 +6930,18 @@
           }
         },
         "additionalProperties": false
+      },
+      "ReportStatus": {
+        "type": "string",
+        "description": "Status of a reported result: a final status, or `running` for a result opened before its\ntest finished (sent again later with the same `id` and a final status).",
+        "enum": [
+          "passed",
+          "failed",
+          "broken",
+          "skipped",
+          "unknown",
+          "running"
+        ]
       },
       "ReportStep": {
         "type": "object",
@@ -7007,7 +7714,22 @@
           }
         }
       },
-      "SimilarItem": {
+      "SimilarList": {
+        "type": "object",
+        "description": "Similar failures of a result.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SimilarResult"
+            }
+          }
+        }
+      },
+      "SimilarResult": {
         "type": "object",
         "description": "A similar failure.",
         "required": [
@@ -7018,16 +7740,7 @@
           "score"
         ],
         "properties": {
-          "defect": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/Defect"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
+          "defect": {},
           "launchId": {
             "type": "string",
             "format": "uuid"
@@ -7052,22 +7765,7 @@
           "score": {
             "type": "number",
             "format": "double",
-            "description": "1 for the same fingerprint, else the trigram similarity of the normalized messages."
-          }
-        }
-      },
-      "SimilarList": {
-        "type": "object",
-        "description": "`{items}` of similar failures.",
-        "required": [
-          "items"
-        ],
-        "properties": {
-          "items": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/SimilarItem"
-            }
+            "description": "1 for the same fingerprint, else the text similarity of the messages (0..1)."
           }
         }
       },
@@ -7615,6 +8313,9 @@
     },
     {
       "name": "analysis"
+    },
+    {
+      "name": "logs"
     }
   ]
 }

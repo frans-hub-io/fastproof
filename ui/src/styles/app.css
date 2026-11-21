@@ -285,3 +285,125 @@
     grid-column: span 2;
   }
 }
+
+.fp-console {
+  position: relative;
+  background: var(--fp-log-bg);
+  color: var(--fp-log-fg);
+  border: 1px solid var(--fh-ui-hairline);
+  border-radius: var(--mantine-radius-md);
+  font-family: var(--mantine-font-family-monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow: hidden;
+}
+
+.fp-console-row {
+  display: flex;
+  gap: 10px;
+  padding: 1px 10px;
+  align-items: baseline;
+}
+
+.fp-console-row:hover {
+  background: color-mix(in srgb, var(--fp-log-fg) 6%, transparent);
+}
+
+.fp-console-time {
+  flex: none;
+  color: var(--fp-ansi-8);
+}
+
+.fp-console-level {
+  flex: none;
+  width: 3.6em;
+  text-transform: uppercase;
+  font-weight: 700;
+  font-size: 11px;
+  color: var(--fp-ansi-8);
+}
+
+.fp-console-row[data-level='info'] .fp-console-level {
+  color: var(--fp-ansi-4);
+}
+
+.fp-console-row[data-level='warn'] .fp-console-level {
+  color: var(--fp-ansi-3);
+}
+
+.fp-console-row[data-level='error'] .fp-console-level {
+  color: var(--fp-ansi-1);
+}
+
+.fp-console-row[data-level='error'] {
+  background: color-mix(in srgb, var(--fp-ansi-1) 9%, transparent);
+}
+
+.fp-console-result {
+  flex: none;
+  width: 14em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fp-ansi-5);
+}
+
+.fp-console-msg {
+  flex: 1;
+  min-width: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.fp-console-gap {
+  margin: 4px 10px;
+  padding: 2px 8px;
+  border: 1px dashed var(--fp-ansi-3);
+  border-radius: 6px;
+  color: var(--fp-ansi-3);
+  font-size: 11.5px;
+}
+
+.fp-console-resume {
+  position: absolute;
+  right: 16px;
+  bottom: 14px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+}
+
+@media (max-width: 48em) {
+  .fp-console-result {
+    display: none;
+  }
+
+  .fp-console-row {
+    flex-wrap: wrap;
+    gap: 2px 8px;
+  }
+
+  .fp-console-msg {
+    flex-basis: 100%;
+  }
+}
+
+.fp-live-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--fp-status-passed);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--fp-status-passed) 60%, transparent);
+  animation: fp-pulse 1.6s ease-out infinite;
+}
+
+@keyframes fp-pulse {
+  to {
+    box-shadow: 0 0 0 7px transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fp-live-dot {
+    animation: none;
+  }
+}

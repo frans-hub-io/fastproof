@@ -1,8 +1,18 @@
-import { Anchor, Badge, Card, Group, SimpleGrid, Stack, Table, Tabs, Text, Title, Tooltip, UnstyledButton } from '@mantine/core';
-import { IconBug, IconExternalLink, IconHistory, IconLink, IconListCheck } from '@tabler/icons-react';
+import { Alert, Anchor, Badge, Button, Card, Group, Progress, SimpleGrid, Stack, Table, Tabs, Text, Title, Tooltip, UnstyledButton } from '@mantine/core';
+import { useCan } from '@franshub/ui-shell';
+import { useState } from 'react';
+import { IconBellOff, IconBug, IconExternalLink, IconHistory, IconLink, IconListCheck, IconTag, IconTopologyStar3 } from '@tabler/icons-react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
 import { useLaunch, useProject, useResult } from '../api/hooks';
-import type { Attempt, Label, ResultDetail, SeriesHistoryItem } from '../api/types';
+import { ApiError } from '../api/client';
+import { useDefectTypeMap, useMockInteractions, useSimilar } from '../api/stageC';
+import type { Attempt, Label, Launch, ResultDetail, SeriesHistoryItem } from '../api/types';
+import type { DefectType } from '../api/types-next';
+import { DefectChip } from '../components/Defect';
+import { LogConsole } from '../components/LogConsole';
+import { TriageDrawer } from '../components/TriageDrawer';
+import { resultTarget, type TriageTarget } from '../lib/triage';
+import { TransitionBadge } from './launch/TransitionBadge';
 import { AnsiText } from '../components/Ansi';
 import { CopyValue } from '../components/CopyButton';
 import { ErrorBlock } from '../components/ErrorBlock';
@@ -10,7 +20,7 @@ import { PageHeader } from '../components/PageHeader';
 import { QueryState } from '../components/QueryState';
 import { StatusBadge } from '../components/Status';
 import { StepTree } from '../components/StepTree';
-import { formatDateTime, formatDuration, isHttpUrl } from '../lib/format';
+import { formatDateTime, formatDuration, formatRelative, isHttpUrl } from '../lib/format';
 import { renderSafeHtml } from '../lib/safeHtml';
 import { STATUS_LABEL, statusVar } from '../lib/status';
 import { AttachmentList } from '../viewers/AttachmentList';
@@ -67,9 +77,197 @@ function Labels({ labels }: { labels: Label[] }) {
   );
 }
 
-function Side({ r }: { r: ResultDetail }) {
+function failing(status: string): boolean {
+  return status === 'failed' || status === 'broken';
+}
+
+function DefectCard({ project, r, types }: { project: string; r: ResultDetail; types: Map<string, DefectType> }) {
+  const canTriage = useCan('results:triage', project);
+  const [target, setTarget] = useState<TriageTarget | null>(null);
+  const d = r.defect;
+  if (!d && !r.muted && !(canTriage && failing(r.status))) return null;
+  return (
+    <Card withBorder radius="md" padding="sm" data-testid="defect-card">
+      <Group gap="sm" wrap="wrap" justify="space-between" align="flex-start">
+        <Stack gap={6} style={{ minWidth: 0, flex: '1 1 260px' }}>
+          <Group gap="xs" wrap="wrap">
+            {d ? <DefectChip defect={d} types={types} size="md" /> : <Text size="sm" c="dimmed">Not triaged</Text>}
+            {r.muted && (
+              <Badge variant="outline" color="gray" leftSection={<IconBellOff size={12} />} style={{ textTransform: 'none' }} data-testid="muted-badge">
+                {r.muteUntil ? `muted until ${formatDateTime(r.muteUntil)}` : 'muted'}
+              </Badge>
+            )}
+            {d?.source === 'rule' && d.by && (
+              <Text size="xs" c="dimmed">
+                set by {d.by.replace(/^rule:/, 'rule ')}
+              </Text>
+            )}
+            {d?.source === 'user' && d.by && (
+              <Text size="xs" c="dimmed">
+                by {d.by}
+                {d.at ? `, ${formatRelative(d.at)}` : ''}
+              </Text>
+            )}
+          </Group>
+          {d?.comment && (
+            <Text size="sm" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }} data-testid="defect-comment">
+              {d.comment}
+            </Text>
+          )}
+          {isHttpUrl(d?.issueUrl) && (
+            <Anchor href={d.issueUrl} target="_blank" rel="noopener noreferrer nofollow" size="sm" data-testid="defect-issue">
+              <Group gap={4} component="span" wrap="nowrap">
+                <IconBug size={14} />
+                {d.issueKey ?? d.issueUrl}
+                <IconExternalLink size={12} />
+              </Group>
+            </Anchor>
+          )}
+        </Stack>
+        {canTriage && (
+          <Button size="xs" variant="light" leftSection={<IconTag size={14} />} onClick={() => setTarget(resultTarget(r))} data-testid="triage-open">
+            Triage
+          </Button>
+        )}
+      </Group>
+      <TriageDrawer project={project} target={target} onClose={() => setTarget(null)} />
+    </Card>
+  );
+}
+
+function SimilarFailures({ project, r, types }: { project: string; r: ResultDetail; types: Map<string, DefectType> }) {
+  const q = useSimilar(project, r.id, 8);
+  if (q.isError && q.error instanceof ApiError && q.error.status === 404) return null;
+  return (
+    <Card withBorder radius="md" padding="sm" data-testid="similar">
+      <Group gap={6} mb={6}>
+        <IconTopologyStar3 size={16} />
+        <Text size="sm" fw={600}>
+          Similar failures
+        </Text>
+      </Group>
+      <QueryState query={q}>
+        {() =>
+          q.data?.length ? (
+            <Stack gap={8}>
+              {q.data.map((s) => (
+                <UnstyledButton key={s.resultId} component={Link} to={`/p/${project}/results/${s.resultId}`} className="fp-tree-row" data-testid="similar-item">
+                  <Stack gap={3}>
+                    <Group gap={6} wrap="nowrap">
+                      <Text size="xs" c="dimmed" style={{ flex: 'none' }}>
+                        #{s.launchNumber}
+                      </Text>
+                      <Text size="sm" fw={600} className="fh-truncate" style={{ flex: 1, minWidth: 0 }}>
+                        {s.name}
+                      </Text>
+                      <Tooltip label={s.score >= 0.99 ? 'Same fingerprint' : 'Similar message'}>
+                        <Text size="xs" c="dimmed" style={{ flex: 'none' }}>
+                          {Math.round(s.score * 100)}%
+                        </Text>
+                      </Tooltip>
+                    </Group>
+                    <Progress value={s.score * 100} size={3} color={s.score >= 0.99 ? 'fhPurple' : 'gray'} aria-hidden />
+                    <Text size="xs" className="fp-mono" c="dimmed" lineClamp={2} style={{ wordBreak: 'break-word' }}>
+                      {s.message}
+                    </Text>
+                    {s.defect && (
+                      <Group gap={4}>
+                        <DefectChip defect={s.defect} types={types} size="xs" />
+                      </Group>
+                    )}
+                  </Stack>
+                </UnstyledButton>
+              ))}
+            </Stack>
+          ) : (
+            <Text size="sm" c="dimmed">
+              No similar failures in this project.
+            </Text>
+          )
+        }
+      </QueryState>
+    </Card>
+  );
+}
+
+function MockInteractionsView({ project, resultId, attempt }: { project: string; resultId: string; attempt: number }) {
+  const q = useMockInteractions(project, resultId, attempt, true);
+  if (q.isError && q.error instanceof ApiError && (q.error.status === 404 || q.error.status === 409)) {
+    return (
+      <Text size="sm" c="dimmed">
+        {q.error.status === 409 ? 'FastMock is not linked to this project. Set its URL in the project settings.' : 'No mock interactions for this attempt.'}
+      </Text>
+    );
+  }
+  return (
+    <QueryState query={q}>
+      {() => {
+        const m = q.data;
+        if (!m) return null;
+        return (
+          <Stack gap="xs" data-testid="mock-interactions">
+            <Text size="xs" c="dimmed">
+              {m.source === 'traceId' ? 'Matched by trace id' : 'Matched by the attempt time window (other tests may share it)'} · confidence {Math.round(m.confidence * 100)}%
+            </Text>
+            {m.items.length === 0 ? (
+              <Text size="sm" c="dimmed">
+                FastMock recorded no requests for this attempt.
+              </Text>
+            ) : (
+              <div className="fp-table-wrap">
+                <Table fz="xs" verticalSpacing={4} striped highlightOnHover miw={560}>
+                  <Table.Thead>
+                    <Table.Tr>
+                      <Table.Th>Time</Table.Th>
+                      <Table.Th>Request</Table.Th>
+                      <Table.Th>Status</Table.Th>
+                      <Table.Th>Stub</Table.Th>
+                      <Table.Th ta="right">Took</Table.Th>
+                    </Table.Tr>
+                  </Table.Thead>
+                  <Table.Tbody>
+                    {m.items.map((i, n) => (
+                      <Table.Tr key={`${i.at}:${String(n)}`} data-testid="mock-row">
+                        <Table.Td className="fp-mono">{new Date(i.at).toLocaleTimeString()}</Table.Td>
+                        <Table.Td className="fp-mono" style={{ wordBreak: 'break-all' }}>
+                          {i.method} {i.url}
+                        </Table.Td>
+                        <Table.Td>
+                          <Badge size="xs" variant="light" color={i.status >= 500 ? 'red' : i.status >= 400 ? 'orange' : 'green'}>
+                            {i.status}
+                          </Badge>
+                        </Table.Td>
+                        <Table.Td>
+                          {i.matchedStub ? <Text size="xs" className="fp-mono">{i.matchedStub}</Text> : <Text size="xs" c="dimmed">no match</Text>}
+                          {i.fault && (
+                            <Text size="xs" c="var(--fp-status-broken)">
+                              fault: {i.fault}
+                            </Text>
+                          )}
+                          {i.nearMiss && (
+                            <Text size="xs" c="var(--fh-semantic-warning-fg)">
+                              near miss: {i.nearMiss}
+                            </Text>
+                          )}
+                        </Table.Td>
+                        <Table.Td ta="right">{formatDuration(i.durationMs)}</Table.Td>
+                      </Table.Tr>
+                    ))}
+                  </Table.Tbody>
+                </Table>
+              </div>
+            )}
+          </Stack>
+        );
+      }}
+    </QueryState>
+  );
+}
+
+function Side({ project, r, types }: { project: string; r: ResultDetail; types: Map<string, DefectType> }) {
   return (
     <Stack gap="md">
+      {failing(r.status) && <SimilarFailures project={project} r={r} types={types} />}
       {r.parameters.length > 0 && (
         <Card withBorder radius="md" padding="sm">
           <Text size="sm" fw={600} mb={6}>
@@ -147,7 +345,7 @@ function Side({ r }: { r: ResultDetail }) {
   );
 }
 
-function AttemptView({ project, attempt }: { project: string; attempt: Attempt }) {
+function AttemptView({ project, attempt, r, launch }: { project: string; attempt: Attempt; r: ResultDetail; launch: Launch | undefined }) {
   const start = attempt.startedAt ? new Date(attempt.startedAt).getTime() : null;
   const timeline = start !== null && attempt.durationMs ? { start, total: attempt.durationMs } : null;
   const [sp, setSp] = useSearchParams();
@@ -194,9 +392,13 @@ function AttemptView({ project, attempt }: { project: string; attempt: Attempt }
           <Tabs.Tab value="attachments" rightSection={attempt.attachments.length ? <Badge size="xs" variant="light" color="gray">{attempt.attachments.length}</Badge> : undefined}>
             Attachments
           </Tabs.Tab>
-          <Tabs.Tab value="logs" disabled={!attempt.stdout && !attempt.stderr}>
-            Logs
+          <Tabs.Tab value="logs" data-testid="tab-result-logs">
+            {launch?.status === 'running' ? 'Live logs' : 'Logs'}
           </Tabs.Tab>
+          <Tabs.Tab value="output" disabled={!attempt.stdout && !attempt.stderr}>
+            Output
+          </Tabs.Tab>
+          <Tabs.Tab value="mocks">Mock interactions</Tabs.Tab>
         </Tabs.List>
         <Tabs.Panel value="steps" pt="sm">
           <StepTree project={project} steps={attempt.steps} timeline={timeline} />
@@ -211,6 +413,16 @@ function AttemptView({ project, attempt }: { project: string; attempt: Attempt }
           )}
         </Tabs.Panel>
         <Tabs.Panel value="logs" pt="sm">
+          {r.launchId ? (
+            <LogConsole project={project} launchId={r.launchId} live={launch?.status === 'running'} resultId={r.id} attempt={attempt.no} height="min(55vh, 520px)" fileName={`${r.name}-attempt-${String(attempt.no)}.log`} />
+          ) : (
+            <Alert color="gray">The launch of this result is unknown, so its logs cannot be read.</Alert>
+          )}
+        </Tabs.Panel>
+        <Tabs.Panel value="mocks" pt="sm">
+          <MockInteractionsView project={project} resultId={r.id} attempt={attempt.no} />
+        </Tabs.Panel>
+        <Tabs.Panel value="output" pt="sm">
           <Stack gap="sm">
             {attempt.stdout && (
               <Stack gap={4}>
@@ -235,11 +447,11 @@ function AttemptView({ project, attempt }: { project: string; attempt: Attempt }
   );
 }
 
-function Attempts({ project, r }: { project: string; r: ResultDetail }) {
+function Attempts({ project, r, launch }: { project: string; r: ResultDetail; launch: Launch | undefined }) {
   const [sp, setSp] = useSearchParams();
   const last = r.attempts[r.attempts.length - 1];
   if (!last) return <Text c="dimmed">No attempts were reported.</Text>;
-  if (r.attempts.length === 1) return <AttemptView project={project} attempt={last} />;
+  if (r.attempts.length === 1) return <AttemptView project={project} attempt={last} r={r} launch={launch} />;
   const current = sp.get('attempt') ?? String(last.no);
   return (
     <Tabs
@@ -265,7 +477,7 @@ function Attempts({ project, r }: { project: string; r: ResultDetail }) {
       </Tabs.List>
       {r.attempts.map((a) => (
         <Tabs.Panel key={a.no} value={String(a.no)} pt="md">
-          <AttemptView project={project} attempt={a} />
+          <AttemptView project={project} attempt={a} r={r} launch={launch} />
         </Tabs.Panel>
       ))}
     </Tabs>
@@ -279,6 +491,7 @@ export default function ResultPage() {
   const launchId = q.data?.launchId ?? q.data?.history.find((h) => h.resultId === id)?.launchId;
   const launch = useLaunch(key, launchId ?? '');
   const launchNumber = q.data?.launchNumber ?? launch.data?.number;
+  const types = useDefectTypeMap(key);
 
   return (
     <QueryState query={q} notFound="Result not found">
@@ -297,6 +510,7 @@ export default function ResultPage() {
                 <>
                   <StatusBadge status={r.status} size="md" />
                   {r.flakyInRun && <StatusBadge status="flaky" size="md" />}
+                  <TransitionBadge transition={r.transition} />
                   {r.muted && (
                     <Badge variant="outline" color="gray">
                       muted
@@ -322,21 +536,7 @@ export default function ResultPage() {
             />
             <Stack gap="md">
               <HistoryStrip project={key} history={r.history} currentLaunch={launchId} fullName={r.fullName} />
-              {r.defect && (
-                <Card withBorder radius="md" padding="sm">
-                  <Group gap="sm" wrap="wrap">
-                    <Badge color="orange" variant="light" style={{ textTransform: 'none' }}>
-                      {r.defect.type.replace(/_/g, ' ')}
-                    </Badge>
-                    {r.defect.comment && <Text size="sm">{r.defect.comment}</Text>}
-                    {isHttpUrl(r.defect.issueUrl) && (
-                      <Anchor href={r.defect.issueUrl} target="_blank" rel="noopener noreferrer" size="sm">
-                        {r.defect.issueUrl}
-                      </Anchor>
-                    )}
-                  </Group>
-                </Card>
-              )}
+              <DefectCard project={key} r={r} types={types} />
               <SimpleGrid cols={{ base: 1, lg: 3 }} spacing="md">
                 <Stack gap="md" className="fp-result-main">
                   {r.description && (
@@ -350,10 +550,10 @@ export default function ResultPage() {
                     </Card>
                   )}
                   <Card withBorder radius="md" padding="md">
-                    <Attempts project={key} r={r} />
+                    <Attempts project={key} r={r} launch={launch.data} />
                   </Card>
                 </Stack>
-                <Side r={r} />
+                <Side project={key} r={r} types={types} />
               </SimpleGrid>
               <UnstyledButton component={Link} to={launchId ? `/p/${key}/launches/${launchId}` : `/p/${key}`}>
                 <Text size="sm" c="dimmed">

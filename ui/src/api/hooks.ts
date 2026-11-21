@@ -195,9 +195,7 @@ export interface AuditChunk {
 }
 
 export function auditChunk(page: AuditPage): AuditChunk {
-  const items = page.items ?? page.events ?? [];
-  const next = page.next ?? (page.nextBefore === undefined || page.nextBefore === null ? null : String(page.nextBefore));
-  return { items, next };
+  return { items: page.items, next: page.next ?? null };
 }
 
 export function useAudit(filters: AuditFilters, enabled: boolean) {

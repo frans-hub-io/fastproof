@@ -53,7 +53,7 @@ export default function TestCasePage() {
     () =>
       chronological.map((i) => {
         const row: Record<string, string | number> = { launch: `#${String(i.launchNumber)}` };
-        for (const s of CHART_STATUSES) row[s] = s === i.status && i.durationMs !== null ? Math.round(i.durationMs) / 1000 : 0;
+        for (const s of CHART_STATUSES) row[s] = s === i.status && typeof i.durationMs === 'number' ? Math.round(i.durationMs) / 1000 : 0;
         return row;
       }),
     [chronological],

@@ -47,7 +47,7 @@ describe('diff', () => {
 });
 
 function result(id: string, status: ResultSummary['status'], message?: string, fingerprint: string | null = null): ResultSummary {
-  return { id, testCaseId: id, seriesKey: id, name: id, fullName: id, suitePath: [], status, flakyInRun: false, attemptCount: 1, durationMs: 1, labels: [], muted: false, fingerprint, message };
+  return { id, launchId: 'l', testCaseId: id, seriesKey: id, name: id, fullName: id, suitePath: [], status, flakyInRun: false, attemptCount: 1, durationMs: 1, labels: [], muted: false, fingerprint, message };
 }
 
 describe('failure groups', () => {

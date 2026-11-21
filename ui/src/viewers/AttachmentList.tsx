@@ -3,8 +3,8 @@ import { useMediaQuery } from '@mantine/hooks';
 import { IconBraces, IconExternalLink, IconFile, IconFileText, IconLayersSubtract, IconMovie, IconPhoto, IconRoute, IconWorld } from '@tabler/icons-react';
 import { useState } from 'react';
 import { attachmentUrl, traceViewerUrl } from '../api/client';
-import type { Attachment } from '../api/types';
-import { attachmentKind, groupAttachments, isActiveContent, type AttachmentEntry } from '../lib/attachments';
+import type { Attachment, AttachmentRef } from '../api/types';
+import { attachmentKind, groupAttachments, isActiveContent, toAttachment, type AttachmentEntry } from '../lib/attachments';
 import { formatBytes } from '../lib/format';
 import { DownloadLinks, EntryBody } from './AttachmentViewer';
 
@@ -53,11 +53,13 @@ function entryInfo(e: AttachmentEntry): { key: string; name: string; kind: strin
   return { key: `pw:${e.name}`, name: `${e.name} (expected / actual${e.diff ? ' / diff' : ''})`, kind: 'playwrightDiff', size: parts.reduce((s, a) => s + a.size, 0), active: false };
 }
 
-export function AttachmentList({ project, attachments, compact = false }: { project: string; attachments: readonly Attachment[]; compact?: boolean }) {
+export function AttachmentList({ project, attachments, compact = false }: { project: string; attachments: readonly AttachmentRef[]; compact?: boolean }) {
   const [open, setOpen] = useState<AttachmentEntry | null>(null);
   const phone = useMediaQuery('(max-width: 48em)');
   if (!attachments.length) return null;
-  const entries = groupAttachments(attachments);
+  const stored = attachments.map(toAttachment).filter((a): a is Attachment => a !== null);
+  const missing = attachments.filter((a) => !a.id);
+  const entries = groupAttachments(stored);
   const current = open ? entryInfo(open) : null;
   return (
     <>
@@ -103,6 +105,17 @@ export function AttachmentList({ project, attachments, compact = false }: { proj
             </UnstyledButton>
           );
         })}
+        {missing.map((a, i) => (
+          <Group key={`missing:${String(i)}:${a.name}`} gap="xs" wrap="nowrap" className="fp-tree-row" style={{ opacity: 0.6, cursor: 'default' }} data-testid="attachment-missing">
+            <span style={{ color: 'var(--mantine-color-dimmed)', display: 'inline-flex' }}>{iconFor(a.kind)}</span>
+            <Text size="sm" className="fh-truncate" style={{ minWidth: 0, flex: 1 }}>
+              {a.name}
+            </Text>
+            <Text size="xs" c="dimmed" style={{ flex: 'none' }}>
+              not uploaded
+            </Text>
+          </Group>
+        ))}
       </Stack>
       <Modal opened={!!open} onClose={() => setOpen(null)} title={current?.name ?? ''} size="min(1100px, 96vw)" fullScreen={phone} styles={{ title: { fontWeight: 700, wordBreak: 'break-word' } }}>
         {open && (

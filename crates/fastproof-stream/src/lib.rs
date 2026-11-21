@@ -2,6 +2,7 @@
 //! with consumer groups managed in PostgreSQL, and the ClickHouse and OpenSearch sinks and
 //! search backends over plain HTTP.
 
+pub mod budget;
 pub mod clickhouse;
 pub mod config;
 pub mod consumer;

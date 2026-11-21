@@ -315,13 +315,58 @@ pub async fn platform(
     )?))
 }
 
-/// Connects, migrates (or checks), builds the state and starts listeners, workers and the
-/// scheduler. `prometheus` serves `/metrics` on the ops listener.
+/// The ops listener started before anything else, so probes get answers while start-up waits.
+struct Boot {
+    stop: CancellationToken,
+    ops_addr: SocketAddr,
+    ops_task: JoinHandle<()>,
+    started: crate::ops::Started,
+}
+
+async fn boot(cfg: &Config, prometheus: Option<PrometheusHandle>) -> anyhow::Result<Boot> {
+    let ops_listener = tokio::net::TcpListener::bind(cfg.ops_listen)
+        .await
+        .with_context(|| format!("FASTPROOF_OPS_LISTEN: binding {}", cfg.ops_listen))?;
+    let ops_addr = ops_listener.local_addr()?;
+    let stop = CancellationToken::new();
+    let started = crate::ops::Started::default();
+    let ops = crate::ops::router(started.clone(), prometheus);
+    let ops_task = {
+        let stop = stop.clone();
+        tokio::spawn(async move {
+            franshub_http::serve(
+                ops_listener,
+                ops,
+                None,
+                stop.cancelled_owned(),
+                ServeOptions::default(),
+            )
+            .await;
+        })
+    };
+    Ok(Boot {
+        stop,
+        ops_addr,
+        ops_task,
+        started,
+    })
+}
+
+/// Connects (waiting for PostgreSQL up to `FASTPROOF_DATABASE_CONNECT_TIMEOUT_SECONDS`),
+/// migrates (or checks), builds the state and starts listeners, workers and the scheduler.
+/// `prometheus` serves `/metrics` on the ops listener, which answers from the start.
 pub async fn start(cfg: Config, prometheus: Option<PrometheusHandle>) -> anyhow::Result<Running> {
     fastproof_blob::install_crypto_provider();
+    let boot = boot(&cfg, prometheus).await?;
     let env = |k: &str| std::env::var(k).ok();
-    let pool = cfg.db.connect(&env).await?;
-    start_with_pool(cfg, pool, prometheus).await
+    let pool = match cfg.db.connect_waiting(&env).await {
+        Ok(p) => p,
+        Err(e) => {
+            boot.stop.cancel();
+            return Err(e);
+        }
+    };
+    start_booted(cfg, pool, boot).await
 }
 
 /// As [`start`], on an existing pool.
@@ -331,11 +376,33 @@ pub async fn start_with_pool(
     prometheus: Option<PrometheusHandle>,
 ) -> anyhow::Result<Running> {
     fastproof_blob::install_crypto_provider();
+    let boot = boot(&cfg, prometheus).await?;
+    start_booted(cfg, pool, boot).await
+}
+
+async fn start_booted(cfg: Config, pool: PgPool, boot: Boot) -> anyhow::Result<Running> {
+    let stop = boot.stop.clone();
+    let r = start_inner(cfg, pool, boot).await;
+    if r.is_err() {
+        stop.cancel();
+    }
+    r
+}
+
+async fn start_inner(cfg: Config, pool: PgPool, boot: Boot) -> anyhow::Result<Running> {
     match cfg.migrate {
         MigrateMode::Auto => crate::db::migrate(&pool).await?,
         MigrateMode::Off => {
-            franshub_store_pg::check_schema(&pool).await?;
-            fastproof_store::check_schema(&pool).await?;
+            crate::db::wait_for(
+                "the database schema",
+                "FASTPROOF_DATABASE_CONNECT_TIMEOUT_SECONDS",
+                cfg.db.connect_timeout,
+                || async {
+                    franshub_store_pg::check_schema(&pool).await?;
+                    fastproof_store::check_schema(&pool).await
+                },
+            )
+            .await?;
         }
     }
     if cfg.valkey_url.is_some() {
@@ -379,9 +446,17 @@ pub async fn start_with_pool(
         rand::random::<u32>()
     );
     let limits = cfg.limits.clone();
-    let kafka = crate::stream::connect_kafka(&cfg, &store)
+    let kafka = match &cfg.kafka {
+        Some(k) if cfg.ingest_mode == crate::config::IngestMode::Kafka => crate::db::wait_for(
+            "Kafka",
+            "FASTPROOF_KAFKA_CONNECT_TIMEOUT_SECONDS",
+            k.connect_timeout,
+            || crate::stream::connect_kafka(&cfg, &store),
+        )
         .await
-        .context("FASTPROOF_KAFKA_*")?;
+        .context("FASTPROOF_KAFKA_*")?,
+        _ => None,
+    };
     let search = crate::stream::search_backend(&cfg)?;
     let state = AppState(Arc::new(Inner {
         perms: Perms::new(&platform),
@@ -410,17 +485,14 @@ pub async fn start_with_pool(
     } else {
         None
     };
-    let stop = CancellationToken::new();
-    let mut tasks = Vec::new();
+    let stop = boot.stop.clone();
+    let mut tasks = vec![boot.ops_task];
 
     let listener = tokio::net::TcpListener::bind(state.cfg.listen)
         .await
         .with_context(|| format!("FASTPROOF_LISTEN: binding {}", state.cfg.listen))?;
-    let ops_listener = tokio::net::TcpListener::bind(state.cfg.ops_listen)
-        .await
-        .with_context(|| format!("FASTPROOF_OPS_LISTEN: binding {}", state.cfg.ops_listen))?;
     let addr = listener.local_addr()?;
-    let ops_addr = ops_listener.local_addr()?;
+    let ops_addr = boot.ops_addr;
     let tls = match &state.cfg.tls {
         Some(t) => Some(franshub_http::server_config(t).context("FASTPROOF_TLS_*")?),
         None => None,
@@ -440,20 +512,6 @@ pub async fn start_with_pool(
         }));
     } else {
         drop(listener);
-    }
-    {
-        let ops = crate::ops::router(state.clone(), prometheus);
-        let stop = stop.clone();
-        tasks.push(tokio::spawn(async move {
-            franshub_http::serve(
-                ops_listener,
-                ops,
-                None,
-                stop.cancelled_owned(),
-                ServeOptions::default(),
-            )
-            .await;
-        }));
     }
     tasks.push(tokio::spawn(crate::live::listen(
         pool.clone(),
@@ -485,6 +543,7 @@ pub async fn start_with_pool(
             async move { local_maintenance(s, stop).await },
         ));
     }
+    let _ = boot.started.set(state.clone());
     tracing::info!(%addr, %ops_addr, ui = crate::ui::embedded(), blobs = state.blobs.backend(), workers = state.cfg.ingest_workers,
         mode = ?state.cfg.ingest_mode, roles = ?state.cfg.roles, "FastProof is serving");
     Ok(Running {

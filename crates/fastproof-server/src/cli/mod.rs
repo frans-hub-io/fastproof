@@ -286,7 +286,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<i32> {
                 franshub_observe::init(TelemetryConfig::new("fastproof", log_format()))?;
             let env = |k: &str| std::env::var(k).ok();
             let db = crate::db::DbSettings::from_lookup(&env)?;
-            let pool = db.connect(&env).await?;
+            let pool = db.connect_waiting(&env).await?;
             crate::db::migrate(&pool).await?;
             tracing::info!("migrations are up to date");
             telemetry.shutdown();

@@ -17,6 +17,10 @@ names the variable.
 
 Keep the operations port internal: it is unauthenticated by design. Expose only port 8080.
 
+The operations listener answers from the first moment of start-up. While FastProof waits for PostgreSQL (and
+Kafka in Kafka mode), `/healthz` returns 200 and `/readyz` returns 503 with `"status": "starting"`, so a pod
+that starts before its database is not restarted by its liveness probe and gets no traffic.
+
 ## Database
 
 | Variable | Default | Meaning |
@@ -28,6 +32,7 @@ Keep the operations port internal: it is unauthenticated by design. Expose only 
 | `PGSSLMODE`, `PGSSLROOTCERT` | none | Standard libpq variables, used when the URL sets no `sslmode` |
 | `FASTPROOF_DATABASE_STATEMENT_TIMEOUT_SECONDS` | `120` | Longest SQL statement on pooled connections; `0` turns it off. Migrations, index builds and the purge of deleted projects run without it |
 | `FASTPROOF_DATABASE_INGEST_RESERVE` | a quarter of the pool, at least 1 | Connections that heavy reads (dashboard, log search, similar failures, rule dry runs, stored log reads) leave free for ingest and workers; must be below `FASTPROOF_DATABASE_MAX_CONNECTIONS` |
+| `FASTPROOF_DATABASE_CONNECT_TIMEOUT_SECONDS` | `300` | How long `serve` and `migrate` wait at start for PostgreSQL (and, with `FASTPROOF_MIGRATE=off`, for the migrations) before they exit with an error; every attempt is logged. `0` tries once. 0 to 86400 |
 | `FASTPROOF_MIGRATE` | `auto` | `auto` applies migrations at start under an advisory lock; `off` expects them applied by `fastproof migrate` (the Helm chart runs it as a Job) |
 
 PostgreSQL 14 to 18 is supported; 18 is recommended. PostgreSQL 14 reached end of life in November 2026.
@@ -104,10 +109,19 @@ Used only with `FASTPROOF_INGEST_MODE=kafka`.
 | `FASTPROOF_KAFKA_CLIENT_ID` | `fastproof` | Client id sent to the brokers (shows up in broker logs and quotas) |
 | `FASTPROOF_KAFKA_MAX_RECORD_BYTES` | `900000` | Largest record FastProof produces (16 KiB to 64 MiB); keep it below the topic's `max.message.bytes` |
 | `FASTPROOF_KAFKA_SIGNATURE_MAX_AGE_HOURS` | `168` | Records FastProof signed longer ago than this are rejected; signatures carry a key id and a time. Upgrade all replicas together: records signed by older versions are rejected |
+| `FASTPROOF_KAFKA_FETCH_MAX_BYTES` | `1048576` (1 MiB), at least the record size | Decoded bytes one partition fetch aims at; from `FASTPROOF_KAFKA_MAX_RECORD_BYTES` to 64 MiB |
+| `FASTPROOF_KAFKA_MAX_INFLIGHT_BYTES` | `67108864` (64 MiB), at least the fetch size | Record bytes one process holds across all partitions it consumes; fetches wait while it is spent. From `FASTPROOF_KAFKA_FETCH_MAX_BYTES` to 64 GiB |
+| `FASTPROOF_KAFKA_BATCH_MAX_RECORDS` | `1000` | Records handled and committed in one transaction, 1 to 100000 |
+| `FASTPROOF_KAFKA_BATCH_MAX_BYTES` | `1048576` (1 MiB) | Record bytes handled and committed in one transaction (a larger record goes alone), 16 KiB to 64 MiB |
+| `FASTPROOF_KAFKA_CONNECT_TIMEOUT_SECONDS` | `300` | How long start-up waits for Kafka (connection and topics) before it exits with an error; every attempt is logged. `0` tries once. 0 to 86400 |
 
 Consumer offsets and partition leases live in PostgreSQL, so Kafka needs only topic `Read`, `Describe` and
 `Write` for the FastProof user (plus `Create` when FastProof creates the topics). Use SASL over TLS outside a
 trusted network.
+
+The memory of the Kafka consumers depends on `FASTPROOF_KAFKA_MAX_INFLIGHT_BYTES`, not on the lag or the
+number of partitions: a writer that starts behind a large backlog drains it within the same memory. See
+[memory of the Kafka consumers](scaling.md#memory-of-the-kafka-consumers) for how to size the limits.
 
 ## ClickHouse sink
 
@@ -151,8 +165,9 @@ Apply to every sink (`FASTPROOF_SINKS`).
 | `FASTPROOF_SINK_BATCH_SIZE` | `2000` | Rows (or documents) written per request, 1 to 100000 |
 | `FASTPROOF_SINK_FLUSH_INTERVAL_MS` | `1000` | Longest wait before a partial batch is written, 10 to 600000 |
 
-Larger batches cost fewer requests and more memory per sink replica; a shorter interval makes search see new
-data sooner.
+Larger batches cost fewer requests; a shorter interval makes search see new data sooner. Whatever the batch
+size, a sink loads and writes at most 1000 results, 250 attempts or about 4 MiB of log lines at a time, and
+each sink runs at most two writes at once per process.
 
 ## Live logs
 

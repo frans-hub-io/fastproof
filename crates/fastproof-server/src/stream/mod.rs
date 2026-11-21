@@ -247,7 +247,6 @@ pub async fn start(s: &AppState, stop: &CancellationToken) -> anyhow::Result<Vec
                 kafka: kafka.clone(),
                 handler: Arc::new(writer::Writer::new(s.clone(), kafka.clone())),
                 start: Start::Earliest,
-                max_bytes: 8 * 1024 * 1024,
                 max_wait_ms: 200,
             });
             tasks.push(group_with(s, GROUP_WRITER, topics, consumer, stop.clone()).await);
@@ -270,12 +269,8 @@ pub async fn start(s: &AppState, stop: &CancellationToken) -> anyhow::Result<Vec
             let topics = kafka_topics(kafka, &[TOPIC_UPLOADS]).await?;
             let consumer = Arc::new(KafkaConsumer {
                 kafka: kafka.clone(),
-                handler: Arc::new(uploads::UploadHandler {
-                    s: s.clone(),
-                    stop: stop.clone(),
-                }),
+                handler: Arc::new(uploads::UploadHandler::new(s.clone(), stop.clone())),
                 start: Start::Earliest,
-                max_bytes: 64 * 1024,
                 max_wait_ms: 500,
             });
             tasks.push(group_with(s, GROUP_INGEST, topics, consumer, stop.clone()).await);
@@ -317,9 +312,8 @@ pub async fn start(s: &AppState, stop: &CancellationToken) -> anyhow::Result<Vec
                         };
                         let consumer = Arc::new(KafkaConsumer {
                             kafka,
-                            handler: Arc::new(KafkaSink { store: s.store.clone(), sink, signer }),
+                            handler: Arc::new(KafkaSink::new(s.store.clone(), sink, signer)),
                             start: Start::Earliest,
-                            max_bytes: 1024 * 1024,
                             max_wait_ms: s.cfg.sink_tuning.flush_interval.as_millis().min(5000) as i32,
                         });
                         group_with(&s, &group, topics, consumer, stop.clone()).await

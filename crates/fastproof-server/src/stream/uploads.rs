@@ -4,6 +4,7 @@
 //! seen again after a crash parses the upload again; the writer drops the duplicates by
 //! client key.
 
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
@@ -14,6 +15,7 @@ use fastproof_stream::consumer::BatchHandler;
 use fastproof_stream::groups::PartitionCtx;
 use fastproof_stream::kafka::RecordAndOffset;
 use fastproof_stream::messages::UploadRecord;
+use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
 use crate::ingest::{JobFailure, process_inner};
@@ -22,12 +24,20 @@ use crate::state::AppState;
 /// Processing attempts of one upload before it fails.
 const ATTEMPTS: i32 = 3;
 
+/// Processes uploads; the partitions of one process share `FASTPROOF_INGEST_WORKERS` slots,
+/// so a backlog never parses more archives at once than the direct mode workers would.
 pub struct UploadHandler {
     pub s: AppState,
     pub stop: CancellationToken,
+    slots: Arc<Semaphore>,
 }
 
 impl UploadHandler {
+    pub fn new(s: AppState, stop: CancellationToken) -> Self {
+        let slots = Arc::new(Semaphore::new(s.cfg.ingest_workers.max(1)));
+        Self { s, stop, slots }
+    }
+
     async fn process(&self, rec: UploadRecord) -> anyhow::Result<()> {
         let s = &self.s;
         let kafka = s
@@ -147,7 +157,13 @@ impl BatchHandler for UploadHandler {
                     .increment(1);
                 continue;
             };
-            self.process(rec).await?;
+            {
+                let _slot = tokio::select! {
+                    _ = self.stop.cancelled() => anyhow::bail!("stopping"),
+                    s = self.slots.acquire() => s?,
+                };
+                self.process(rec).await?;
+            }
             ctx.commit(r.offset + 1, Some(hwm)).await?;
         }
         ctx.commit(next_offset, Some(hwm)).await

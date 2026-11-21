@@ -1,6 +1,9 @@
 //! The ops listener: `/metrics`, `/healthz` (process alive), `/readyz` (database reachable,
-//! migrations at the expected version, blob store reachable).
+//! migrations at the expected version, blob store reachable). It serves from the first moment
+//! of start-up: while FastProof still waits for PostgreSQL or Kafka, `/healthz` answers and
+//! `/readyz` says `starting`.
 
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use axum::Json;
@@ -31,7 +34,16 @@ async fn check<F: std::future::Future<Output = anyhow::Result<()>>>(name: &str, 
     }
 }
 
-async fn readyz(State(s): State<AppState>) -> (StatusCode, Json<serde_json::Value>) {
+/// The state once start-up is complete.
+pub type Started = Arc<OnceLock<AppState>>;
+
+async fn readyz(State(started): State<Started>) -> (StatusCode, Json<serde_json::Value>) {
+    let Some(s) = started.get() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"status": "starting", "checks": {}})),
+        );
+    };
     let db = check("database", s.store.ping()).await;
     let schema = db
         && check("migrations", async {
@@ -55,12 +67,12 @@ async fn readyz(State(s): State<AppState>) -> (StatusCode, Json<serde_json::Valu
     )
 }
 
-/// The ops router.
-pub fn router(state: AppState, prometheus: Option<PrometheusHandle>) -> Router {
+/// The ops router; `/readyz` fails until `started` is set.
+pub fn router(started: Started, prometheus: Option<PrometheusHandle>) -> Router {
     let mut r = Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
-        .with_state(state);
+        .with_state(started);
     if let Some(h) = prometheus {
         r = r.merge(franshub_observe::metrics_router(h));
     }

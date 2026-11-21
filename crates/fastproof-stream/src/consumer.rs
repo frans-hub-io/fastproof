@@ -1,6 +1,7 @@
 //! Partition workers: a Kafka partition consumed from its committed offset, and the PostgreSQL
 //! outbox (`events`) read in id order without skipping rows of transactions still in flight.
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -11,9 +12,11 @@ use rskafka::record::RecordAndOffset;
 use tokio_util::sync::CancellationToken;
 
 use crate::groups::{PartitionCtx, PartitionRunner};
-use crate::kafka::{Kafka, Start};
+use crate::kafka::{FetchWindow, Fetched, Kafka, Start, record_bytes};
 
-/// Handles one fetched batch of a partition and commits `next_offset`.
+/// Handles one batch of a partition and commits `next_offset`. A batch holds at most
+/// [`crate::KafkaConfig::batch_max_records`] records and about
+/// [`crate::KafkaConfig::batch_max_bytes`] bytes (a larger record is a batch of its own).
 #[async_trait]
 pub trait BatchHandler: Send + Sync + 'static {
     async fn handle(
@@ -25,14 +28,35 @@ pub trait BatchHandler: Send + Sync + 'static {
     ) -> anyhow::Result<()>;
 }
 
-/// Consumes the partitions a group member holds.
+/// Consumes the partitions a group member holds. Fetches stay within the process budget
+/// ([`Kafka::fetch_bounded`]); the records are handed over in bounded batches, each committed
+/// before its bytes go back to the budget.
 pub struct KafkaConsumer<H> {
     pub kafka: Arc<Kafka>,
     pub handler: Arc<H>,
     /// Where to start without a committed offset.
     pub start: Start,
-    pub max_bytes: i32,
     pub max_wait_ms: i32,
+}
+
+/// Takes the next batch from the front of `records`: at most `max_records` records and
+/// `max_bytes` bytes, and at least one record.
+pub fn next_batch(
+    records: &mut VecDeque<RecordAndOffset>,
+    max_records: usize,
+    max_bytes: usize,
+) -> (Vec<RecordAndOffset>, usize) {
+    let mut out = Vec::new();
+    let mut bytes = 0;
+    while let Some(r) = records.front() {
+        let b = record_bytes(r);
+        if !out.is_empty() && (out.len() >= max_records || bytes + b > max_bytes) {
+            break;
+        }
+        bytes += b;
+        out.extend(records.pop_front());
+    }
+    (out, bytes)
 }
 
 #[async_trait]
@@ -50,32 +74,48 @@ impl<H: BatchHandler> PartitionRunner for KafkaConsumer<H> {
                     .await?
             }
         };
+        let cfg = self.kafka.config();
+        let mut window = FetchWindow::new(cfg.fetch_max_bytes);
         loop {
             if stop.is_cancelled() {
                 return Ok(());
             }
             let fetched = tokio::select! {
                 _ = stop.cancelled() => return Ok(()),
-                r = self.kafka.fetch(&ctx.topic, ctx.partition, offset, self.max_bytes, self.max_wait_ms) => r?,
+                r = self.kafka.fetch_bounded(&ctx.topic, ctx.partition, offset, &mut window, self.max_wait_ms) => r?,
             };
-            let (records, hwm, from) = fetched;
+            let Fetched {
+                records,
+                high_watermark: hwm,
+                from,
+                mut reservation,
+            } = fetched;
             offset = from;
-            let records: Vec<RecordAndOffset> =
-                records.into_iter().filter(|r| r.offset >= offset).collect();
-            let Some(last) = records.last().map(|r| r.offset) else {
+            if records.is_empty() {
                 ctx.record_lag(hwm, offset);
                 continue;
-            };
-            let next = last + 1;
-            let n = records.len();
-            let started = Instant::now();
-            self.handler.handle(&ctx, records, next, hwm).await?;
-            metrics::counter!("fastproof_kafka_consumed_total", "group" => ctx.group.clone(), "topic" => ctx.topic.clone())
-                .increment(n as u64);
-            metrics::histogram!("fastproof_kafka_batch_seconds", "group" => ctx.group.clone())
-                .record(started.elapsed().as_secs_f64());
-            offset = next;
-            ctx.record_lag(hwm, offset);
+            }
+            let mut records = VecDeque::from(records);
+            while !records.is_empty() {
+                let (batch, bytes) =
+                    next_batch(&mut records, cfg.batch_max_records, cfg.batch_max_bytes);
+                let Some(next) = batch.last().map(|r| r.offset + 1) else {
+                    break;
+                };
+                let n = batch.len();
+                let started = Instant::now();
+                self.handler.handle(&ctx, batch, next, hwm).await?;
+                reservation.release(bytes);
+                metrics::counter!("fastproof_kafka_consumed_total", "group" => ctx.group.clone(), "topic" => ctx.topic.clone())
+                    .increment(n as u64);
+                metrics::histogram!("fastproof_kafka_batch_seconds", "group" => ctx.group.clone())
+                    .record(started.elapsed().as_secs_f64());
+                offset = next;
+                ctx.record_lag(hwm, offset);
+                if stop.is_cancelled() {
+                    return Ok(());
+                }
+            }
         }
     }
 }
@@ -177,5 +217,54 @@ impl OutboxReader {
             self.gap = None;
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use rskafka::record::Record;
+
+    use super::*;
+
+    fn rec(offset: i64, size: usize) -> RecordAndOffset {
+        RecordAndOffset {
+            record: Record {
+                key: None,
+                value: Some(vec![b'x'; size]),
+                headers: BTreeMap::new(),
+                timestamp: chrono::Utc::now(),
+            },
+            offset,
+        }
+    }
+
+    #[test]
+    fn batches_are_bounded_in_records_and_bytes() {
+        let mut q: VecDeque<RecordAndOffset> = (0..10).map(|i| rec(i, 1000)).collect();
+        q.push_back(rec(10, 50_000));
+        q.push_back(rec(11, 10));
+        let (b, bytes) = next_batch(&mut q, 4, 1 << 20);
+        assert_eq!(
+            (b.len(), b[0].offset, bytes),
+            (4, 0, 4 * record_bytes(&b[0]))
+        );
+        let (b, _) = next_batch(&mut q, 100, 3000);
+        assert_eq!(b.len(), 2, "bytes cap the batch");
+        let (b, _) = next_batch(&mut q, 100, 3000);
+        assert_eq!(b.iter().map(|r| r.offset).collect::<Vec<_>>(), vec![6, 7]);
+        let (b, _) = next_batch(&mut q, 100, 3000);
+        assert_eq!(b.len(), 2);
+        let (b, _) = next_batch(&mut q, 100, 3000);
+        assert_eq!(
+            (b.len(), b[0].offset),
+            (1, 10),
+            "a record larger than the cap is a batch of its own"
+        );
+        let (b, _) = next_batch(&mut q, 100, 3000);
+        assert_eq!(b[0].offset, 11);
+        assert!(q.is_empty());
+        assert!(next_batch(&mut q, 100, 3000).0.is_empty());
     }
 }

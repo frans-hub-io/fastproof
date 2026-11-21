@@ -1,13 +1,15 @@
-//! The writer (`fastproof-writer`): persists `ingest.results` and `ingest.logs` to PostgreSQL.
-//! One transaction per fetched batch holds the rows and the consumer offset, so a batch is
-//! applied exactly once even when a writer stops half way; rows are also idempotent by client
-//! ids, which absorbs duplicate records from producer retries.
+//! The writer (`fastproof-writer`): persists `ingest.results` and `ingest.logs` to PostgreSQL in
+//! batches bounded in records and bytes by the consumer. The consumer offset is committed in
+//! the same transaction as the last rows of a batch; rows are idempotent by client ids, which
+//! absorbs a batch replayed after a stop half way and duplicate records from producer retries.
+//! Transactions that hit a deadlock or serialization failure run again. Raw records are
+//! dropped as they are decoded.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use fastproof_store::ingest::NewAttempt;
+use fastproof_store::ingest::{NewAttempt, TX_ATTEMPTS, retry_pause, retryable};
 use fastproof_store::logs::LogLine;
 use fastproof_store::stream::WriterLaunch;
 use fastproof_stream::Kafka;
@@ -83,8 +85,8 @@ impl Writer {
         hwm: i64,
     ) -> anyhow::Result<()> {
         let mut by_launch: BTreeMap<(String, Uuid), Vec<ResultRecord>> = BTreeMap::new();
-        for r in &records {
-            let Some((v, signed)) = self.value(&ctx.topic, r) else {
+        for r in records {
+            let Some((v, signed)) = self.value(&ctx.topic, &r) else {
                 continue;
             };
             match serde_json::from_slice::<ResultRecord>(v) {
@@ -147,19 +149,60 @@ impl Writer {
                 self.s.store.link_attachments(used, wl.launch.id).await?;
             }
         }
-        let mut tx = self.s.store.pool().begin().await?;
+        // One transaction per launch (and upload), the last one with the offset: a transaction
+        // that touched several launches would take the shared test case and series locks of
+        // one launch after the per-series locks of another and could deadlock with other
+        // partitions. A batch replayed after a crash between them is absorbed by client keys.
         let mut accepted = 0;
-        for (wl, upload, attempts, _) in work {
-            let out =
-                fastproof_store::ingest::persist_attempts_in(&mut tx, &wl.launch, upload, attempts)
-                    .await?;
-            accepted += out.accepted;
+        let last = work.len();
+        for (i, (wl, upload, attempts, _)) in work.into_iter().enumerate() {
+            let offset = (i + 1 == last).then_some((next, hwm));
+            accepted += self.persist(ctx, &wl, upload, attempts, offset).await?;
         }
-        ctx.commit_in(&mut tx, next, Some(hwm)).await?;
-        tx.commit().await?;
+        if last == 0 {
+            ctx.commit(next, Some(hwm)).await?;
+        }
         metrics::counter!("fastproof_results_ingested_total", "source" => "kafka")
             .increment(accepted);
         Ok(())
+    }
+
+    /// Persists the attempts of one launch, committing the offset too when given; retried as a
+    /// whole after a deadlock or serialization failure.
+    async fn persist(
+        &self,
+        ctx: &PartitionCtx,
+        wl: &WriterLaunch,
+        upload: Option<Uuid>,
+        attempts: Vec<NewAttempt>,
+        offset: Option<(i64, i64)>,
+    ) -> anyhow::Result<u64> {
+        let mut n = 0;
+        loop {
+            n += 1;
+            let r = async {
+                let mut tx = self.s.store.pool().begin().await?;
+                let out = fastproof_store::ingest::persist_attempts_in(
+                    &mut tx,
+                    &wl.launch,
+                    upload,
+                    attempts.clone(),
+                )
+                .await?;
+                if let Some((next, hwm)) = offset {
+                    ctx.commit_in(&mut tx, next, Some(hwm)).await?;
+                }
+                tx.commit().await?;
+                Ok::<_, anyhow::Error>(out.accepted)
+            }
+            .await;
+            match r {
+                Err(e) if n < TX_ATTEMPTS && retryable(&e).is_some() => {
+                    retry_pause("writer", &e, n).await
+                }
+                r => return r,
+            }
+        }
     }
 
     async fn logs(
@@ -171,8 +214,8 @@ impl Writer {
     ) -> anyhow::Result<()> {
         let mut by_launch: BTreeMap<(String, Uuid), (Vec<LogLine>, Vec<LogLine>)> = BTreeMap::new();
         let max_line = self.s.cfg.log_limits.max_line_bytes;
-        for r in &records {
-            let Some((v, signed)) = self.value(&ctx.topic, r) else {
+        for r in records {
+            let Some((v, signed)) = self.value(&ctx.topic, &r) else {
                 continue;
             };
             match serde_json::from_slice::<LogRecord>(v) {
@@ -227,21 +270,35 @@ impl Writer {
                 resolved.push((wl, lines));
             }
         }
-        let mut tx = self.s.store.pool().begin().await?;
-        let mut n = 0;
-        for (wl, lines) in resolved {
-            let chunks = fastproof_store::logs::insert_log_lines(
-                &mut tx,
-                wl.launch.project_id,
-                &wl.launch.project_key,
-                wl.launch.id,
-                lines,
-            )
-            .await?;
-            n += chunks.iter().map(|c| c.lines.len() as u64).sum::<u64>();
-        }
-        ctx.commit_in(&mut tx, next, Some(hwm)).await?;
-        tx.commit().await?;
+        let mut attempt = 0;
+        let n = loop {
+            attempt += 1;
+            let r = async {
+                let mut tx = self.s.store.pool().begin().await?;
+                let mut n = 0;
+                for (wl, lines) in &resolved {
+                    let chunks = fastproof_store::logs::insert_log_lines(
+                        &mut tx,
+                        wl.launch.project_id,
+                        &wl.launch.project_key,
+                        wl.launch.id,
+                        lines.clone(),
+                    )
+                    .await?;
+                    n += chunks.iter().map(|c| c.lines.len() as u64).sum::<u64>();
+                }
+                ctx.commit_in(&mut tx, next, Some(hwm)).await?;
+                tx.commit().await?;
+                Ok::<_, anyhow::Error>(n)
+            }
+            .await;
+            match r {
+                Err(e) if attempt < TX_ATTEMPTS && retryable(&e).is_some() => {
+                    retry_pause("writer_logs", &e, attempt).await
+                }
+                r => break r?,
+            }
+        };
         metrics::counter!("fastproof_log_lines_stored_total", "source" => "kafka").increment(n);
         Ok(())
     }

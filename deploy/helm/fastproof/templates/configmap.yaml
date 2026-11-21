@@ -16,6 +16,7 @@ data:
   FASTPROOF_DATABASE_URL_FILE: /etc/fastproof/secrets/database-url
   FASTPROOF_DATABASE_MAX_CONNECTIONS: {{ .Values.database.maxConnections | quote }}
   FASTPROOF_DATABASE_STATEMENT_TIMEOUT_SECONDS: {{ .Values.database.statementTimeoutSeconds | int64 | quote }}
+  FASTPROOF_DATABASE_CONNECT_TIMEOUT_SECONDS: {{ .Values.database.connectTimeoutSeconds | int64 | quote }}
   {{- if gt (int .Values.database.ingestReserve) 0 }}
   FASTPROOF_DATABASE_INGEST_RESERVE: {{ .Values.database.ingestReserve | int64 | quote }}
   {{- end }}
@@ -83,6 +84,11 @@ data:
   FASTPROOF_KAFKA_CLIENT_ID: {{ .Values.kafka.clientId | quote }}
   FASTPROOF_KAFKA_MAX_RECORD_BYTES: {{ .Values.kafka.maxRecordBytes | int64 | quote }}
   FASTPROOF_KAFKA_SIGNATURE_MAX_AGE_HOURS: {{ .Values.kafka.signatureMaxAgeHours | int64 | quote }}
+  FASTPROOF_KAFKA_CONNECT_TIMEOUT_SECONDS: {{ .Values.kafka.connectTimeoutSeconds | int64 | quote }}
+  FASTPROOF_KAFKA_FETCH_MAX_BYTES: {{ max (int64 .Values.kafka.consumer.fetchMaxBytes) (int64 .Values.kafka.maxRecordBytes) | quote }}
+  FASTPROOF_KAFKA_MAX_INFLIGHT_BYTES: {{ max (int64 .Values.kafka.consumer.maxInflightBytes) (int64 .Values.kafka.consumer.fetchMaxBytes) (int64 .Values.kafka.maxRecordBytes) | quote }}
+  FASTPROOF_KAFKA_BATCH_MAX_RECORDS: {{ .Values.kafka.consumer.batchMaxRecords | int64 | quote }}
+  FASTPROOF_KAFKA_BATCH_MAX_BYTES: {{ .Values.kafka.consumer.batchMaxBytes | int64 | quote }}
   {{- end }}
   {{- if .Values.sinks.clickhouse.enabled }}
   {{- $c := include "fastproof.clickhouseConn" . | fromJson }}

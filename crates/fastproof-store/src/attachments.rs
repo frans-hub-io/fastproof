@@ -60,7 +60,10 @@ impl Store {
         let mut names: Vec<Option<String>> = Vec::with_capacity(items.len());
         let mut keys = Vec::with_capacity(items.len());
         let mut seen = std::collections::HashSet::new();
-        for a in items {
+        // Hash order: concurrent uploads sharing attachments lock their rows in one order.
+        let mut sorted: Vec<&NewAttachment> = items.iter().collect();
+        sorted.sort_by(|a, b| a.sha256.cmp(&b.sha256));
+        for a in sorted {
             if !seen.insert(a.sha256.as_str()) {
                 continue;
             }
@@ -93,7 +96,9 @@ impl Store {
         .bind(&keys)
         .fetch_all(&mut *tx)
         .await?;
-        let all: Vec<Uuid> = rows.iter().map(|r| r.0).collect();
+        let mut all: Vec<Uuid> = rows.iter().map(|r| r.0).collect();
+        all.sort();
+        all.dedup();
         sqlx::query(
             "insert into attachment_links (attachment_id, launch_id) select a, $2 from unnest($1::uuid[]) as a \
              on conflict do nothing",
@@ -163,11 +168,14 @@ impl Store {
         if ids.is_empty() {
             return Ok(());
         }
+        let mut ids = ids.to_vec();
+        ids.sort();
+        ids.dedup();
         sqlx::query(
             "insert into attachment_links (attachment_id, launch_id) select a, $2 from unnest($1::uuid[]) as a \
              on conflict do nothing",
         )
-        .bind(ids)
+        .bind(&ids)
         .bind(launch_id)
         .execute(&self.pool)
         .await?;

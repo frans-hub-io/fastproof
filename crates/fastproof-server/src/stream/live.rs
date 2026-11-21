@@ -1,10 +1,11 @@
 //! Live log fan-out of one replica: lines reach [`LogHub`] from PostgreSQL `LISTEN` (direct
 //! mode) or from a reader of `ingest.logs` that starts at the latest offset and never commits
-//! (Kafka mode, `fastproof-live-<replica>`). Each SSE subscriber has its own queue, bounded in
-//! lines and bytes (oldest lines are dropped first and reported as a gap); a subscriber that
-//! takes nothing for [`STALL_AFTER`] while its queue overflows is dropped.
+//! (Kafka mode, `fastproof-live-<replica>`; it fetches only while someone follows a launch).
+//! Each SSE subscriber has its own queue, bounded in lines and bytes (oldest lines are dropped
+//! first and reported as a gap); a subscriber that takes nothing for [`STALL_AFTER`] while its
+//! queue overflows is dropped.
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -12,7 +13,7 @@ use std::time::{Duration, Instant};
 use fastproof_store::Store;
 use fastproof_store::logs::{LOGS_CHANNEL, LogLine, LogNotice};
 use fastproof_stream::Kafka;
-use fastproof_stream::kafka::{Start, TOPIC_LOGS};
+use fastproof_stream::kafka::{FetchWindow, Fetched, Start, TOPIC_LOGS};
 use fastproof_stream::messages::LogRecord;
 use sqlx::PgPool;
 use sqlx::postgres::PgListener;
@@ -200,6 +201,17 @@ impl LogHub {
             .len()
     }
 
+    /// Launches with at least one subscriber.
+    pub fn launches(&self) -> HashSet<Uuid> {
+        self.hub
+            .subs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .map(|s| s.launch)
+            .collect()
+    }
+
     pub fn publish(&self, b: LogBatch) {
         if b.lines.is_empty() {
             return;
@@ -287,8 +299,21 @@ pub async fn listen_pg(pool: PgPool, store: Store, hub: LogHub, stop: Cancellati
     }
 }
 
+/// How often a partition reader without subscribers moves to the end of the log.
+const IDLE_POLL: Duration = Duration::from_millis(500);
+
+/// The launch a record is keyed by (the gateway keys records by launch id).
+fn record_launch(r: &fastproof_stream::kafka::RecordAndOffset) -> Option<Uuid> {
+    std::str::from_utf8(r.record.key.as_deref()?)
+        .ok()?
+        .parse()
+        .ok()
+}
+
 /// Kafka mode: reads every partition of `ingest.logs` from the latest offset without a group or
-/// commits, and publishes the lines of this replica's subscribers.
+/// commits, and publishes the lines of this replica's subscribers. Without subscribers a reader
+/// only follows the end of the log; with them it fetches within the process budget and decodes
+/// only the records of followed launches.
 pub async fn listen_kafka(kafka: Arc<Kafka>, hub: LogHub, stop: CancellationToken) {
     let topic = kafka.topic(TOPIC_LOGS);
     let trusted = kafka.config().trusted_producers;
@@ -312,30 +337,45 @@ pub async fn listen_kafka(kafka: Arc<Kafka>, hub: LogHub, stop: CancellationToke
         let topic = topic.clone();
         tasks.push(tokio::spawn(async move {
             let mut offset: Option<i64> = None;
+            let mut window = FetchWindow::new(kafka.config().fetch_max_bytes);
             loop {
                 if stop.is_cancelled() {
                     return;
                 }
-                let o = match offset {
-                    Some(o) => o,
-                    None => match kafka.offset(&topic, p, Start::Latest).await {
-                        Ok(o) => o,
+                let wanted = hub.launches();
+                if wanted.is_empty() || offset.is_none() {
+                    match kafka.offset(&topic, p, Start::Latest).await {
+                        Ok(o) => offset = Some(o),
                         Err(e) => {
                             tracing::warn!(partition = p, error = %format!("{e:#}"), "live log reader: offset failed");
+                            offset = None;
                             tokio::select! {
                                 _ = stop.cancelled() => return,
                                 _ = tokio::time::sleep(Duration::from_secs(2)) => {}
                             }
                             continue;
                         }
-                    },
-                };
+                    }
+                    if wanted.is_empty() {
+                        tokio::select! {
+                            _ = stop.cancelled() => return,
+                            _ = tokio::time::sleep(IDLE_POLL) => {}
+                        }
+                        continue;
+                    }
+                }
+                let Some(o) = offset else { continue };
                 let fetched = tokio::select! {
                     _ = stop.cancelled() => return,
-                    r = kafka.fetch(&topic, p, o, 4 * 1024 * 1024, 500) => r,
+                    r = kafka.fetch_bounded(&topic, p, o, &mut window, 500) => r,
                 };
-                let (records, _hwm, from) = match fetched {
-                    Ok(r) => r,
+                let Fetched {
+                    records,
+                    from,
+                    reservation,
+                    ..
+                } = match fetched {
+                    Ok(f) => f,
                     Err(e) => {
                         tracing::warn!(partition = p, error = %format!("{e:#}"), "live log reader: fetch failed");
                         offset = None;
@@ -349,16 +389,19 @@ pub async fn listen_kafka(kafka: Arc<Kafka>, hub: LogHub, stop: CancellationToke
                 let mut next = from;
                 let mut by_launch: BTreeMap<(String, Uuid), Vec<LogLine>> = BTreeMap::new();
                 for r in records {
-                    if r.offset < from {
+                    next = r.offset + 1;
+                    if record_launch(&r).is_some_and(|l| !wanted.contains(&l)) {
                         continue;
                     }
-                    next = r.offset + 1;
                     if !trusted && !kafka.signer().is_some_and(|s| s.verify(&topic, &r.record)) {
                         continue;
                     }
                     let Some(Ok(rec)) = r.record.value.as_deref().map(serde_json::from_slice::<LogRecord>) else {
                         continue;
                     };
+                    if !wanted.contains(&rec.launch_id) {
+                        continue;
+                    }
                     by_launch
                         .entry((rec.project.clone(), rec.launch_id))
                         .or_default()
@@ -371,6 +414,7 @@ pub async fn listen_kafka(kafka: Arc<Kafka>, hub: LogHub, stop: CancellationToke
                         lines,
                     });
                 }
+                drop(reservation);
                 offset = Some(next);
             }
         }));

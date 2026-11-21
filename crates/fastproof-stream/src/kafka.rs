@@ -19,6 +19,7 @@ use rustls::pki_types::pem::PemObject;
 use sha2::Sha256;
 use tokio::sync::Mutex;
 
+use crate::budget::{ByteBudget, RECORD_OVERHEAD, Reservation};
 use crate::config::{KafkaConfig, SaslMechanism};
 
 /// Topic names after the prefix (`31-streaming.md`).
@@ -250,6 +251,61 @@ pub struct Kafka {
     signer: Option<Signer>,
     partitions: Mutex<HashMap<String, i32>>,
     clients: Mutex<HashMap<(String, i32), Arc<PartitionClient>>>,
+    budget: Arc<ByteBudget>,
+}
+
+/// Smallest fetch request: the broker still returns at least one whole record batch.
+pub const MIN_FETCH_BYTES: usize = 16 * 1024;
+
+/// The fetch size of one partition, adapted to how much its records expand once decoded.
+///
+/// The broker counts `max_bytes` on the wire (compressed), while memory holds decoded records;
+/// the first request is small, and later ones aim at [`KafkaConfig::fetch_max_bytes`] decoded
+/// bytes from the expansion seen in full fetches.
+#[derive(Clone, Copy, Debug)]
+pub struct FetchWindow {
+    request: usize,
+}
+
+impl FetchWindow {
+    pub fn new(target: usize) -> Self {
+        Self {
+            request: (target / 16).clamp(MIN_FETCH_BYTES, target.max(MIN_FETCH_BYTES)),
+        }
+    }
+
+    /// Bytes requested from the broker next.
+    pub fn request(&self) -> usize {
+        self.request
+    }
+
+    /// Adapts to a fetch of `self.request()` bytes that decoded to `decoded` bytes; `full`
+    /// tells that the partition had more records, so the broker filled the request.
+    pub fn observe(&mut self, decoded: usize, full: bool, target: usize) {
+        if !full || decoded == 0 {
+            return;
+        }
+        let ideal = (self.request as u128 * target as u128 / decoded as u128) as usize;
+        let max = target.max(MIN_FETCH_BYTES);
+        self.request = ideal
+            .min(self.request.saturating_mul(2))
+            .clamp(MIN_FETCH_BYTES, max);
+    }
+}
+
+/// Records of one partition fetch, held in the process budget until released.
+#[derive(Debug)]
+pub struct Fetched {
+    pub records: Vec<RecordAndOffset>,
+    pub high_watermark: i64,
+    /// The offset the fetch started at (after a reset of an out-of-range offset).
+    pub from: i64,
+    pub reservation: Reservation,
+}
+
+/// Bytes a record is counted for in the budget.
+pub fn record_bytes(r: &RecordAndOffset) -> usize {
+    r.record.approximate_size() + RECORD_OVERHEAD
 }
 
 impl std::fmt::Debug for Kafka {
@@ -281,11 +337,57 @@ impl Kafka {
             signer,
             partitions: Mutex::new(HashMap::new()),
             clients: Mutex::new(HashMap::new()),
+            budget: ByteBudget::new(cfg.max_inflight_bytes),
         })
     }
 
     pub fn config(&self) -> &KafkaConfig {
         &self.cfg
+    }
+
+    /// The in-flight byte budget of this process.
+    pub fn budget(&self) -> &Arc<ByteBudget> {
+        &self.budget
+    }
+
+    /// Fetches from `offset` within the process budget: reserves
+    /// [`KafkaConfig::fetch_max_bytes`] first (waiting while the budget is spent), then holds
+    /// the decoded size of the records returned (records before `from` are dropped).
+    pub async fn fetch_bounded(
+        &self,
+        topic: &str,
+        partition: i32,
+        offset: i64,
+        window: &mut FetchWindow,
+        max_wait_ms: i32,
+    ) -> anyhow::Result<Fetched> {
+        let target = self.cfg.fetch_max_bytes;
+        let mut reservation = self.budget.reserve(target).await;
+        let request = window.request();
+        let (records, high_watermark, from) = self
+            .fetch(
+                topic,
+                partition,
+                offset,
+                request.min(i32::MAX as usize - 1) as i32 + 1,
+                max_wait_ms,
+            )
+            .await?;
+        let records: Vec<RecordAndOffset> =
+            records.into_iter().filter(|r| r.offset >= from).collect();
+        let decoded: usize = records.iter().map(record_bytes).sum();
+        reservation.resize(decoded);
+        let full = records
+            .last()
+            .is_some_and(|r| r.offset + 1 < high_watermark);
+        window.observe(decoded, full, target);
+        metrics::histogram!("fastproof_kafka_fetch_bytes").record(decoded as f64);
+        Ok(Fetched {
+            records,
+            high_watermark,
+            from,
+            reservation,
+        })
     }
 
     pub fn signer(&self) -> Option<&Signer> {
@@ -480,10 +582,8 @@ impl Kafka {
         max_wait_ms: i32,
     ) -> anyhow::Result<(Vec<RecordAndOffset>, i64, i64)> {
         let pc = self.partition(topic, partition).await?;
-        match pc
-            .fetch_records(offset, 1..max_bytes.max(1024), max_wait_ms)
-            .await
-        {
+        let bytes = 1..max_bytes.max(1024);
+        match pc.fetch_records(offset, bytes.clone(), max_wait_ms).await {
             Ok((records, hwm)) => Ok((records, hwm, offset)),
             Err(rskafka::client::error::Error::ServerError {
                 protocol_error: rskafka::client::error::ProtocolError::OffsetOutOfRange,
@@ -499,9 +599,7 @@ impl Kafka {
                     reset,
                     "Kafka offset out of range; resetting"
                 );
-                let (records, hwm) = pc
-                    .fetch_records(reset, 1..max_bytes.max(1024), max_wait_ms)
-                    .await?;
+                let (records, hwm) = pc.fetch_records(reset, bytes, max_wait_ms).await?;
                 Ok((records, hwm, reset))
             }
             Err(e) => Err(e).with_context(|| format!("fetching from {topic}/{partition}")),
@@ -527,6 +625,34 @@ mod tests {
         assert_eq!(partition_for(b"foobar", 1), 0);
         let p = partition_for(b"0195b2c4-7d1e-7000-8000-000000000001", 12);
         assert!((0..12).contains(&p));
+    }
+
+    #[test]
+    fn fetch_windows_aim_at_the_decoded_target() {
+        let target = 4 << 20;
+        let mut w = FetchWindow::new(target);
+        assert_eq!(w.request(), 256 << 10);
+        // Records expanding eight times: the request settles at an eighth of the target.
+        for _ in 0..10 {
+            let decoded = w.request() * 8;
+            w.observe(decoded, true, target);
+        }
+        assert_eq!(w.request(), target / 8);
+        // Incompressible records: the request grows to the target, doubling at most.
+        let before = w.request();
+        w.observe(before, true, target);
+        assert_eq!(w.request(), before * 2);
+        for _ in 0..10 {
+            let decoded = w.request();
+            w.observe(decoded, true, target);
+        }
+        assert_eq!(w.request(), target);
+        // A partial fetch says nothing about the expansion.
+        w.observe(1, false, target);
+        assert_eq!(w.request(), target);
+        // Extreme expansion stops at the minimum.
+        w.observe(target * 1000, true, target);
+        assert_eq!(w.request(), MIN_FETCH_BYTES);
     }
 
     #[test]

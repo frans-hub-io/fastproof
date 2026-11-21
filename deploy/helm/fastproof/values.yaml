@@ -93,7 +93,7 @@ roles:
     resources:
       requests:
         cpu: 100m
-        memory: 128Mi
+        memory: 192Mi
         ephemeral-storage: 64Mi
       limits:
         cpu: "1"
@@ -123,7 +123,7 @@ roles:
     resources:
       requests:
         cpu: 50m
-        memory: 128Mi
+        memory: 192Mi
         ephemeral-storage: 64Mi
       limits:
         cpu: "1"
@@ -155,6 +155,7 @@ database:
   maxConnections: 20
   statementTimeoutSeconds: 120
   ingestReserve: 0
+  connectTimeoutSeconds: 300
   sslMode: ""
   ca:
     existingSecret: ""
@@ -581,6 +582,12 @@ kafka:
   clientId: fastproof
   maxRecordBytes: 900000
   signatureMaxAgeHours: 168
+  connectTimeoutSeconds: 300
+  consumer:
+    fetchMaxBytes: 1048576
+    maxInflightBytes: 67108864
+    batchMaxRecords: 1000
+    batchMaxBytes: 1048576
   external:
     brokers: []
     tls:

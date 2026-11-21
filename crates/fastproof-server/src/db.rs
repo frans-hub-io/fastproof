@@ -24,6 +24,8 @@ pub struct DbSettings {
     /// Connections heavy reads leave free for ingest and workers
     /// (`FASTPROOF_DATABASE_INGEST_RESERVE`).
     pub ingest_reserve: u32,
+    /// How long start-up waits for PostgreSQL (`FASTPROOF_DATABASE_CONNECT_TIMEOUT_SECONDS`).
+    pub connect_timeout: Duration,
 }
 
 impl std::fmt::Debug for DbSettings {
@@ -33,6 +35,7 @@ impl std::fmt::Debug for DbSettings {
             .field("max_connections", &self.max_connections)
             .field("statement_timeout", &self.statement_timeout)
             .field("ingest_reserve", &self.ingest_reserve)
+            .field("connect_timeout", &self.connect_timeout)
             .finish_non_exhaustive()
     }
 }
@@ -78,7 +81,15 @@ impl DbSettings {
                     )
                 })?,
         };
+        let connect_timeout = match env.var("FASTPROOF_DATABASE_CONNECT_TIMEOUT_SECONDS") {
+            None => DEFAULT_CONNECT_TIMEOUT,
+            Some(v) => match v.trim().parse::<u64>() {
+                Ok(n) if n <= 86_400 => Duration::from_secs(n),
+                _ => bail!("FASTPROOF_DATABASE_CONNECT_TIMEOUT_SECONDS: 0..=86400"),
+            },
+        };
         Ok(Self {
+            connect_timeout,
             url,
             ca_file: env
                 .var("FASTPROOF_DATABASE_CA_FILE")
@@ -134,6 +145,31 @@ impl DbSettings {
         Ok(opts)
     }
 
+    /// Connects a pool, retrying for up to [`Self::connect_timeout`] while PostgreSQL is not
+    /// reachable yet (it may still be starting next to FastProof).
+    pub async fn connect_waiting(
+        &self,
+        get: &(dyn Fn(&str) -> Option<String> + Sync),
+    ) -> anyhow::Result<PgPool> {
+        let opts = self.connect_options(get)?;
+        wait_for(
+            "PostgreSQL",
+            "FASTPROOF_DATABASE_CONNECT_TIMEOUT_SECONDS",
+            self.connect_timeout,
+            || async {
+                // One plain connection first: it fails at once while the server is down,
+                // where the pool would keep retrying until its acquire timeout.
+                use sqlx::Connection;
+                sqlx::PgConnection::connect_with(&opts)
+                    .await?
+                    .close()
+                    .await?;
+                self.connect(get).await
+            },
+        )
+        .await
+    }
+
     /// Connects a pool and logs the effective TLS mode.
     pub async fn connect(
         &self,
@@ -166,6 +202,69 @@ pub fn ssl_mode_name(m: PgSslMode) -> &'static str {
         PgSslMode::Require => "require",
         PgSslMode::VerifyCa => "verify-ca",
         PgSslMode::VerifyFull => "verify-full",
+    }
+}
+
+/// Default of `FASTPROOF_DATABASE_CONNECT_TIMEOUT_SECONDS`.
+pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Runs `attempt` until it succeeds, for up to `timeout` (at least once), with a backoff from
+/// one to fifteen seconds; every failure is logged. Start-up uses it for the services FastProof
+/// needs (`what`), so a pod that starts before them waits instead of crashing; `var` names the
+/// setting of the timeout in the final error.
+pub async fn wait_for<T, F, Fut>(
+    what: &str,
+    var: &str,
+    timeout: Duration,
+    mut attempt: F,
+) -> anyhow::Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<T>>,
+{
+    let started = std::time::Instant::now();
+    let deadline = started + timeout;
+    let mut backoff = Duration::from_secs(1);
+    let mut n = 0u32;
+    loop {
+        n += 1;
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        let cap = left.clamp(Duration::from_secs(1), Duration::from_secs(30));
+        let r = match tokio::time::timeout(cap, attempt()).await {
+            Ok(r) => r,
+            Err(_) => Err(anyhow!("timed out")),
+        };
+        let e = match r {
+            Ok(v) => {
+                if n > 1 {
+                    tracing::info!(
+                        service = what,
+                        attempts = n,
+                        waited_seconds = started.elapsed().as_secs(),
+                        "{what} is reachable"
+                    );
+                }
+                return Ok(v);
+            }
+            Err(e) => e,
+        };
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            bail!(
+                "{what} was not reachable within {} s ({n} attempt(s); set {var} to wait longer): {e:#}",
+                started.elapsed().as_secs()
+            );
+        }
+        tracing::warn!(
+            service = what,
+            attempt = n,
+            retry_in_seconds = backoff.min(left).as_secs_f64(),
+            gives_up_in_seconds = left.as_secs(),
+            error = %format!("{e:#}"),
+            "{what} is not reachable yet; waiting"
+        );
+        tokio::time::sleep(backoff.min(left)).await;
+        backoff = (backoff * 2).min(Duration::from_secs(15));
     }
 }
 
@@ -215,6 +314,7 @@ mod tests {
             max_connections: 5,
             statement_timeout: None,
             ingest_reserve: 1,
+            connect_timeout: Duration::ZERO,
         }
     }
 
@@ -273,5 +373,51 @@ mod tests {
         };
         let e = DbSettings::from_lookup(&vars).unwrap_err().to_string();
         assert!(e.contains("FASTPROOF_DATABASE_INGEST_RESERVE"), "{e}");
+        assert_eq!(d.connect_timeout, DEFAULT_CONNECT_TIMEOUT);
+        let vars = |k: &str| match k {
+            "FASTPROOF_DATABASE_URL" => Some("postgres://u@db.example.com/fp".to_string()),
+            "FASTPROOF_DATABASE_CONNECT_TIMEOUT_SECONDS" => Some("90000".into()),
+            _ => None,
+        };
+        let e = DbSettings::from_lookup(&vars).unwrap_err().to_string();
+        assert!(
+            e.contains("FASTPROOF_DATABASE_CONNECT_TIMEOUT_SECONDS"),
+            "{e}"
+        );
+    }
+
+    #[tokio::test]
+    async fn waiting_retries_until_success_or_the_deadline() {
+        let mut calls = 0;
+        let v = wait_for("svc", "VAR", Duration::from_secs(10), || {
+            calls += 1;
+            let ok = calls >= 2;
+            async move { if ok { Ok(7) } else { Err(anyhow!("refused")) } }
+        })
+        .await
+        .unwrap();
+        assert_eq!((v, calls), (7, 2));
+        let started = std::time::Instant::now();
+        let e = wait_for::<(), _, _>("svc", "VAR", Duration::from_millis(1500), || async {
+            Err(anyhow!("refused"))
+        })
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(
+            e.contains("svc was not reachable")
+                && e.contains("3 attempt(s)")
+                && e.contains("VAR")
+                && e.contains("refused"),
+            "{e}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(5));
+        let e = wait_for::<(), _, _>("svc", "VAR", Duration::ZERO, || async {
+            Err(anyhow!("refused"))
+        })
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("(1 attempt(s);"), "{e}");
     }
 }

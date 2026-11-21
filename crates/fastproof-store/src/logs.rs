@@ -502,6 +502,19 @@ impl Store {
         .await?)
     }
 
+    /// Stored bytes of the chunks that still exist, by id.
+    pub async fn log_chunk_sizes(&self, ids: &[i64]) -> anyhow::Result<Vec<(i64, i64)>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(sqlx::query_as(
+            "select id, bytes::bigint from attempt_log_chunks where id = any($1) order by id",
+        )
+        .bind(ids)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
     pub async fn log_chunks(&self, ids: &[i64]) -> anyhow::Result<Vec<LogChunk>> {
         if ids.is_empty() {
             return Ok(Vec::new());

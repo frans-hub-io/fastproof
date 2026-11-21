@@ -5,7 +5,8 @@
 //! later upload) becomes another attempt, and its result is recomputed from all attempts: the
 //! latest by start time, then by ingest order (Allure 3 semantics, [`fastproof_model::group_attempts`]).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use fastproof_model::{
@@ -47,6 +48,35 @@ pub struct PersistOutcome {
     pub accepted_keys: HashSet<String>,
     /// Results created or recomputed.
     pub results: u64,
+}
+
+/// Attempts of a transaction that hit a deadlock or a serialization failure, at most.
+pub const TX_ATTEMPTS: u32 = 5;
+
+/// `Some("deadlock")` or `Some("serialization")` when `e` is a PostgreSQL error after which
+/// the whole transaction can simply run again (SQLSTATE 40P01 or 40001).
+pub fn retryable(e: &anyhow::Error) -> Option<&'static str> {
+    e.chain()
+        .find_map(|c| match c.downcast_ref::<sqlx::Error>() {
+            Some(sqlx::Error::Database(d)) => match d.code().as_deref() {
+                Some("40P01") => Some("deadlock"),
+                Some("40001") => Some("serialization"),
+                _ => None,
+            },
+            _ => None,
+        })
+}
+
+/// Counts a retried transaction (`fastproof_db_tx_retries_total{path, reason}`) and sleeps a
+/// short jittered backoff that grows with `attempt` (about 20 ms, 40 ms, 80 ms, ...).
+pub async fn retry_pause(path: &'static str, e: &anyhow::Error, attempt: u32) {
+    let reason = retryable(e).unwrap_or("other");
+    metrics::counter!("fastproof_db_tx_retries_total", "path" => path, "reason" => reason)
+        .increment(1);
+    tracing::debug!(path, reason, attempt, "retrying a transaction");
+    let base = 20u64 << attempt.min(6).saturating_sub(1);
+    let jitter = rand::random::<u64>() % base.max(1);
+    tokio::time::sleep(Duration::from_millis(base + jitter)).await;
 }
 
 /// Per-attempt data kept as JSON next to the indexed columns.
@@ -171,14 +201,27 @@ impl Store {
         if attempts.is_empty() {
             return Ok(PersistOutcome::default());
         }
-        let mut tx = self.pool.begin().await?;
-        let out = persist_attempts_in(&mut tx, launch, upload_id, attempts).await?;
-        if out.accepted == 0 {
-            tx.rollback().await?;
-        } else {
-            tx.commit().await?;
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            let r = async {
+                let mut tx = self.pool.begin().await?;
+                let out = persist_attempts_in(&mut tx, launch, upload_id, attempts.clone()).await?;
+                if out.accepted == 0 {
+                    tx.rollback().await?;
+                } else {
+                    tx.commit().await?;
+                }
+                Ok::<_, anyhow::Error>(out)
+            }
+            .await;
+            match r {
+                Err(e) if attempt < TX_ATTEMPTS && retryable(&e).is_some() => {
+                    retry_pause("persist", &e, attempt).await
+                }
+                r => return r,
+            }
         }
-        Ok(out)
     }
 
     /// Stores containers of a launch (fixtures attach to results at read time, whichever
@@ -478,8 +521,9 @@ pub async fn persist_attempts_in(
         });
     }
 
-    // Test cases.
-    let mut tc_index: HashMap<&str, usize> = HashMap::new();
+    // Test cases, in key order: concurrent launches of a project upsert the same rows, and
+    // taking their locks in one order keeps them from deadlocking.
+    let mut tc_index: BTreeMap<&str, usize> = BTreeMap::new();
     for (i, p) in prepared.iter().enumerate() {
         tc_index.insert(p.tc_hash.as_str(), i);
     }
@@ -519,6 +563,10 @@ pub async fn persist_attempts_in(
                display_name = excluded.display_name, \
                source_file = coalesce(excluded.source_file, test_cases.source_file), \
                source_line = coalesce(excluded.source_line, test_cases.source_line) \
+             where test_cases.display_name is distinct from excluded.display_name \
+               or (excluded.source_file is not null and test_cases.source_file is distinct from excluded.source_file) \
+               or (excluded.source_line is not null and test_cases.source_line is distinct from excluded.source_line) \
+               or test_cases.last_seen_at < excluded.last_seen_at - interval '1 hour' \
              returning id, test_case_hash",
         )
         .bind(launch.project_id)
@@ -534,10 +582,25 @@ pub async fn persist_attempts_in(
         .bind(now)
         .fetch_all(&mut *conn)
         .await?;
-    let tc_by_hash: HashMap<String, Uuid> = rows.into_iter().map(|(i, h)| (h, i)).collect();
+    let mut tc_by_hash: HashMap<String, Uuid> = rows.into_iter().map(|(i, h)| (h, i)).collect();
+    // Rows left unchanged (the `where` above) return nothing: read their ids.
+    let unchanged: Vec<&String> = tc_hashes
+        .iter()
+        .filter(|h| !tc_by_hash.contains_key(*h))
+        .collect();
+    if !unchanged.is_empty() {
+        let rows: Vec<(Uuid, String)> = sqlx::query_as(
+            "select id, test_case_hash from test_cases where project_id = $1 and test_case_hash = any($2)",
+        )
+        .bind(launch.project_id)
+        .bind(&unchanged)
+        .fetch_all(&mut *conn)
+        .await?;
+        tc_by_hash.extend(rows.into_iter().map(|(i, h)| (h, i)));
+    }
 
-    // Series.
-    let mut se_index: HashMap<&str, usize> = HashMap::new();
+    // Series, in key order (as the test cases).
+    let mut se_index: BTreeMap<&str, usize> = BTreeMap::new();
     for (i, p) in prepared.iter().enumerate() {
         se_index.insert(p.series_key.as_str(), i);
     }
@@ -565,6 +628,7 @@ pub async fn persist_attempts_in(
              select i, $1, tc, k, ph, e, p, $8, $8 from unnest($2::uuid[], $3::uuid[], $4::text[], $5::text[], \
                $6::text[], $7::jsonb[]) as t(i, tc, k, ph, e, p) \
              on conflict (project_id, series_key) do update set last_seen_at = excluded.last_seen_at \
+             where series.last_seen_at < excluded.last_seen_at - interval '1 hour' \
              returning id, series_key, test_case_id",
         )
         .bind(launch.project_id)
@@ -577,8 +641,22 @@ pub async fn persist_attempts_in(
         .bind(now)
         .fetch_all(&mut *conn)
         .await?;
-    let series_by_key: HashMap<String, (Uuid, Uuid)> =
+    let mut series_by_key: HashMap<String, (Uuid, Uuid)> =
         rows.into_iter().map(|(i, k, tc)| (k, (i, tc))).collect();
+    let unchanged: Vec<&String> = se_keys
+        .iter()
+        .filter(|k| !series_by_key.contains_key(*k))
+        .collect();
+    if !unchanged.is_empty() {
+        let rows: Vec<(Uuid, String, Uuid)> = sqlx::query_as(
+            "select id, series_key, test_case_id from series where project_id = $1 and series_key = any($2)",
+        )
+        .bind(launch.project_id)
+        .bind(&unchanged)
+        .fetch_all(&mut *conn)
+        .await?;
+        series_by_key.extend(rows.into_iter().map(|(i, k, tc)| (k, (i, tc))));
+    }
     let series_ids: Vec<Uuid> = series_by_key.values().map(|v| v.0).collect();
     let mut tc_of_series: HashMap<Uuid, Uuid> = series_by_key.values().copied().collect();
 

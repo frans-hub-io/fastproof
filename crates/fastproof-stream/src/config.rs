@@ -144,7 +144,25 @@ pub struct KafkaConfig {
     pub max_record_bytes: usize,
     /// Signed records older than this are rejected (`FASTPROOF_KAFKA_SIGNATURE_MAX_AGE_HOURS`).
     pub signature_max_age: std::time::Duration,
+    /// Decoded bytes one partition fetch aims at (`FASTPROOF_KAFKA_FETCH_MAX_BYTES`).
+    pub fetch_max_bytes: usize,
+    /// Decoded record bytes a process holds across its partitions
+    /// (`FASTPROOF_KAFKA_MAX_INFLIGHT_BYTES`).
+    pub max_inflight_bytes: usize,
+    /// Records handled and committed together, at most (`FASTPROOF_KAFKA_BATCH_MAX_RECORDS`).
+    pub batch_max_records: usize,
+    /// Record bytes handled and committed together, at most (`FASTPROOF_KAFKA_BATCH_MAX_BYTES`).
+    pub batch_max_bytes: usize,
+    /// How long start-up waits for Kafka (`FASTPROOF_KAFKA_CONNECT_TIMEOUT_SECONDS`).
+    pub connect_timeout: Duration,
 }
+
+/// Default of `FASTPROOF_KAFKA_FETCH_MAX_BYTES` (raised to the maximum record size).
+pub const DEFAULT_FETCH_MAX_BYTES: usize = 1024 * 1024;
+/// Default of `FASTPROOF_KAFKA_MAX_INFLIGHT_BYTES` (raised to the fetch size).
+pub const DEFAULT_MAX_INFLIGHT_BYTES: usize = 64 * 1024 * 1024;
+/// Largest fetch: the response size the client accepts.
+pub const MAX_FETCH_BYTES: usize = 64 * 1024 * 1024;
 
 impl KafkaConfig {
     /// From `FASTPROOF_KAFKA_*`; `None` when no brokers are set.
@@ -219,7 +237,42 @@ impl KafkaConfig {
         if !(1..=24 * 365).contains(&max_age_hours) {
             bail!("FASTPROOF_KAFKA_SIGNATURE_MAX_AGE_HOURS: 1..=8760");
         }
+        let fetch_max_bytes: usize = v.parse(
+            "FASTPROOF_KAFKA_FETCH_MAX_BYTES",
+            DEFAULT_FETCH_MAX_BYTES.max(max_record_bytes),
+        )?;
+        if fetch_max_bytes < max_record_bytes || fetch_max_bytes > MAX_FETCH_BYTES {
+            bail!(
+                "FASTPROOF_KAFKA_FETCH_MAX_BYTES: from FASTPROOF_KAFKA_MAX_RECORD_BYTES ({max_record_bytes}) to {MAX_FETCH_BYTES}"
+            );
+        }
+        let max_inflight_bytes: usize = v.parse(
+            "FASTPROOF_KAFKA_MAX_INFLIGHT_BYTES",
+            DEFAULT_MAX_INFLIGHT_BYTES.max(fetch_max_bytes),
+        )?;
+        if max_inflight_bytes < fetch_max_bytes || max_inflight_bytes > 64 << 30 {
+            bail!(
+                "FASTPROOF_KAFKA_MAX_INFLIGHT_BYTES: from FASTPROOF_KAFKA_FETCH_MAX_BYTES ({fetch_max_bytes}) to 68719476736"
+            );
+        }
+        let batch_max_records: usize = v.parse("FASTPROOF_KAFKA_BATCH_MAX_RECORDS", 1000)?;
+        if !(1..=100_000).contains(&batch_max_records) {
+            bail!("FASTPROOF_KAFKA_BATCH_MAX_RECORDS: 1..=100000");
+        }
+        let batch_max_bytes: usize = v.parse("FASTPROOF_KAFKA_BATCH_MAX_BYTES", 1024 * 1024)?;
+        if !(16 * 1024..=MAX_FETCH_BYTES).contains(&batch_max_bytes) {
+            bail!("FASTPROOF_KAFKA_BATCH_MAX_BYTES: 16384..=67108864");
+        }
+        let connect_timeout: u64 = v.parse("FASTPROOF_KAFKA_CONNECT_TIMEOUT_SECONDS", 300)?;
+        if connect_timeout > 86_400 {
+            bail!("FASTPROOF_KAFKA_CONNECT_TIMEOUT_SECONDS: 0..=86400");
+        }
         Ok(Some(Self {
+            fetch_max_bytes,
+            max_inflight_bytes,
+            batch_max_records,
+            batch_max_bytes,
+            connect_timeout: Duration::from_secs(connect_timeout),
             signature_max_age: std::time::Duration::from_secs(max_age_hours * 3600),
             brokers,
             tls,
@@ -424,6 +477,12 @@ mod tests {
         assert_eq!(c.topic_prefix, "fastproof.");
         assert_eq!(c.partitions, 12);
         assert!(!c.create_topics && !c.trusted_producers);
+        assert_eq!(
+            (c.fetch_max_bytes, c.max_inflight_bytes),
+            (1 << 20, 64 << 20)
+        );
+        assert_eq!((c.batch_max_records, c.batch_max_bytes), (1000, 1 << 20));
+        assert_eq!(c.connect_timeout, Duration::from_secs(300));
         let sasl = c.sasl.clone().unwrap();
         assert_eq!(sasl.mechanism, SaslMechanism::ScramSha512);
         assert_eq!(sasl.password.expose(), "kafka-secret-123");
@@ -434,6 +493,11 @@ mod tests {
             ("FASTPROOF_KAFKA_TOPIC_PREFIX", "a b"),
             ("FASTPROOF_KAFKA_BROKERS", "kafka://x:1"),
             ("FASTPROOF_KAFKA_TLS", "maybe"),
+            ("FASTPROOF_KAFKA_FETCH_MAX_BYTES", "65536"),
+            ("FASTPROOF_KAFKA_MAX_INFLIGHT_BYTES", "524288"),
+            ("FASTPROOF_KAFKA_BATCH_MAX_RECORDS", "0"),
+            ("FASTPROOF_KAFKA_BATCH_MAX_BYTES", "100"),
+            ("FASTPROOF_KAFKA_CONNECT_TIMEOUT_SECONDS", "x"),
         ] {
             let mut m2 = m.clone();
             m2.insert(k, val.into());
@@ -443,6 +507,21 @@ mod tests {
         let mut m2 = m.clone();
         m2.remove("FASTPROOF_KAFKA_PASSWORD_FILE");
         assert!(kafka(&m2).is_err());
+        let mut m2 = m.clone();
+        m2.insert("FASTPROOF_KAFKA_MAX_RECORD_BYTES", (8 << 20).to_string());
+        let c = kafka(&m2).unwrap().unwrap();
+        assert_eq!(
+            (c.fetch_max_bytes, c.max_inflight_bytes),
+            (8 << 20, 64 << 20),
+            "the fetch size follows the record size"
+        );
+        m2.insert("FASTPROOF_KAFKA_MAX_INFLIGHT_BYTES", (32 << 20).to_string());
+        m2.insert("FASTPROOF_KAFKA_FETCH_MAX_BYTES", (16 << 20).to_string());
+        let c = kafka(&m2).unwrap().unwrap();
+        assert_eq!(
+            (c.fetch_max_bytes, c.max_inflight_bytes),
+            (16 << 20, 32 << 20)
+        );
     }
 
     #[test]

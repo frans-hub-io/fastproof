@@ -253,6 +253,57 @@ tests:
       - equal:
           path: data.FASTPROOF_KAFKA_MAX_RECORD_BYTES
           value: "900000"
+      - equal:
+          path: data.FASTPROOF_KAFKA_FETCH_MAX_BYTES
+          value: "1048576"
+      - equal:
+          path: data.FASTPROOF_KAFKA_MAX_INFLIGHT_BYTES
+          value: "67108864"
+      - equal:
+          path: data.FASTPROOF_KAFKA_BATCH_MAX_RECORDS
+          value: "1000"
+      - equal:
+          path: data.FASTPROOF_KAFKA_BATCH_MAX_BYTES
+          value: "1048576"
+      - equal:
+          path: data.FASTPROOF_KAFKA_CONNECT_TIMEOUT_SECONDS
+          value: "300"
+      - equal:
+          path: data.FASTPROOF_DATABASE_CONNECT_TIMEOUT_SECONDS
+          value: "300"
+
+  - it: passes the Kafka consumer memory settings and keeps the fetch at least one record
+    template: templates/configmap.yaml
+    documentIndex: 0
+    values:
+      - ../ci/kafka-opensearch-values.yaml
+    set:
+      kafka.maxRecordBytes: 8388608
+      kafka.consumer.fetchMaxBytes: 1048576
+      kafka.consumer.maxInflightBytes: 4194304
+      kafka.consumer.batchMaxRecords: 500
+      kafka.consumer.batchMaxBytes: 262144
+      kafka.connectTimeoutSeconds: 60
+      database.connectTimeoutSeconds: 0
+    asserts:
+      - equal:
+          path: data.FASTPROOF_KAFKA_FETCH_MAX_BYTES
+          value: "8388608"
+      - equal:
+          path: data.FASTPROOF_KAFKA_MAX_INFLIGHT_BYTES
+          value: "8388608"
+      - equal:
+          path: data.FASTPROOF_KAFKA_BATCH_MAX_RECORDS
+          value: "500"
+      - equal:
+          path: data.FASTPROOF_KAFKA_BATCH_MAX_BYTES
+          value: "262144"
+      - equal:
+          path: data.FASTPROOF_KAFKA_CONNECT_TIMEOUT_SECONDS
+          value: "60"
+      - equal:
+          path: data.FASTPROOF_DATABASE_CONNECT_TIMEOUT_SECONDS
+          value: "0"
 
   - it: rejects a Kafka replication factor of zero
     template: templates/deployment.yaml

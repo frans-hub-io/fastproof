@@ -40,6 +40,11 @@ In Kafka mode only the gateway produces, after token authentication, unless
 consumer groups are not used), and the writer commits its offset in the same transaction as the data, so
 retries never duplicate results. FastProof exports consumer lag on `/metrics`.
 
+Launches that run the same tests are written at the same time by several writers (or ingest workers) without
+waiting on each other for long: the rows they share (test cases, series, statistics) are written in key order
+and left alone when nothing changed, and a transaction that still meets a deadlock or a serialization failure
+runs again after a short pause (counted in `fastproof_db_tx_retries_total`).
+
 Topics (after `FASTPROOF_KAFKA_TOPIC_PREFIX`, default `fastproof.`): `ingest.results`, `ingest.logs`,
 `ingest.uploads` and `events`. Create them yourself with the partition count you want, or let FastProof create
 them (`kafka.topics.create`, on for the bundled Kafka).
@@ -113,6 +118,44 @@ Start from these and measure with `fastproof bench`:
 - Size the PostgreSQL connections for all Deployments: replicas × `database.maxConnections` summed over roles.
 - Run one heavy backend at a time on small nodes: ClickHouse, OpenSearch and Kafka together need about
   4.5 GiB.
+
+## Memory of the Kafka consumers
+
+Every process that consumes Kafka (the writer, the upload consumer of the `ingest` role, the sinks and the live
+log readers of the `api` role) keeps its memory within settings, whatever the lag, the number of partitions it
+holds or the size of the records:
+
+- **One budget per process.** Before a partition fetch is sent it reserves `FASTPROOF_KAFKA_FETCH_MAX_BYTES`
+  from `FASTPROOF_KAFKA_MAX_INFLIGHT_BYTES`; when the budget is spent, fetches wait (back pressure) until
+  earlier records are committed. The records a process holds stay within the budget plus at most one record
+  batch per fetch.
+- **Decoded size, not wire size.** Kafka counts fetch bytes compressed. FastProof starts each partition with
+  a small request and adapts it to how much the records expand, so a fetch decodes to about
+  `FASTPROOF_KAFKA_FETCH_MAX_BYTES`.
+- **Bounded transactions.** Fetched records are handled and committed in batches of at most
+  `FASTPROOF_KAFKA_BATCH_MAX_RECORDS` records and `FASTPROOF_KAFKA_BATCH_MAX_BYTES` bytes; raw records are
+  dropped as they are decoded, and each committed batch returns its bytes to the budget.
+- **Uploads** are parsed from a file streamed out of blob storage, never held whole in memory, and at most
+  `FASTPROOF_INGEST_WORKERS` archives are parsed at once per process, however many partitions have uploads
+  waiting.
+- **Sinks** load and write at most 1000 results, 250 attempts or about 4 MiB of log lines at a time, with at
+  most two writes at once per sink and process.
+- **Live log readers** fetch only while someone follows a launch on that replica, and decode only the records
+  of followed launches.
+
+A writer needs about 30 MiB at rest and stayed under 140 MiB while draining a large backlog, at either budget
+below; decoded rows, database statements and allocator overhead come on top of the raw records the budget
+counts. The chart's defaults (64 MiB budget, 512 MiB memory limit for `writer` and `sink`) leave room; lower
+the budget before lowering the limit. `fastproof_kafka_inflight_bytes` shows the budget in use and
+`fastproof_kafka_budget_waits_total` counts fetches that had to wait.
+
+| Writer draining 268 MiB of backlog (10,000 results, 200,000 log lines, 20 launches sharing tests) | Peak memory | Drain time |
+|---|---|---|
+| Before (fixed 8 MiB fetches on every partition, one transaction per fetch) | 530 MiB | 25 to 34 s |
+| `FASTPROOF_KAFKA_MAX_INFLIGHT_BYTES` 64 MiB (default) | 125 to 135 MiB | 3 to 4 s |
+| `FASTPROOF_KAFKA_MAX_INFLIGHT_BYTES` 32 MiB | 126 MiB | 4 s |
+
+Measured with the static release build, one writer holding 12 partitions, on a shared development VM.
 
 ## Measured numbers
 

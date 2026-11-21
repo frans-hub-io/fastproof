@@ -561,6 +561,11 @@
         "ingestReserve": {
           "type": "integer",
           "minimum": 0
+        },
+        "connectTimeoutSeconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 86400
         }
       }
     },
@@ -1711,6 +1716,37 @@
         "signatureMaxAgeHours": {
           "type": "integer",
           "minimum": 1
+        },
+        "connectTimeoutSeconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 86400
+        },
+        "consumer": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "fetchMaxBytes": {
+              "type": "integer",
+              "minimum": 16384,
+              "maximum": 67108864
+            },
+            "maxInflightBytes": {
+              "type": "integer",
+              "minimum": 16384,
+              "maximum": 68719476736
+            },
+            "batchMaxRecords": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100000
+            },
+            "batchMaxBytes": {
+              "type": "integer",
+              "minimum": 16384,
+              "maximum": 67108864
+            }
+          }
         }
       },
       "required": [

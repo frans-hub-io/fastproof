@@ -261,7 +261,92 @@ pub async fn load_batch(store: &Store, events: &[EventRecord]) -> anyhow::Result
     })
 }
 
-/// Loads and writes a batch, retrying with backoff.
+/// Results loaded and written at once, at most.
+pub const SINK_RESULTS: usize = 1000;
+/// Attempts (each with its steps) loaded and written at once, at most.
+pub const SINK_ATTEMPTS: usize = 250;
+/// Stored log bytes loaded and written at once, about (a larger chunk goes alone).
+pub const SINK_LOG_BYTES: i64 = 4 * 1024 * 1024;
+/// Batches one sink writes at once in a process.
+pub const SINK_WRITERS: usize = 2;
+
+/// Groups chunk ids into runs of about `max` stored bytes, keeping their order.
+pub fn chunk_groups(sizes: &[(i64, i64)], max: i64) -> Vec<Vec<i64>> {
+    let mut out: Vec<Vec<i64>> = Vec::new();
+    let mut bytes = 0;
+    for (id, b) in sizes {
+        let b = (*b).max(1);
+        match out.last_mut() {
+            Some(g) if bytes + b <= max => g.push(*id),
+            _ => {
+                out.push(vec![*id]);
+                bytes = 0;
+            }
+        }
+        bytes += b;
+    }
+    out
+}
+
+#[derive(Default)]
+struct Written {
+    results: u64,
+    attempts: u64,
+    lines: u64,
+}
+
+/// Loads and writes the rows of `events` in parts bounded in rows and bytes, then applies the
+/// deletions they name.
+async fn write_parts(
+    store: &Store,
+    sink: &dyn Sink,
+    events: &[EventRecord],
+) -> anyhow::Result<Written> {
+    let (results, attempts, chunks) = ids_of(events);
+    let mut w = Written::default();
+    for ids in results.chunks(SINK_RESULTS) {
+        let b = SinkBatch {
+            results: store.sink_results(ids).await?,
+            ..SinkBatch::default()
+        };
+        if !b.is_empty() {
+            sink.write(&b, &b.token()).await?;
+            w.results += b.results.len() as u64;
+        }
+    }
+    for ids in attempts.chunks(SINK_ATTEMPTS) {
+        let b = SinkBatch {
+            attempts: store.sink_attempts(ids).await?,
+            ..SinkBatch::default()
+        };
+        if !b.is_empty() {
+            sink.write(&b, &b.token()).await?;
+            w.attempts += b.attempts.len() as u64;
+        }
+    }
+    let sizes = store.log_chunk_sizes(&chunks).await?;
+    for ids in chunk_groups(&sizes, SINK_LOG_BYTES) {
+        let b = SinkBatch {
+            logs: store.log_chunks(&ids).await?,
+            ..SinkBatch::default()
+        };
+        if !b.is_empty() {
+            sink.write(&b, &b.token()).await?;
+            w.lines += b.logs.iter().map(|c| c.lines.len() as u64).sum::<u64>();
+        }
+    }
+    let deletions = load_deletions(store, events).await?;
+    if !deletions.is_empty() {
+        sink.delete(&deletions).await?;
+        metrics::counter!("fastproof_sink_deletions_total", "sink" => sink.name())
+            .increment((deletions.launches.len() + deletions.projects.len()) as u64);
+    }
+    Ok(w)
+}
+
+/// Loads and writes a batch, retrying with backoff. Rows are loaded and written in parts of
+/// at most [`SINK_RESULTS`] results, [`SINK_ATTEMPTS`] attempts or about [`SINK_LOG_BYTES`] of
+/// log lines, so the memory of a write does not depend on the size of the batch.
 pub async fn write_batch(
     store: &Store,
     sink: &dyn Sink,
@@ -272,29 +357,15 @@ pub async fn write_batch(
     loop {
         attempt += 1;
         let started = Instant::now();
-        let r = async {
-            let batch = load_batch(store, events).await?;
-            if !batch.is_empty() {
-                sink.write(&batch, &batch.token()).await?;
-            }
-            let deletions = load_deletions(store, events).await?;
-            if !deletions.is_empty() {
-                sink.delete(&deletions).await?;
-                metrics::counter!("fastproof_sink_deletions_total", "sink" => sink.name())
-                    .increment((deletions.launches.len() + deletions.projects.len()) as u64);
-            }
-            Ok::<_, anyhow::Error>(batch)
-        }
-        .await;
-        match r {
-            Ok(batch) => {
+        match write_parts(store, sink, events).await {
+            Ok(w) => {
                 let name = sink.name();
                 metrics::counter!("fastproof_sink_rows_total", "sink" => name, "kind" => "results")
-                    .increment(batch.results.len() as u64);
+                    .increment(w.results);
                 metrics::counter!("fastproof_sink_rows_total", "sink" => name, "kind" => "attempts")
-                    .increment(batch.attempts.len() as u64);
+                    .increment(w.attempts);
                 metrics::counter!("fastproof_sink_rows_total", "sink" => name, "kind" => "log_lines")
-                    .increment(batch.logs.iter().map(|c| c.lines.len() as u64).sum());
+                    .increment(w.lines);
                 metrics::counter!("fastproof_sink_events_total", "sink" => name)
                     .increment(events.len() as u64);
                 metrics::histogram!("fastproof_sink_batch_seconds", "sink" => name)
@@ -394,10 +465,23 @@ impl PartitionRunner for OutboxSink {
 }
 
 /// Kafka mode: a sink consuming the `events` topic. Only records the relay signed are used.
+/// The partitions of one process share [`SINK_WRITERS`] write slots.
 pub struct KafkaSink {
     pub store: Store,
     pub sink: Arc<dyn Sink>,
     pub signer: Signer,
+    pub slots: Arc<tokio::sync::Semaphore>,
+}
+
+impl KafkaSink {
+    pub fn new(store: Store, sink: Arc<dyn Sink>, signer: Signer) -> Self {
+        Self {
+            store,
+            sink,
+            signer,
+            slots: Arc::new(tokio::sync::Semaphore::new(SINK_WRITERS)),
+        }
+    }
 }
 
 /// Splits events into parts of at most `max_events` events and [`MAX_CHUNKS_PER_BATCH`] log
@@ -450,6 +534,7 @@ impl BatchHandler for KafkaSink {
             }
         }
         for part in sink_parts(&events, 1000) {
+            let _slot = self.slots.acquire().await?;
             write_batch(&self.store, self.sink.as_ref(), part).await?;
         }
         metrics::gauge!("fastproof_sink_lag_events", "sink" => self.sink.name())
@@ -564,5 +649,23 @@ mod tests {
         assert!(parts.iter().all(|p| p.len() <= 1000));
         assert_eq!(parts.iter().map(|p| p.len()).sum::<usize>(), events.len());
         assert!(sink_parts(&[], 1000).is_empty());
+    }
+
+    #[test]
+    fn log_chunks_are_written_in_groups_bounded_by_bytes() {
+        let sizes = vec![(1, 100), (2, 300), (3, 50), (4, 1000), (5, 10), (6, 0)];
+        assert_eq!(
+            chunk_groups(&sizes, 400),
+            vec![vec![1, 2], vec![3], vec![4], vec![5, 6]]
+        );
+        assert!(chunk_groups(&[], 400).is_empty());
+        let many: Vec<(i64, i64)> = (0..1000).map(|i| (i, 64 * 1024)).collect();
+        let groups = chunk_groups(&many, SINK_LOG_BYTES);
+        assert!(
+            groups
+                .iter()
+                .all(|g| g.len() as i64 * 64 * 1024 <= SINK_LOG_BYTES)
+        );
+        assert_eq!(groups.iter().map(|g| g.len()).sum::<usize>(), 1000);
     }
 }

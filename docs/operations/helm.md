@@ -161,6 +161,8 @@ digest:
 | `roles.split`, `roles.<role>.*` | `false` | Separate Deployments per role |
 | `kafka.*`, `sinks.*`, `opensearch.*` | off | Kafka, ClickHouse and OpenSearch; see above |
 | `kafka.topics.replication`, `kafka.clientId`, `kafka.maxRecordBytes` | `-1`, `fastproof`, `900000` | `FASTPROOF_KAFKA_REPLICATION`, `_CLIENT_ID`, `_MAX_RECORD_BYTES` |
+| `kafka.consumer.fetchMaxBytes`, `maxInflightBytes`, `batchMaxRecords`, `batchMaxBytes` | `1048576`, `67108864`, `1000`, `1048576` | `FASTPROOF_KAFKA_FETCH_MAX_BYTES`, `_MAX_INFLIGHT_BYTES`, `_BATCH_MAX_RECORDS`, `_BATCH_MAX_BYTES`; the fetch and the budget are raised to at least `kafka.maxRecordBytes`. See [memory of the Kafka consumers](scaling.md#memory-of-the-kafka-consumers) |
+| `database.connectTimeoutSeconds`, `kafka.connectTimeoutSeconds` | `300`, `300` | How long pods wait at start for PostgreSQL and Kafka before they exit (`FASTPROOF_DATABASE_CONNECT_TIMEOUT_SECONDS`, `FASTPROOF_KAFKA_CONNECT_TIMEOUT_SECONDS`) |
 | `sinks.batchSize`, `sinks.flushIntervalMs`, `sinks.opensearch.replicas` | `2000`, `1000`, `1` | `FASTPROOF_SINK_BATCH_SIZE`, `FASTPROOF_SINK_FLUSH_INTERVAL_MS`, `FASTPROOF_OPENSEARCH_REPLICAS` |
 
 Every secret (database URL, S3 keys, token file, OIDC client secret, Kafka, ClickHouse and OpenSearch
@@ -276,6 +278,11 @@ With `migrations.mode: job` (default):
 
 With `migrations.mode: auto` there is no Job and every replica migrates at start under the advisory lock.
 
+Pods that start before PostgreSQL (for example the bundled one on the first install) or Kafka wait for them
+instead of crashing: `/healthz` answers, `/readyz` reports `starting`, and every attempt is logged. After
+`database.connectTimeoutSeconds` (or `kafka.connectTimeoutSeconds`, default 300 each) without success the
+pod exits with an error that names the setting.
+
 Upgrade one minor version at a time and read the release notes. Downgrades are not supported once a newer
 version has migrated the schema; restore a backup instead.
 
@@ -329,6 +336,11 @@ annotations, and scheduling (`nodeSelector`, `tolerations`, `affinity`, `topolog
 values fall back to the top-level ones. The top-level `replicaCount` and `autoscaling` apply only without
 the split. A headless `<release>-fastproof-ops` Service lets the ServiceMonitor scrape every role. Split roles
 share attachments, so they need S3 or a ReadWriteMany volume.
+
+`roles.writer` and `roles.sink` default to 192 MiB requested and 512 MiB limit, sized for the default
+in-flight budget of the Kafka consumers (`kafka.consumer.maxInflightBytes`, 64 MiB). To run them smaller,
+lower the budget first: `ci/bigdata-values.yaml` runs them in 384 MiB with a 32 MiB budget. See
+[memory of the Kafka consumers](scaling.md#memory-of-the-kafka-consumers).
 
 ## Monitoring
 

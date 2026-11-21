@@ -89,6 +89,8 @@ roles:
 kafka:
   topics:
     partitions: 6
+  consumer:
+    maxInflightBytes: 33554432
   bundled:
     enabled: true
     mode: simple

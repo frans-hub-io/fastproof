@@ -140,9 +140,18 @@ test('admin: rules (create, dry run, apply), gates, notifications, integrations,
   await expect(page.getByTestId('secrets-table').or(page.getByText('No secrets yet'))).toBeVisible();
   await page.getByTestId('secret-name').fill(`hook-key-${run}`);
   await page.getByTestId('secret-value').fill('e2e-secret-value-0001');
+  await page.getByTestId('secret-purpose').click();
+  await page.getByRole('option', { name: 'Webhook signing key or URL' }).click();
   await page.getByTestId('secret-save').click();
   await expect(page.getByTestId('secret-row').filter({ hasText: `hook-key-${run}` })).toBeVisible();
   expect(await page.content()).not.toContain('e2e-secret-value-0001');
+  await page.getByTestId('secret-name').fill(`vcs-token-${run}`);
+  await page.getByTestId('secret-value').fill('e2e-vcs-token-0001');
+  await page.getByTestId('secret-purpose').click();
+  await page.getByRole('option', { name: 'GitLab or GitHub token' }).click();
+  await page.getByTestId('secret-origin').fill('https://gitlab.example.com');
+  await page.getByTestId('secret-save').click();
+  await expect(page.getByTestId('secret-row').filter({ hasText: `vcs-token-${run}` })).toBeVisible();
 
   await page.goto(`${P}/notifications`);
   await page.getByTestId('notification-add').click();
@@ -154,7 +163,8 @@ test('admin: rules (create, dry run, apply), gates, notifications, integrations,
   await page.goto(`${P}/settings?tab=integrations`);
   await expect(page.getByTestId('integrations-save')).toBeVisible();
   if (!(await page.getByTestId('vcs-enabled').isChecked())) await page.getByTestId('vcs-enabled').click();
-  await pickOption(page, 'vcs-token', `hook-key-${run}`);
+  await pickOption(page, 'vcs-token', `vcs-token-${run}`);
+  await page.getByTestId('vcs-repository').fill('group/app');
   await page.getByTestId('integrations-save').click();
   await expect(page.getByText('Integrations saved')).toBeVisible();
   await page.goto(`${P}/settings`);

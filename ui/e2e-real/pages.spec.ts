@@ -48,6 +48,8 @@ test('admin: projects, launches, launch with clusters, gate, live logs and test 
 
   await page.goto(`${P}/launches/${s.launches['nightly 3'] ?? ''}`);
   await expect(page.getByRole('heading', { name: /nightly 3/ })).toBeVisible();
+  await expect(page.getByTestId('explorer-test').first()).toBeVisible();
+  await page.getByRole('tab', { name: 'Results' }).click();
   await expect(page.getByTestId('result-row').first()).toBeVisible();
   await page.getByRole('tab', { name: /Failures/ }).click();
   const cluster = page.getByTestId('cluster').first();

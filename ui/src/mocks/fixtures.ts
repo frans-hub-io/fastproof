@@ -18,6 +18,7 @@ import type {
   TokenOptions,
   TreeGroupBy,
   TreeNode,
+  TreeTest,
   Upload,
 } from '../api/types';
 import { actualPng, diffPng, expectedPng, screenshotPng } from './images';
@@ -938,15 +939,43 @@ export function uploadsOf(def: LaunchDef): Upload[] {
   return list;
 }
 
-export function treeOf(launchId: string, groupBy: TreeGroupBy): TreeNode {
-  const results = launchResults(launchId);
+function groupPath(r: ResultSummary, def: TestDef, groupBy: TreeGroupBy): string[] {
+  return groupBy === 'suite' ? r.suitePath : groupBy === 'feature' ? [def.feature, def.story] : def.pkg.split('.');
+}
+
+function leafOf(r: ResultSummary): TreeTest {
+  return {
+    id: r.id,
+    name: r.name,
+    status: r.status,
+    durationMs: r.durationMs,
+    attemptCount: r.attemptCount > 1 ? r.attemptCount : null,
+    flakyInRun: r.flakyInRun || undefined,
+    flaky: r.flaky || undefined,
+    muted: r.muted || undefined,
+    transition: r.transition ?? null,
+    defect: r.defect ? { typeId: r.defect.typeId, group: r.defect.group, name: r.defect.name, source: r.defect.source } : null,
+  };
+}
+
+export interface TreeOptions {
+  results?: ResultSummary[];
+  includeTests?: boolean;
+  reveal?: string | null;
+  budget?: number;
+}
+
+/** The launch tree as the server builds it (groups, counts, durations, leaves within a budget). */
+export function treeOf(launchId: string, groupBy: TreeGroupBy, o: TreeOptions = {}): TreeNode {
+  const results = o.results ?? launchResults(launchId);
   const root: TreeNode = { name: 'root', path: [], counts: emptyCounts(), children: [] };
   const byId = new Map<string, StoredResult>();
   for (const r of resultsByLaunch.get(launchId) ?? []) byId.set(r.summary.id, r);
+  const direct = new Map<TreeNode, ResultSummary[]>();
   for (const r of results) {
     const def = byId.get(r.id)?.def;
     if (!def) continue;
-    const path = groupBy === 'suite' ? r.suitePath : groupBy === 'feature' ? [def.feature, def.story] : def.pkg.split('.');
+    const path = groupPath(r, def, groupBy);
     let node = root;
     const nodes = [root];
     path.forEach((name, i) => {
@@ -958,15 +987,51 @@ export function treeOf(launchId: string, groupBy: TreeGroupBy): TreeNode {
       node = child;
       nodes.push(child);
     });
-    node.resultIds = [...(node.resultIds ?? []), r.id];
+    if (o.includeTests) direct.set(node, [...(direct.get(node) ?? []), r]);
+    else node.resultIds = [...(node.resultIds ?? []), r.id];
     for (const n of nodes) {
       n.counts.total++;
       n.counts[r.status]++;
       if (r.flakyInRun) n.counts.flaky++;
       if (r.muted) n.counts.muted++;
+      n.durationMs = (n.durationMs ?? 0) + (r.durationMs ?? 0);
+    }
+  }
+  if (o.includeTests) {
+    const groups = [...direct.entries()].sort(
+      ([a, x], [b, y]) =>
+        Number(y.some((r) => r.id === o.reveal)) - Number(x.some((r) => r.id === o.reveal)) ||
+        Number(y.some((r) => r.status === 'failed' || r.status === 'broken')) - Number(x.some((r) => r.status === 'failed' || r.status === 'broken')) ||
+        x.length - y.length ||
+        a.path.join('/').localeCompare(b.path.join('/')),
+    );
+    let left = o.budget ?? 5000;
+    const walk = (n: TreeNode) => {
+      n.testCount = direct.get(n)?.length ?? 0;
+      n.children.forEach(walk);
+    };
+    walk(root);
+    for (const [node, list] of groups) {
+      if (list.length > left) continue;
+      left -= list.length;
+      node.tests = list.map(leafOf);
     }
   }
   return root;
+}
+
+/** The tests directly in one group, paged like the server pages them. */
+export function treeTestsOf(launchId: string, groupBy: TreeGroupBy, results: ResultSummary[], path: string[]): TreeTest[] {
+  const byId = new Map<string, StoredResult>();
+  for (const r of resultsByLaunch.get(launchId) ?? []) byId.set(r.summary.id, r);
+  const key = JSON.stringify(path);
+  return results
+    .filter((r) => {
+      const def = byId.get(r.id)?.def;
+      return def && JSON.stringify(groupPath(r, def, groupBy)) === key;
+    })
+    .sort((a, b) => (a.fullName < b.fullName ? -1 : a.fullName > b.fullName ? 1 : a.id < b.id ? -1 : 1))
+    .map(leafOf);
 }
 
 export function projects(): Project[] {

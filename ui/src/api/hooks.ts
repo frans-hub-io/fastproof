@@ -1,4 +1,4 @@
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteData } from '@tanstack/react-query';
+import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteData } from '@tanstack/react-query';
 import { API, projectPath, request, withQuery } from './client';
 import type {
   AuditEvent,
@@ -18,8 +18,10 @@ import type {
   TestCaseHistoryItem,
   TokenList,
   TokenOptions,
+  TreeFilters,
   TreeGroupBy,
   TreeNode,
+  TreeTest,
   Upload,
 } from './types';
 
@@ -133,6 +135,31 @@ export function useTree(key: string, id: string, groupBy: TreeGroupBy) {
     queryKey: qk.tree(key, id, groupBy),
     queryFn: () => request<TreeNode | TreeNode[] | ItemList<TreeNode>>(withQuery(`${projectPath(key)}/launches/${encodeURIComponent(id)}/tree`, { groupBy })).then(treeRoots),
   });
+}
+
+function treeFilterQuery(f: TreeFilters) {
+  return { groupBy: f.groupBy, status: f.status, q: f.q, flaky: f.flaky ? 'true' : undefined };
+}
+
+/** The launch tree with its tests as leaves (groups that do not fit are read with `fetchTreeTests`). */
+export function useExplorerTree(key: string, id: string, f: TreeFilters, running: boolean, enabled = true) {
+  return useQuery({
+    queryKey: [...qk.tree(key, id), 'tests', f] as const,
+    queryFn: () =>
+      request<TreeNode>(withQuery(`${projectPath(key)}/launches/${encodeURIComponent(id)}/tree`, { ...treeFilterQuery(f), includeTests: 'true', reveal: f.reveal })),
+    placeholderData: keepPreviousData,
+    refetchInterval: running ? 15_000 : false,
+    enabled: !!id && enabled,
+  });
+}
+
+export const TREE_TESTS_PAGE = 500;
+
+/** A page of the tests directly in one group of the launch tree. */
+export function fetchTreeTests(key: string, id: string, f: TreeFilters, path: readonly string[], before: string | null): Promise<Page<TreeTest>> {
+  return request<Page<TreeTest>>(
+    withQuery(`${projectPath(key)}/launches/${encodeURIComponent(id)}/tree/tests`, { ...treeFilterQuery(f), path: JSON.stringify(path), before: before ?? undefined, limit: TREE_TESTS_PAGE }),
+  );
 }
 
 export function treeRoots(body: TreeNode | TreeNode[] | ItemList<TreeNode>): TreeNode[] {

@@ -407,3 +407,153 @@
     animation: none;
   }
 }
+
+.fp-explorer {
+  display: grid;
+  grid-template-columns: minmax(280px, var(--fp-x-split, 42%)) 6px minmax(0, 1fr);
+  height: clamp(520px, calc(100dvh - 96px), 1600px);
+  border: 1px solid var(--fh-ui-hairline);
+  border-radius: var(--mantine-radius-md);
+  overflow: hidden;
+  scroll-margin-top: 120px;
+}
+
+.fp-x-left {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.fp-x-toolbar {
+  border-bottom: 1px solid var(--fh-ui-hairline);
+  flex: none;
+}
+
+.fp-x-list {
+  flex: 1;
+  min-height: 0;
+}
+
+.fp-x-tree {
+  height: 100%;
+  outline: none;
+}
+
+.fp-x-tree:focus-visible {
+  outline: 2px solid var(--fh-color-focus-ring);
+  outline-offset: -2px;
+}
+
+.fp-x-tree[data-busy='true'] {
+  opacity: 0.7;
+  transition: opacity 120ms;
+}
+
+.fp-x-footer {
+  border-top: 1px solid var(--fh-ui-hairline);
+  flex: none;
+}
+
+.fp-x-resizer {
+  cursor: col-resize;
+  background: var(--fh-ui-hairline);
+  touch-action: none;
+  outline: none;
+}
+
+.fp-x-resizer:hover,
+.fp-x-resizer:focus-visible {
+  background: var(--mantine-color-fhPurple-5);
+}
+
+.fp-x-right {
+  overflow: auto;
+  min-width: 0;
+  min-height: 0;
+  padding: 14px 16px;
+}
+
+.fp-x-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding-right: 8px;
+  cursor: pointer;
+  color: inherit;
+  text-decoration: none;
+  border-left: 3px solid transparent;
+  user-select: none;
+}
+
+.fp-x-row:hover {
+  background: var(--fh-ui-row-hover);
+}
+
+.fp-x-row[data-selected='true'] {
+  background: var(--fh-ui-row-selected);
+  border-left-color: var(--mantine-color-fhPurple-5);
+}
+
+.fp-x-tree:focus-within .fp-x-row[data-active='true'] {
+  box-shadow: inset 0 0 0 1px var(--mantine-color-fhPurple-4);
+}
+
+.fp-x-chevron {
+  display: inline-flex;
+  width: 14px;
+  flex: none;
+  color: var(--mantine-color-dimmed);
+}
+
+.fp-x-name {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.fp-x-counts,
+.fp-x-marks {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: none;
+}
+
+.fp-x-count {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 16px;
+  padding: 0 5px;
+  border-radius: 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+.fp-x-mark {
+  display: inline-flex;
+  color: var(--mantine-color-dimmed);
+}
+
+.fp-x-duration {
+  flex: none;
+  width: 56px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.fp-explorer-phone {
+  border: 1px solid var(--fh-ui-hairline);
+  border-radius: var(--mantine-radius-md);
+}
+
+@media (max-width: 48em) {
+  .fp-x-duration {
+    display: none;
+  }
+
+  .fp-x-marks .mantine-Badge-root[data-testid='defect-chip'] {
+    max-width: 96px;
+  }
+}

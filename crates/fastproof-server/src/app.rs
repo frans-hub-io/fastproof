@@ -56,6 +56,7 @@ pub fn api_router() -> (Router<AppState>, utoipa::openapi::OpenApi) {
         .routes(routes!(api::launches::finish))
         .routes(routes!(api::results::ingest, api::results::list))
         .routes(routes!(api::results::tree))
+        .routes(routes!(api::results::tree_tests))
         .routes(routes!(api::results::detail))
         .routes(routes!(api::results::history))
         .routes(routes!(api::attachments::upload))

@@ -7,9 +7,10 @@ use bytes::{Bytes, BytesMut};
 use fastproof_ingest::{IngestError, JsonBounds, ReportOptions, report_to_parsed, scan_json};
 use fastproof_model::{AttachmentKind, ReportResult};
 use fastproof_store::ingest::{LaunchRef, NewAttempt};
-use fastproof_store::results::{GroupBy, ResultFilter};
+use fastproof_store::results::{GroupBy, ResultFilter, TreeFilter, TreeOptions};
 use fastproof_store::{
     DailyEntry, HistoryEntry, HistoryFilter, Launch, Page, ResultDetail, ResultSummary, TreeNode,
+    TreeTest,
 };
 use franshub_auth::Auth;
 use franshub_http::{ApiError, ApiResult};
@@ -539,11 +540,93 @@ pub async fn list(
 pub struct TreeQuery {
     /// `suite` (default), `feature` or `package`.
     pub group_by: Option<String>,
+    /// Leaves (`tests`, `testCount`) instead of `resultIds`; groups that do not fit the
+    /// response are read from `.../tree/tests`.
+    pub include_tests: Option<bool>,
+    /// One status or a comma-separated list; counts are those of the matching results.
+    pub status: Option<String>,
+    /// Substring of the test name, full name or suite path.
+    pub q: Option<String>,
+    /// Only results flaky in this run.
+    pub flaky: Option<bool>,
+    /// A result whose group is inlined first (to reveal a deep-linked result).
+    pub reveal: Option<Uuid>,
+}
+
+/// Query of the tests of one tree group.
+#[derive(Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+#[serde(rename_all = "camelCase")]
+pub struct TreeTestsQuery {
+    /// `suite` (default), `feature` or `package`.
+    pub group_by: Option<String>,
+    /// The group: its `path` as a JSON array of names (`[]` for the root).
+    pub path: String,
+    pub status: Option<String>,
+    pub q: Option<String>,
+    pub flaky: Option<bool>,
+    pub before: Option<String>,
+    pub limit: Option<i64>,
+}
+
+/// Bytes of the `path` of a tree group, at most.
+pub const MAX_TREE_PATH_BYTES: usize = 8 * 1024;
+/// Names in the `path` of a tree group, at most.
+pub const MAX_TREE_PATH_NAMES: usize = 64;
+
+fn group_by(v: Option<&str>) -> ApiResult<GroupBy> {
+    match v.unwrap_or("suite") {
+        "suite" => Ok(GroupBy::Suite),
+        "feature" => Ok(GroupBy::Feature),
+        "package" => Ok(GroupBy::Package),
+        _ => Err(ApiError::bad_request(
+            "groupBy must be suite, feature or package",
+        )),
+    }
+}
+
+fn statuses(v: Option<&str>) -> ApiResult<Vec<String>> {
+    let list: Vec<String> = v
+        .map(|v| {
+            v.split(',')
+                .map(|x| x.trim().to_ascii_lowercase())
+                .filter(|x| !x.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    if list.iter().any(|x| {
+        !matches!(
+            x.as_str(),
+            "passed" | "failed" | "broken" | "skipped" | "unknown" | "running"
+        )
+    }) {
+        return Err(ApiError::bad_request(
+            "status must be passed, failed, broken, skipped, unknown or running",
+        ));
+    }
+    Ok(list)
+}
+
+fn tree_filter(
+    status: Option<&str>,
+    q: Option<String>,
+    flaky: Option<bool>,
+) -> ApiResult<TreeFilter> {
+    if q.as_ref().is_some_and(|v| v.len() > MAX_Q_BYTES) {
+        return Err(ApiError::bad_request(format!(
+            "q has at most {MAX_Q_BYTES} bytes"
+        )));
+    }
+    Ok(TreeFilter {
+        statuses: statuses(status)?,
+        q: q.filter(|v| !v.trim().is_empty()),
+        flaky: flaky.filter(|f| *f),
+    })
 }
 
 #[utoipa::path(get, path = "/api/v1/projects/{key}/launches/{id}/tree", tag = "results", operation_id = "results_tree",
     params(("key" = String, Path), ("id" = Uuid, Path), TreeQuery),
-    responses((status = 200, body = TreeNode), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
+    responses((status = 200, body = TreeNode), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
 pub async fn tree(
     State(s): State<AppState>,
     auth: Auth,
@@ -552,17 +635,52 @@ pub async fn tree(
 ) -> ApiResult<Json<TreeNode>> {
     let project = s.project_for(&auth, &key, &s.perms.launches_read).await?;
     let launch = s.launch_of(&project, id).await?;
-    let by = match q.group_by.as_deref().unwrap_or("suite") {
-        "suite" => GroupBy::Suite,
-        "feature" => GroupBy::Feature,
-        "package" => GroupBy::Package,
-        _ => {
-            return Err(ApiError::bad_request(
-                "groupBy must be suite, feature or package",
-            ));
-        }
+    let o = TreeOptions {
+        by: group_by(q.group_by.as_deref())?,
+        include_tests: q.include_tests.unwrap_or(false),
+        filter: tree_filter(q.status.as_deref(), q.q, q.flaky)?,
+        reveal: q.reveal,
     };
-    Ok(Json(s.store.tree(&launch, by).await?))
+    Ok(Json(s.store.tree_with(&launch, &o).await?))
+}
+
+#[utoipa::path(get, path = "/api/v1/projects/{key}/launches/{id}/tree/tests", tag = "results", operation_id = "results_tree_tests",
+    params(("key" = String, Path), ("id" = Uuid, Path), TreeTestsQuery),
+    responses((status = 200, body = Page<TreeTest>), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
+pub async fn tree_tests(
+    State(s): State<AppState>,
+    auth: Auth,
+    P((key, id)): P<(String, Uuid)>,
+    Q(q): Q<TreeTestsQuery>,
+) -> ApiResult<Json<Page<TreeTest>>> {
+    let project = s.project_for(&auth, &key, &s.perms.launches_read).await?;
+    let launch = s.launch_of(&project, id).await?;
+    let by = group_by(q.group_by.as_deref())?;
+    if q.path.len() > MAX_TREE_PATH_BYTES {
+        return Err(ApiError::bad_request(format!(
+            "path has at most {MAX_TREE_PATH_BYTES} bytes"
+        )));
+    }
+    let path: Vec<String> = serde_json::from_str(&q.path)
+        .map_err(|_| ApiError::bad_request("path must be a JSON array of strings"))?;
+    if path.len() > MAX_TREE_PATH_NAMES {
+        return Err(ApiError::bad_request(format!(
+            "path has at most {MAX_TREE_PATH_NAMES} names"
+        )));
+    }
+    if q.before
+        .as_ref()
+        .is_some_and(|v| v.len() > MAX_TREE_PATH_BYTES)
+    {
+        return Err(ApiError::bad_request("before is not a cursor"));
+    }
+    let f = tree_filter(q.status.as_deref(), q.q, q.flaky)?;
+    let limit = page_limit(q.limit)?;
+    Ok(Json(
+        s.store
+            .tree_tests(&launch, by, &path, &f, q.before.as_deref(), limit)
+            .await?,
+    ))
 }
 
 #[utoipa::path(get, path = "/api/v1/projects/{key}/results/{id}", tag = "results", operation_id = "results_detail",

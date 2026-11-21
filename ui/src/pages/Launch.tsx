@@ -1,14 +1,14 @@
-import { Accordion, ActionIcon, Anchor, Badge, Button, Card, Chip, Group, SegmentedControl, SimpleGrid, Stack, Switch, Tabs, Text, TextInput, Tooltip, UnstyledButton } from '@mantine/core';
+import { Accordion, ActionIcon, Anchor, Badge, Button, Card, Chip, Group, SimpleGrid, Stack, Switch, Tabs, Text, TextInput, Tooltip, UnstyledButton } from '@mantine/core';
 import { DonutChart } from '@mantine/charts';
 import { EmptyState, useCan } from '@franshub/ui-shell';
 import { useDebouncedValue } from '@mantine/hooks';
-import { IconAlertTriangle, IconBrandGithub, IconBrandGitlab, IconChevronDown, IconChevronRight, IconExternalLink, IconGitBranch, IconGitCommit, IconGitCompare, IconListCheck, IconSearch, IconStar, IconStarFilled, IconUpload, IconX } from '@tabler/icons-react';
+import { IconAlertTriangle, IconBrandGithub, IconBrandGitlab, IconExternalLink, IconGitBranch, IconGitCommit, IconGitCompare, IconListCheck, IconSearch, IconStar, IconStarFilled, IconUpload, IconList, IconListTree } from '@tabler/icons-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
 import { useProjectEvents } from '../api/events';
-import { flatItems, useLaunch, useProject, useResults, useTree, useUploads } from '../api/hooks';
+import { flatItems, useLaunch, useProject, useResults, useUploads } from '../api/hooks';
 import { useDefectTypeMap, usePatchLaunch } from '../api/stageC';
-import type { Counts, Launch, ResultFilters, ResultStatus, ResultSummary, TreeGroupBy, TreeNode, Upload } from '../api/types';
+import type { Counts, Launch, ResultFilters, ResultStatus, ResultSummary, Upload } from '../api/types';
 import type { DefectType } from '../api/types-next';
 import { RESULT_STATUSES } from '../api/types';
 import { DefectChip } from '../components/Defect';
@@ -26,6 +26,7 @@ import { useListKeys } from '../lib/keys';
 import { rememberLaunch } from '../lib/recent';
 import { STATUS_LABEL, statusVar, uploadStatusColor } from '../lib/status';
 import { Clusters } from './launch/Clusters';
+import { Explorer } from './launch/Explorer';
 import { TestPlanModal } from './launch/TestPlanModal';
 import { TransitionBadge } from './launch/TransitionBadge';
 import { LaunchProgress, LiveBadge } from './Launches';
@@ -298,18 +299,7 @@ function ResultRow({ project, r, index, selected, onHover, types }: { project: s
   );
 }
 
-function collectIds(node: TreeNode, out: Set<string>): Set<string> {
-  for (const id of node.resultIds ?? []) out.add(id);
-  for (const c of node.children) collectIds(c, out);
-  return out;
-}
-
-interface TreeSelection {
-  label: string;
-  ids: Set<string>;
-}
-
-function Results({ project, launch, selection, onClearSelection }: { project: string; launch: Launch; selection: TreeSelection | null; onClearSelection: () => void }) {
+function Results({ project, launch }: { project: string; launch: Launch }) {
   const [sp, setSp] = useSearchParams();
   const navigate = useNavigate();
   const statusParam = sp.get('status') ?? '';
@@ -324,8 +314,7 @@ function Results({ project, launch, selection, onClearSelection }: { project: st
   );
   const q = useResults(project, launch.id, filters);
   const types = useDefectTypeMap(project);
-  const all = flatItems(q.data);
-  const items = selection ? all.filter((r) => selection.ids.has(r.id)) : all;
+  const items = flatItems(q.data);
   const [selected, setSelected] = useState(-1);
 
   const set = useCallback(
@@ -377,13 +366,6 @@ function Results({ project, launch, selection, onClearSelection }: { project: st
         <TextInput aria-label="Search results" placeholder="Search by name or error" leftSection={<IconSearch size={16} />} value={text} onChange={(e) => setText(e.currentTarget.value)} />
         <TextInput aria-label="Label filter" placeholder="Label name:value, e.g. severity:blocker" value={label} onChange={(e) => set('label', e.currentTarget.value || null)} />
       </SimpleGrid>
-      {selection && (
-        <Group gap="xs">
-          <Badge variant="light" color="fhPurple" rightSection={<IconX size={12} style={{ cursor: 'pointer' }} onClick={onClearSelection} aria-label="Clear tree selection" />} style={{ textTransform: 'none' }} data-testid="tree-selection">
-            In {selection.label}
-          </Badge>
-        </Group>
-      )}
       <QueryState query={q}>
         {() =>
           items.length === 0 ? (
@@ -400,72 +382,6 @@ function Results({ project, launch, selection, onClearSelection }: { project: st
       </QueryState>
       <Text size="xs" c="dimmed" visibleFrom="sm">
         {items.length} shown. Tip: j / k move the selection, Enter opens it.
-      </Text>
-    </Stack>
-  );
-}
-
-function TreeRow({ node, depth, onPick, selectedKey }: { node: TreeNode; depth: number; onPick: (n: TreeNode) => void; selectedKey: string | null }) {
-  const [open, setOpen] = useState(depth < 1);
-  const key = node.path.join('/');
-  const hasChildren = node.children.length > 0;
-  return (
-    <>
-      <Group gap={6} wrap="nowrap" className="fp-tree-row" data-selected={selectedKey === key} style={{ paddingLeft: 6 + depth * 16 }} data-testid="tree-node">
-        <UnstyledButton onClick={() => setOpen((o) => !o)} aria-label={open ? `Collapse ${node.name}` : `Expand ${node.name}`} style={{ visibility: hasChildren ? 'visible' : 'hidden', display: 'inline-flex' }}>
-          {open ? <IconChevronDown size={14} /> : <IconChevronRight size={14} />}
-        </UnstyledButton>
-        <UnstyledButton onClick={() => onPick(node)} style={{ flex: 1, minWidth: 0 }}>
-          <Group gap="sm" wrap="nowrap">
-            <Text size="sm" className="fh-truncate" style={{ flex: 1, minWidth: 0 }} fw={hasChildren ? 600 : 400}>
-              {node.name}
-            </Text>
-            <div style={{ width: 120, flex: 'none' }}>
-              <StatusBar counts={node.counts} height={6} />
-            </div>
-            <Text size="xs" c="dimmed" style={{ width: 70, textAlign: 'right', flex: 'none' }}>
-              {node.counts.failed + node.counts.broken > 0 ? `${String(node.counts.failed + node.counts.broken)} / ` : ''}
-              {node.counts.total}
-            </Text>
-          </Group>
-        </UnstyledButton>
-      </Group>
-      {open && node.children.map((c) => <TreeRow key={c.path.join('/')} node={c} depth={depth + 1} onPick={onPick} selectedKey={selectedKey} />)}
-    </>
-  );
-}
-
-function Tree({ project, launch, onPick, selectedKey }: { project: string; launch: Launch; onPick: (n: TreeNode) => void; selectedKey: string | null }) {
-  const [groupBy, setGroupBy] = useState<TreeGroupBy>('suite');
-  const q = useTree(project, launch.id, groupBy);
-  return (
-    <Stack gap="sm">
-      <SegmentedControl
-        size="xs"
-        value={groupBy}
-        onChange={setGroupBy}
-        data={[
-          { value: 'suite', label: 'Suites' },
-          { value: 'feature', label: 'Features' },
-          { value: 'package', label: 'Packages' },
-        ]}
-        style={{ alignSelf: 'flex-start' }}
-      />
-      <QueryState query={q}>
-        {() =>
-          q.data?.length ? (
-            <Card withBorder radius="md" padding="xs" data-testid="tree">
-              {q.data.map((n) => (
-                <TreeRow key={n.path.join('/')} node={n} depth={0} onPick={onPick} selectedKey={selectedKey} />
-              ))}
-            </Card>
-          ) : (
-            <EmptyState title="No results yet" />
-          )
-        }
-      </QueryState>
-      <Text size="xs" c="dimmed">
-        Pick a group to list its results.
       </Text>
     </Stack>
   );
@@ -505,8 +421,8 @@ export default function LaunchPage() {
   const q = useLaunch(key, id);
   const live = useProjectEvents(key);
   const [sp, setSp] = useSearchParams();
-  const tab = sp.get('tab') ?? 'results';
-  const [selection, setSelection] = useState<(TreeSelection & { key: string }) | null>(null);
+  const asked = sp.get('tab');
+  const tab = asked === 'tree' || (!asked && !sp.get('label')) ? 'explorer' : (asked ?? 'results');
   const [planOpen, setPlanOpen] = useState(false);
   const canPlan = useCan('launches:write', key);
 
@@ -518,17 +434,17 @@ export default function LaunchPage() {
     setSp(
       (prev) => {
         const next = new URLSearchParams(prev);
-        if (!t || t === 'results') next.delete('tab');
+        if (!t || t === 'explorer') next.delete('tab');
         else next.set('tab', t);
+        if (t !== 'explorer') {
+          next.delete('test');
+          next.delete('attempt');
+          next.delete('section');
+        }
         return next;
       },
       { replace: true },
     );
-
-  const pick = (n: TreeNode) => {
-    setSelection({ key: n.path.join('/'), label: n.path.join(' › '), ids: collectIds(n, new Set()) });
-    setTab('results');
-  };
 
   return (
     <QueryState query={q} notFound="Launch not found">
@@ -574,8 +490,12 @@ export default function LaunchPage() {
               <Uploads project={key} launch={l} />
               <Tabs value={tab} onChange={setTab} keepMounted={false}>
                 <Tabs.List>
-                  <Tabs.Tab value="results">Results</Tabs.Tab>
-                  <Tabs.Tab value="tree">Tree</Tabs.Tab>
+                  <Tabs.Tab value="explorer" leftSection={<IconListTree size={14} />} data-testid="tab-explorer">
+                    Tree
+                  </Tabs.Tab>
+                  <Tabs.Tab value="results" leftSection={<IconList size={14} />}>
+                    Results
+                  </Tabs.Tab>
                   <Tabs.Tab value="failures" rightSection={l.counts.failed + l.counts.broken > 0 ? <Badge size="xs" color="red" variant="light">{l.counts.failed + l.counts.broken}</Badge> : undefined}>
                     Failures
                   </Tabs.Tab>
@@ -583,11 +503,11 @@ export default function LaunchPage() {
                     {l.status === 'running' ? 'Live' : 'Logs'}
                   </Tabs.Tab>
                 </Tabs.List>
-                <Tabs.Panel value="results" pt="md">
-                  <Results project={key} launch={l} selection={selection} onClearSelection={() => setSelection(null)} />
+                <Tabs.Panel value="explorer" pt="md">
+                  <Explorer project={key} launch={l} />
                 </Tabs.Panel>
-                <Tabs.Panel value="tree" pt="md">
-                  <Tree project={key} launch={l} onPick={pick} selectedKey={selection?.key ?? null} />
+                <Tabs.Panel value="results" pt="md">
+                  <Results project={key} launch={l} />
                 </Tabs.Panel>
                 <Tabs.Panel value="failures" pt="md">
                   <Clusters project={key} launch={l} />

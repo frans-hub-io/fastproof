@@ -402,6 +402,51 @@ pub struct TreeNode {
     pub children: Vec<TreeNode>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result_ids: Option<Vec<Uuid>>,
+    /// Sum of the durations of the results under the node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<i64>,
+    /// Results directly in this node (not in its children), with `includeTests`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub test_count: Option<i64>,
+    /// The results directly in this node, with `includeTests`, when they fit the response;
+    /// absent while `testCount` is above zero, they are read page by page from `.../tree/tests`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tests: Option<Vec<TreeTest>>,
+}
+
+/// A result as a leaf of the launch tree.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TreeTest {
+    pub id: Uuid,
+    /// The name shown in the tree (the test title, without the groups above it).
+    pub name: String,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<i64>,
+    /// Attempts, when more than one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt_count: Option<i32>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub flaky_in_run: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub flaky: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub muted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transition: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub defect: Option<TreeDefect>,
+}
+
+/// The parts of a defect that name and color it in the tree.
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TreeDefect {
+    pub type_id: Uuid,
+    pub group: String,
+    pub name: String,
+    pub source: String,
 }
 
 /// A stored attachment.

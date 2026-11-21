@@ -6,8 +6,13 @@ export async function openRichLaunch(page: Page): Promise<void> {
   await expect(page.getByRole('heading', { name: '#41 web-shop nightly' })).toBeVisible();
 }
 
-export async function openRichResult(page: Page): Promise<void> {
+export async function openRichResults(page: Page): Promise<void> {
   await openRichLaunch(page);
+  await page.getByRole('tab', { name: 'Results' }).click();
+}
+
+export async function openRichResult(page: Page): Promise<void> {
+  await openRichResults(page);
   await page.getByTestId('result-row').filter({ hasText: 'pays with saved card' }).click();
   await expect(page.getByRole('heading', { name: 'pays with saved card' })).toBeVisible();
 }

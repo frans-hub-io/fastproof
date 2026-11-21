@@ -16,6 +16,7 @@ import {
   testCaseHistory,
   TOKEN_OPTIONS,
   treeOf,
+  treeTestsOf,
   uploadsOf,
   type MockRole,
 } from './fixtures';
@@ -131,6 +132,24 @@ function filterResults(list: ResultSummary[], url: URL): ResultSummary[] {
   });
 }
 
+/** The tree's search matches names and suites only, like the server's. */
+function filterTree(list: ResultSummary[], url: URL): ResultSummary[] {
+  const q = url.searchParams.get('q')?.toLowerCase();
+  const rest = new URL(url);
+  rest.searchParams.delete('q');
+  return filterResults(list, rest).filter((r) => !q || `${r.name} ${r.fullName} ${r.suitePath.join(' ')}`.toLowerCase().includes(q));
+}
+
+/** Inline budget of tree leaves; e2e tests lower it to exercise paging. */
+function treeBudget(): number {
+  try {
+    const v = Number(globalThis.localStorage.getItem('fastproof.mock.treeBudget'));
+    return v > 0 ? v : 5000;
+  } catch {
+    return 5000;
+  }
+}
+
 function audit(action: string, scope: string | undefined, detail: unknown): void {
   const me = meFor(currentRole());
   const id = (state.audit[0]?.id ?? 0) + 1;
@@ -201,9 +220,29 @@ export const handlers = [
   http.get(`${API}/projects/:key/launches/:id/tree`, ({ params, request }) => {
     const def = launchDef(String(params.id));
     if (!def || def.project !== params.key) return error(404, 'not_found', 'launch not found');
-    const g = new URL(request.url).searchParams.get('groupBy') ?? 'suite';
+    const url = new URL(request.url);
+    const g = url.searchParams.get('groupBy') ?? 'suite';
     if (g !== 'suite' && g !== 'feature' && g !== 'package') return error(400, 'invalid_query', 'groupBy must be suite, feature or package', { field: 'groupBy' });
-    return HttpResponse.json(treeOf(def.launch.id, g));
+    const results = filterTree(launchResults(def.launch.id).map((r) => analyze(def.project, r)), url);
+    return HttpResponse.json(treeOf(def.launch.id, g, { results, includeTests: url.searchParams.get('includeTests') === 'true', reveal: url.searchParams.get('reveal'), budget: treeBudget() }));
+  }),
+
+  http.get(`${API}/projects/:key/launches/:id/tree/tests`, ({ params, request }) => {
+    const def = launchDef(String(params.id));
+    if (!def || def.project !== params.key) return error(404, 'not_found', 'launch not found');
+    const url = new URL(request.url);
+    const g = url.searchParams.get('groupBy') ?? 'suite';
+    if (g !== 'suite' && g !== 'feature' && g !== 'package') return error(400, 'invalid_query', 'groupBy must be suite, feature or package', { field: 'groupBy' });
+    let path: unknown;
+    try {
+      path = JSON.parse(url.searchParams.get('path') ?? '');
+    } catch {
+      path = null;
+    }
+    if (!Array.isArray(path) || !path.every((p) => typeof p === 'string')) return error(400, 'invalid_query', 'path must be a JSON array of strings', { field: 'path' });
+    const results = filterTree(launchResults(def.launch.id).map((r) => analyze(def.project, r)), url);
+    const items = treeTestsOf(def.launch.id, g, results, path);
+    return HttpResponse.json(page(items, url, (t) => t.id));
   }),
 
   http.get(`${API}/projects/:key/results/:id`, ({ params }) => {

@@ -1,0 +1,357 @@
+//! The integrations worker of each replica: consumes `launch.finished` from the outbox (one
+//! replica at a time), evaluates gates once the launch's uploads are processed, queues
+//! notifications and VCS updates in the same transaction as the gate result, sends due
+//! deliveries with exponential backoff, refreshes quality metrics, prunes old deliveries and
+//! re-encrypts secrets after a key rotation.
+
+use std::time::{Duration, Instant};
+
+use chrono::Utc;
+use fastproof_store::integrations::{DeliveryJob, NewDelivery};
+use fastproof_store::{Launch, Project};
+use serde_json::json;
+use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
+
+use super::gates::{self, Evaluation, GateStatus};
+use super::notify::{self, NewFailures, Outcome, Summary, SummaryLaunch};
+use super::settings::{IntegrationSettings, Notification, VcsSettings, matches_any};
+use super::{quality, vcs};
+use crate::state::AppState;
+
+/// Name of the outbox cursor.
+pub const CONSUMER: &str = "integrations";
+/// How long a launch with unprocessed uploads waits before its gate is evaluated anyway.
+pub const MAX_UPLOAD_WAIT: Duration = Duration::from_secs(1800);
+/// Deliveries sent per round.
+pub const BATCH: i64 = 10;
+/// Days finished deliveries are kept.
+pub const KEEP_DAYS: i64 = 30;
+
+/// The launch page.
+pub fn launch_url(s: &AppState, project: &str, id: Uuid) -> Option<String> {
+    let base = s.cfg.public_url.as_ref()?;
+    base.join(&format!("p/{project}/launches/{id}"))
+        .ok()
+        .map(|u| u.to_string())
+}
+
+/// The summary messages are built from.
+pub fn summary(
+    s: &AppState,
+    project: &Project,
+    launch: &Launch,
+    ev: &Evaluation,
+    events: Vec<String>,
+) -> Summary {
+    let vcs = launch.vcs.clone().unwrap_or_default();
+    let ci = launch.ci.clone().unwrap_or_default();
+    Summary {
+        project: project.key.clone(),
+        launch: SummaryLaunch {
+            id: launch.id,
+            number: launch.number,
+            name: launch.name.clone(),
+            status: launch.status.clone(),
+            branch: vcs.branch,
+            environment: gates::env_of(launch).map(str::to_string),
+            repository: vcs.repository,
+            commit: vcs.commit,
+            merge_request: ci.merge_request,
+            ci_url: ci.url,
+            url: launch_url(s, &project.key, launch.id),
+            duration_ms: launch.duration_ms,
+            counts: launch.counts.clone(),
+        },
+        gate: ev.report.clone(),
+        new_failures: NewFailures {
+            count: ev.new_failures,
+            names: ev.new_failure_names.clone(),
+            baseline_launch_id: ev.previous_launch_id,
+        },
+        events,
+    }
+}
+
+/// The deliveries of a finished launch.
+pub fn deliveries(
+    settings: &IntegrationSettings,
+    launch: &Launch,
+    summary: &Summary,
+    max_attempts: i32,
+) -> Vec<NewDelivery> {
+    let mut out = Vec::new();
+    if launch.debug {
+        return out;
+    }
+    for n in &settings.notifications {
+        let f = n.filter.clone().unwrap_or_default();
+        if !matches_any(&f.branches, gates::branch_of(launch))
+            || !matches_any(&f.environments, gates::env_of(launch))
+        {
+            continue;
+        }
+        let events: Vec<String> = summary
+            .events
+            .iter()
+            .filter(|e| n.on.contains(e))
+            .cloned()
+            .collect();
+        if events.is_empty() {
+            continue;
+        }
+        let mut sm = summary.clone();
+        sm.events = events.clone();
+        out.push(NewDelivery {
+            channel: n.kind.clone(),
+            target_id: n.id.clone(),
+            events,
+            payload: json!({"summary": sm, "notification": n}),
+            max_attempts,
+        });
+    }
+    if let Some(v) = &settings.vcs
+        && vcs::applies(v, summary)
+    {
+        out.push(NewDelivery {
+            channel: v.provider.clone(),
+            target_id: "vcs".into(),
+            events: summary.events.clone(),
+            payload: json!({"summary": summary, "vcs": v}),
+            max_attempts,
+        });
+    }
+    out
+}
+
+async fn process_launch(
+    s: &AppState,
+    project_id: Uuid,
+    launch_id: Uuid,
+    queued_at: chrono::DateTime<Utc>,
+) -> anyhow::Result<()> {
+    let Some(key) = s.store.project_key(project_id).await? else {
+        return Ok(());
+    };
+    let (Some(project), Some(launch)) = (
+        s.store.project(&key).await?,
+        s.store.launch(project_id, launch_id).await?,
+    ) else {
+        return Ok(());
+    };
+    let waited = (Utc::now() - queued_at).to_std().unwrap_or_default();
+    if gates::is_pending(&launch) && waited < MAX_UPLOAD_WAIT {
+        return Ok(());
+    }
+    let doc = s.store.project_settings(project_id).await?;
+    let settings = IntegrationSettings::parse(&doc).unwrap_or_else(|e| {
+        tracing::warn!(project = %key, error = %e, "integration settings are invalid; skipping gates and notifications");
+        IntegrationSettings::default()
+    });
+    let ev = gates::evaluate_launch(s, &project, &launch, &settings.gates).await?;
+    let mut events = vec!["launchFinished".to_string()];
+    if ev.report.status == GateStatus::Failed {
+        events.push("gateFailed".into());
+    }
+    if ev.new_failures > 0 {
+        events.push("newFailures".into());
+    }
+    let sm = summary(s, &project, &launch, &ev, events);
+    let ds = deliveries(
+        &settings,
+        &launch,
+        &sm,
+        s.cfg.integrations.delivery_max_attempts,
+    );
+    if s.store
+        .complete_gate(
+            project_id,
+            launch_id,
+            ev.report.status.as_str(),
+            serde_json::to_value(&ev.report)?,
+            &ds,
+        )
+        .await?
+    {
+        if !launch.debug {
+            quality::launch_finished(&key, launch.duration_ms);
+        }
+        tracing::info!(project = %key, launch = %launch_id, gate = ev.report.status.as_str(), deliveries = ds.len(), "launch evaluated");
+    }
+    Ok(())
+}
+
+async fn send(s: &AppState, job: &DeliveryJob) -> Outcome {
+    let Ok(sm) = serde_json::from_value::<Summary>(job.payload["summary"].clone()) else {
+        return Outcome::Fail("the delivery payload is unreadable".into(), None);
+    };
+    match job.channel.as_str() {
+        "gitlab" | "github" => {
+            match serde_json::from_value::<VcsSettings>(job.payload["vcs"].clone()) {
+                Ok(v) => vcs::deliver(s, job.project_id, &v, &sm).await,
+                Err(_) => Outcome::Fail("the delivery payload is unreadable".into(), None),
+            }
+        }
+        _ => match serde_json::from_value::<Notification>(job.payload["notification"].clone()) {
+            Ok(n) => notify::send(s, job.project_id, job.id, &n, &sm).await,
+            Err(_) => Outcome::Fail("the delivery payload is unreadable".into(), None),
+        },
+    }
+}
+
+/// The delay before attempt `attempts + 1`.
+pub fn backoff(base: Duration, attempts: i32) -> Duration {
+    let exp = attempts.clamp(1, 16) as u32 - 1;
+    base.saturating_mul(1u32 << exp.min(12))
+        .min(Duration::from_secs(3600))
+}
+
+async fn deliver(s: &AppState, job: DeliveryJob) {
+    let outcome = send(s, &job).await;
+    let (ok, err, code, retry) = match outcome {
+        Outcome::Delivered(c) => (true, None, c, None),
+        Outcome::Retry(e, c) if job.attempts < job.max_attempts => {
+            let d = backoff(s.cfg.integrations.delivery_backoff, job.attempts);
+            (
+                false,
+                Some(e),
+                c,
+                Some(Utc::now() + chrono::Duration::from_std(d).unwrap_or_default()),
+            )
+        }
+        Outcome::Retry(e, c) | Outcome::Fail(e, c) => (false, Some(e), c, None),
+    };
+    let label = if ok {
+        "delivered"
+    } else if retry.is_some() {
+        "retry"
+    } else {
+        "failed"
+    };
+    metrics::counter!("fastproof_deliveries_total", "kind" => job.channel.clone(), "outcome" => label)
+        .increment(1);
+    if !ok {
+        tracing::warn!(project = %job.project_key, delivery = %job.id, kind = %job.channel, target = %job.target_id,
+            attempt = job.attempts, error = err.as_deref().unwrap_or_default(), "delivery failed");
+    }
+    if let Err(e) = s
+        .store
+        .finish_delivery(job.id, ok, err.as_deref(), code.map(i32::from), retry)
+        .await
+    {
+        tracing::error!(error = %format!("{e:#}"), "recording a delivery failed");
+    }
+}
+
+/// One round: outbox, waiting launches, due deliveries.
+pub async fn tick(s: &AppState) -> anyhow::Result<()> {
+    let cfg = &s.cfg.integrations;
+    s.store
+        .consume_finished_launches(CONSUMER, cfg.settle, 500)
+        .await?;
+    for (p, l, queued) in s.store.waiting_gates(50).await? {
+        if let Err(e) = process_launch(s, p, l, queued).await {
+            tracing::warn!(launch = %l, error = %format!("{e:#}"), "evaluating a launch failed");
+        }
+    }
+    for _ in 0..5 {
+        let jobs = s
+            .store
+            .claim_deliveries(BATCH, Duration::from_secs(120))
+            .await?;
+        if jobs.is_empty() {
+            break;
+        }
+        futures::future::join_all(jobs.into_iter().map(|j| deliver(s, j))).await;
+    }
+    Ok(())
+}
+
+async fn reseal(s: &AppState) {
+    let Some(keys) = s.cfg.integrations.secrets.clone() else {
+        return;
+    };
+    let mut done = 0u64;
+    loop {
+        let rows = match s.store.secrets_not_under_key(keys.active_id(), 100).await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(error = %format!("{e:#}"), "listing secrets to re-encrypt failed");
+                return;
+            }
+        };
+        let mut progressed = false;
+        for (p, name, sealed) in &rows {
+            let Ok(v) = keys.open(*p, name, sealed) else {
+                continue;
+            };
+            let Ok(new) = keys.seal(*p, name, v.expose()) else {
+                continue;
+            };
+            if s.store
+                .reseal_secret(*p, name, &sealed.key_id, &new)
+                .await
+                .unwrap_or(false)
+            {
+                done += 1;
+                progressed = true;
+            }
+        }
+        if !progressed {
+            if !rows.is_empty() {
+                tracing::warn!(
+                    count = rows.len(),
+                    "some secrets use a key that is not in FASTPROOF_SECRETS_KEY_FILE"
+                );
+            }
+            break;
+        }
+    }
+    if done > 0 {
+        tracing::info!(
+            count = done,
+            key = keys.active_id(),
+            "re-encrypted secrets with the active key"
+        );
+    }
+}
+
+/// Runs until `stop`.
+pub async fn run(s: AppState, stop: CancellationToken) {
+    reseal(&s).await;
+    let mut last_metrics: Option<Instant> = None;
+    let mut last_prune: Option<Instant> = None;
+    loop {
+        if let Err(e) = tick(&s).await {
+            tracing::warn!(error = %format!("{e:#}"), "integrations round failed");
+        }
+        if last_metrics.is_none_or(|t| t.elapsed() >= Duration::from_secs(60)) {
+            last_metrics = Some(Instant::now());
+            if let Err(e) = quality::refresh(&s).await {
+                tracing::warn!(error = %format!("{e:#}"), "refreshing quality metrics failed");
+            }
+        }
+        if last_prune.is_none_or(|t| t.elapsed() >= Duration::from_secs(6 * 3600)) {
+            last_prune = Some(Instant::now());
+            let _ = s.store.prune_deliveries(KEEP_DAYS).await;
+        }
+        tokio::select! {
+            _ = stop.cancelled() => return,
+            _ = tokio::time::sleep(s.cfg.integrations.poll) => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backoff_doubles_and_caps() {
+        let b = Duration::from_secs(30);
+        assert_eq!(backoff(b, 1), Duration::from_secs(30));
+        assert_eq!(backoff(b, 2), Duration::from_secs(60));
+        assert_eq!(backoff(b, 4), Duration::from_secs(240));
+        assert_eq!(backoff(b, 20), Duration::from_secs(3600));
+    }
+}

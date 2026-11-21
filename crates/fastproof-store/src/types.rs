@@ -52,6 +52,9 @@ pub struct LaunchCi {
     pub job_id: Option<String>,
     pub url: Option<String>,
     pub build_order: Option<i64>,
+    /// Merge request IID (GitLab) or pull request number (GitHub) of the pipeline.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub merge_request: Option<String>,
 }
 
 /// Version control metadata of a launch.

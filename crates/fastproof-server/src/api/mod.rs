@@ -3,6 +3,7 @@
 pub mod admin;
 pub mod attachments;
 pub mod events;
+pub mod integrations;
 pub mod launches;
 pub mod projects;
 pub mod results;
@@ -55,7 +56,7 @@ impl Modify for BearerAuth {
     components(schemas(ErrorBody, fastproof_model::ReportResult)),
     tags(
         (name = "projects"), (name = "launches"), (name = "uploads"), (name = "results"),
-        (name = "attachments"), (name = "events"), (name = "admin")
+        (name = "attachments"), (name = "events"), (name = "admin"), (name = "integrations")
     )
 )]
 pub struct ApiDoc;

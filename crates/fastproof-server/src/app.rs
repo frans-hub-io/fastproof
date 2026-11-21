@@ -59,6 +59,14 @@ pub fn api_router() -> (Router<AppState>, utoipa::openapi::OpenApi) {
         .routes(routes!(api::events::stream))
         .routes(routes!(api::admin::audit))
         .routes(routes!(api::admin::jobs))
+        .routes(routes!(api::integrations::gate))
+        .routes(routes!(api::integrations::secrets))
+        .routes(routes!(
+            api::integrations::put_secret,
+            api::integrations::delete_secret
+        ))
+        .routes(routes!(api::integrations::deliveries))
+        .routes(routes!(api::integrations::mock_interactions))
         .merge(uploads)
         .split_for_parts()
 }
@@ -108,6 +116,7 @@ pub fn router(state: AppState) -> Router {
         .merge(franshub_auth::routes::<AppState>())
         .merge(state.platform.oidc_router())
         .route("/api/openapi.json", get(openapi_json))
+        .merge(crate::mcp::router(&state))
         .route("/healthz", get(|| async { "ok" }));
     if state.cfg.ui {
         app = app
@@ -266,6 +275,8 @@ pub async fn start_with_pool(
         wake: Arc::new(Notify::new()),
         sse: Arc::new(Semaphore::new(MAX_SSE)),
         instance,
+        egress: crate::integrations::egress::Egress::new(cfg.integrations.egress.clone())?,
+        analysis: Arc::new(crate::integrations::analysis::Fallback),
         cfg: Arc::new(cfg),
     }));
     let stop = CancellationToken::new();
@@ -324,6 +335,10 @@ pub async fn start_with_pool(
             stop.clone(),
         )));
     }
+    tasks.push(tokio::spawn(crate::integrations::dispatch::run(
+        state.clone(),
+        stop.clone(),
+    )));
     let sched = crate::scheduler::standard_jobs()?;
     tasks.push(tokio::spawn(sched.run(state.clone(), stop.clone())));
     {

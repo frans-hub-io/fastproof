@@ -26,6 +26,9 @@ pub struct LaunchQuery {
     pub attr: Option<String>,
     /// Substring of the name.
     pub q: Option<String>,
+    /// Exact external id.
+    #[serde(rename = "externalId")]
+    pub external_id: Option<String>,
     /// `false` (default): regular launches; `true`: debug launches only.
     pub debug: Option<bool>,
     /// Cursor from `next`.
@@ -80,6 +83,7 @@ pub fn validate_start(b: &LaunchStart) -> ApiResult<()> {
             ("ci.pipelineId", &c.pipeline_id),
             ("ci.jobId", &c.job_id),
             ("ci.url", &c.url),
+            ("ci.mergeRequest", &c.merge_request),
         ] {
             bounded(n, v.as_deref(), 2048)?;
         }
@@ -167,6 +171,7 @@ pub async fn list(
         status: q.status,
         attr: key_value(q.attr.as_deref(), "attr")?,
         q: q.q.filter(|v| !v.is_empty()),
+        external_id: q.external_id.filter(|v| !v.is_empty() && v.len() <= 256),
         debug: q.debug.unwrap_or(false),
         before,
         limit: page_limit(q.limit)?,

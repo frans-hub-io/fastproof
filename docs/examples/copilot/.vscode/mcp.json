@@ -1,0 +1,19 @@
+{
+  "inputs": [
+    {
+      "type": "promptString",
+      "id": "fastproof-token",
+      "description": "FastProof API token (viewer to read, editor to triage)",
+      "password": true
+    }
+  ],
+  "servers": {
+    "fastproof": {
+      "type": "http",
+      "url": "https://fastproof.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${input:fastproof-token}"
+      }
+    }
+  }
+}

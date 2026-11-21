@@ -118,6 +118,10 @@ pub struct Inner {
     pub sse: Arc<Semaphore>,
     /// Identifies this replica in leases.
     pub instance: String,
+    /// The egress-checked HTTP client of integrations.
+    pub egress: crate::integrations::egress::Egress,
+    /// Analysis operations used by the MCP tools.
+    pub analysis: Arc<dyn crate::integrations::analysis::AnalysisOps>,
 }
 
 /// The axum state.

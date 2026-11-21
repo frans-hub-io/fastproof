@@ -3,6 +3,7 @@
 pub mod archive;
 pub mod ci;
 pub mod client;
+pub mod gate;
 pub mod watch;
 
 use std::path::PathBuf;
@@ -42,6 +43,9 @@ pub enum Command {
         #[command(subcommand)]
         command: LaunchCommand,
     },
+    /// Check the quality gate of a launch: exit 0 when it passed, 1 when it failed, 2 on
+    /// errors or when it is still pending.
+    Gate(gate::GateArgs),
     /// Print the version.
     Version,
 }
@@ -284,6 +288,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<i32> {
             Ok(0)
         }
         Command::Upload(u) => upload(u).await,
+        Command::Gate(g) => Ok(gate::run(g).await),
         Command::Watch(w) => watch::run(w).await,
     }
 }

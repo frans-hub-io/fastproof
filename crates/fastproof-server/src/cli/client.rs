@@ -154,6 +154,35 @@ impl Client {
         self.send(rb).await
     }
 
+    /// The launch with an external id, if any.
+    pub async fn launch_by_external(
+        &self,
+        project: &str,
+        external_id: &str,
+    ) -> anyhow::Result<Option<Launch>> {
+        let rb = self
+            .request(
+                Method::GET,
+                &format!("api/v1/projects/{}/launches", Self::enc(project)),
+            )?
+            .query(&[("externalId", external_id), ("limit", "1")]);
+        Ok(self
+            .send::<Items<Launch>>(rb)
+            .await?
+            .items
+            .into_iter()
+            .next())
+    }
+
+    /// The quality gate of a launch.
+    pub async fn gate(&self, project: &str, id: Uuid) -> anyhow::Result<serde_json::Value> {
+        let rb = self.request(
+            Method::GET,
+            &format!("api/v1/projects/{}/launches/{id}/gate", Self::enc(project)),
+        )?;
+        self.send(rb).await
+    }
+
     /// Sends an upload body.
     pub async fn upload(
         &self,

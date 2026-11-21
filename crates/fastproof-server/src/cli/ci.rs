@@ -31,6 +31,7 @@ pub fn detect(get: &dyn Fn(&str) -> Option<String>) -> Option<CiMeta> {
                 job_id: v("CI_JOB_ID"),
                 url: v("CI_PIPELINE_URL").or(v("CI_JOB_URL")),
                 build_order: v("CI_PIPELINE_IID").and_then(|n| n.parse().ok()),
+                merge_request: v("CI_MERGE_REQUEST_IID"),
             },
             vcs: LaunchVcs {
                 repository: v("CI_PROJECT_URL"),
@@ -65,6 +66,7 @@ pub fn detect(get: &dyn Fn(&str) -> Option<String>) -> Option<CiMeta> {
                     _ => None,
                 },
                 build_order: v("GITHUB_RUN_NUMBER").and_then(|n| n.parse().ok()),
+                merge_request: v("GITHUB_REF").and_then(|r| github_pr(&r)),
             },
             vcs: LaunchVcs {
                 repository: repo.map(|r| format!("{server}/{r}")),
@@ -93,6 +95,7 @@ pub fn detect(get: &dyn Fn(&str) -> Option<String>) -> Option<CiMeta> {
                 job_id: job,
                 url: v("BUILD_URL"),
                 build_order: build.and_then(|n| n.parse().ok()),
+                merge_request: v("CHANGE_ID"),
             },
             vcs: LaunchVcs {
                 repository: v("GIT_URL"),
@@ -104,6 +107,12 @@ pub fn detect(get: &dyn Fn(&str) -> Option<String>) -> Option<CiMeta> {
         });
     }
     None
+}
+
+/// The pull request number of `refs/pull/<n>/merge` (or `/head`).
+fn github_pr(r: &str) -> Option<String> {
+    let n = r.strip_prefix("refs/pull/")?.split('/').next()?;
+    (!n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())).then(|| n.to_string())
 }
 
 #[cfg(test)]
@@ -157,6 +166,28 @@ mod tests {
             Some("https://github.com/org/app/actions/runs/99")
         );
         assert_eq!(c.vcs.branch.as_deref(), Some("feature-x"));
+        assert_eq!(c.ci.merge_request, None);
+        let m = env(&[
+            ("GITHUB_ACTIONS", "true"),
+            ("GITHUB_REF", "refs/pull/17/merge"),
+        ]);
+        assert_eq!(
+            detect(&|k| m.get(k).cloned())
+                .unwrap()
+                .ci
+                .merge_request
+                .as_deref(),
+            Some("17")
+        );
+        let m = env(&[("GITLAB_CI", "true"), ("CI_MERGE_REQUEST_IID", "5")]);
+        assert_eq!(
+            detect(&|k| m.get(k).cloned())
+                .unwrap()
+                .ci
+                .merge_request
+                .as_deref(),
+            Some("5")
+        );
 
         let m = env(&[
             ("JENKINS_URL", "https://ci.example.com/"),

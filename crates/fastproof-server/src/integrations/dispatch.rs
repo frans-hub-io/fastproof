@@ -285,7 +285,13 @@ async fn reseal(s: &AppState) {
             let Ok(v) = keys.open(*p, name, sealed) else {
                 continue;
             };
-            let Ok(new) = keys.seal(*p, name, v.expose()) else {
+            let Ok(new) = keys.seal(
+                *p,
+                name,
+                sealed.purpose.as_deref(),
+                sealed.origin.as_deref(),
+                v.expose(),
+            ) else {
                 continue;
             };
             if s.store

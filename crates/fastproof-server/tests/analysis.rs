@@ -415,7 +415,7 @@ async fn fingerprints_clusters_triage_and_similar() {
             "/api/v1/projects/an/settings",
             Some(ADMIN_TOKEN),
             Some(json!({"issueTrackers": [{"type": "jira", "urlTemplate": "https://issues.example.com/browse/{key}",
-                "keyRegex": "[A-Z]+-[0-9]+"}], "vcs": {"provider": "gitlab", "url": "https://gitlab.example.com", "tokenSecretRef": "gitlab-token", "comment": true}})),
+                "keyRegex": "[A-Z]+-[0-9]+"}], "vcs": {"provider": "gitlab", "url": "https://gitlab.example.com", "repository": "group/app", "tokenSecretRef": "gitlab-token", "comment": true}})),
         )
         .await;
     assert_eq!(st, StatusCode::OK);

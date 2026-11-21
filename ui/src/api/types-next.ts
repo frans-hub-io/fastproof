@@ -89,6 +89,8 @@ export interface ProjectSettings {
 
 export type SecretInfo = S['SecretMeta'];
 
+export type SecretPurpose = S['SecretPurpose'];
+
 export type FlakyTest = Omit<S['FlakyItem'], 'lastStatuses'> & { lastStatuses: ResultStatus[] };
 
 export type DurationChange = S['DurationChange'];

@@ -99,12 +99,21 @@ Every parser has size, depth and count limits, and one byte budget per upload co
   environment variable, except the optional Valkey URL.
 - Secrets are redacted from logs and never returned by the API.
 - Project secrets (integration tokens, webhook keys) are encrypted at rest with AES-256-GCM under the key in
-  `FASTPROOF_SECRETS_KEY_FILE`, bound to their project and name, and write-only through the API. Rotate the key
-  as described in [Secrets key rotation](configuration.md#secrets-key-rotation).
-- Integrations reach only the hosts in `FASTPROOF_EGRESS_ALLOW` (empty by default: no outbound calls). Names
-  matched only by a wildcard must resolve to public addresses, every redirect is checked again, and proxies
-  from the environment are ignored.
-- Webhooks are signed with HMAC-SHA256 (`X-FastProof-Signature`); verify the signature on the receiving side.
+  `FASTPROOF_SECRETS_KEY_FILE`, bound to their project, name, purpose and destination origin, and write-only
+  through the API. A secret is used only for its purpose and sent only to its origin, so pointing a setting at
+  another URL needs the secret written again ([Project secrets](../guide/notifications.md#project-secrets)).
+  Rotate the key as described in [Secrets key rotation](configuration.md#secrets-key-rotation).
+- Integrations reach only the hosts in `FASTPROOF_EGRESS_ALLOW` (empty by default: no outbound calls). An
+  entry with a port allows only that port. Names matched only by a wildcard must resolve to public addresses,
+  every redirect is checked again and loses credential headers when it leaves the origin, calls that carry a
+  token (GitLab, GitHub, FastMock) do not follow redirects, and proxies from the environment are ignored.
+- Merge request comments and commit statuses go only to the repository pinned in the project settings, and text
+  from launches is escaped in them.
+- Webhooks are signed with HMAC-SHA256 over a timestamp and the body (`X-FastProof-Timestamp`,
+  `X-FastProof-Signature`); verify the signature, the timestamp and the delivery id on the receiving side
+  ([Webhook](../guide/notifications.md#webhook)).
+- Notification targets and integration URLs in the project settings are shown only to callers with
+  `settings:write`; changes of those URLs are audited with the old and the new value.
 - Keep port 9090 (metrics, health, readiness) inside the cluster; the Helm chart's NetworkPolicy allows it
   only from the monitoring namespace.
 

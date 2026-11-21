@@ -1,4 +1,4 @@
-import { ActionIcon, Alert, Badge, Button, Card, ColorInput, Fieldset, Group, Modal, NumberInput, PasswordInput, Select, SimpleGrid, Stack, Switch, Table, Tabs, Text, TextInput, Title, Tooltip } from '@mantine/core';
+import { ActionIcon, Alert, Badge, Button, Card, ColorInput, Fieldset, Group, Modal, NumberInput, PasswordInput, Select, SimpleGrid, Stack, Switch, Table, Tabs, TagsInput, Text, TextInput, Title, Tooltip } from '@mantine/core';
 import { EmptyState, useCan } from '@franshub/ui-shell';
 import { notifications } from '@mantine/notifications';
 import { IconEdit, IconLock, IconPlus, IconTrash } from '@tabler/icons-react';
@@ -7,7 +7,7 @@ import { useParams, useSearchParams } from 'react-router';
 import { errorMessage } from '../api/client';
 import { useProject } from '../api/hooks';
 import { useDefectTypes, useDeleteDefectType, useSaveDefectType, useSaveSettings, useSecrets, useSettings, useWriteSecret } from '../api/stageC';
-import type { DefectGroup, DefectType, IssueTracker, IssueTrackerType, ProjectSettings, VcsSettings } from '../api/types-next';
+import type { DefectGroup, DefectType, IssueTracker, IssueTrackerType, ProjectSettings, SecretPurpose, VcsSettings } from '../api/types-next';
 import { DEFECT_GROUPS } from '../api/types-next';
 import { DefectChip } from '../components/Defect';
 import { PageHeader } from '../components/PageHeader';
@@ -324,6 +324,16 @@ function trackerErrors(t: IssueTracker): { url: string | null; regex: string | n
   return { url, regex };
 }
 
+const REPO_PATH = /^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)+$/;
+const ORIGIN = /^https?:\/\/[^\s/?#@]+\/?$/i;
+const PURPOSES: { value: SecretPurpose; label: string }[] = [
+  { value: 'vcs', label: 'GitLab or GitHub token' },
+  { value: 'fastmock', label: 'FastMock token' },
+  { value: 'slack', label: 'Slack webhook URL' },
+  { value: 'webhook', label: 'Webhook signing key or URL' },
+  { value: 'telegram', label: 'Telegram bot token' },
+];
+
 function secretOptions(names: string[], current: string | null | undefined): string[] {
   return current && !names.includes(current) ? [...names, current] : names;
 }
@@ -339,8 +349,9 @@ function IntegrationsForm({ project, settings, canWrite }: { project: string; se
   const tErrors = trackers.map(trackerErrors);
   const vcsUrlError = vcs && !HTTP_URL.test(vcs.url) ? 'Must be an http(s) URL' : null;
   const vcsTokenError = vcs && !vcs.tokenSecretRef ? 'Choose the secret with the API token' : null;
+  const vcsRepoError = vcs && !REPO_PATH.test(vcs.repository) ? (vcs.provider === 'github' ? 'owner/repo' : 'group/project, subgroups allowed') : null;
   const fmUrlError = fm && !HTTP_URL.test(fm.url) ? 'Must be an http(s) URL' : null;
-  const valid = tErrors.every((e) => !e.url && !e.regex) && !vcsUrlError && !vcsTokenError && !fmUrlError && trackers.length <= 10;
+  const valid = tErrors.every((e) => !e.url && !e.regex) && !vcsUrlError && !vcsTokenError && !vcsRepoError && !fmUrlError && trackers.length <= 10;
 
   const setTracker = (i: number, t: Partial<IssueTracker>) => setTrackers(trackers.map((x, j) => (j === i ? { ...x, ...t } : x)));
 
@@ -398,11 +409,11 @@ function IntegrationsForm({ project, settings, canWrite }: { project: string; se
             </Group>
           )}
         </Section>
-        <Section title="Merge request comments" description="When a launch finishes, FastProof posts or updates one comment and a commit status on the merge request of its pipeline.">
+        <Section title="Merge request comments" description="When a launch of the repository below finishes, FastProof posts or updates one comment and a commit status on its merge request. The token secret needs purpose vcs and the origin of the API URL.">
           <Switch
             label="Enabled"
             checked={!!vcs}
-            onChange={(e) => setVcs(e.currentTarget.checked ? { provider: 'gitlab', url: 'https://gitlab.example.com', tokenSecretRef: '', comment: true, status: true } : null)}
+            onChange={(e) => setVcs(e.currentTarget.checked ? { provider: 'gitlab', url: 'https://gitlab.example.com', repository: '', tokenSecretRef: '', comment: true, status: true } : null)}
             data-testid="vcs-enabled"
           />
           {vcs && (
@@ -422,6 +433,10 @@ function IntegrationsForm({ project, settings, canWrite }: { project: string; se
                 <TextInput label="API base URL" value={vcs.url} onChange={(e) => setVcs({ ...vcs, url: e.currentTarget.value })} error={vcsUrlError} />
                 <Select label="Token secret" placeholder="Choose a secret" data={secretOptions(names, vcs.tokenSecretRef)} value={vcs.tokenSecretRef || null} onChange={(v) => setVcs({ ...vcs, tokenSecretRef: v ?? '' })} error={vcsTokenError} comboboxProps={{ withinPortal: true }} data-testid="vcs-token" />
               </SimpleGrid>
+              <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="xs">
+                <TextInput label="Repository" description="The only repository FastProof posts to" placeholder={vcs.provider === 'github' ? 'owner/repo' : 'group/app'} value={vcs.repository} onChange={(e) => setVcs({ ...vcs, repository: e.currentTarget.value.trim() })} error={vcsRepoError} data-testid="vcs-repository" />
+                <TagsInput label="Only source branches" description="Empty: every branch" placeholder="feature/*" value={vcs.sourceBranches ?? []} onChange={(v) => setVcs({ ...vcs, sourceBranches: v.length ? v : null })} maxTags={50} />
+              </SimpleGrid>
               <Group gap="lg">
                 <Switch label="Comment with the summary" checked={vcs.comment} onChange={(e) => setVcs({ ...vcs, comment: e.currentTarget.checked })} />
                 <Switch label="Commit status" checked={vcs.status} onChange={(e) => setVcs({ ...vcs, status: e.currentTarget.checked })} />
@@ -429,7 +444,7 @@ function IntegrationsForm({ project, settings, canWrite }: { project: string; se
             </>
           )}
         </Section>
-        <Section title="FastMock" description="Shows the mock calls a test made (by trace id or time window) on the result page.">
+        <Section title="FastMock" description="Shows the mock calls a test made (by trace id or time window) on the result page. A token secret needs purpose fastmock and the origin of the FastMock URL.">
           <Switch label="Enabled" checked={!!fm} onChange={(e) => setFm(e.currentTarget.checked ? { url: 'https://fastmock.example.com', tokenSecretRef: null } : null)} />
           {fm && (
             <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="xs">
@@ -455,22 +470,27 @@ function Secrets({ project, canWrite }: { project: string; canWrite: boolean }) 
   const write = useWriteSecret(project);
   const [name, setName] = useState('');
   const [value, setValue] = useState('');
+  const [purpose, setPurpose] = useState<SecretPurpose | null>(null);
+  const [origin, setOrigin] = useState('');
   if (!canWrite) {
     return <EmptyState title="Secrets are managed by project admins" description="Writing and listing secrets needs the settings:write permission." />;
   }
   const nameError = name && !SECRET_NAME.test(name) ? 'Lowercase letters, digits, . _ -; up to 63 characters' : null;
   const valueError = value.length > 8192 ? 'At most 8192 characters' : null;
-  const valid = SECRET_NAME.test(name) && value.length > 0 && !valueError;
+  const needsOrigin = purpose === 'vcs' || purpose === 'fastmock';
+  const originError = origin && !ORIGIN.test(origin) ? 'An origin such as https://gitlab.example.com' : needsOrigin && !origin ? 'Required for this purpose' : null;
+  const valid = SECRET_NAME.test(name) && value.length > 0 && !valueError && !!purpose && !originError;
   const exists = (q.data ?? []).some((s) => s.name === name);
   const submit = () => {
     if (!valid) return;
     write.mutate(
-      { name, value },
+      { name, value, purpose, origin: origin.trim() || null },
       {
         onSuccess: () => {
           notifications.show({ color: 'green', message: `Secret ${name} saved` });
           setValue('');
           setName('');
+          setOrigin('');
         },
         onError: (e) => {
           setValue('');
@@ -482,7 +502,7 @@ function Secrets({ project, canWrite }: { project: string; canWrite: boolean }) 
   return (
     <Stack gap="md">
       <Alert color="gray" variant="light" icon={<IconLock size={18} />} title="Write-only">
-        Secret values are encrypted on the server and never shown again, not even to admins. Settings refer to them by name (tokens for merge request comments, FastMock, notification signing keys). To change a value, write it again under the same name.
+        Secret values are encrypted on the server and never shown again, not even to admins. Settings refer to them by name (tokens for merge request comments, FastMock, notification signing keys and URLs). Each secret is used only for its purpose and sent only to its origin: to change a value or point it at another URL, write it again under the same name.
       </Alert>
       <Card withBorder radius="md" padding="md">
         <Stack gap="sm">
@@ -490,6 +510,8 @@ function Secrets({ project, canWrite }: { project: string; canWrite: boolean }) 
           <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="sm">
             <TextInput label="Name" placeholder="gitlab-token" value={name} onChange={(e) => setName(e.currentTarget.value.trim())} error={nameError} maxLength={63} data-testid="secret-name" />
             <PasswordInput label="Value" value={value} onChange={(e) => setValue(e.currentTarget.value)} error={valueError} autoComplete="new-password" data-testid="secret-value" />
+            <Select label="Purpose" placeholder="Choose" data={PURPOSES} value={purpose} onChange={(v) => setPurpose(PURPOSES.find((p) => p.value === v)?.value ?? null)} allowDeselect={false} comboboxProps={{ withinPortal: true }} data-testid="secret-purpose" />
+            <TextInput label="Origin" description={needsOrigin ? 'Where the secret is sent, e.g. https://gitlab.example.com' : 'Optional: the only origin it may be sent to'} placeholder="https://gitlab.example.com" value={origin} onChange={(e) => setOrigin(e.currentTarget.value.trim())} error={originError} data-testid="secret-origin" />
           </SimpleGrid>
           {exists && (
             <Text size="xs" c="var(--fh-semantic-warning-fg)">
@@ -512,6 +534,8 @@ function Secrets({ project, canWrite }: { project: string; canWrite: boolean }) 
                   <Table.Thead>
                     <Table.Tr>
                       <Table.Th>Name</Table.Th>
+                      <Table.Th>Purpose</Table.Th>
+                      <Table.Th>Origin</Table.Th>
                       <Table.Th>Value</Table.Th>
                       <Table.Th>Updated</Table.Th>
                     </Table.Tr>
@@ -520,6 +544,8 @@ function Secrets({ project, canWrite }: { project: string; canWrite: boolean }) 
                     {q.data.map((s) => (
                       <Table.Tr key={s.name} data-testid="secret-row">
                         <Table.Td className="fp-mono">{s.name}</Table.Td>
+                        <Table.Td>{s.purpose ?? <Text span size="sm" c="var(--fh-semantic-warning-fg)">none, write again</Text>}</Table.Td>
+                        <Table.Td className="fp-mono" c="dimmed">{s.origin ?? 'any'}</Table.Td>
                         <Table.Td c="dimmed">••••••••</Table.Td>
                         <Table.Td c="dimmed" title={`${formatDateTime(s.updatedAt)}${s.updatedBy ? ` by ${s.updatedBy}` : ''}`}>
                           {formatRelative(s.updatedAt)}

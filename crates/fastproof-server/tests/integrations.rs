@@ -151,6 +151,21 @@ async fn handle(
         ("POST", ["redirect"]) => {
             (AxStatus::FOUND, [("location", "http://203.0.113.7/stolen")]).into_response()
         }
+        (_, ["moved", rest @ ..]) => {
+            let host = rec
+                .headers
+                .get("host")
+                .cloned()
+                .unwrap_or_default()
+                .replace("127.0.0.1", "localhost");
+            let q = if rec.query.is_empty() {
+                String::new()
+            } else {
+                format!("?{}", rec.query)
+            };
+            let to = format!("http://{host}/{}{q}", rest.join("/"));
+            (AxStatus::FOUND, [("location", to)]).into_response()
+        }
         ("POST", ["slack"]) => "ok".into_response(),
         ("POST", [bot, "sendMessage"]) if bot.starts_with("bot") => json_body(json!({"ok": true})),
         ("GET", ["__admin", "requests"]) => {
@@ -279,13 +294,20 @@ async fn settings(db: &TestDb, project: &str, v: Value) {
         .unwrap();
 }
 
-async fn put_secret(s: &Server, project: &str, name: &str, value: &str) {
+async fn put_secret(
+    s: &Server,
+    project: &str,
+    name: &str,
+    value: &str,
+    purpose: &str,
+    origin: Option<&str>,
+) {
     let (st, b) = s
         .call(
             Method::PUT,
             &format!("/api/v1/projects/{project}/secrets/{name}"),
             Some(ADMIN_TOKEN),
-            Some(json!({"value": value})),
+            Some(json!({"value": value, "purpose": purpose, "origin": origin})),
         )
         .await;
     assert!(st.is_success(), "{st} {b}");
@@ -584,11 +606,19 @@ async fn vcs_comments_are_created_then_updated() {
     let s = start(&db, &e).await;
     for (project, provider) in [("gl", "gitlab"), ("gh", "github")] {
         s.project(project).await;
-        put_secret(&s, project, "vcs-token", &format!("{provider}-token-123")).await;
+        put_secret(
+            &s,
+            project,
+            "vcs-token",
+            &format!("{provider}-token-123"),
+            "vcs",
+            Some(&fake.url()),
+        )
+        .await;
         settings(
             &db,
             project,
-            json!({"vcs": {"provider": provider, "url": fake.url(), "tokenSecretRef": "vcs-token"},
+            json!({"vcs": {"provider": provider, "url": fake.url(), "repository": "group/app", "tokenSecretRef": "vcs-token"},
                    "gates": [{"name": "g", "rules": [{"metric": "failed", "op": "lte", "value": 0}]}]}),
         )
         .await;
@@ -650,7 +680,11 @@ async fn vcs_comments_are_created_then_updated() {
                 (first["state"].as_str(), second["state"].as_str()),
                 (Some("failed"), Some("success"))
             );
-            assert_eq!(statuses[0].headers["private-token"], "gitlab-token-123");
+            assert_eq!(
+                statuses[0].headers["authorization"],
+                "Bearer gitlab-token-123"
+            );
+            assert!(!statuses[0].headers.contains_key("private-token"));
         } else {
             assert_eq!(
                 (first["state"].as_str(), second["state"].as_str()),
@@ -678,6 +712,317 @@ async fn vcs_comments_are_created_then_updated() {
     }
 }
 
+/// A launch with a merge request and a commit on `repository`.
+async fn mr_launch(
+    s: &Server,
+    project: &str,
+    name: &str,
+    repository: &str,
+    branch: &str,
+) -> String {
+    let id = launch(
+        s,
+        project,
+        json!({"name": name, "ci": {"provider": "gitlab", "mergeRequest": "5"},
+               "vcs": {"repository": repository, "branch": branch,
+                       "commit": "0123456789abcdef0123456789abcdef01234567"}}),
+    )
+    .await;
+    results(s, project, &id, &[("x", "passed")]).await;
+    finish(s, project, &id).await;
+    id
+}
+
+async fn settled_delivery(s: &Server, project: &str, launch: &str) -> Value {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let found = deliveries(s, project)
+            .await
+            .into_iter()
+            .find(|d| d["launchId"] == launch);
+        if let Some(d) = found
+            && matches!(d["status"].as_str(), Some("delivered" | "failed"))
+        {
+            return d;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out: delivery of {launch}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+#[tokio::test]
+async fn vcs_token_stays_on_the_pinned_repository() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let fake = Fake::start().await;
+    let e = env(&fake, &[]);
+    let s = start(&db, &e).await;
+    s.project("gl").await;
+    put_secret(&s, "gl", "vcs-token", "glpat-123", "vcs", Some(&fake.url())).await;
+    settings(
+        &db,
+        "gl",
+        json!({"vcs": {"provider": "gitlab", "url": fake.url(), "repository": "group/app",
+                       "tokenSecretRef": "vcs-token", "sourceBranches": ["feature/*"]}}),
+    )
+    .await;
+
+    let elsewhere = mr_launch(
+        &s,
+        "gl",
+        "app",
+        &format!("{}/victim/secret-app", fake.url()),
+        "feature/x",
+    )
+    .await;
+    let d = settled_delivery(&s, "gl", &elsewhere).await;
+    assert_eq!(d["status"], "failed", "{d}");
+    assert!(
+        d["lastError"]
+            .as_str()
+            .unwrap()
+            .contains("is not vcs.repository"),
+        "{d}"
+    );
+    assert!(fake.requests("/api/v4/projects/victim").is_empty());
+    assert!(fake.requests("/api/v4/").is_empty(), "nothing was called");
+
+    let name = "app [click](https://evil.example.com/x) ![t](https://evil.example.com/t.png) @all <b>hi</b>";
+    let pinned = mr_launch(
+        &s,
+        "gl",
+        name,
+        &format!("{}/group/app.git", fake.url()),
+        "feature/y",
+    )
+    .await;
+    assert_eq!(
+        settled_delivery(&s, "gl", &pinned).await["status"],
+        "delivered"
+    );
+    let notes = fake.st.notes.lock().unwrap().clone();
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    let (marker, body) = notes[0].1.split_once('\n').unwrap();
+    assert!(
+        marker.starts_with("<!-- fastproof:")
+            && marker.ends_with(" -->")
+            && !marker[4..marker.len() - 4].contains('>'),
+        "the name stays inside the hidden marker: {marker}"
+    );
+    for bad in [
+        "](https://evil",
+        "![",
+        "@all",
+        "<b>",
+        "https://evil",
+        "[click]",
+    ] {
+        assert!(!body.contains(bad), "{bad} in {body}");
+    }
+
+    let other_branch = mr_launch(
+        &s,
+        "gl",
+        "app",
+        &format!("{}/group/app", fake.url()),
+        "main",
+    )
+    .await;
+    wait_for("gate evaluated", || gate_done(&db, &other_branch)).await;
+    assert!(
+        deliveries(&s, "gl")
+            .await
+            .iter()
+            .all(|d| d["launchId"] != other_branch.as_str()),
+        "a branch outside vcs.sourceBranches posts nothing"
+    );
+}
+
+#[tokio::test]
+async fn vcs_calls_do_not_follow_redirects() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let fake = Fake::start().await;
+    let e = env(&fake, &[("FASTPROOF_EGRESS_ALLOW", "127.0.0.1, localhost")]);
+    let s = start(&db, &e).await;
+    s.project("gl").await;
+    put_secret(&s, "gl", "vcs-token", "glpat-456", "vcs", Some(&fake.url())).await;
+    settings(
+        &db,
+        "gl",
+        json!({"vcs": {"provider": "gitlab", "url": format!("{}/moved", fake.url()),
+                       "repository": "group/app", "tokenSecretRef": "vcs-token"}}),
+    )
+    .await;
+    let id = mr_launch(
+        &s,
+        "gl",
+        "app",
+        &format!("{}/group/app", fake.url()),
+        "feature",
+    )
+    .await;
+    let d = settled_delivery(&s, "gl", &id).await;
+    assert_eq!(d["status"], "failed", "{d}");
+    assert!(d["lastError"].as_str().unwrap().contains("HTTP 302"), "{d}");
+    let log = fake.st.log.lock().unwrap().clone();
+    assert!(!log.is_empty());
+    for r in &log {
+        assert!(r.path.starts_with("/moved/"), "followed to {}", r.path);
+        assert!(
+            !r.headers["host"].starts_with("localhost"),
+            "the token went to another origin: {r:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn secrets_are_bound_to_purpose_and_origin() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let fake = Fake::start().await;
+    let e = env(&fake, &[("FASTPROOF_EGRESS_ALLOW", "127.0.0.1, localhost")]);
+    let s = start(&db, &e).await;
+    s.project("shop").await;
+    let l = launch(&s, "shop", json!({"name": "n"})).await;
+    let r = mock_result(&s, "shop", &l, "r", None, 1_795_249_079_000).await;
+    let path = format!("/api/v1/projects/shop/results/{r}/mock-interactions");
+    put_secret(
+        &s,
+        "shop",
+        "fm",
+        "fm-token-9",
+        "fastmock",
+        Some(&fake.url()),
+    )
+    .await;
+    put_secret(&s, "shop", "hook-key", "hmac-key-9", "webhook", None).await;
+    let moved = fake.url().replace("127.0.0.1", "localhost");
+
+    settings(
+        &db,
+        "shop",
+        json!({"fastmock": {"url": moved, "tokenSecretRef": "fm"}}),
+    )
+    .await;
+    let (st, b) = s.get(&path, ADMIN_TOKEN).await;
+    assert_eq!(st, StatusCode::CONFLICT, "{b}");
+    assert!(
+        b["message"]
+            .as_str()
+            .unwrap()
+            .contains("may only be sent to"),
+        "{b}"
+    );
+    settings(
+        &db,
+        "shop",
+        json!({"fastmock": {"url": fake.url(), "tokenSecretRef": "hook-key"}}),
+    )
+    .await;
+    let (st, b) = s.get(&path, ADMIN_TOKEN).await;
+    assert_eq!(st, StatusCode::CONFLICT, "{b}");
+    assert!(
+        b["message"].as_str().unwrap().contains("is for webhook"),
+        "{b}"
+    );
+    assert!(
+        fake.requests("/__admin").is_empty(),
+        "no token left the server"
+    );
+
+    settings(
+        &db,
+        "shop",
+        json!({"fastmock": {"url": fake.url(), "tokenSecretRef": "fm"}}),
+    )
+    .await;
+    let (st, mut doc) = s.get("/api/v1/projects/shop/settings", ADMIN_TOKEN).await;
+    assert_eq!(st, StatusCode::OK);
+    doc["fastmock"]["url"] = json!(moved);
+    let put = |d: Value| {
+        let s = &s;
+        async move {
+            s.call(
+                Method::PUT,
+                "/api/v1/projects/shop/settings",
+                Some(ADMIN_TOKEN),
+                Some(d),
+            )
+            .await
+        }
+    };
+    let (st, b) = put(doc.clone()).await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "{b}");
+    assert!(
+        b["message"]
+            .as_str()
+            .unwrap()
+            .contains("may only be sent to"),
+        "{b}"
+    );
+    put_secret(&s, "shop", "fm", "fm-token-9", "fastmock", Some(&moved)).await;
+    let (st, b) = put(doc.clone()).await;
+    assert_eq!(st, StatusCode::OK, "{b}");
+    let (_, audit) = s.get("/api/v1/audit?limit=100", ADMIN_TOKEN).await;
+    let change = audit["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["action"] == "project.settings.urls")
+        .unwrap_or_else(|| panic!("{audit}"))
+        .clone();
+    let text = change.to_string();
+    assert!(
+        text.contains("fastmock.url")
+            && text.contains(&format!("{}/", fake.url()))
+            && text.contains(&format!("{moved}/")),
+        "{text}"
+    );
+    assert!(!text.contains("fm-token-9"));
+}
+
+#[tokio::test]
+async fn settings_hide_targets_from_readers() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let fake = Fake::start().await;
+    let e = env(&fake, &[]);
+    let s = start(&db, &e).await;
+    s.project("shop").await;
+    settings(
+        &db,
+        "shop",
+        json!({"notifications": [
+                {"id": "sl", "kind": "slack", "on": ["gateFailed"],
+                 "target": "https://hooks.example.com/services/T0/B0/token-part-321"},
+                {"id": "mail", "kind": "email", "on": ["gateFailed"], "target": "qa@example.com"}],
+               "fastmock": {"url": "https://fastmock.example.com:9090"}}),
+    )
+    .await;
+    let viewer = s.token("v", "viewer", &["shop"]).await;
+    let (st, b) = s.get("/api/v1/projects/shop/settings", &viewer).await;
+    assert_eq!(st, StatusCode::OK, "{b}");
+    let text = b.to_string();
+    for hidden in ["token-part-321", "qa@example.com", "fastmock.example.com"] {
+        assert!(
+            !text.contains(hidden),
+            "{hidden} visible to a viewer: {text}"
+        );
+    }
+    assert_eq!(b["notifications"][0]["id"], "sl");
+    let (st, b) = s.get("/api/v1/projects/shop/settings", ADMIN_TOKEN).await;
+    assert_eq!(st, StatusCode::OK);
+    assert!(b.to_string().contains("token-part-321"), "{b}");
+}
+
 #[tokio::test]
 async fn notifications_are_signed_retried_and_listed() {
     let Some(db) = TestDb::new().await else {
@@ -695,9 +1040,17 @@ async fn notifications_are_signed_retried_and_listed() {
     );
     let s = start(&db, &e).await;
     s.project("shop").await;
-    put_secret(&s, "shop", "hook-key", "hmac-key-456").await;
-    put_secret(&s, "shop", "tg", "123456:ABC-def_ghi").await;
-    put_secret(&s, "shop", "slack-url", &format!("{}/slack", fake.url())).await;
+    put_secret(&s, "shop", "hook-key", "hmac-key-456", "webhook", None).await;
+    put_secret(&s, "shop", "tg", "123456:ABC-def_ghi", "telegram", None).await;
+    put_secret(
+        &s,
+        "shop",
+        "slack-url",
+        &format!("{}/slack", fake.url()),
+        "slack",
+        Some(&fake.url()),
+    )
+    .await;
     fake.st.fail_hook.store(2, Ordering::SeqCst);
     settings(
         &db,
@@ -705,7 +1058,7 @@ async fn notifications_are_signed_retried_and_listed() {
         json!({"gates": [{"name": "g", "rules": [{"metric": "failed", "op": "lte", "value": 0}]}],
                "notifications": [
             {"id": "hook", "kind": "webhook", "on": ["launchFinished"], "target": format!("{}/hook", fake.url()), "secretRef": "hook-key"},
-            {"id": "slack", "kind": "slack", "on": ["gateFailed"], "secretRef": "slack-url"},
+            {"id": "slack", "kind": "slack", "on": ["gateFailed"], "targetSecretRef": "slack-url"},
             {"id": "tg", "kind": "telegram", "on": ["newFailures"], "target": "-100200", "secretRef": "tg"},
             {"id": "mail", "kind": "email", "on": ["gateFailed"], "target": "qa@example.com"},
             {"id": "gone", "kind": "webhook", "on": ["launchFinished"], "target": format!("{}/gone", fake.url())},
@@ -753,9 +1106,22 @@ async fn notifications_are_signed_retried_and_listed() {
     assert_eq!(hooks.len(), 3);
     let body = hooks[2].body.as_bytes();
     let sig = &hooks[2].headers["x-fastproof-signature"];
+    let ts: i64 = hooks[2].headers["x-fastproof-timestamp"].parse().unwrap();
+    assert!((chrono::Utc::now().timestamp() - ts).abs() < 120, "{ts}");
     assert_eq!(
         *sig,
-        fastproof_server::integrations::notify::signature(b"hmac-key-456", body)
+        fastproof_server::integrations::notify::signature(b"hmac-key-456", ts, body)
+    );
+    let mut signed = format!("{ts}.").into_bytes();
+    signed.extend_from_slice(body);
+    let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, b"hmac-key-456");
+    assert_eq!(
+        *sig,
+        format!(
+            "sha256={}",
+            hex::encode(ring::hmac::sign(&key, &signed).as_ref())
+        ),
+        "the signature covers <timestamp>.<body>"
     );
     assert_eq!(
         hooks[0].body, hooks[2].body,
@@ -899,7 +1265,7 @@ async fn secrets_are_write_only() {
             Method::PUT,
             path,
             Some(ADMIN_TOKEN),
-            Some(json!({"value": value})),
+            Some(json!({"value": value, "purpose": "slack"})),
         )
         .await;
     assert_eq!(st, StatusCode::CREATED);
@@ -908,13 +1274,17 @@ async fn secrets_are_write_only() {
             Method::PUT,
             path,
             Some(ADMIN_TOKEN),
-            Some(json!({"value": value})),
+            Some(
+                json!({"value": value, "purpose": "slack", "origin": "https://hooks.example.com/"}),
+            ),
         )
         .await;
     assert_eq!(st, StatusCode::NO_CONTENT);
     let (st, list) = s.get("/api/v1/projects/shop/secrets", ADMIN_TOKEN).await;
     assert_eq!(st, StatusCode::OK);
     assert_eq!(list["items"][0]["name"], "slack-url");
+    assert_eq!(list["items"][0]["purpose"], "slack");
+    assert_eq!(list["items"][0]["origin"], "https://hooks.example.com");
     let (_, audit) = s.get("/api/v1/audit?limit=100", ADMIN_TOKEN).await;
     for text in [list.to_string(), audit.to_string()] {
         assert!(!text.contains("very-secret-value-789"), "{text}");
@@ -932,17 +1302,39 @@ async fn secrets_are_write_only() {
             Method::PUT,
             path,
             Some(&editor),
-            Some(json!({"value": "x"})),
+            Some(json!({"value": "x", "purpose": "webhook"})),
         )
         .await;
     assert_eq!(st, StatusCode::FORBIDDEN);
     let (st, _) = s.get("/api/v1/projects/shop/secrets", &editor).await;
     assert_eq!(st, StatusCode::FORBIDDEN);
     for (name, body) in [
-        ("-bad", json!({"value": "x"})),
-        ("ok", json!({"value": ""})),
-        ("ok", json!({"value": "x".repeat(9000)})),
-        ("ok", json!({"value": "x", "extra": 1})),
+        ("-bad", json!({"value": "x", "purpose": "webhook"})),
+        ("ok", json!({"value": "", "purpose": "webhook"})),
+        (
+            "ok",
+            json!({"value": "x".repeat(9000), "purpose": "webhook"}),
+        ),
+        (
+            "ok",
+            json!({"value": "x", "purpose": "webhook", "extra": 1}),
+        ),
+        ("ok", json!({"value": "x"})),
+        ("ok", json!({"value": "x", "purpose": "anything"})),
+        ("ok", json!({"value": "x", "purpose": "vcs"})),
+        (
+            "ok",
+            json!({"value": "x", "purpose": "fastmock", "origin": "fastmock.example.com"}),
+        ),
+        (
+            "ok",
+            json!({"value": "x", "purpose": "vcs", "origin": "https://gitlab.example.com/api"}),
+        ),
+        ("ok", json!({"value": "not a url", "purpose": "slack"})),
+        (
+            "ok",
+            json!({"value": value, "purpose": "slack", "origin": "https://evil.example.net"}),
+        ),
     ] {
         let (st, b) = s
             .call(
@@ -973,7 +1365,7 @@ async fn secrets_are_write_only() {
             Method::PUT,
             path,
             Some(ADMIN_TOKEN),
-            Some(json!({"value": "x"})),
+            Some(json!({"value": "x", "purpose": "webhook"})),
         )
         .await;
     assert_eq!(st, StatusCode::SERVICE_UNAVAILABLE, "{b}");
@@ -1282,7 +1674,15 @@ async fn mock_interactions_against_a_fake_journal() {
     let path = |r: &str| format!("/api/v1/projects/shop/results/{r}/mock-interactions");
     let (st, b) = s.get(&path(&traced), ADMIN_TOKEN).await;
     assert_eq!(st, StatusCode::CONFLICT, "not configured: {b}");
-    put_secret(&s, "shop", "fm", "fm-token-1").await;
+    put_secret(
+        &s,
+        "shop",
+        "fm",
+        "fm-token-1",
+        "fastmock",
+        Some(&fake.url()),
+    )
+    .await;
     settings(
         &db,
         "shop",
@@ -1389,7 +1789,7 @@ async fn mock_interactions_against_a_real_fastmock() {
     let e = env(&fake, &[("FASTPROOF_EGRESS_ALLOW", &allow)]);
     let s = start(&db, &e).await;
     s.project("shop").await;
-    put_secret(&s, "shop", "fm", &token).await;
+    put_secret(&s, "shop", "fm", &token, "fastmock", Some(&admin)).await;
     settings(
         &db,
         "shop",

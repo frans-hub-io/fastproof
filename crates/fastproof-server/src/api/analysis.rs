@@ -535,6 +535,7 @@ pub async fn flaky(
 }
 
 #[utoipa::path(get, path = "/api/v1/projects/{key}/settings", tag = "analysis", operation_id = "analysis_get_settings",
+    description = "The settings document. Callers without `settings:write` get notification targets and the `vcs` and `fastmock` URLs emptied, with `redacted: true` on each.",
     params(("key" = String, Path)),
     responses((status = 200, body = ProjectSettings), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
 pub async fn get_settings(
@@ -543,7 +544,15 @@ pub async fn get_settings(
     P(key): P<String>,
 ) -> ApiResult<Json<ProjectSettings>> {
     let p = s.project_for(&auth, &key, &s.perms.projects_read).await?;
-    Ok(Json(s.store.project_settings(p.id).await?))
+    let mut doc = s.store.project_settings(p.id).await?;
+    if auth
+        .principal
+        .denial(&s.perms.settings_write, Some(&p.key))
+        .is_some()
+    {
+        crate::integrations::settings::redact(&mut doc);
+    }
+    Ok(Json(doc))
 }
 
 #[utoipa::path(put, path = "/api/v1/projects/{key}/settings", tag = "analysis", operation_id = "analysis_put_settings", request_body = ProjectSettings,
@@ -559,7 +568,22 @@ pub async fn put_settings(
     let p = s.project_for(&auth, &key, &s.perms.settings_write).await?;
     body.validate().map_err(ApiError::bad_request)?;
     validate_integration_settings(&body)?;
+    let new_doc = serde_json::to_value(&body).map_err(|e| ApiError::bad_request(e.to_string()))?;
+    crate::integrations::settings::check_secret_uses(&s, p.id, &new_doc)
+        .await
+        .map_err(ApiError::bad_request)?;
+    let old_doc = s.store.project_settings_json(p.id).await?;
     s.store.put_project_settings(p.id, &body).await?;
+    let url_changes = crate::integrations::settings::url_changes(&old_doc, &new_doc);
+    if !url_changes.is_empty() {
+        s.audit(
+            &auth,
+            "project.settings.urls",
+            Some(&p.key),
+            serde_json::json!({"changes": url_changes}),
+        )
+        .await;
+    }
     s.audit(
         &auth,
         "project.settings",

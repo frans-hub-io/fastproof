@@ -63,8 +63,14 @@ test('secrets are write-only', async ({ page }) => {
   await expect(page.getByTestId('secret-row')).toHaveCount(4);
   await page.getByTestId('secret-name').fill('jira-token');
   await page.getByTestId('secret-value').fill('s3cr3t-value-e2e');
+  await expect(page.getByTestId('secret-save')).toBeDisabled();
+  await page.getByTestId('secret-purpose').click();
+  await page.getByRole('option', { name: 'GitLab or GitHub token' }).click();
+  await expect(page.getByText('Required for this purpose')).toBeVisible();
+  await page.getByTestId('secret-purpose').click();
+  await page.getByRole('option', { name: 'Webhook signing key or URL' }).click();
   await page.getByTestId('secret-save').click();
-  await expect(page.getByTestId('secret-row').filter({ hasText: 'jira-token' })).toBeVisible();
+  await expect(page.getByTestId('secret-row').filter({ hasText: 'jira-token' })).toContainText('webhook');
   await expect(page.getByTestId('secret-value')).toHaveValue('');
   await expect(page.getByText('s3cr3t-value-e2e')).toHaveCount(0);
   expect(await page.content()).not.toContain('s3cr3t-value-e2e');

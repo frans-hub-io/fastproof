@@ -207,8 +207,10 @@ settings below decide what they may reach.
 
 Every outbound call of an integration (webhooks, Slack, Telegram, GitLab, GitHub, FastMock, and the SMTP relay)
 goes through the egress allowlist. A name that only matches a wildcard must resolve to public addresses; list
-an internal host exactly to allow it. Redirects are checked hop by hop and proxies from the environment are
-ignored. Allow only the hosts your projects need, for example
+an internal host exactly to allow it. An entry with a port (`gitlab.example.com:443`) allows that port only:
+other ports of the host are allowed only by another entry, and a wildcard entry never reaches an internal
+address. Redirects are checked hop by hop (credential headers are dropped when a redirect leaves the origin;
+GitLab, GitHub and FastMock calls do not follow redirects) and proxies from the environment are ignored. Allow only the hosts your projects need, for example
 `FASTPROOF_EGRESS_ALLOW=hooks.slack.com,api.telegram.org,gitlab.example.com,smtp.example.com:465`.
 
 Generate a secrets key with `openssl rand -hex 32` and keep it in your secret store. Only replicas with the

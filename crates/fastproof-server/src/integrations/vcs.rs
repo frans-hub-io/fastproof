@@ -1,11 +1,17 @@
 //! GitLab merge request notes and GitHub pull request comments (one per project and launch
 //! name, found again by a marker and updated in place) and commit statuses.
+//!
+//! The token is used only for the repository pinned in `vcs.repository`: launch metadata is
+//! written by uploaders, so a launch that names another repository is refused. Calls carry the
+//! token in `Authorization` and never follow redirects. Text from launches is escaped so a
+//! comment cannot carry links, images, mentions or HTML.
 
 use reqwest::Method;
 use serde::Deserialize;
 
 use super::egress::{MAX_RESPONSE_BYTES, OutboundError};
 use super::notify::{Outcome, Summary};
+use super::secrets::SecretPurpose;
 use super::settings::VcsSettings;
 use crate::state::AppState;
 
@@ -26,16 +32,53 @@ pub fn marker(project: &str, launch_name: &str) -> String {
     format!("<!-- fastproof:{project}:{} -->", clean.trim())
 }
 
-fn md(s: &str) -> String {
+/// Text from a launch as inert Markdown: ASCII punctuation is backslash-escaped, `<`, `>` and
+/// `&` become entities, line breaks become spaces, and a zero-width space after `@`, `#`, `!`,
+/// `~`, `%`, `$` and in `://` and `www.` keeps mentions, references and bare links from forming.
+pub fn md(s: &str) -> String {
+    const ZWSP: char = '\u{200B}';
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len() + s.len() / 4);
+    for (i, &c) in chars.iter().enumerate() {
+        match c {
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '&' => out.push_str("&amp;"),
+            c if c.is_control() => out.push(' '),
+            '@' | '#' | '!' | '~' | '%' | '$' => {
+                out.push('\\');
+                out.push(c);
+                out.push(ZWSP);
+            }
+            ':' if chars.get(i + 1) == Some(&'/') => {
+                out.push_str("\\:");
+                out.push(ZWSP);
+            }
+            '.' if i >= 3
+                && chars[i - 3..i]
+                    .iter()
+                    .collect::<String>()
+                    .eq_ignore_ascii_case("www") =>
+            {
+                out.push_str("\\.");
+                out.push(ZWSP);
+            }
+            c if c.is_ascii_punctuation() => {
+                out.push('\\');
+                out.push(c);
+            }
+            c if c == ZWSP || c.is_whitespace() => out.push(' '),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// A commit status name or description: printable text on one line, at most `max` characters.
+fn plain(s: &str, max: usize) -> String {
     s.chars()
-        .map(|c| match c {
-            '<' => "&lt;".to_string(),
-            '>' => "&gt;".to_string(),
-            '|' => "\\|".to_string(),
-            '`' => "'".to_string(),
-            '\n' | '\r' => " ".to_string(),
-            c => c.to_string(),
-        })
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .take(max)
         .collect()
 }
 
@@ -91,7 +134,7 @@ pub fn comment_body(s: &Summary) -> String {
 }
 
 /// The repository path (`group/sub/app` or `owner/repo`) of a repository URL whose host fits
-/// the configured API URL.
+/// the configured API URL; it must be the pinned `vcs.repository`.
 pub fn repo_path(settings: &VcsSettings, repository: &str) -> Result<String, String> {
     let api = url::Url::parse(&settings.url).map_err(|_| "vcs.url is not a URL".to_string())?;
     let repo = url::Url::parse(repository.trim())
@@ -122,7 +165,13 @@ pub fn repo_path(settings: &VcsSettings, repository: &str) -> Result<String, Str
     if !ok || (settings.provider == "github" && parts.len() != 2) {
         return Err("the launch repository path is not a project path".into());
     }
-    Ok(path)
+    if !path.eq_ignore_ascii_case(settings.repository.trim_matches('/')) {
+        return Err(format!(
+            "the launch repository {} is not vcs.repository; nothing is posted",
+            plain(&path, 200)
+        ));
+    }
+    Ok(settings.repository.trim_matches('/').to_string())
 }
 
 fn enc(s: &str) -> String {
@@ -172,20 +221,19 @@ impl Api<'_> {
             .egress
             .request(method, &url)
             .map_err(Outcome::of_error)?;
-        rb = if self.settings.provider == "gitlab" {
-            rb.header("PRIVATE-TOKEN", &self.token)
-        } else {
-            rb.bearer_auth(&self.token)
+        rb = rb.bearer_auth(&self.token);
+        if self.settings.provider == "github" {
+            rb = rb
                 .header(reqwest::header::ACCEPT, "application/vnd.github+json")
-                .header("X-GitHub-Api-Version", "2022-11-28")
-        };
+                .header("X-GitHub-Api-Version", "2022-11-28");
+        }
         if let Some(b) = body {
             rb = rb.json(&b);
         }
         let r = self
             .st
             .egress
-            .send(rb, MAX_RESPONSE_BYTES)
+            .send_no_redirect(rb, MAX_RESPONSE_BYTES)
             .await
             .map_err(|e: OutboundError| Outcome::of_error(e))?;
         match Outcome::of_status(r.status) {
@@ -255,10 +303,7 @@ impl Api<'_> {
             "{} passed, {} failed, {} broken; gate {gate}",
             c.passed, c.failed, c.broken
         );
-        let context: String = format!("fastproof/{}/{}", s.project, s.launch.name)
-            .chars()
-            .take(200)
-            .collect();
+        let context = plain(&format!("fastproof/{}/{}", s.project, s.launch.name), 200);
         let interrupted = s.launch.status == "interrupted";
         let mut body = if self.settings.provider == "gitlab" {
             let state = match gate {
@@ -290,11 +335,14 @@ impl Api<'_> {
     }
 }
 
-/// Whether a launch has anything to post (a merge request number or a commit).
+/// Whether a launch has anything to post (a merge request number or a commit) and its branch
+/// is one of `vcs.sourceBranches`.
 pub fn applies(settings: &VcsSettings, s: &Summary) -> bool {
     let mr = settings.comment && mr_number(s).is_some();
     let st = settings.status && commit(s).is_some();
-    s.launch.repository.is_some() && (mr || st)
+    s.launch.repository.is_some()
+        && (mr || st)
+        && super::settings::matches_any(&settings.source_branches, s.launch.branch.as_deref())
 }
 
 fn mr_number(s: &Summary) -> Option<&str> {
@@ -325,8 +373,19 @@ pub async fn deliver(
         Ok(r) => r,
         Err(e) => return Outcome::Fail(e, None),
     };
+    if !super::settings::matches_any(&settings.source_branches, s.launch.branch.as_deref()) {
+        return Outcome::Fail(
+            "the launch branch is not in vcs.sourceBranches".into(),
+            None,
+        );
+    }
     let token = match st
-        .project_secret(project_id, &settings.token_secret_ref)
+        .project_secret(
+            project_id,
+            &settings.token_secret_ref,
+            SecretPurpose::Vcs,
+            Some(&settings.url),
+        )
         .await
     {
         Ok(t) => t.expose().trim().to_string(),
@@ -363,6 +422,8 @@ mod tests {
         VcsSettings {
             provider: "gitlab".into(),
             url: "https://gitlab.example.com".into(),
+            repository: "group/sub/app".into(),
+            source_branches: None,
             token_secret_ref: "t".into(),
             comment: true,
             status: true,
@@ -379,17 +440,45 @@ mod tests {
             repo_path(&gl(), "https://gitlab.example.com/group/sub/app.git").unwrap(),
             "group/sub/app"
         );
-        assert!(repo_path(&gl(), "https://evil.example.com/group/app").is_err());
+        assert_eq!(
+            repo_path(&gl(), "https://gitlab.example.com/Group/Sub/App").unwrap(),
+            "group/sub/app"
+        );
+        assert!(repo_path(&gl(), "https://evil.example.com/group/sub/app").is_err());
         assert!(repo_path(&gl(), "https://gitlab.example.com/app").is_err());
         assert!(repo_path(&gl(), "https://gitlab.example.com/a/../b").is_err());
+        let other = repo_path(&gl(), "https://gitlab.example.com/victim/secret-app").unwrap_err();
+        assert!(other.contains("is not vcs.repository"), "{other}");
         let mut gh = gl();
         gh.provider = "github".into();
         gh.url = "https://api.github.com".into();
+        gh.repository = "org/app".into();
         assert_eq!(
             repo_path(&gh, "https://github.com/org/app").unwrap(),
             "org/app"
         );
         assert!(repo_path(&gh, "https://github.com/org/app/extra").is_err());
         assert_eq!(enc("group/app"), "group%2Fapp");
+    }
+
+    #[test]
+    fn launch_text_is_inert_markdown() {
+        let evil = "x [click](https://evil.example.com/a) ![p](https://evil.example.com/t.png) \
+                    @all <img src=x onerror=alert(1)> **b** `c` #1 !2 www.evil.example.com &amp;\n| d |";
+        let m = md(evil);
+        for bad in [
+            "[click](", "![", "](", "@all", "<img", "**", "`c`", "https://", "www.evil", "#1",
+            "!2", "\n",
+        ] {
+            assert!(!m.contains(bad), "{bad} survived in {m}");
+        }
+        assert!(m.contains("&lt;img"), "{m}");
+        assert!(
+            m.contains("&amp;amp\\;"),
+            "an entity in the text stays text: {m}"
+        );
+        assert!(m.contains("\\|"), "{m}");
+        assert_eq!(md("checkout_pays-ok"), "checkout\\_pays\\-ok");
+        assert_eq!(plain("a\nb\u{1b}c", 3), "a b");
     }
 }

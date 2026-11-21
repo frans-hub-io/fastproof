@@ -14,7 +14,9 @@ use uuid::Uuid;
 use super::{ErrorBody, P, Q, page_limit};
 use crate::integrations::fastmock::{self, MockInteractions};
 use crate::integrations::gates::{self, GateReport};
-use crate::integrations::secrets::{MAX_SECRET_BYTES, valid_name};
+use crate::integrations::secrets::{
+    MAX_SECRET_BYTES, SecretPurpose, normalize_origin, origin_of, valid_name,
+};
 use crate::integrations::settings::IntegrationSettings;
 use crate::state::AppState;
 
@@ -49,6 +51,14 @@ pub struct SecretList {
 pub struct SecretValue {
     /// At most 8 KiB. Never returned by the API.
     pub value: String,
+    /// What the secret is for; it is refused for anything else.
+    pub purpose: SecretPurpose,
+    /// The only origin (`https://host[:port]`) the secret may be sent to. Required for `vcs`
+    /// (the GitLab base URL or GitHub API URL) and `fastmock` (the admin URL); optional for the
+    /// others (for `slack` and a webhook URL it must then be the origin of the URL itself).
+    /// Changing the URL in the settings needs the secret written again for the new origin.
+    #[serde(default)]
+    pub origin: Option<String>,
 }
 
 impl std::fmt::Debug for SecretValue {
@@ -58,7 +68,7 @@ impl std::fmt::Debug for SecretValue {
 }
 
 #[utoipa::path(get, path = "/api/v1/projects/{key}/secrets", tag = "integrations", operation_id = "integrations_secrets",
-    description = "Names of the project's secrets; values are write-only.",
+    description = "Names, purposes and origins of the project's secrets; values are write-only.",
     params(("key" = String, Path)),
     responses((status = 200, body = SecretList), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
 pub async fn secrets(
@@ -73,7 +83,7 @@ pub async fn secrets(
 }
 
 #[utoipa::path(put, path = "/api/v1/projects/{key}/secrets/{name}", tag = "integrations", operation_id = "integrations_put_secret", request_body = SecretValue,
-    description = "Creates or replaces a secret, encrypted at rest with `FASTPROOF_SECRETS_KEY_FILE`. Settings refer to it by name (`secretRef`, `tokenSecretRef`).",
+    description = "Creates or replaces a secret, encrypted at rest with `FASTPROOF_SECRETS_KEY_FILE` and bound to a purpose and, optionally, the origin it may be sent to. Settings refer to it by name (`secretRef`, `targetSecretRef`, `tokenSecretRef`); a reference with another purpose, or a URL on another origin, is refused.",
     params(("key" = String, Path), ("name" = String, Path)),
     responses((status = 201, description = "created"), (status = 204, description = "replaced"),
         (status = 400, body = ErrorBody), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody),
@@ -95,13 +105,43 @@ pub async fn put_secret(
             "value must have 1 to {MAX_SECRET_BYTES} bytes"
         )));
     }
+    let origin = body
+        .origin
+        .as_deref()
+        .map(normalize_origin)
+        .transpose()
+        .map_err(ApiError::bad_request)?;
+    if body.purpose.needs_origin() && origin.is_none() {
+        return Err(ApiError::bad_request(format!(
+            "a {} secret needs origin, the URL it is sent to",
+            body.purpose.as_str()
+        )));
+    }
+    if body.purpose == SecretPurpose::Slack {
+        let Some(o) = origin_of(&body.value) else {
+            return Err(ApiError::bad_request(
+                "a slack secret is the incoming webhook URL",
+            ));
+        };
+        if origin.as_ref().is_some_and(|x| *x != o) {
+            return Err(ApiError::bad_request(
+                "origin is not the origin of the URL in value",
+            ));
+        }
+    }
     let Some(keys) = &s.cfg.integrations.secrets else {
         return Err(ApiError::unavailable(
             "secrets need FASTPROOF_SECRETS_KEY_FILE on the server",
         ));
     };
     let sealed = keys
-        .seal(project.id, &name, &body.value)
+        .seal(
+            project.id,
+            &name,
+            Some(body.purpose.as_str()),
+            origin.as_deref(),
+            &body.value,
+        )
         .map_err(|_| ApiError::internal())?;
     let created = s
         .store
@@ -115,7 +155,8 @@ pub async fn put_secret(
             "secret.update"
         },
         Some(&project.key),
-        serde_json::json!({"name": name, "keyId": sealed.key_id}),
+        serde_json::json!({"name": name, "keyId": sealed.key_id, "purpose": body.purpose.as_str(),
+            "origin": origin}),
     )
     .await;
     Ok(if created {

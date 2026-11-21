@@ -237,6 +237,7 @@ export function secretsOf(project: string): MockSecret[] {
             { name: 'fastmock-token', purpose: 'fastmock', origin: 'https://fastmock.example.com', updatedAt: iso(NOW - 30 * DAY) },
             { name: 'gitlab-token', purpose: 'vcs', origin: 'https://gitlab.example.com', updatedAt: iso(NOW - 12 * DAY) },
             { name: 'slack-webhook', purpose: 'slack', origin: null, updatedAt: iso(NOW - 40 * DAY) },
+            { name: 'teams-qa-channel', purpose: 'teams', origin: 'https://default0a1b2c3d.4e.environment.api.powerplatform.com', updatedAt: iso(NOW - 5 * DAY) },
             { name: 'webhook-hmac', purpose: 'webhook', origin: null, updatedAt: iso(NOW - 3 * DAY) },
           ]
         : [];

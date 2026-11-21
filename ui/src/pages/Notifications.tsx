@@ -2,13 +2,13 @@ import { ActionIcon, Anchor, Badge, Button, Card, Checkbox, Group, Modal, Select
 import { EmptyState, useCan } from '@franshub/ui-shell';
 import { useMediaQuery } from '@mantine/hooks';
 import { notifications } from '@mantine/notifications';
-import { IconBrandGithub, IconBrandGitlab, IconBrandSlack, IconBrandTelegram, IconEdit, IconMail, IconPlus, IconTrash, IconWebhook } from '@tabler/icons-react';
+import { IconBrandGithub, IconBrandGitlab, IconBrandSlack, IconBrandTeams, IconBrandTelegram, IconEdit, IconMail, IconPlus, IconSend, IconTrash, IconWebhook } from '@tabler/icons-react';
 import { useState } from 'react';
 import { Link, useParams } from 'react-router';
 import { errorMessage } from '../api/client';
 import { useProject } from '../api/hooks';
-import { useDeliveries, useSaveSettings, useSecrets, useSettings } from '../api/stageC';
-import type { Delivery, NotificationEvent, NotificationKind, NotificationTarget, ProjectSettings } from '../api/types-next';
+import { useDeliveries, useSaveSettings, useSecrets, useSettings, useTestNotification } from '../api/stageC';
+import type { Delivery, NotificationEvent, NotificationKind, NotificationTarget, ProjectSettings, SecretInfo, SecretPurpose } from '../api/types-next';
 import { PageHeader } from '../components/PageHeader';
 import { QueryState } from '../components/QueryState';
 import { formatDateTime, formatRelative } from '../lib/format';
@@ -16,6 +16,7 @@ import { formatDateTime, formatRelative } from '../lib/format';
 const KINDS: { value: NotificationKind; label: string; target: string; placeholder: string }[] = [
   { value: 'webhook', label: 'Webhook', target: 'URL', placeholder: 'https://ci.example.com/hooks/fastproof' },
   { value: 'slack', label: 'Slack', target: 'Incoming webhook URL', placeholder: 'https://hooks.slack.com/services/…' },
+  { value: 'teams', label: 'Microsoft Teams', target: 'Workflow URL', placeholder: '' },
   { value: 'email', label: 'Email', target: 'Address', placeholder: 'qa-team@example.com' },
   { value: 'telegram', label: 'Telegram', target: 'Chat id or @channel', placeholder: '-1001234567890' },
 ];
@@ -45,6 +46,8 @@ function KindIcon({ kind, size = 18 }: { kind: NotificationKind; size?: number }
   switch (kind) {
     case 'slack':
       return <IconBrandSlack size={size} />;
+    case 'teams':
+      return <IconBrandTeams size={size} />;
     case 'email':
       return <IconMail size={size} />;
     case 'telegram':
@@ -68,25 +71,60 @@ function targetError(kind: NotificationKind, target: string): string | null {
 }
 
 const PATTERN = /^[A-Za-z0-9._/*-]{1,200}$/;
+const NAME_GLOB = /^\S(.{0,254}\S)?$/;
+const ATTRIBUTE = /^[^=\s][^=]{0,127}=\S.{0,127}$/;
 
-function NotificationEditor({ initial, secrets, onSave, onDelete, onCancel, saving }: { initial: NotificationTarget; secrets: string[]; onSave: (n: NotificationTarget) => void; onDelete?: () => void; onCancel: () => void; saving: boolean }) {
+/** The secret purpose a reference of the kind needs. */
+function purposeOf(kind: NotificationKind): SecretPurpose | null {
+  switch (kind) {
+    case 'webhook':
+      return 'webhook';
+    case 'slack':
+      return 'slack';
+    case 'teams':
+      return 'teams';
+    case 'telegram':
+      return 'telegram';
+    default:
+      return null;
+  }
+}
+
+type Filter = { branches: string[]; environments: string[]; launchNames: string[]; attributes: string[] };
+
+function filterOf(n: NotificationTarget): Filter {
+  return { branches: n.filter?.branches ?? [], environments: n.filter?.environments ?? [], launchNames: n.filter?.launchNames ?? [], attributes: n.filter?.attributes ?? [] };
+}
+
+function same(a: NotificationTarget, b: NotificationTarget): boolean {
+  const norm = (x: NotificationTarget) => JSON.stringify({ ...x, target: x.target ?? '', secretRef: x.secretRef ?? null, targetSecretRef: x.targetSecretRef ?? null, filter: filterOf(x) });
+  return norm(a) === norm(b);
+}
+
+function NotificationEditor({ initial, secrets, onSave, onDelete, onCancel, onTest, saving, testing }: { initial: NotificationTarget; secrets: SecretInfo[]; onSave: (n: NotificationTarget) => void; onDelete?: () => void; onCancel: () => void; onTest?: () => void; saving: boolean; testing: boolean }) {
   const [n, setN] = useState<NotificationTarget>(initial);
   const kind = KINDS.find((k) => k.value === n.kind) ?? KINDS[0];
-  const urlKind = n.kind === 'webhook' || n.kind === 'slack';
+  const teams = n.kind === 'teams';
+  const urlKind = n.kind === 'webhook' || n.kind === 'slack' || teams;
   const fromSecret = urlKind && !!n.targetSecretRef;
-  const tError = fromSecret ? null : targetError(n.kind, n.target ?? '');
-  const branches = n.filter?.branches ?? [];
-  const environments = n.filter?.environments ?? [];
-  const filterError = [...branches, ...environments].some((p) => !PATTERN.test(p)) ? 'Use names or globs like release/*' : null;
-  const valid = !tError && n.on.length > 0 && !filterError;
-  const withCurrent = (cur: string | null | undefined) => (cur && !secrets.includes(cur) ? [...secrets, cur] : secrets);
+  const tError = teams ? (n.targetSecretRef ? null : 'Pick the secret that holds the workflow URL') : fromSecret ? null : targetError(n.kind, n.target ?? '');
+  const f = filterOf(n);
+  const setFilter = (patch: Partial<Filter>) => setN({ ...n, filter: { ...f, ...patch } });
+  const filterError = [...f.branches, ...f.environments].some((p) => !PATTERN.test(p)) ? 'Use names or globs like release/*' : null;
+  const nameError = f.launchNames.some((p) => !NAME_GLOB.test(p)) ? 'Launch names or globs like nightly-*' : null;
+  const attributeError = f.attributes.some((p) => !ATTRIBUTE.test(p)) ? 'Use key=value (the value may be a glob)' : null;
+  const valid = !tError && n.on.length > 0 && !filterError && !nameError && !attributeError;
+  const purpose = purposeOf(n.kind);
+  const names = secrets.filter((x) => x.purpose === purpose).map((x) => x.name);
+  const withCurrent = (cur: string | null | undefined) => (cur && !names.includes(cur) ? [...names, cur] : names);
   const usesSecretRef = n.kind === 'webhook' || n.kind === 'telegram';
+  const changed = !same(n, initial);
   const submit = () => {
     if (!valid) return;
-    const filter = branches.length || environments.length ? { branches, environments } : null;
+    const filter = f.branches.length || f.environments.length || f.launchNames.length || f.attributes.length ? f : null;
     onSave({
       ...n,
-      target: fromSecret ? '' : (n.target ?? '').trim(),
+      target: fromSecret || teams ? '' : (n.target ?? '').trim(),
       filter,
       secretRef: usesSecretRef ? (n.secretRef ?? null) : null,
       targetSecretRef: urlKind ? (n.targetSecretRef ?? null) : null,
@@ -95,13 +133,14 @@ function NotificationEditor({ initial, secrets, onSave, onDelete, onCancel, savi
   return (
     <Stack gap="sm">
       <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="sm">
-        <Select label="Kind" data={KINDS.map(({ value, label }) => ({ value, label }))} value={n.kind} onChange={(v) => v && setN({ ...n, kind: v })} allowDeselect={false} comboboxProps={{ withinPortal: true }} data-testid="notification-kind" />
+        <Select label="Kind" data={KINDS.map(({ value, label }) => ({ value, label }))} value={n.kind} onChange={(v) => v && v !== n.kind && setN({ ...n, kind: v, secretRef: null, targetSecretRef: null })} allowDeselect={false} comboboxProps={{ withinPortal: true }} data-testid="notification-kind" />
         {usesSecretRef && (
           <Select
             label={n.kind === 'webhook' ? 'Signing secret' : 'Bot token secret'}
             description={n.kind === 'webhook' ? 'Purpose webhook; HMAC-SHA256 key for X-FastProof-Signature' : 'Purpose telegram'}
             placeholder="None"
             data={withCurrent(n.secretRef)}
+            nothingFoundMessage={`No secret with purpose ${purpose}`}
             value={n.secretRef ?? null}
             onChange={(v) => setN({ ...n, secretRef: v })}
             clearable
@@ -109,7 +148,22 @@ function NotificationEditor({ initial, secrets, onSave, onDelete, onCancel, savi
           />
         )}
       </SimpleGrid>
-      {urlKind && (
+      {teams && (
+        <Select
+          label="Workflow URL secret"
+          description="The URL of the Teams workflow is a credential: store it as a project secret with purpose teams (Settings › Secrets)"
+          placeholder="Pick a secret"
+          data={withCurrent(n.targetSecretRef)}
+          value={n.targetSecretRef ?? null}
+          onChange={(v) => setN({ ...n, targetSecretRef: v, target: '' })}
+          error={tError}
+          nothingFoundMessage="No secret with purpose teams"
+          required
+          comboboxProps={{ withinPortal: true }}
+          data-testid="notification-target-secret"
+        />
+      )}
+      {urlKind && !teams && (
         <Select
           label="URL from a secret"
           description={n.kind === 'slack' ? 'Recommended: the Slack webhook URL is a credential (purpose slack)' : 'For a URL that carries a token (purpose webhook)'}
@@ -117,12 +171,13 @@ function NotificationEditor({ initial, secrets, onSave, onDelete, onCancel, savi
           data={withCurrent(n.targetSecretRef)}
           value={n.targetSecretRef ?? null}
           onChange={(v) => setN({ ...n, targetSecretRef: v })}
+          nothingFoundMessage={`No secret with purpose ${purpose}`}
           clearable
           comboboxProps={{ withinPortal: true }}
           data-testid="notification-target-secret"
         />
       )}
-      {!fromSecret && (
+      {!fromSecret && !teams && (
         <TextInput label={kind?.target} placeholder={kind?.placeholder} value={n.target ?? ''} onChange={(e) => setN({ ...n, target: e.currentTarget.value })} error={tError} maxLength={500} data-testid="notification-target" data-autofocus />
       )}
       <Checkbox.Group label="Send on" value={n.on} onChange={(v) => setN({ ...n, on: v })} error={n.on.length ? null : 'Pick at least one event'}>
@@ -133,17 +188,26 @@ function NotificationEditor({ initial, secrets, onSave, onDelete, onCancel, savi
         </Group>
       </Checkbox.Group>
       <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="sm">
-        <TagsInput label="Only branches" description="Empty: all" placeholder="main, release/*" value={branches} onChange={(v) => setN({ ...n, filter: { branches: v, environments } })} maxTags={20} error={filterError} />
-        <TagsInput label="Only environments" description="Empty: all" placeholder="staging-chromium" value={environments} onChange={(v) => setN({ ...n, filter: { branches, environments: v } })} maxTags={20} />
+        <TagsInput label="Only branches" description="Empty: all" placeholder={f.branches.length ? undefined : 'main, release/*'} value={f.branches} onChange={(v) => setFilter({ branches: v })} maxTags={20} error={filterError} />
+        <TagsInput label="Only environments" description="Empty: all" placeholder={f.environments.length ? undefined : 'staging-chromium'} value={f.environments} onChange={(v) => setFilter({ environments: v })} maxTags={20} />
+        <TagsInput label="Only launch names" description="Empty: all" placeholder={f.launchNames.length ? undefined : 'nightly-*'} value={f.launchNames} onChange={(v) => setFilter({ launchNames: v })} maxTags={20} error={nameError} data-testid="notification-launch-names" />
+        <TagsInput label="Only with attributes" description="key=value, all must match; empty: any" placeholder={f.attributes.length ? undefined : 'trigger=schedule'} value={f.attributes} onChange={(v) => setFilter({ attributes: v })} maxTags={20} error={attributeError} data-testid="notification-attributes" />
       </SimpleGrid>
       <Group justify="space-between" mt="xs">
-        {onDelete ? (
-          <Button variant="subtle" color="red" leftSection={<IconTrash size={16} />} onClick={onDelete} loading={saving}>
-            Delete
-          </Button>
-        ) : (
-          <span />
-        )}
+        <Group gap="xs">
+          {onDelete ? (
+            <Button variant="subtle" color="red" leftSection={<IconTrash size={16} />} onClick={onDelete} loading={saving}>
+              Delete
+            </Button>
+          ) : null}
+          {onTest && (
+            <Tooltip label="Save the changes first" disabled={!changed}>
+              <Button variant="default" leftSection={<IconSend size={16} />} onClick={onTest} loading={testing} disabled={changed} data-testid="notification-test">
+                Send test notification
+              </Button>
+            </Tooltip>
+          )}
+        </Group>
         <Group gap="xs">
           <Button variant="default" onClick={onCancel}>
             Cancel
@@ -157,9 +221,8 @@ function NotificationEditor({ initial, secrets, onSave, onDelete, onCancel, savi
   );
 }
 
-function TargetCard({ n, canWrite, onEdit }: { n: NotificationTarget; canWrite: boolean; onEdit: () => void }) {
-  const branches = n.filter?.branches ?? [];
-  const environments = n.filter?.environments ?? [];
+function TargetCard({ n, canWrite, onEdit, onTest, testing }: { n: NotificationTarget; canWrite: boolean; onEdit: () => void; onTest: () => void; testing: boolean }) {
+  const { branches, environments, launchNames, attributes } = filterOf(n);
   return (
     <Card withBorder radius="md" padding="md" data-testid="notification-card">
       <Stack gap={6}>
@@ -169,11 +232,18 @@ function TargetCard({ n, canWrite, onEdit }: { n: NotificationTarget; canWrite: 
             <Text fw={700}>{kindLabel(n.kind)}</Text>
           </Group>
           {canWrite && (
-            <Tooltip label="Edit">
-              <ActionIcon variant="subtle" aria-label={`Edit the ${kindLabel(n.kind)} notification`} onClick={onEdit}>
-                <IconEdit size={16} />
-              </ActionIcon>
-            </Tooltip>
+            <Group gap={2} wrap="nowrap">
+              <Tooltip label="Send test notification">
+                <ActionIcon variant="subtle" aria-label={`Send a test ${kindLabel(n.kind)} notification`} onClick={onTest} loading={testing} data-testid="notification-card-test">
+                  <IconSend size={16} />
+                </ActionIcon>
+              </Tooltip>
+              <Tooltip label="Edit">
+                <ActionIcon variant="subtle" aria-label={`Edit the ${kindLabel(n.kind)} notification`} onClick={onEdit}>
+                  <IconEdit size={16} />
+                </ActionIcon>
+              </Tooltip>
+            </Group>
           )}
         </Group>
         <Text size="sm" className="fp-mono" style={{ wordBreak: 'break-all' }} c={n.target ? undefined : 'dimmed'}>
@@ -188,6 +258,8 @@ function TargetCard({ n, canWrite, onEdit }: { n: NotificationTarget; canWrite: 
         </Group>
         <Text size="xs" c="dimmed">
           {n.secretRef ? `secret ${n.secretRef}` : 'no secret'} · branches: {branches.length ? branches.join(', ') : 'all'} · environments: {environments.length ? environments.join(', ') : 'all'}
+          {launchNames.length ? ` · launches: ${launchNames.join(', ')}` : ''}
+          {attributes.length ? ` · attributes: ${attributes.join(', ')}` : ''}
         </Text>
       </Stack>
     </Card>
@@ -285,6 +357,19 @@ export default function NotificationsPage() {
   const q = useSettings(key);
   const save = useSaveSettings(key);
   const secrets = useSecrets(key, canWrite);
+  const test = useTestNotification(key);
+  const [testingId, setTestingId] = useState<string | null>(null);
+  const sendTest = (id: string) => {
+    setTestingId(id);
+    test.mutate(id, {
+      onSuccess: (r) =>
+        r.delivered
+          ? notifications.show({ color: 'green', title: 'Test notification delivered', message: r.responseStatus ? `The receiver answered ${r.responseStatus}.` : 'The receiver accepted it.' })
+          : notifications.show({ color: 'red', title: 'Test notification not delivered', message: r.error ?? 'The receiver refused it.' }),
+      onError: (e) => notifications.show({ color: 'red', title: 'Test notification not sent', message: errorMessage(e) }),
+      onSettled: () => setTestingId(null),
+    });
+  };
   const phone = useMediaQuery('(max-width: 48em)');
   const [editing, setEditing] = useState<{ index: number | null; n: NotificationTarget } | null>(null);
 
@@ -305,7 +390,7 @@ export default function NotificationsPage() {
       <PageHeader
         crumbs={[{ label: 'Projects', to: '/' }, { label: project.data?.name ?? key, to: `/p/${key}` }, { label: 'Notifications' }]}
         title="Notifications"
-        subtitle="Webhooks, Slack, email and Telegram messages on launch events. Webhook bodies are signed with HMAC-SHA256 (X-FastProof-Signature)."
+        subtitle="Webhooks, Slack, Microsoft Teams, email and Telegram messages on launch events. Webhook bodies are signed with HMAC-SHA256 (X-FastProof-Signature)."
         actions={
           canWrite && q.data ? (
             <Button leftSection={<IconPlus size={16} />} onClick={() => setEditing({ index: null, n: { id: newId(), kind: 'webhook', on: ['launchFinished'], target: '', secretRef: null, filter: null } })} data-testid="notification-add">
@@ -323,7 +408,7 @@ export default function NotificationsPage() {
               {settings.notifications.length ? (
                 <SimpleGrid cols={{ base: 1, md: 2, xl: 3 }} spacing="md" data-testid="notifications-list">
                   {settings.notifications.map((n, i) => (
-                    <TargetCard key={n.id} n={n} canWrite={canWrite} onEdit={() => setEditing({ index: i, n: structuredClone(n) })} />
+                    <TargetCard key={n.id} n={n} canWrite={canWrite} onEdit={() => setEditing({ index: i, n: structuredClone(n) })} onTest={() => sendTest(n.id)} testing={testingId === n.id} />
                   ))}
                 </SimpleGrid>
               ) : (
@@ -334,8 +419,10 @@ export default function NotificationsPage() {
                 {editing && (
                   <NotificationEditor
                     initial={editing.n}
-                    secrets={(secrets.data ?? []).map((s) => s.name)}
+                    secrets={secrets.data ?? []}
                     saving={save.isPending}
+                    testing={testingId === editing.n.id}
+                    onTest={editing.index === null ? undefined : () => sendTest(editing.n.id)}
                     onCancel={() => setEditing(null)}
                     onDelete={editing.index === null ? undefined : () => persist(settings, settings.notifications.filter((_, j) => j !== editing.index), 'Notification deleted')}
                     onSave={(n) => persist(settings, editing.index === null ? [...settings.notifications, n] : settings.notifications.map((x, j) => (j === editing.index ? n : x)), 'Notification saved')}

@@ -220,13 +220,16 @@ settings below decide what they may reach.
 | `FASTPROOF_DELIVERY_BACKOFF_SECONDS` | `30` | First retry delay, doubled per attempt, at most one hour (0 to 3600) |
 | `FASTPROOF_METRICS_TOP_BRANCHES` | `10` | Branches per project with their own `branch` label in the quality metrics; the rest are `other` (1 to 100) |
 
-Every outbound call of an integration (webhooks, Slack, Telegram, GitLab, GitHub, FastMock, and the SMTP relay)
+Every outbound call of an integration (webhooks, Slack, Microsoft Teams, Telegram, GitLab, GitHub, FastMock, and
+the SMTP relay)
 goes through the egress allowlist. A name that only matches a wildcard must resolve to public addresses; list
 an internal host exactly to allow it. An entry with a port (`gitlab.example.com:443`) allows that port only:
 other ports of the host are allowed only by another entry, and a wildcard entry never reaches an internal
 address. Redirects are checked hop by hop (credential headers are dropped when a redirect leaves the origin;
 GitLab, GitHub and FastMock calls do not follow redirects) and proxies from the environment are ignored. Allow only the hosts your projects need, for example
-`FASTPROOF_EGRESS_ALLOW=hooks.slack.com,api.telegram.org,gitlab.example.com,smtp.example.com:465`.
+`FASTPROOF_EGRESS_ALLOW=hooks.slack.com,api.telegram.org,gitlab.example.com,smtp.example.com:465`. Microsoft
+Teams workflow URLs are on `*.environment.api.powerplatform.com:443` (and `*.logic.azure.com:443` for
+workflows built in Azure Logic Apps); see [Microsoft Teams](../guide/notifications.md#microsoft-teams-workflows).
 
 Generate a secrets key with `openssl rand -hex 32` and keep it in your secret store. Only replicas with the
 `scheduler` role re-encrypt secrets; every replica that serves the API needs the same key file.

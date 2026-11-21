@@ -15,6 +15,7 @@ import type {
   LaunchComparison,
   LaunchPatch,
   MockInteractions,
+  NotificationTestResult,
   ProjectSettings,
   Rule,
   RuleInput,
@@ -241,6 +242,13 @@ export function useDeliveries(key: string) {
   return useQuery({
     queryKey: qc2.deliveries(key),
     queryFn: () => request<ItemList<Delivery>>(withQuery(`${projectPath(key)}/notifications/deliveries`, { limit: 100 })).then((r) => r.items),
+  });
+}
+
+/** Sends a sample message to one saved notification (`POST .../notifications/{id}/test`). */
+export function useTestNotification(key: string) {
+  return useMutation({
+    mutationFn: (id: string) => request<NotificationTestResult>(`${projectPath(key)}/notifications/${enc(id)}/test`, { method: 'POST' }),
   });
 }
 

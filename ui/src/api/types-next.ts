@@ -59,7 +59,7 @@ export type GateOp = S['Op'];
 export type GateRule = S['GateRule'];
 export type Gate = S['Gate'];
 
-export type NotificationKind = 'webhook' | 'slack' | 'email' | 'telegram';
+export type NotificationKind = 'webhook' | 'slack' | 'teams' | 'email' | 'telegram';
 export type NotificationEvent = 'launchFinished' | 'gateFailed' | 'newFailures';
 
 export type NotificationTarget = Omit<S['Notification'], 'kind' | 'on'> & {
@@ -128,6 +128,8 @@ export type GateResult = S['GateReport'];
 export type DeliveryStatus = 'pending' | 'sending' | 'delivered' | 'failed';
 
 export type Delivery = Omit<S['DeliveryView'], 'status'> & { status: DeliveryStatus };
+
+export type NotificationTestResult = S['NotificationTestResult'];
 
 export type MockInteraction = S['MockInteraction'];
 

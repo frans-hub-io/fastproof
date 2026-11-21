@@ -12,10 +12,12 @@ use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
 use super::{ErrorBody, P, Q, page_limit};
+use crate::integrations::dispatch;
 use crate::integrations::fastmock::{self, MockInteractions};
 use crate::integrations::gates::{self, GateReport};
+use crate::integrations::notify::{self, Outcome};
 use crate::integrations::secrets::{
-    MAX_SECRET_BYTES, SecretPurpose, normalize_origin, origin_of, valid_name,
+    MAX_SECRET_BYTES, SecretPurpose, check_teams_url, normalize_origin, origin_of, valid_name,
 };
 use crate::integrations::settings::IntegrationSettings;
 use crate::state::AppState;
@@ -54,7 +56,8 @@ pub struct SecretValue {
     /// What the secret is for; it is refused for anything else.
     pub purpose: SecretPurpose,
     /// The only origin (`https://host[:port]`) the secret may be sent to. Required for `vcs`
-    /// (the GitLab base URL or GitHub API URL) and `fastmock` (the admin URL); optional for the
+    /// (the GitLab base URL or GitHub API URL) and `fastmock` (the admin URL); taken from the
+    /// URL for `teams` (the value is the workflow URL, which must be `https`); optional for the
     /// others (for `slack` and a webhook URL it must then be the origin of the URL itself).
     /// Changing the URL in the settings needs the secret written again for the new origin.
     #[serde(default)]
@@ -105,12 +108,23 @@ pub async fn put_secret(
             "value must have 1 to {MAX_SECRET_BYTES} bytes"
         )));
     }
-    let origin = body
+    let mut origin = body
         .origin
         .as_deref()
         .map(normalize_origin)
         .transpose()
         .map_err(ApiError::bad_request)?;
+    if body.purpose == SecretPurpose::Teams {
+        check_teams_url(&body.value).map_err(ApiError::bad_request)?;
+        let o = origin_of(&body.value)
+            .ok_or_else(|| ApiError::bad_request("a teams secret is the workflow URL"))?;
+        if origin.as_ref().is_some_and(|x| *x != o) {
+            return Err(ApiError::bad_request(
+                "origin is not the origin of the URL in value",
+            ));
+        }
+        origin = Some(o);
+    }
     if body.purpose.needs_origin() && origin.is_none() {
         return Err(ApiError::bad_request(format!(
             "a {} secret needs origin, the URL it is sent to",
@@ -231,6 +245,74 @@ pub async fn deliveries(
             )
             .await?,
     ))
+}
+
+/// The result of a test notification.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct NotificationTestResult {
+    /// Whether the receiver accepted the message (`2xx`, or the SMTP relay took it).
+    pub delivered: bool,
+    /// The HTTP status (or SMTP code) of the answer, when there was one.
+    pub response_status: Option<u16>,
+    /// Why it was not delivered; never contains the target URL.
+    pub error: Option<String>,
+}
+
+#[utoipa::path(post, path = "/api/v1/projects/{key}/notifications/{id}/test", tag = "integrations", operation_id = "integrations_test_notification",
+    description = "Sends a sample message (a made-up launch with a failed gate and new failures, marked as a test) to one saved notification of the project, once and without retries, and returns how the receiver answered. Every kind can be tested. At most one test per notification every 5 seconds.",
+    params(("key" = String, Path), ("id" = String, Path, description = "The notification id")),
+    responses((status = 200, body = NotificationTestResult), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody),
+        (status = 409, description = "the project settings are invalid", body = ErrorBody),
+        (status = 429, description = "a test of this notification was sent less than 5 seconds ago", body = ErrorBody)))]
+pub async fn test_notification(
+    State(s): State<AppState>,
+    auth: Auth,
+    P((key, id)): P<(String, String)>,
+) -> ApiResult<Json<NotificationTestResult>> {
+    let project = s.project_for(&auth, &key, &s.perms.settings_write).await?;
+    if !valid_name(&id) {
+        return Err(ApiError::not_found("notification"));
+    }
+    let doc = s.store.project_settings_json(project.id).await?;
+    let settings = IntegrationSettings::parse(&doc)
+        .map_err(|e| ApiError::conflict(format!("invalid project settings: {e}")))?;
+    let Some(n) = settings.notifications.iter().find(|n| n.id == id) else {
+        return Err(ApiError::not_found("notification"));
+    };
+    if !notify::test_allowed(project.id, &n.id) {
+        return Err(ApiError::too_many_requests(
+            "a test of this notification was sent less than 5 seconds ago",
+        ));
+    }
+    let sample = notify::sample_summary(
+        &project.key,
+        dispatch::page_url(&s, &format!("p/{}", project.key)),
+        n,
+    );
+    let out = match notify::send(&s, project.id, Uuid::now_v7(), n, &sample).await {
+        Outcome::Delivered(c) => NotificationTestResult {
+            delivered: true,
+            response_status: c,
+            error: None,
+        },
+        Outcome::Retry(e, c) | Outcome::Throttled(e, c, _) | Outcome::Fail(e, c) => {
+            NotificationTestResult {
+                delivered: false,
+                response_status: c,
+                error: Some(e),
+            }
+        }
+    };
+    s.audit(
+        &auth,
+        "notification.test",
+        Some(&project.key),
+        serde_json::json!({"id": n.id, "kind": n.kind, "delivered": out.delivered,
+            "responseStatus": out.response_status}),
+    )
+    .await;
+    Ok(Json(out))
 }
 
 /// Query of the mock interactions.

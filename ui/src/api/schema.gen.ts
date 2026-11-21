@@ -390,6 +390,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{key}/notifications/{id}/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Sends a sample message (a made-up launch with a failed gate and new failures, marked as a test) to one saved notification of the project, once and without retries, and returns how the receiver answered. Every kind can be tested. At most one test per notification every 5 seconds. */
+        post: operations["integrations_test_notification"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{key}/results/{id}": {
         parameters: {
             query?: never;
@@ -970,7 +987,7 @@ export interface components {
             events: string[];
             /** Format: uuid */
             id: string;
-            /** @description `webhook`, `slack`, `email`, `telegram`, `gitlab` or `github`. */
+            /** @description `webhook`, `slack`, `teams`, `email`, `telegram`, `gitlab` or `github`. */
             kind: string;
             lastError?: string | null;
             /** Format: uuid */
@@ -1530,7 +1547,7 @@ export interface components {
         Notification: {
             filter?: components["schemas"]["NotificationFilter"] | null;
             id: string;
-            /** @description `webhook`, `slack`, `email` or `telegram`. */
+            /** @description `webhook`, `slack`, `teams`, `email` or `telegram`. */
             kind: string;
             /** @description `launchFinished`, `gateFailed`, `newFailures`. */
             on: string[];
@@ -1546,14 +1563,39 @@ export interface components {
             target?: string;
             /**
              * @description Webhook and Slack: a secret (purpose `webhook` or `slack`) holding the URL, instead of
-             *     `target`.
+             *     `target`. Teams: the secret (purpose `teams`) holding the workflow URL; required, as
+             *     Teams takes no `target`.
              */
             targetSecretRef?: string | null;
         };
-        /** @description Which launches a notification is about. */
+        /**
+         * @description Which launches a notification is about. Every part that is given must match; within a
+         *     list of globs one match is enough, while every `attributes` entry must match.
+         */
         NotificationFilter: {
+            /**
+             * @description Launch attributes as `key=value`; the launch needs every one of them (`value` may be a
+             *     glob, `key=*` only asks for the key).
+             */
+            attributes?: string[] | null;
+            /** @description Branch globs (`*` matches any text). */
             branches?: string[] | null;
+            /** @description Environment globs. */
             environments?: string[] | null;
+            /** @description Launch name globs, e.g. `nightly-*`. */
+            launchNames?: string[] | null;
+        };
+        /** @description The result of a test notification. */
+        NotificationTestResult: {
+            /** @description Whether the receiver accepted the message (`2xx`, or the SMTP relay took it). */
+            delivered: boolean;
+            /** @description Why it was not delivered; never contains the target URL. */
+            error?: string | null;
+            /**
+             * Format: int32
+             * @description The HTTP status (or SMTP code) of the answer, when there was one.
+             */
+            responseStatus?: number | null;
         };
         /**
          * @description A comparison.
@@ -1572,7 +1614,7 @@ export interface components {
                 events: string[];
                 /** Format: uuid */
                 id: string;
-                /** @description `webhook`, `slack`, `email`, `telegram`, `gitlab` or `github`. */
+                /** @description `webhook`, `slack`, `teams`, `email`, `telegram`, `gitlab` or `github`. */
                 kind: string;
                 lastError?: string | null;
                 /** Format: uuid */
@@ -2133,12 +2175,13 @@ export interface components {
          * @description What a secret may be used for.
          * @enum {string}
          */
-        SecretPurpose: "vcs" | "fastmock" | "slack" | "telegram" | "webhook" | "smtp";
+        SecretPurpose: "vcs" | "fastmock" | "slack" | "telegram" | "webhook" | "smtp" | "teams";
         /** @description Body of `PUT .../secrets/{name}`. */
         SecretValue: {
             /**
              * @description The only origin (`https://host[:port]`) the secret may be sent to. Required for `vcs`
-             *     (the GitLab base URL or GitHub API URL) and `fastmock` (the admin URL); optional for the
+             *     (the GitLab base URL or GitHub API URL) and `fastmock` (the admin URL); taken from the
+             *     URL for `teams` (the value is the workflow URL, which must be `https`); optional for the
              *     others (for `slack` and a webhook URL it must then be the origin of the URL itself).
              *     Changing the URL in the settings needs the secret written again for the new origin.
              */
@@ -4083,6 +4126,63 @@ export interface operations {
                 };
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    integrations_test_notification: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                /** @description The notification id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationTestResult"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description the project settings are invalid */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description a test of this notification was sent less than 5 seconds ago */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };

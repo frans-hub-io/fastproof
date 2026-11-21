@@ -97,7 +97,7 @@ S3-compatible bucket or a directory.
 
 -   :material-bell-ring-outline:{ .fp-card__icon } **[Notifications](guide/notifications.md)**
 
-    Signed webhooks, Slack, email, Telegram, merge request comments and commit statuses.
+    Signed webhooks, Slack, Microsoft Teams, email, Telegram, merge request comments and commit statuses.
 
 -   :material-robot-outline:{ .fp-card__icon } **[MCP and GitHub Copilot](guide/mcp-copilot.md)**
 

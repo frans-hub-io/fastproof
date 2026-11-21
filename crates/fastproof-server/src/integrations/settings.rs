@@ -85,14 +85,45 @@ fn yes() -> bool {
     true
 }
 
-/// Which launches a notification is about.
+/// Which launches a notification is about. Every part that is given must match; within a
+/// list of globs one match is enough, while every `attributes` entry must match.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NotificationFilter {
+    /// Branch globs (`*` matches any text).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branches: Option<Vec<String>>,
+    /// Environment globs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environments: Option<Vec<String>>,
+    /// Launch name globs, e.g. `nightly-*`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch_names: Option<Vec<String>>,
+    /// Launch attributes as `key=value`; the launch needs every one of them (`value` may be a
+    /// glob, `key=*` only asks for the key).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attributes: Option<Vec<String>>,
+}
+
+impl NotificationFilter {
+    /// Whether a launch with these properties passes the filter.
+    pub fn matches(
+        &self,
+        branch: Option<&str>,
+        environment: Option<&str>,
+        launch_name: &str,
+        attributes: &[(String, String)],
+    ) -> bool {
+        matches_any(&self.branches, branch)
+            && matches_any(&self.environments, environment)
+            && matches_any(&self.launch_names, Some(launch_name))
+            && self.attributes.iter().flatten().all(|a| {
+                let (k, v) = a.split_once('=').unwrap_or((a.as_str(), "*"));
+                attributes
+                    .iter()
+                    .any(|(ak, av)| ak == k.trim() && glob_match(v.trim(), av))
+            })
+    }
 }
 
 /// A notification channel.
@@ -100,7 +131,7 @@ pub struct NotificationFilter {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Notification {
     pub id: String,
-    /// `webhook`, `slack`, `email` or `telegram`.
+    /// `webhook`, `slack`, `teams`, `email` or `telegram`.
     pub kind: String,
     /// `launchFinished`, `gateFailed`, `newFailures`.
     pub on: Vec<String>,
@@ -109,7 +140,8 @@ pub struct Notification {
     #[serde(default)]
     pub target: String,
     /// Webhook and Slack: a secret (purpose `webhook` or `slack`) holding the URL, instead of
-    /// `target`.
+    /// `target`. Teams: the secret (purpose `teams`) holding the workflow URL; required, as
+    /// Teams takes no `target`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_secret_ref: Option<String>,
     /// Webhook: the HMAC signing key (purpose `webhook`); Telegram: the bot token (purpose
@@ -299,11 +331,41 @@ impl IntegrationSettings {
             if let Some(f) = &n.filter {
                 globs("notifications.filter.branches", &f.branches)?;
                 globs("notifications.filter.environments", &f.environments)?;
+                globs("notifications.filter.launchNames", &f.launch_names)?;
+                globs("notifications.filter.attributes", &f.attributes)?;
+                if f.attributes.iter().flatten().any(|a| {
+                    a.split_once('=')
+                        .is_none_or(|(k, v)| k.trim().is_empty() || v.trim().is_empty())
+                }) {
+                    return Err(
+                        "notifications.filter.attributes: entries are key=value (value may be a glob)"
+                            .into(),
+                    );
+                }
             }
-            if n.target_secret_ref.is_some() && !matches!(n.kind.as_str(), "webhook" | "slack") {
-                return Err("notifications.targetSecretRef is for webhook and slack".into());
+            if n.target_secret_ref.is_some()
+                && !matches!(n.kind.as_str(), "webhook" | "slack" | "teams")
+            {
+                return Err("notifications.targetSecretRef is for webhook, slack and teams".into());
             }
             match n.kind.as_str() {
+                "teams" => {
+                    if !n.target.trim().is_empty() {
+                        return Err(
+                            "teams notifications: the workflow URL is a credential; store it in a secret with purpose teams and refer to it with targetSecretRef (target is not accepted)"
+                                .into(),
+                        );
+                    }
+                    if n.target_secret_ref.is_none() {
+                        return Err(
+                            "teams notifications need targetSecretRef (a secret with purpose teams holding the workflow URL)"
+                                .into(),
+                        );
+                    }
+                    if n.secret_ref.is_some() {
+                        return Err("teams notifications: secretRef is not used".into());
+                    }
+                }
                 "webhook" | "slack" => {
                     match (&n.target_secret_ref, n.target.trim().is_empty()) {
                         (Some(_), true) => {}
@@ -365,7 +427,8 @@ impl IntegrationSettings {
                 }
                 _ => {
                     return Err(
-                        "notifications.kind must be webhook, slack, email or telegram".into(),
+                        "notifications.kind must be webhook, slack, teams, email or telegram"
+                            .into(),
                     );
                 }
             }
@@ -448,6 +511,7 @@ impl IntegrationSettings {
             let purpose = match n.kind.as_str() {
                 "webhook" => SecretPurpose::Webhook,
                 "slack" => SecretPurpose::Slack,
+                "teams" => SecretPurpose::Teams,
                 "telegram" => SecretPurpose::Telegram,
                 _ => continue,
             };
@@ -675,7 +739,9 @@ mod tests {
                 {"id": "chat", "kind": "telegram", "on": ["gateFailed"], "target": "-100123", "secretRef": "tg"},
                 {"id": "mail", "kind": "email", "on": ["newFailures"], "target": "qa@example.com, dev@example.com"},
                 {"id": "sl", "kind": "slack", "on": ["gateFailed"], "targetSecretRef": "slack-url"},
-                {"id": "hidden", "kind": "webhook", "on": ["gateFailed"], "targetSecretRef": "hook-url", "secretRef": "hook-key"}
+                {"id": "hidden", "kind": "webhook", "on": ["gateFailed"], "targetSecretRef": "hook-url", "secretRef": "hook-key"},
+                {"id": "ms", "kind": "teams", "on": ["gateFailed"], "targetSecretRef": "teams-url",
+                 "filter": {"launchNames": ["nightly-*"], "attributes": ["trigger=schedule", "suite=*"]}}
             ],
             "vcs": {"provider": "gitlab", "url": "https://gitlab.example.com", "repository": "group/app", "tokenSecretRef": "gl",
                     "sourceBranches": ["main", "feature/*"]},
@@ -761,6 +827,38 @@ mod tests {
                 json!([{"type": "jira", "urlTemplate": "https://j.example.com/{key}", "keyRegex": "("}]),
             ),
             ("fastmock", json!({"url": "fastmock:9090"})),
+            (
+                "notifications",
+                json!([{"id": "a", "kind": "teams", "on": ["launchFinished"], "target": "https://x.logic.azure.com/workflows/1?sig=s"}]),
+            ),
+            (
+                "notifications",
+                json!([{"id": "a", "kind": "teams", "on": ["launchFinished"], "target": "https://x.logic.azure.com/w?sig=s", "targetSecretRef": "t"}]),
+            ),
+            (
+                "notifications",
+                json!([{"id": "a", "kind": "teams", "on": ["launchFinished"]}]),
+            ),
+            (
+                "notifications",
+                json!([{"id": "a", "kind": "teams", "on": ["launchFinished"], "targetSecretRef": "t", "secretRef": "k"}]),
+            ),
+            (
+                "notifications",
+                json!([{"id": "a", "kind": "teams", "on": ["launchFinished"], "targetSecretRef": "t", "filter": {"attributes": ["trigger"]}}]),
+            ),
+            (
+                "notifications",
+                json!([{"id": "a", "kind": "teams", "on": ["launchFinished"], "targetSecretRef": "t", "filter": {"attributes": ["=x"]}}]),
+            ),
+            (
+                "notifications",
+                json!([{"id": "a", "kind": "teams", "on": ["launchFinished"], "targetSecretRef": "t", "filter": {"launchNames": [""]}}]),
+            ),
+            (
+                "notifications",
+                json!([{"id": "a", "kind": "teams", "on": ["launchFinished"], "targetSecretRef": "t", "filter": {"launchNames": vec!["x"; 51]}}]),
+            ),
         ] {
             let mut d = doc.clone();
             d[k] = v.clone();
@@ -784,6 +882,8 @@ mod tests {
         assert_eq!(find("fm").purpose, SecretPurpose::Fastmock);
         assert_eq!(find("slack-url").purpose, SecretPurpose::Slack);
         assert_eq!(find("tg").purpose, SecretPurpose::Telegram);
+        assert_eq!(find("teams-url").purpose, SecretPurpose::Teams);
+        assert_eq!(find("teams-url").destination, None);
         assert_eq!(find("hook-url").destination, None);
         assert_eq!(
             uses.iter()
@@ -792,6 +892,59 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![Some("https://hooks.example.com/fp".to_string()), None]
         );
+    }
+
+    #[test]
+    fn filters_route_by_branch_environment_name_and_attributes() {
+        let attrs = |l: &[(&str, &str)]| -> Vec<(String, String)> {
+            l.iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect()
+        };
+        let nightly = NotificationFilter {
+            launch_names: Some(vec!["nightly-*".into()]),
+            attributes: Some(vec!["trigger=schedule".into(), "suite = e2e*".into()]),
+            ..Default::default()
+        };
+        let sched = attrs(&[("trigger", "schedule"), ("suite", "e2e-chrome")]);
+        assert!(nightly.matches(Some("main"), None, "nightly-full", &sched));
+        assert!(!nightly.matches(Some("main"), None, "mr-checks", &sched));
+        assert!(
+            !nightly.matches(
+                None,
+                None,
+                "nightly-full",
+                &attrs(&[("trigger", "schedule")])
+            ),
+            "every attribute entry must match"
+        );
+        assert!(!nightly.matches(
+            None,
+            None,
+            "nightly-full",
+            &attrs(&[("trigger", "push"), ("suite", "e2e")])
+        ));
+        let mr = NotificationFilter {
+            branches: Some(vec!["feature/*".into()]),
+            environments: Some(vec!["staging".into()]),
+            attributes: Some(vec!["mr=*".into()]),
+            ..Default::default()
+        };
+        assert!(mr.matches(
+            Some("feature/x"),
+            Some("staging"),
+            "checks",
+            &attrs(&[("mr", "42")])
+        ));
+        assert!(!mr.matches(Some("feature/x"), Some("staging"), "checks", &[]));
+        assert!(!mr.matches(
+            Some("main"),
+            Some("staging"),
+            "checks",
+            &attrs(&[("mr", "1")])
+        ));
+        assert!(!mr.matches(Some("feature/x"), None, "checks", &attrs(&[("mr", "1")])));
+        assert!(NotificationFilter::default().matches(None, None, "", &[]));
     }
 
     #[test]

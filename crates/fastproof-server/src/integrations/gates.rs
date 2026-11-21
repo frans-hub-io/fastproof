@@ -200,7 +200,8 @@ pub struct Evaluation {
     pub facts: Facts,
     /// New failures against the previous launch of the same branch and environment.
     pub new_failures: i64,
-    pub new_failure_names: Vec<String>,
+    /// Up to [`NEW_FAILURE_SAMPLE`] new failures: result id and full name.
+    pub new_failure_sample: Vec<(Uuid, String)>,
     pub previous_launch_id: Option<Uuid>,
 }
 
@@ -210,7 +211,7 @@ async fn baseline_for(
     launch: &Launch,
     branch: &str,
     sample: i64,
-) -> anyhow::Result<(Baseline, Vec<String>)> {
+) -> anyhow::Result<(Baseline, Vec<(Uuid, String)>)> {
     let b = s
         .store
         .baseline_launch(
@@ -285,7 +286,7 @@ pub async fn evaluate_launch(
         },
         facts,
         new_failures: previous.new_failures,
-        new_failure_names: names,
+        new_failure_sample: names,
         previous_launch_id: previous.launch_id,
     })
 }

@@ -13,6 +13,7 @@ pub mod notify;
 pub mod quality;
 pub mod secrets;
 pub mod settings;
+pub mod teams;
 pub mod vcs;
 
 use fastproof_blob::Secret;

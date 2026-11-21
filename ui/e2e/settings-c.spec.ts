@@ -58,9 +58,41 @@ test('add a notification and see deliveries', async ({ page }) => {
   await expect(card).toContainText('Gate failed');
 });
 
+test('add a Teams notification with routing filters and send a test', async ({ page }) => {
+  await page.goto('/p/web-shop/notifications');
+  await page.getByTestId('notification-add').click();
+  await page.getByTestId('notification-kind').click();
+  await page.getByRole('option', { name: 'Microsoft Teams' }).click();
+  await expect(page.getByTestId('notification-target')).toHaveCount(0);
+  await expect(page.getByText('Pick the secret that holds the workflow URL')).toBeVisible();
+  await expect(page.getByTestId('notification-save')).toBeDisabled();
+  await page.getByTestId('notification-target-secret').click();
+  await expect(page.getByRole('option')).toHaveText(['teams-qa-channel']);
+  await page.getByRole('option', { name: 'teams-qa-channel' }).click();
+  await page.getByTestId('notification-launch-names').fill('nightly-*');
+  await page.getByTestId('notification-launch-names').press('Enter');
+  await page.getByTestId('notification-attributes').fill('trigger');
+  await page.getByTestId('notification-attributes').press('Enter');
+  await expect(page.getByText('Use key=value (the value may be a glob)')).toBeVisible();
+  await expect(page.getByTestId('notification-save')).toBeDisabled();
+  await page.getByTestId('notification-attributes').press('Backspace');
+  await page.getByTestId('notification-attributes').fill('trigger=schedule');
+  await page.getByTestId('notification-attributes').press('Enter');
+  await page.getByLabel('Gate failed').check();
+  await page.getByTestId('notification-save').click();
+  const card = page.getByTestId('notification-card').filter({ hasText: 'Microsoft Teams' });
+  await expect(card).toBeVisible();
+  await expect(card).toContainText('URL in secret teams-qa-channel');
+  await expect(card).toContainText('launches: nightly-*');
+  await expect(card).toContainText('attributes: trigger=schedule');
+  await card.getByTestId('notification-card-test').click();
+  await expect(page.getByText('Test notification delivered')).toBeVisible();
+  await expect(page.getByText('The receiver answered 202.')).toBeVisible();
+});
+
 test('secrets are write-only', async ({ page }) => {
   await page.goto('/p/web-shop/settings?tab=secrets');
-  await expect(page.getByTestId('secret-row')).toHaveCount(4);
+  await expect(page.getByTestId('secret-row')).toHaveCount(5);
   await page.getByTestId('secret-name').fill('jira-token');
   await page.getByTestId('secret-value').fill('s3cr3t-value-e2e');
   await expect(page.getByTestId('secret-save')).toBeDisabled();
@@ -90,5 +122,6 @@ test('viewers see settings, gates and notifications read-only', async ({ page })
   await page.goto('/p/web-shop/notifications');
   await expect(page.getByTestId('notification-card').first()).toBeVisible();
   await expect(page.getByTestId('notification-add')).toHaveCount(0);
+  await expect(page.getByTestId('notification-card-test')).toHaveCount(0);
   await page.evaluate(() => window.localStorage.removeItem('fastproof-mock-role'));
 });

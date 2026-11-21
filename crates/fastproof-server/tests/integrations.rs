@@ -30,6 +30,7 @@ struct Rec {
     query: String,
     headers: HashMap<String, String>,
     body: String,
+    at: std::time::Instant,
 }
 
 #[derive(Default)]
@@ -37,10 +38,12 @@ struct FakeState {
     log: Mutex<Vec<Rec>>,
     notes: Mutex<Vec<(u64, String)>>,
     fail_hook: AtomicUsize,
+    throttle_teams: AtomicUsize,
     journal: Mutex<Vec<Value>>,
 }
 
-/// A fake GitLab, GitHub, webhook receiver, Slack, Telegram and FastMock admin API.
+/// A fake GitLab, GitHub, webhook receiver, Slack, Teams Workflows, Telegram and FastMock
+/// admin API.
 struct Fake {
     addr: SocketAddr,
     st: Arc<FakeState>,
@@ -91,6 +94,7 @@ async fn handle(
             .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or_default().to_string()))
             .collect(),
         body: String::from_utf8_lossy(&body).to_string(),
+        at: std::time::Instant::now(),
     };
     st.log.lock().unwrap().push(rec.clone());
     let seg: Vec<&str> = path.trim_matches('/').split('/').collect();
@@ -167,6 +171,24 @@ async fn handle(
             (AxStatus::FOUND, [("location", to)]).into_response()
         }
         ("POST", ["slack"]) => "ok".into_response(),
+        ("POST", [hook @ ("teams" | "teams-mr")]) => {
+            if *hook == "teams"
+                && st
+                    .throttle_teams
+                    .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                    .is_ok()
+            {
+                (AxStatus::TOO_MANY_REQUESTS, [("retry-after", "1")]).into_response()
+            } else if serde_json::from_str::<Value>(&rec.body)
+                .is_ok_and(|v| v["type"] == "message" && v["attachments"].is_array())
+                && rec.query.contains("sig=")
+            {
+                AxStatus::ACCEPTED.into_response()
+            } else {
+                AxStatus::BAD_REQUEST.into_response()
+            }
+        }
+        ("POST", ["teams-closed"]) => AxStatus::UNAUTHORIZED.into_response(),
         ("POST", [bot, "sendMessage"]) if bot.starts_with("bot") => json_body(json!({"ok": true})),
         ("GET", ["__admin", "requests"]) => {
             let offset: usize = rec
@@ -1822,4 +1844,424 @@ async fn mock_interactions_against_a_real_fastmock() {
     assert_eq!(b["source"], "traceId", "{b}");
     assert_eq!(b["items"][0]["url"], "/fastproof-correlation-probe", "{b}");
     assert_eq!(b["items"][0]["traceId"], trace.as_str());
+}
+
+async fn put_settings(s: &Server, project: &str, token: &str, doc: Value) -> (StatusCode, Value) {
+    s.call(
+        Method::PUT,
+        &format!("/api/v1/projects/{project}/settings"),
+        Some(token),
+        Some(doc),
+    )
+    .await
+}
+
+/// The Workflows envelope and the required parts of an Adaptive Card 1.5.
+fn assert_teams_message(body: &str) -> Value {
+    let v: Value = serde_json::from_str(body).unwrap();
+    assert_eq!(v["type"], "message", "{v}");
+    let att = &v["attachments"][0];
+    assert_eq!(v["attachments"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        att["contentType"],
+        "application/vnd.microsoft.card.adaptive"
+    );
+    assert!(att["contentUrl"].is_null());
+    let card = att["content"].clone();
+    assert_eq!(card["type"], "AdaptiveCard");
+    assert_eq!(card["version"], "1.5");
+    assert_eq!(
+        card["$schema"],
+        "http://adaptivecards.io/schemas/adaptive-card.json"
+    );
+    assert!(!card["body"].as_array().unwrap().is_empty());
+    for a in card["actions"].as_array().into_iter().flatten() {
+        assert_eq!(a["type"], "Action.OpenUrl");
+        assert!(a["title"].is_string() && a["url"].is_string(), "{a}");
+    }
+    assert!(body.len() <= fastproof_server::integrations::teams::MAX_PAYLOAD_BYTES);
+    card
+}
+
+#[tokio::test]
+async fn teams_cards_are_routed_by_filters_and_throttling_is_honoured() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let fake = Fake::start().await;
+    let e = env(&fake, &[]);
+    let s = start(&db, &e).await;
+    s.project("shop").await;
+    put_secret(
+        &s,
+        "shop",
+        "teams-nightly",
+        &format!(
+            "{}/teams?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=nightly-sig-123",
+            fake.url()
+        ),
+        "teams",
+        None,
+    )
+    .await;
+    put_secret(
+        &s,
+        "shop",
+        "teams-mr",
+        &format!("{}/teams-mr?sig=mr-sig-456", fake.url()),
+        "teams",
+        Some(&fake.url()),
+    )
+    .await;
+    let (_, list) = s.get("/api/v1/projects/shop/secrets", ADMIN_TOKEN).await;
+    let nightly = list["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["name"] == "teams-nightly")
+        .unwrap()
+        .clone();
+    assert_eq!(nightly["purpose"], "teams");
+    assert_eq!(
+        nightly["origin"],
+        fake.url(),
+        "the origin is taken from the URL"
+    );
+    fake.st.throttle_teams.store(1, Ordering::SeqCst);
+    settings(
+        &db,
+        "shop",
+        json!({"gates": [{"name": "g", "rules": [{"metric": "failed", "op": "lte", "value": 0}]}],
+               "notifications": [
+            {"id": "nightly", "kind": "teams", "on": ["launchFinished"], "targetSecretRef": "teams-nightly",
+             "filter": {"launchNames": ["nightly-*"], "attributes": ["trigger=schedule"]}},
+            {"id": "mr", "kind": "teams", "on": ["gateFailed"], "targetSecretRef": "teams-mr",
+             "filter": {"attributes": ["mr=*"], "branches": ["feature/*"]}}
+        ]}),
+    )
+    .await;
+    let night = launch(
+        &s,
+        "shop",
+        json!({"name": "nightly-full", "vcs": {"branch": "main"},
+               "attributes": [{"key": "trigger", "value": "schedule"}]}),
+    )
+    .await;
+    results(&s, "shop", &night, &[("a", "passed"), ("b", "failed")]).await;
+    finish(&s, "shop", &night).await;
+    let mr = launch(
+        &s,
+        "shop",
+        json!({"name": "mr-checks", "vcs": {"branch": "feature/login"},
+               "attributes": [{"key": "mr", "value": "42"}]}),
+    )
+    .await;
+    results(&s, "shop", &mr, &[("c", "failed")]).await;
+    finish(&s, "shop", &mr).await;
+    let other = launch(
+        &s,
+        "shop",
+        json!({"name": "nightly-full", "vcs": {"branch": "main"},
+               "attributes": [{"key": "trigger", "value": "push"}]}),
+    )
+    .await;
+    finish(&s, "shop", &other).await;
+    wait_for("teams deliveries settle", || async {
+        let d = deliveries(&s, "shop").await;
+        d.len() == 2 && d.iter().all(|x| x["status"] == "delivered")
+    })
+    .await;
+    wait_for("the unmatched launch is evaluated", || {
+        gate_done(&db, &other)
+    })
+    .await;
+    let d = deliveries(&s, "shop").await;
+    assert_eq!(d.len(), 2, "the push launch matched no filter: {d:?}");
+    let by = |id: &str| {
+        d.iter()
+            .find(|x| x["notificationId"] == id)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(by("nightly")["launchId"], night.as_str());
+    assert_eq!(by("nightly")["kind"], "teams");
+    assert_eq!(by("nightly")["attempts"], 2, "a 429 is retried");
+    assert_eq!(by("nightly")["responseStatus"], 202);
+    assert_eq!(by("mr")["launchId"], mr.as_str());
+    assert_eq!(by("mr")["attempts"], 1);
+    let listed = serde_json::to_string(&d).unwrap();
+    assert!(!listed.contains("sig="), "{listed}");
+
+    let calls = fake.requests("/teams");
+    let night_calls: Vec<&Rec> = calls.iter().filter(|r| r.path == "/teams").collect();
+    assert_eq!(night_calls.len(), 2);
+    assert!(
+        night_calls[1].at.duration_since(night_calls[0].at) >= Duration::from_millis(900),
+        "Retry-After: 1 delays the retry beyond the 50 ms backoff"
+    );
+    assert_eq!(night_calls[0].body, night_calls[1].body);
+    assert!(night_calls[1].query.contains("sig=nightly-sig-123"));
+    assert_eq!(night_calls[1].headers["content-type"], "application/json");
+    let card = assert_teams_message(&night_calls[1].body);
+    let text = card.to_string();
+    assert!(text.contains("shop / nightly-full #1"), "{text}");
+    assert!(text.contains("Quality gate failed"), "{text}");
+    assert!(text.contains("2 total · 1 passed · 1 failed"), "{text}");
+    assert!(text.contains("Pass rate"), "{text}");
+    assert!(text.contains("New failures (1)"), "{text}");
+    let launch_url = format!("https://fastproof.example.com/p/shop/launches/{night}");
+    assert_eq!(card["actions"][0]["title"], "Open launch");
+    assert_eq!(card["actions"][0]["url"], launch_url.as_str());
+    assert_eq!(card["actions"][1]["title"], "Open failures");
+    assert_eq!(
+        card["actions"][1]["url"],
+        format!("{launch_url}?tab=failures")
+    );
+    assert!(
+        text.contains("https://fastproof.example.com/p/shop/results/"),
+        "new failures link to their results: {text}"
+    );
+    let mr_call = calls.iter().find(|r| r.path == "/teams-mr").unwrap();
+    let mr_card = assert_teams_message(&mr_call.body);
+    assert!(mr_card.to_string().contains("feature/login"));
+}
+
+#[tokio::test]
+async fn teams_needs_a_teams_secret_on_its_origin() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let fake = Fake::start().await;
+    let e = env(&fake, &[]);
+    let s = start(&db, &e).await;
+    s.project("shop").await;
+    let teams_url = format!("{}/teams?sig=s3cr3t-sig", fake.url());
+    for (body, want) in [
+        (
+            json!({"value": "http://teams.example.com/w?sig=x", "purpose": "teams"}),
+            "https",
+        ),
+        (
+            json!({"value": "not a url", "purpose": "teams"}),
+            "workflow URL",
+        ),
+        (
+            json!({"value": teams_url, "purpose": "teams", "origin": "https://other.example.com"}),
+            "origin is not the origin",
+        ),
+    ] {
+        let (st, b) = s
+            .call(
+                Method::PUT,
+                "/api/v1/projects/shop/secrets/t",
+                Some(ADMIN_TOKEN),
+                Some(body),
+            )
+            .await;
+        assert_eq!(st, StatusCode::BAD_REQUEST, "{b}");
+        assert!(b["message"].as_str().unwrap().contains(want), "{want}: {b}");
+    }
+    put_secret(&s, "shop", "teams-url", &teams_url, "teams", None).await;
+    put_secret(
+        &s,
+        "shop",
+        "slack-url",
+        &format!("{}/slack", fake.url()),
+        "slack",
+        None,
+    )
+    .await;
+    let (_, base) = s.get("/api/v1/projects/shop/settings", ADMIN_TOKEN).await;
+    let with = |n: Value| {
+        let mut d = base.clone();
+        d["notifications"] = json!([n]);
+        d
+    };
+    for (n, want) in [
+        (
+            json!({"id": "t", "kind": "teams", "on": ["launchFinished"], "target": teams_url}),
+            "target is not accepted",
+        ),
+        (
+            json!({"id": "t", "kind": "teams", "on": ["launchFinished"]}),
+            "need targetSecretRef",
+        ),
+        (
+            json!({"id": "t", "kind": "teams", "on": ["launchFinished"], "targetSecretRef": "slack-url"}),
+            "is for slack",
+        ),
+        (
+            json!({"id": "t", "kind": "slack", "on": ["launchFinished"], "targetSecretRef": "teams-url"}),
+            "is for teams",
+        ),
+        (
+            json!({"id": "t", "kind": "teams", "on": ["launchFinished"], "targetSecretRef": "teams-url",
+                   "filter": {"attributes": ["no-equals-sign"]}}),
+            "key=value",
+        ),
+    ] {
+        let (st, b) = put_settings(&s, "shop", ADMIN_TOKEN, with(n.clone())).await;
+        assert_eq!(st, StatusCode::BAD_REQUEST, "{n}: {b}");
+        assert!(b["message"].as_str().unwrap().contains(want), "{want}: {b}");
+    }
+    let (st, b) = put_settings(
+        &s,
+        "shop",
+        ADMIN_TOKEN,
+        with(json!({"id": "t", "kind": "teams", "on": ["launchFinished"], "targetSecretRef": "teams-url",
+                    "filter": {"launchNames": ["nightly-*"], "attributes": ["trigger=schedule"]}})),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{b}");
+    assert_eq!(
+        b["notifications"][0]["filter"]["launchNames"][0],
+        "nightly-*"
+    );
+    let viewer = s.token("v", "viewer", &["shop"]).await;
+    let (st, b) = s.get("/api/v1/projects/shop/settings", &viewer).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(b["notifications"][0]["redacted"], true);
+    assert!(!b.to_string().contains("s3cr3t-sig"));
+
+    settings(
+        &db,
+        "shop",
+        json!({"notifications": [{"id": "t", "kind": "slack", "on": ["launchFinished"], "targetSecretRef": "teams-url"}]}),
+    )
+    .await;
+    let id = launch(&s, "shop", json!({"name": "n"})).await;
+    finish(&s, "shop", &id).await;
+    wait_for("the misbound delivery fails", || async {
+        deliveries(&s, "shop")
+            .await
+            .first()
+            .is_some_and(|d| d["status"] == "failed")
+    })
+    .await;
+    let d = deliveries(&s, "shop").await;
+    assert!(
+        d[0]["lastError"].as_str().unwrap().contains("is for teams"),
+        "{d:?}"
+    );
+    assert!(fake.requests("/teams").is_empty(), "nothing was sent");
+}
+
+#[tokio::test]
+async fn test_notifications_are_sent_on_request() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let fake = Fake::start().await;
+    let e = env(&fake, &[]);
+    let s = start(&db, &e).await;
+    s.project("shop").await;
+    put_secret(
+        &s,
+        "shop",
+        "teams-url",
+        &format!("{}/teams?sig=t-sig", fake.url()),
+        "teams",
+        None,
+    )
+    .await;
+    put_secret(
+        &s,
+        "shop",
+        "closed",
+        &format!("{}/teams-closed?sig=c-sig", fake.url()),
+        "teams",
+        None,
+    )
+    .await;
+    put_secret(&s, "shop", "hook-key", "hmac-key-789", "webhook", None).await;
+    settings(
+        &db,
+        "shop",
+        json!({"notifications": [
+            {"id": "teams", "kind": "teams", "on": ["gateFailed"], "targetSecretRef": "teams-url"},
+            {"id": "closed", "kind": "teams", "on": ["gateFailed"], "targetSecretRef": "closed"},
+            {"id": "hook", "kind": "webhook", "on": ["launchFinished"], "target": format!("{}/hook", fake.url()), "secretRef": "hook-key"},
+            {"id": "gone", "kind": "webhook", "on": ["launchFinished"], "target": format!("{}/gone", fake.url())}
+        ]}),
+    )
+    .await;
+    let test = |id: &str, token: Option<&str>| {
+        let s = &s;
+        let path = format!("/api/v1/projects/shop/notifications/{id}/test");
+        let token = token.map(str::to_string);
+        async move { s.call(Method::POST, &path, token.as_deref(), None).await }
+    };
+
+    let (st, b) = test("teams", Some(ADMIN_TOKEN)).await;
+    assert_eq!(st, StatusCode::OK, "{b}");
+    assert_eq!(
+        b,
+        json!({"delivered": true, "responseStatus": 202, "error": null})
+    );
+    let sent = fake.requests("/teams");
+    assert_eq!(sent.len(), 1);
+    let card = assert_teams_message(&sent[0].body);
+    let text = card.to_string();
+    assert!(text.contains("Test notification"), "{text}");
+    assert!(text.contains("shop / Sample launch #0"), "{text}");
+    assert_eq!(
+        card["actions"][0]["url"],
+        "https://fastproof.example.com/p/shop"
+    );
+
+    let (st, b) = test("teams", Some(ADMIN_TOKEN)).await;
+    assert_eq!(st, StatusCode::TOO_MANY_REQUESTS, "{b}");
+    assert_eq!(fake.requests("/teams").len(), 1);
+
+    let (st, b) = test("hook", Some(ADMIN_TOKEN)).await;
+    assert_eq!(st, StatusCode::OK, "{b}");
+    assert_eq!(b["delivered"], true);
+    let hook = &fake.requests("/hook")[0];
+    let v: Value = serde_json::from_str(&hook.body).unwrap();
+    assert_eq!(v["test"], true);
+    assert_eq!(v["project"], "shop");
+    let ts: i64 = hook.headers["x-fastproof-timestamp"].parse().unwrap();
+    assert_eq!(
+        hook.headers["x-fastproof-signature"],
+        fastproof_server::integrations::notify::signature(
+            b"hmac-key-789",
+            ts,
+            hook.body.as_bytes()
+        )
+    );
+
+    let (st, b) = test("gone", Some(ADMIN_TOKEN)).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(b["delivered"], false);
+    assert_eq!(b["responseStatus"], 404);
+    assert_eq!(b["error"], "HTTP 404");
+    let (_, b) = test("closed", Some(ADMIN_TOKEN)).await;
+    assert_eq!(b["delivered"], false, "{b}");
+    assert!(b["error"].as_str().unwrap().contains("Anyone"), "{b}");
+    assert!(!b.to_string().contains("c-sig"));
+
+    let (st, _) = test("missing", Some(ADMIN_TOKEN)).await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+    let viewer = s.token("v", "viewer", &["shop"]).await;
+    let (st, b) = test("hook", Some(&viewer)).await;
+    assert_eq!(st, StatusCode::FORBIDDEN, "{b}");
+    let (st, _) = test("hook", None).await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        fake.requests("/hook").len(),
+        1,
+        "refused callers send nothing"
+    );
+    assert!(
+        deliveries(&s, "shop").await.is_empty(),
+        "tests are not queued as deliveries"
+    );
+    let (_, audit) = s.get("/api/v1/audit?limit=100", ADMIN_TOKEN).await;
+    let tests: Vec<&Value> = audit["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|a| a["action"] == "notification.test")
+        .collect();
+    assert_eq!(tests.len(), 4, "{audit}");
 }

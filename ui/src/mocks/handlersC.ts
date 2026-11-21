@@ -211,6 +211,13 @@ export function stageCHandlers({ role, error, audit }: Helpers) {
       for (const ref of [body.vcs?.tokenSecretRef, body.fastmock?.tokenSecretRef, ...(body.notifications ?? []).map((n) => n.secretRef)]) {
         if (ref && !secrets.has(ref)) return error(400, 'invalid_body', `unknown secret ${ref}`, { field: 'secretRef' });
       }
+      for (const n of body.notifications ?? []) {
+        if (n.kind !== 'teams') continue;
+        if (n.target) return error(400, 'invalid_body', 'teams notifications: the workflow URL is a credential; store it in a secret with purpose teams and refer to it with targetSecretRef (target is not accepted)', { field: 'notifications.target' });
+        const ref = secretsOf(String(params.key)).find((x) => x.name === n.targetSecretRef);
+        if (!n.targetSecretRef) return error(400, 'invalid_body', 'teams notifications need targetSecretRef (a secret with purpose teams holding the workflow URL)', { field: 'notifications.targetSecretRef' });
+        if (ref && ref.purpose !== 'teams') return error(400, 'invalid_body', `the secret "${ref.name}" is for ${ref.purpose}, not teams`, { field: 'notifications.targetSecretRef' });
+      }
       for (const t of body.issueTrackers ?? []) {
         if (!t.urlTemplate.includes('{key}')) return error(400, 'invalid_body', 'urlTemplate must contain {key}', { field: 'issueTrackers.urlTemplate' });
       }
@@ -229,7 +236,11 @@ export function stageCHandlers({ role, error, audit }: Helpers) {
       if (!NAME.test(name)) return error(400, 'invalid_body', 'name must match [a-z0-9][a-z0-9._-]{0,62}', { field: 'name' });
       const body = (await request.json()) as { value?: string; purpose?: string; origin?: string };
       if (!body.value || body.value.length > 8192) return error(400, 'invalid_body', 'value must be 1-8192 characters', { field: 'value' });
-      if (!body.purpose || !['vcs', 'fastmock', 'slack', 'telegram', 'webhook', 'smtp'].includes(body.purpose)) return error(400, 'invalid_body', 'purpose is required', { field: 'purpose' });
+      if (!body.purpose || !['vcs', 'fastmock', 'slack', 'telegram', 'webhook', 'smtp', 'teams'].includes(body.purpose)) return error(400, 'invalid_body', 'purpose is required', { field: 'purpose' });
+      if (body.purpose === 'teams') {
+        if (!/^https:\/\/[^\s/]+\/\S*$/.test(body.value)) return error(400, 'invalid_body', 'a teams secret is the workflow URL: https://… with its sig parameter', { field: 'value' });
+        body.origin = new URL(body.value).origin;
+      }
       if ((body.purpose === 'vcs' || body.purpose === 'fastmock') && !body.origin) return error(400, 'invalid_body', `a ${body.purpose} secret needs origin`, { field: 'origin' });
       writeSecret(String(params.key), name, body.purpose, body.origin ?? null);
       audit('secret.write', String(params.key), { name, purpose: body.purpose });
@@ -260,6 +271,15 @@ export function stageCHandlers({ role, error, audit }: Helpers) {
       const def = launchDef(String(params.id));
       if (!def || def.project !== params.key) return error(404, 'not_found', 'launch not found');
       return HttpResponse.json(gateOf(def.project, launchView(def)));
+    }),
+
+    http.post(`${API}/projects/:key/notifications/:id/test`, ({ params }) => {
+      if (!writer()) return forbid('settings:write');
+      const n = settingsOf(String(params.key)).notifications.find((x) => x.id === params.id);
+      if (!n) return error(404, 'not_found', 'notification not found');
+      audit('notification.test', String(params.key), { id: n.id, kind: n.kind });
+      const status = n.kind === 'teams' ? 202 : n.kind === 'email' ? 250 : n.kind === 'webhook' ? 204 : 200;
+      return HttpResponse.json({ delivered: true, responseStatus: status, error: null });
     }),
 
     http.get(`${API}/projects/:key/notifications/deliveries`, ({ params }) => {

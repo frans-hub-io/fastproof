@@ -93,7 +93,7 @@ pub struct DeliveryView {
     pub id: Uuid,
     /// The notification id, or `vcs`.
     pub notification_id: String,
-    /// `webhook`, `slack`, `email`, `telegram`, `gitlab` or `github`.
+    /// `webhook`, `slack`, `teams`, `email`, `telegram`, `gitlab` or `github`.
     pub kind: String,
     pub launch_id: Option<Uuid>,
     pub events: Vec<String>,
@@ -407,23 +407,24 @@ impl Store {
     }
 
     /// Failed or broken (not muted) results of `launch` whose series was not failed or broken
-    /// in `baseline` (all of them without a baseline): their count and up to `sample` names.
+    /// in `baseline` (all of them without a baseline): their count and up to `sample` result ids
+    /// with their full names.
     pub async fn new_failures(
         &self,
         launch: &Launch,
         baseline: Option<&Launch>,
         sample: i64,
-    ) -> anyhow::Result<(i64, Vec<String>)> {
+    ) -> anyhow::Result<(i64, Vec<(Uuid, String)>)> {
         let (bid, bcreated) = match baseline {
             Some(b) => (Some(b.id), Some(b.created_at)),
             None => (None, None),
         };
-        let rows: Vec<(String, i64)> = sqlx::query_as(
-            "with nf as (select r.full_name from results r where r.launch_id = $1 and r.launch_created_at = $2 \
+        let rows: Vec<(Uuid, String, i64)> = sqlx::query_as(
+            "with nf as (select r.id, r.full_name from results r where r.launch_id = $1 and r.launch_created_at = $2 \
              and r.status in ('failed', 'broken') and not r.muted and not exists (select 1 from results b \
              where b.launch_id = $3 and b.launch_created_at = $4 and b.series_id = r.series_id \
              and b.status in ('failed', 'broken'))) \
-             select full_name, (select count(*) from nf) from nf order by full_name limit $5",
+             select id, full_name, (select count(*) from nf) from nf order by full_name, id limit $5",
         )
         .bind(launch.id)
         .bind(launch.created_at)
@@ -432,12 +433,12 @@ impl Store {
         .bind(sample.max(1))
         .fetch_all(&self.pool)
         .await?;
-        let count = rows.first().map(|r| r.1).unwrap_or(0);
+        let count = rows.first().map(|r| r.2).unwrap_or(0);
         Ok((
             count,
             rows.into_iter()
                 .take(sample.max(0) as usize)
-                .map(|r| r.0)
+                .map(|r| (r.0, r.1))
                 .collect(),
         ))
     }

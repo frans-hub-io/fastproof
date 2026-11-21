@@ -1,0 +1,232 @@
+{
+  "type": "message",
+  "attachments": [
+    {
+      "contentType": "application/vnd.microsoft.card.adaptive",
+      "contentUrl": null,
+      "content": {
+        "type": "AdaptiveCard",
+        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+        "version": "1.5",
+        "fallbackText": "FastProof shop / nightly #7: quality gate failed",
+        "msteams": {
+          "width": "Full"
+        },
+        "body": [
+          {
+            "type": "Container",
+            "style": "attention",
+            "bleed": true,
+            "items": [
+              {
+                "type": "RichTextBlock",
+                "inlines": [
+                  {
+                    "type": "TextRun",
+                    "text": "shop / nightly #7",
+                    "size": "Medium",
+                    "weight": "Bolder",
+                    "selectAction": {
+                      "type": "Action.OpenUrl",
+                      "url": "https://fastproof.example.com/p/shop/launches/0192f0c4-0000-7000-8000-000000000007"
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "RichTextBlock",
+                "inlines": [
+                  {
+                    "type": "TextRun",
+                    "text": "Quality gate failed",
+                    "weight": "Bolder",
+                    "color": "Attention"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "RichTextBlock",
+            "inlines": [
+              {
+                "type": "TextRun",
+                "text": "Branch: ",
+                "weight": "Bolder"
+              },
+              {
+                "type": "TextRun",
+                "text": "main"
+              }
+            ],
+            "spacing": "Small"
+          },
+          {
+            "type": "RichTextBlock",
+            "inlines": [
+              {
+                "type": "TextRun",
+                "text": "Environment: ",
+                "weight": "Bolder"
+              },
+              {
+                "type": "TextRun",
+                "text": "staging-chromium"
+              }
+            ],
+            "spacing": "Small"
+          },
+          {
+            "type": "RichTextBlock",
+            "inlines": [
+              {
+                "type": "TextRun",
+                "text": "Status: ",
+                "weight": "Bolder"
+              },
+              {
+                "type": "TextRun",
+                "text": "finished"
+              }
+            ],
+            "spacing": "Small"
+          },
+          {
+            "type": "RichTextBlock",
+            "inlines": [
+              {
+                "type": "TextRun",
+                "text": "Results: ",
+                "weight": "Bolder"
+              },
+              {
+                "type": "TextRun",
+                "text": "120 total · 110 passed · 3 failed · 1 broken · 4 skipped · 2 flaky"
+              }
+            ],
+            "spacing": "Small"
+          },
+          {
+            "type": "RichTextBlock",
+            "inlines": [
+              {
+                "type": "TextRun",
+                "text": "Pass rate: ",
+                "weight": "Bolder"
+              },
+              {
+                "type": "TextRun",
+                "text": "94.8%"
+              }
+            ],
+            "spacing": "Small"
+          },
+          {
+            "type": "RichTextBlock",
+            "inlines": [
+              {
+                "type": "TextRun",
+                "text": "Duration: ",
+                "weight": "Bolder"
+              },
+              {
+                "type": "TextRun",
+                "text": "12m 34s"
+              }
+            ],
+            "spacing": "Small"
+          },
+          {
+            "type": "RichTextBlock",
+            "inlines": [
+              {
+                "type": "TextRun",
+                "text": "Quality gate: ",
+                "weight": "Bolder"
+              },
+              {
+                "type": "TextRun",
+                "text": "failed, 2 of 3 rules not met"
+              }
+            ],
+            "spacing": "Small"
+          },
+          {
+            "type": "TextBlock",
+            "text": "Rules not met",
+            "weight": "Bolder",
+            "wrap": true,
+            "spacing": "Medium"
+          },
+          {
+            "type": "RichTextBlock",
+            "inlines": [
+              {
+                "type": "TextRun",
+                "text": "default: failed <= 0 (actual 3)"
+              }
+            ],
+            "spacing": "Small"
+          },
+          {
+            "type": "RichTextBlock",
+            "inlines": [
+              {
+                "type": "TextRun",
+                "text": "default: passRate >= 95 (actual 94.83)"
+              }
+            ],
+            "spacing": "Small"
+          },
+          {
+            "type": "TextBlock",
+            "text": "New failures (2)",
+            "weight": "Bolder",
+            "wrap": true,
+            "spacing": "Medium"
+          },
+          {
+            "type": "RichTextBlock",
+            "inlines": [
+              {
+                "type": "TextRun",
+                "text": "checkout.pays",
+                "selectAction": {
+                  "type": "Action.OpenUrl",
+                  "url": "https://fastproof.example.com/p/shop/results/0192f0c4-0000-7000-8000-0000000000a1"
+                }
+              }
+            ],
+            "spacing": "Small"
+          },
+          {
+            "type": "RichTextBlock",
+            "inlines": [
+              {
+                "type": "TextRun",
+                "text": "cart.totals",
+                "selectAction": {
+                  "type": "Action.OpenUrl",
+                  "url": "https://fastproof.example.com/p/shop/results/0192f0c4-0000-7000-8000-0000000000a2"
+                }
+              }
+            ],
+            "spacing": "Small"
+          }
+        ],
+        "actions": [
+          {
+            "type": "Action.OpenUrl",
+            "title": "Open launch",
+            "url": "https://fastproof.example.com/p/shop/launches/0192f0c4-0000-7000-8000-000000000007"
+          },
+          {
+            "type": "Action.OpenUrl",
+            "title": "Open failures",
+            "url": "https://fastproof.example.com/p/shop/launches/0192f0c4-0000-7000-8000-000000000007?tab=failures"
+          }
+        ]
+      }
+    }
+  ]
+}

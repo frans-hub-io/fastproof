@@ -14,8 +14,8 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use super::gates::{self, Evaluation, GateStatus};
-use super::notify::{self, NewFailures, Outcome, Summary, SummaryLaunch};
-use super::settings::{IntegrationSettings, Notification, VcsSettings, matches_any};
+use super::notify::{self, NewFailure, NewFailures, Outcome, Summary, SummaryLaunch};
+use super::settings::{IntegrationSettings, Notification, VcsSettings};
 use super::{quality, vcs};
 use crate::state::AppState;
 
@@ -30,10 +30,13 @@ pub const KEEP_DAYS: i64 = 30;
 
 /// The launch page.
 pub fn launch_url(s: &AppState, project: &str, id: Uuid) -> Option<String> {
+    page_url(s, &format!("p/{project}/launches/{id}"))
+}
+
+/// A page of the UI under `FASTPROOF_PUBLIC_URL`.
+pub fn page_url(s: &AppState, path: &str) -> Option<String> {
     let base = s.cfg.public_url.as_ref()?;
-    base.join(&format!("p/{project}/launches/{id}"))
-        .ok()
-        .map(|u| u.to_string())
+    base.join(path).ok().map(|u| u.to_string())
 }
 
 /// The summary messages are built from.
@@ -64,12 +67,27 @@ pub fn summary(
             counts: launch.counts.clone(),
         },
         gate: ev.report.clone(),
+        pass_rate: ev.facts.pass_rate(),
         new_failures: NewFailures {
             count: ev.new_failures,
-            names: ev.new_failure_names.clone(),
+            names: ev
+                .new_failure_sample
+                .iter()
+                .map(|(_, n)| n.clone())
+                .collect(),
+            items: ev
+                .new_failure_sample
+                .iter()
+                .map(|(id, n)| NewFailure {
+                    name: n.clone(),
+                    result_id: *id,
+                    url: page_url(s, &format!("p/{}/results/{id}", project.key)),
+                })
+                .collect(),
             baseline_launch_id: ev.previous_launch_id,
         },
         events,
+        test: false,
     }
 }
 
@@ -84,10 +102,19 @@ pub fn deliveries(
     if launch.debug {
         return out;
     }
+    let attributes: Vec<(String, String)> = launch
+        .attributes
+        .iter()
+        .map(|a| (a.key.clone(), a.value.clone()))
+        .collect();
     for n in &settings.notifications {
-        let f = n.filter.clone().unwrap_or_default();
-        if !matches_any(&f.branches, gates::branch_of(launch))
-            || !matches_any(&f.environments, gates::env_of(launch))
+        if let Some(f) = &n.filter
+            && !f.matches(
+                gates::branch_of(launch),
+                gates::env_of(launch),
+                &launch.name,
+                &attributes,
+            )
         {
             continue;
         }
@@ -199,11 +226,13 @@ async fn send(s: &AppState, job: &DeliveryJob) -> Outcome {
     }
 }
 
+/// The longest delay between two attempts.
+pub const MAX_DELAY: Duration = Duration::from_secs(3600);
+
 /// The delay before attempt `attempts + 1`.
 pub fn backoff(base: Duration, attempts: i32) -> Duration {
     let exp = attempts.clamp(1, 16) as u32 - 1;
-    base.saturating_mul(1u32 << exp.min(12))
-        .min(Duration::from_secs(3600))
+    base.saturating_mul(1u32 << exp.min(12)).min(MAX_DELAY)
 }
 
 async fn deliver(s: &AppState, job: DeliveryJob) {
@@ -219,7 +248,20 @@ async fn deliver(s: &AppState, job: DeliveryJob) {
                 Some(Utc::now() + chrono::Duration::from_std(d).unwrap_or_default()),
             )
         }
-        Outcome::Retry(e, c) | Outcome::Fail(e, c) => (false, Some(e), c, None),
+        Outcome::Throttled(e, c, after) if job.attempts < job.max_attempts => {
+            let d = backoff(s.cfg.integrations.delivery_backoff, job.attempts)
+                .max(after)
+                .min(MAX_DELAY);
+            (
+                false,
+                Some(e),
+                c,
+                Some(Utc::now() + chrono::Duration::from_std(d).unwrap_or_default()),
+            )
+        }
+        Outcome::Retry(e, c) | Outcome::Throttled(e, c, _) | Outcome::Fail(e, c) => {
+            (false, Some(e), c, None)
+        }
     };
     let label = if ok {
         "delivered"

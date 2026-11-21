@@ -91,7 +91,7 @@ impl AttachmentSink for SpoolSink {
 }
 
 /// Why a job did not complete.
-enum JobFailure {
+pub(crate) enum JobFailure {
     /// The upload itself is bad: fail it without retrying.
     Permanent(UploadError),
     /// Something on our side: retry while attempts remain.
@@ -106,7 +106,7 @@ impl From<anyhow::Error> for JobFailure {
     }
 }
 
-fn map_ingest_error(e: IngestError) -> JobFailure {
+pub(crate) fn map_ingest_error(e: IngestError) -> JobFailure {
     if let Some(limit) = e.limit_name() {
         return JobFailure::Permanent(UploadError {
             code: "limit_exceeded".into(),
@@ -212,7 +212,7 @@ async fn process_impl(s: &AppState, worker_id: &str, job: ClaimedJob, stop: &Can
         .spool_dir
         .join("work")
         .join(format!("{}-{}", job.upload_id, job.attempt));
-    let r = process_inner(s, &job, &work, &lost, stop).await;
+    let r = process_inner(s, &job, &work, &lost, stop, None).await;
     hb.abort();
     let _ = tokio::fs::remove_dir_all(&work).await;
     let completed = match &r {
@@ -318,12 +318,69 @@ async fn raw_file(s: &AppState, job: &ClaimedJob, work: &Path) -> Result<PathBuf
     }
 }
 
-async fn process_inner(
+/// Persists (direct mode) or produces to `ingest.results` (Kafka mode) one chunk of parsed
+/// results. A result too large for a Kafka record is persisted directly.
+async fn emit_chunk(
+    s: &AppState,
+    kafka: Option<&std::sync::Arc<fastproof_stream::Kafka>>,
+    launch: &LaunchRef,
+    upload_id: uuid::Uuid,
+    attempts: Vec<NewAttempt>,
+) -> anyhow::Result<()> {
+    let Some(kafka) = kafka else {
+        s.store
+            .persist_attempts(launch, Some(upload_id), attempts)
+            .await?;
+        return Ok(());
+    };
+    let max = kafka.config().max_record_bytes;
+    let mut records = Vec::with_capacity(attempts.len());
+    let mut direct = Vec::new();
+    for a in attempts {
+        let rec = fastproof_stream::messages::ResultRecord {
+            v: fastproof_stream::messages::VERSION,
+            project: launch.project_key.clone(),
+            launch_id: launch.id,
+            result: None,
+            parsed: Some(Box::new(a.result)),
+            client_key: Some(a.client_key),
+            upload_id: Some(upload_id),
+        };
+        let value = serde_json::to_vec(&rec)?;
+        if value.len() > max {
+            direct.push(NewAttempt {
+                client_key: rec.client_key.unwrap_or_default(),
+                result: *rec.parsed.expect("set above"),
+            });
+            continue;
+        }
+        records.push(fastproof_stream::kafka::Outgoing {
+            key: launch.id.to_string().into_bytes(),
+            value,
+        });
+    }
+    kafka
+        .produce(
+            &kafka.topic(fastproof_stream::kafka::TOPIC_RESULTS),
+            records,
+        )
+        .await?;
+    if !direct.is_empty() {
+        metrics::counter!("fastproof_kafka_oversized_results_total").increment(direct.len() as u64);
+        s.store
+            .persist_attempts(launch, Some(upload_id), direct)
+            .await?;
+    }
+    Ok(())
+}
+
+pub(crate) async fn process_inner(
     s: &AppState,
     job: &ClaimedJob,
     work: &Path,
     lost: &AtomicBool,
     stop: &CancellationToken,
+    kafka: Option<&std::sync::Arc<fastproof_stream::Kafka>>,
 ) -> Result<UploadDone, JobFailure> {
     tokio::fs::create_dir_all(work.join("att"))
         .await
@@ -439,15 +496,18 @@ async fn process_inner(
             if lost.load(Ordering::SeqCst) || stop.is_cancelled() {
                 return Err(JobFailure::LeaseLost);
             }
-            s.store
-                .persist_attempts(&launch, Some(job.upload_id), std::mem::take(&mut attempts))
-                .await?;
+            emit_chunk(
+                s,
+                kafka,
+                &launch,
+                job.upload_id,
+                std::mem::take(&mut attempts),
+            )
+            .await?;
         }
     }
     if !attempts.is_empty() {
-        s.store
-            .persist_attempts(&launch, Some(job.upload_id), attempts)
-            .await?;
+        emit_chunk(s, kafka, &launch, job.upload_id, attempts).await?;
     }
 
     let mut warnings: Vec<String> = batch

@@ -245,7 +245,8 @@
           "description": "Start, milliseconds since the Unix epoch."
         },
         "status": {
-          "$ref": "#/$defs/Status"
+          "$ref": "#/$defs/ReportStatus",
+          "description": "A final status, or `running` while the test runs."
         },
         "stderr": {
           "type": [
@@ -310,6 +311,18 @@
         }
       },
       "additionalProperties": false
+    },
+    "ReportStatus": {
+      "type": "string",
+      "description": "Status of a reported result: a final status, or `running` for a result opened before its\ntest finished (sent again later with the same `id` and a final status).",
+      "enum": [
+        "passed",
+        "failed",
+        "broken",
+        "skipped",
+        "unknown",
+        "running"
+      ]
     },
     "ReportStep": {
       "type": "object",

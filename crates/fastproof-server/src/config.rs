@@ -23,6 +23,111 @@ pub enum MigrateMode {
     Off,
 }
 
+/// How results reach PostgreSQL (`FASTPROOF_INGEST_MODE`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IngestMode {
+    /// HTTP, spool, PostgreSQL job queue, workers.
+    Direct,
+    /// The HTTP gateway produces to Kafka; writer consumers persist.
+    Kafka,
+}
+
+/// Components that run in this process (`FASTPROOF_ROLES`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Roles {
+    pub api: bool,
+    pub ingest: bool,
+    pub writer: bool,
+    pub sink: bool,
+    pub scheduler: bool,
+}
+
+impl Roles {
+    pub const ALL: Roles = Roles {
+        api: true,
+        ingest: true,
+        writer: true,
+        sink: true,
+        scheduler: true,
+    };
+
+    /// `all` or a comma list of `api`, `ingest`, `writer`, `sink`, `scheduler`.
+    pub fn parse(s: &str) -> anyhow::Result<Self> {
+        let s = s.trim().to_ascii_lowercase();
+        if s == "all" {
+            return Ok(Self::ALL);
+        }
+        let mut r = Roles {
+            api: false,
+            ingest: false,
+            writer: false,
+            sink: false,
+            scheduler: false,
+        };
+        for part in s.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+            match part {
+                "api" => r.api = true,
+                "ingest" => r.ingest = true,
+                "writer" => r.writer = true,
+                "sink" => r.sink = true,
+                "scheduler" => r.scheduler = true,
+                other => bail!(
+                    "unknown role {other:?}: expected all or api, ingest, writer, sink, scheduler"
+                ),
+            }
+        }
+        if r == (Roles {
+            api: false,
+            ingest: false,
+            writer: false,
+            sink: false,
+            scheduler: false,
+        }) {
+            bail!("no role given");
+        }
+        Ok(r)
+    }
+}
+
+/// Where log search and similar failures go (`FASTPROOF_SEARCH_BACKEND`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SearchBackendKind {
+    Postgres,
+    ClickHouse,
+    OpenSearch,
+}
+
+/// An analytics sink (`FASTPROOF_SINKS`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SinkKind {
+    ClickHouse,
+    OpenSearch,
+}
+
+/// Limits of the live logs API.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LogLimits {
+    /// Bytes of one message (`FASTPROOF_LOG_MAX_LINE_BYTES`).
+    pub max_line_bytes: usize,
+    /// Lines per request (`FASTPROOF_LOG_MAX_LINES_PER_REQUEST`).
+    pub max_lines_per_request: usize,
+    /// Body of one request (`FASTPROOF_LOG_MAX_REQUEST_BYTES`).
+    pub max_request_bytes: u64,
+    /// Log bytes accepted per launch (`FASTPROOF_LOG_MAX_BYTES_PER_LAUNCH`).
+    pub max_bytes_per_launch: i64,
+}
+
+impl Default for LogLimits {
+    fn default() -> Self {
+        Self {
+            max_line_bytes: 64 * 1024,
+            max_lines_per_request: 5000,
+            max_request_bytes: 8 * 1024 * 1024,
+            max_bytes_per_launch: 256 * 1024 * 1024,
+        }
+    }
+}
+
 /// Everything `fastproof serve` needs.
 #[derive(Clone)]
 pub struct Config {
@@ -48,6 +153,15 @@ pub struct Config {
     pub limits: Limits,
     /// Days of outbox events kept (`FASTPROOF_OUTBOX_RETENTION_DAYS`).
     pub outbox_retention_days: i64,
+    pub ingest_mode: IngestMode,
+    pub roles: Roles,
+    pub search_backend: SearchBackendKind,
+    pub sinks: Vec<SinkKind>,
+    pub kafka: Option<fastproof_stream::KafkaConfig>,
+    pub clickhouse: Option<fastproof_stream::ClickHouseConfig>,
+    pub opensearch: Option<fastproof_stream::OpenSearchConfig>,
+    pub sink_tuning: fastproof_stream::SinkTuning,
+    pub log_limits: LogLimits,
 }
 
 fn redact_url(u: &str) -> String {
@@ -102,6 +216,14 @@ impl fmt::Debug for Config {
             )
             .field("retain_uploads", &self.retain_uploads)
             .field("outbox_retention_days", &self.outbox_retention_days)
+            .field("ingest_mode", &self.ingest_mode)
+            .field("roles", &self.roles)
+            .field("search_backend", &self.search_backend)
+            .field("sinks", &self.sinks)
+            .field("kafka", &self.kafka)
+            .field("clickhouse", &self.clickhouse)
+            .field("opensearch", &self.opensearch)
+            .field("log_limits", &self.log_limits)
             .finish_non_exhaustive()
     }
 }
@@ -304,6 +426,99 @@ impl Config {
             max_upload_bytes,
             ..Limits::default()
         };
+        let vars = fastproof_stream::Vars(get);
+        let kafka = fastproof_stream::KafkaConfig::from_vars(&vars)?;
+        let clickhouse = fastproof_stream::ClickHouseConfig::from_vars(&vars)?;
+        let opensearch = fastproof_stream::OpenSearchConfig::from_vars(&vars)?;
+        let ingest_mode = match env
+            .var("FASTPROOF_INGEST_MODE")
+            .map(|v| v.trim().to_ascii_lowercase())
+            .as_deref()
+        {
+            None | Some("direct") => IngestMode::Direct,
+            Some("kafka") => IngestMode::Kafka,
+            Some(v) => bail!("FASTPROOF_INGEST_MODE: expected direct or kafka, got {v:?}"),
+        };
+        if ingest_mode == IngestMode::Kafka && kafka.is_none() {
+            bail!("FASTPROOF_KAFKA_BROKERS is required with FASTPROOF_INGEST_MODE=kafka");
+        }
+        let roles = match env.var("FASTPROOF_ROLES") {
+            None => Roles::ALL,
+            Some(v) => Roles::parse(&v).map_err(|e| anyhow!("FASTPROOF_ROLES: {e}"))?,
+        };
+        let search_backend = match env
+            .var("FASTPROOF_SEARCH_BACKEND")
+            .map(|v| v.trim().to_ascii_lowercase())
+            .as_deref()
+        {
+            None | Some("postgres") => SearchBackendKind::Postgres,
+            Some("clickhouse") => SearchBackendKind::ClickHouse,
+            Some("opensearch") => SearchBackendKind::OpenSearch,
+            Some(v) => bail!(
+                "FASTPROOF_SEARCH_BACKEND: expected postgres, clickhouse or opensearch, got {v:?}"
+            ),
+        };
+        let mut sinks = Vec::new();
+        for part in env
+            .var("FASTPROOF_SINKS")
+            .unwrap_or_default()
+            .split(',')
+            .map(|p| p.trim().to_ascii_lowercase())
+            .filter(|p| !p.is_empty())
+        {
+            let k = match part.as_str() {
+                "clickhouse" => SinkKind::ClickHouse,
+                "opensearch" => SinkKind::OpenSearch,
+                other => bail!(
+                    "FASTPROOF_SINKS: unknown sink {other:?}: expected clickhouse, opensearch"
+                ),
+            };
+            if !sinks.contains(&k) {
+                sinks.push(k);
+            }
+        }
+        let needs_ch = search_backend == SearchBackendKind::ClickHouse
+            || sinks.contains(&SinkKind::ClickHouse);
+        let needs_os = search_backend == SearchBackendKind::OpenSearch
+            || sinks.contains(&SinkKind::OpenSearch);
+        if needs_ch && clickhouse.is_none() {
+            bail!(
+                "FASTPROOF_CLICKHOUSE_URL is required by FASTPROOF_SINKS or FASTPROOF_SEARCH_BACKEND"
+            );
+        }
+        if needs_os && opensearch.is_none() {
+            bail!(
+                "FASTPROOF_OPENSEARCH_URL is required by FASTPROOF_SINKS or FASTPROOF_SEARCH_BACKEND"
+            );
+        }
+        let defaults = LogLimits::default();
+        let log_limits = LogLimits {
+            max_line_bytes: env.parse("FASTPROOF_LOG_MAX_LINE_BYTES", defaults.max_line_bytes)?,
+            max_lines_per_request: env.parse(
+                "FASTPROOF_LOG_MAX_LINES_PER_REQUEST",
+                defaults.max_lines_per_request,
+            )?,
+            max_request_bytes: env.parse(
+                "FASTPROOF_LOG_MAX_REQUEST_BYTES",
+                defaults.max_request_bytes,
+            )?,
+            max_bytes_per_launch: env.parse(
+                "FASTPROOF_LOG_MAX_BYTES_PER_LAUNCH",
+                defaults.max_bytes_per_launch,
+            )?,
+        };
+        if !(256..=1024 * 1024).contains(&log_limits.max_line_bytes) {
+            bail!("FASTPROOF_LOG_MAX_LINE_BYTES: 256..=1048576");
+        }
+        if !(1..=100_000).contains(&log_limits.max_lines_per_request) {
+            bail!("FASTPROOF_LOG_MAX_LINES_PER_REQUEST: 1..=100000");
+        }
+        if !(1024..=256 * 1024 * 1024).contains(&log_limits.max_request_bytes) {
+            bail!("FASTPROOF_LOG_MAX_REQUEST_BYTES: 1024..=268435456");
+        }
+        if log_limits.max_bytes_per_launch < 1024 {
+            bail!("FASTPROOF_LOG_MAX_BYTES_PER_LAUNCH: at least 1024");
+        }
         Ok(Self {
             listen,
             ops_listen,
@@ -326,6 +541,15 @@ impl Config {
             retain_uploads: env.bool("FASTPROOF_RETAIN_UPLOADS", false)?,
             limits,
             outbox_retention_days: env.parse("FASTPROOF_OUTBOX_RETENTION_DAYS", 7)?,
+            ingest_mode,
+            roles,
+            search_backend,
+            sinks,
+            kafka,
+            clickhouse,
+            opensearch,
+            sink_tuning: fastproof_stream::SinkTuning::from_vars(&vars)?,
+            log_limits,
         })
     }
 }
@@ -360,6 +584,38 @@ mod tests {
         assert_eq!(c.migrate, MigrateMode::Auto);
         assert!(c.ui);
         assert!(matches!(c.blob, BlobConfig::Fs { .. }));
+    }
+
+    #[test]
+    fn streaming_settings() {
+        let base = ("FASTPROOF_DATABASE_URL", "postgres://db.example.com/fp");
+        let c = cfg(&[base]).unwrap();
+        assert_eq!(c.ingest_mode, IngestMode::Direct);
+        assert_eq!(c.roles, Roles::ALL);
+        assert_eq!(c.search_backend, SearchBackendKind::Postgres);
+        assert!(c.sinks.is_empty() && c.kafka.is_none());
+        let c = cfg(&[
+            base,
+            ("FASTPROOF_INGEST_MODE", "kafka"),
+            ("FASTPROOF_KAFKA_BROKERS", "kafka.example.com:9092"),
+            ("FASTPROOF_ROLES", "api, writer"),
+            ("FASTPROOF_SINKS", "clickhouse"),
+            ("FASTPROOF_CLICKHOUSE_URL", "http://ch.example.com:8123"),
+        ])
+        .unwrap();
+        assert_eq!(c.ingest_mode, IngestMode::Kafka);
+        assert!(c.roles.api && c.roles.writer && !c.roles.sink && !c.roles.ingest);
+        assert_eq!(c.sinks, vec![SinkKind::ClickHouse]);
+        for (k, v) in [
+            ("FASTPROOF_INGEST_MODE", "kafka"),
+            ("FASTPROOF_ROLES", "api,cook"),
+            ("FASTPROOF_SEARCH_BACKEND", "opensearch"),
+            ("FASTPROOF_SINKS", "elastic"),
+            ("FASTPROOF_LOG_MAX_LINE_BYTES", "1"),
+        ] {
+            let e = format!("{:#}", cfg(&[base, (k, v)]).unwrap_err());
+            assert!(e.contains("FASTPROOF_"), "{k}: {e}");
+        }
     }
 
     #[test]

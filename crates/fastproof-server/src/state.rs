@@ -118,6 +118,12 @@ pub struct Inner {
     pub sse: Arc<Semaphore>,
     /// Identifies this replica in leases.
     pub instance: String,
+    /// Live log fan-out of this replica.
+    pub logs: crate::stream::live::LogHub,
+    /// Kafka (Kafka ingest mode only).
+    pub kafka: Option<Arc<fastproof_stream::Kafka>>,
+    /// The search backend; `None` searches PostgreSQL.
+    pub search: Option<Arc<dyn fastproof_stream::sink::SearchBackend>>,
 }
 
 /// The axum state.

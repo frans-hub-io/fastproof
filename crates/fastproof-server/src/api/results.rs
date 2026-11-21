@@ -82,79 +82,41 @@ impl ResultBatch<'_> {
             return Ok(());
         }
         let pending = std::mem::take(&mut self.pending);
-        let ids: Vec<Uuid> = pending
-            .iter()
-            .flat_map(|(_, r)| {
-                let mut v: Vec<Uuid> = r
-                    .attachments
-                    .iter()
-                    .filter_map(|a| a.id.parse().ok())
-                    .collect();
-                fn walk(steps: &[fastproof_model::ReportStep], v: &mut Vec<Uuid>) {
-                    for s in steps {
-                        v.extend(
-                            s.attachments
-                                .iter()
-                                .filter_map(|a| a.id.parse::<Uuid>().ok()),
-                        );
-                        walk(&s.steps, v);
-                    }
-                }
-                walk(&r.steps, &mut v);
-                v
-            })
-            .collect();
-        let s = self.s;
-        let known = s
-            .store
-            .attachments_in_project(self.launch.project_id, &ids)
-            .await?;
-        let env_key = self.env_key.clone();
-        let opts = ReportOptions {
-            limits: &s.limits,
-            environment_key: env_key.as_deref(),
-        };
-        let mut attempts = Vec::with_capacity(pending.len());
-        let mut used: Vec<Uuid> = Vec::new();
-        for (index, r) in pending {
-            let client = r.id.trim().to_string();
-            let mut parsed = match report_to_parsed(r, &opts) {
-                Ok(p) => p,
-                Err(m) => {
-                    self.reject(index, m);
-                    continue;
-                }
-            };
-            let mut missing = None;
-            parsed.visit_attachments_mut(&mut |a| {
-                let id = a.id.as_ref().and_then(|i| i.0.parse::<Uuid>().ok());
-                match id.and_then(|i| known.get(&i).map(|k| (i, k))) {
-                    Some((i, (size, ct, name))) => {
-                        a.size = Some(*size as u64);
-                        if a.content_type.is_none() {
-                            a.content_type = Some(ct.clone());
-                        }
-                        if a.name.is_empty() {
-                            a.name = name.clone().unwrap_or_else(|| "attachment".into());
-                        }
-                        a.kind = AttachmentKind::infer(a.content_type.as_deref(), &a.name);
-                        used.push(i);
-                    }
-                    None => missing = Some(a.source.trim_start_matches("attachment:").to_string()),
-                }
-            });
-            if let Some(m) = missing {
-                self.reject(index, format!("unknown attachment id {m}"));
-                continue;
-            }
-            attempts.push(NewAttempt {
-                client_key: format!("r:{client}"),
-                result: parsed,
-            });
+        let originals: Option<Vec<ReportResult>> = self
+            .s
+            .kafka_gateway()
+            .then(|| pending.iter().map(|(_, r)| r.clone()).collect());
+        let prep = prepare_reports(
+            self.s,
+            self.launch.project_id,
+            self.env_key.as_deref(),
+            pending,
+        )
+        .await?;
+        for r in prep.rejected {
+            self.reject(r.index, r.message);
         }
-        used.sort();
-        used.dedup();
-        self.s.store.link_attachments(&used, self.launch.id).await?;
+        if let Some(originals) = originals {
+            let produced = crate::stream::produce_results(
+                self.s,
+                &self.launch,
+                prep.accepted
+                    .iter()
+                    .map(|(pos, index, _)| (*index, originals[*pos].clone()))
+                    .collect(),
+            )
+            .await?;
+            for (index, message) in produced.rejected {
+                self.reject(index, message);
+            }
+            self.summary.accepted += produced.accepted;
+            return Ok(());
+        }
+        let attempts: Vec<NewAttempt> = prep.accepted.into_iter().map(|(_, _, a)| a).collect();
+        self.s
+            .store
+            .link_attachments(&prep.used, self.launch.id)
+            .await?;
         let n = attempts.len() as u64;
         let out = self
             .s
@@ -167,6 +129,104 @@ impl ResultBatch<'_> {
             .increment(out.accepted);
         Ok(())
     }
+}
+
+/// Results converted for persisting: `(position in the input, caller's index, attempt)`.
+pub struct PreparedReports {
+    pub accepted: Vec<(usize, u64, NewAttempt)>,
+    /// Attachment rows the accepted results reference.
+    pub used: Vec<Uuid>,
+    pub rejected: Vec<Rejected>,
+}
+
+/// Validates report results and resolves their attachment references (unknown attachments
+/// reject the result). Used by the API and by the Kafka writer.
+pub async fn prepare_reports(
+    s: &AppState,
+    project_id: Uuid,
+    env_key: Option<&str>,
+    pending: Vec<(u64, ReportResult)>,
+) -> anyhow::Result<PreparedReports> {
+    let ids: Vec<Uuid> = pending
+        .iter()
+        .flat_map(|(_, r)| {
+            let mut v: Vec<Uuid> = r
+                .attachments
+                .iter()
+                .filter_map(|a| a.id.parse().ok())
+                .collect();
+            fn walk(steps: &[fastproof_model::ReportStep], v: &mut Vec<Uuid>) {
+                for s in steps {
+                    v.extend(
+                        s.attachments
+                            .iter()
+                            .filter_map(|a| a.id.parse::<Uuid>().ok()),
+                    );
+                    walk(&s.steps, v);
+                }
+            }
+            walk(&r.steps, &mut v);
+            v
+        })
+        .collect();
+    let known = s.store.attachments_in_project(project_id, &ids).await?;
+    let opts = ReportOptions {
+        limits: &s.limits,
+        environment_key: env_key,
+    };
+    let mut out = PreparedReports {
+        accepted: Vec::with_capacity(pending.len()),
+        used: Vec::new(),
+        rejected: Vec::new(),
+    };
+    for (pos, (index, r)) in pending.into_iter().enumerate() {
+        let client = r.id.trim().to_string();
+        let mut parsed = match report_to_parsed(r, &opts) {
+            Ok(p) => p,
+            Err(m) => {
+                out.rejected.push(Rejected { index, message: m });
+                continue;
+            }
+        };
+        let mut missing = None;
+        let mut used = Vec::new();
+        parsed.visit_attachments_mut(&mut |a| {
+            let id = a.id.as_ref().and_then(|i| i.0.parse::<Uuid>().ok());
+            match id.and_then(|i| known.get(&i).map(|k| (i, k))) {
+                Some((i, (size, ct, name))) => {
+                    a.size = Some(*size as u64);
+                    if a.content_type.is_none() {
+                        a.content_type = Some(ct.clone());
+                    }
+                    if a.name.is_empty() {
+                        a.name = name.clone().unwrap_or_else(|| "attachment".into());
+                    }
+                    a.kind = AttachmentKind::infer(a.content_type.as_deref(), &a.name);
+                    used.push(i);
+                }
+                None => missing = Some(a.source.trim_start_matches("attachment:").to_string()),
+            }
+        });
+        if let Some(m) = missing {
+            out.rejected.push(Rejected {
+                index,
+                message: format!("unknown attachment id {m}"),
+            });
+            continue;
+        }
+        out.used.extend(used);
+        out.accepted.push((
+            pos,
+            index,
+            NewAttempt {
+                client_key: format!("r:{client}"),
+                result: parsed,
+            },
+        ));
+    }
+    out.used.sort();
+    out.used.dedup();
+    Ok(out)
 }
 
 #[utoipa::path(post, path = "/api/v1/projects/{key}/launches/{id}/results", tag = "results",
@@ -350,11 +410,11 @@ pub async fn list(
     if statuses.iter().any(|x| {
         !matches!(
             x.as_str(),
-            "passed" | "failed" | "broken" | "skipped" | "unknown"
+            "passed" | "failed" | "broken" | "skipped" | "unknown" | "running"
         )
     }) {
         return Err(ApiError::bad_request(
-            "status must be passed, failed, broken, skipped or unknown",
+            "status must be passed, failed, broken, skipped, unknown or running",
         ));
     }
     let f = ResultFilter {

@@ -158,22 +158,64 @@ pub async fn create(
         .unwrap_or_else(|e| e.into_inner())
         .insert(upload_id, spooled.path.clone());
     metrics::counter!("fastproof_upload_bytes_total").increment(spooled.size);
-    let upload = s
-        .store
-        .enqueue_upload(&NewUpload {
-            id: upload_id,
-            project_id: project.id,
-            project_key: project.key.clone(),
+    let new_upload = NewUpload {
+        id: upload_id,
+        project_id: project.id,
+        project_key: project.key.clone(),
+        launch_id: launch.id,
+        format,
+        file_name,
+        size_bytes: spooled.size as i64,
+        sha256: spooled.sha256.clone(),
+        blob_key: blob_key.to_string(),
+        created_by: auth.principal.name.clone(),
+        max_attempts: 3,
+    };
+    if s.kafka_gateway() {
+        let upload = s.store.record_upload(&new_upload).await?;
+        let rec = fastproof_stream::messages::UploadRecord {
+            v: fastproof_stream::messages::VERSION,
+            project: project.key.clone(),
             launch_id: launch.id,
-            format,
-            file_name,
-            size_bytes: spooled.size as i64,
-            sha256: spooled.sha256.clone(),
-            blob_key: blob_key.to_string(),
-            created_by: auth.principal.name.clone(),
-            max_attempts: 3,
-        })
-        .await?;
+            upload_id,
+            blob_key: new_upload.blob_key.clone(),
+            format: new_upload.format.clone(),
+            file_name: new_upload.file_name.clone(),
+        };
+        let kafka = s.kafka()?;
+        let produced = kafka
+            .produce(
+                &kafka.topic(fastproof_stream::kafka::TOPIC_UPLOADS),
+                vec![fastproof_stream::kafka::Outgoing {
+                    key: launch.id.to_string().into_bytes(),
+                    value: serde_json::to_vec(&rec).map_err(anyhow::Error::from)?,
+                }],
+            )
+            .await;
+        if let Err(e) = produced {
+            tracing::warn!(error = %format!("{e:#}"), "producing an upload to Kafka failed");
+            if let Ok(Some(job)) = s.store.start_upload(upload_id, 1).await {
+                let _ = s
+                    .store
+                    .fail_upload(
+                        &job,
+                        &fastproof_store::UploadError {
+                            code: "unavailable".into(),
+                            message: "the ingest queue was not available".into(),
+                            limit: None,
+                        },
+                    )
+                    .await;
+            }
+            return Err(ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "the ingest queue is not available; retry later",
+            ));
+        }
+        return Ok((StatusCode::ACCEPTED, Json(upload)));
+    }
+    let upload = s.store.enqueue_upload(&new_upload).await?;
     s.wake.notify_one();
     Ok((StatusCode::ACCEPTED, Json(upload)))
 }

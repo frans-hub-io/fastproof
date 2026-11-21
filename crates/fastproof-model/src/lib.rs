@@ -19,7 +19,9 @@ pub use identity::{
     ExplicitId, IdSource, IdentityInput, SourceRef, TestIdentity, UNKNOWN_PARAMETER_VALUE,
 };
 pub use launch::{CiInfo, Executor, KeyValue, LaunchMeta, VcsInfo};
-pub use report::{ReportAttachment, ReportError, ReportResult, ReportSource, ReportStep};
+pub use report::{
+    ReportAttachment, ReportError, ReportResult, ReportSource, ReportStatus, ReportStep,
+};
 pub use result::{
     BoundedText, Category, Container, Description, Fixtures, GlobalError, Globals, Label, Link,
     Parameter, ParameterMode, ParsedResult, SourceFormat, StatusDetails, Step, StepKind,

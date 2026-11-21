@@ -1,6 +1,7 @@
 //! The REST API (`/api/v1`), documented with utoipa.
 
 pub mod admin;
+pub mod analysis;
 pub mod attachments;
 pub mod events;
 pub mod launches;
@@ -55,7 +56,7 @@ impl Modify for BearerAuth {
     components(schemas(ErrorBody, fastproof_model::ReportResult)),
     tags(
         (name = "projects"), (name = "launches"), (name = "uploads"), (name = "results"),
-        (name = "attachments"), (name = "events"), (name = "admin")
+        (name = "attachments"), (name = "events"), (name = "admin"), (name = "analysis")
     )
 )]
 pub struct ApiDoc;

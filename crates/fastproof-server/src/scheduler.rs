@@ -348,8 +348,15 @@ pub fn standard_jobs() -> anyhow::Result<Scheduler> {
         }
     })?;
     sch.register("projects.purge", "1m", |s: AppState| async move {
-        for d in s.store.pending_blob_deletions(10).await? {
+        for d in s.store.pending_blob_deletions(500).await? {
             let r = async {
+                if d.project_id.is_none()
+                    && let Ok(k) = fastproof_blob::BlobKey::parse(&d.prefix)
+                {
+                    s.blobs.delete(&k).await?;
+                    s.store.finish_blob_deletion(&d).await?;
+                    return Ok(());
+                }
                 let key = d.prefix.strip_prefix("projects/").unwrap_or_default();
                 let n = s
                     .blobs
@@ -366,7 +373,57 @@ pub fn standard_jobs() -> anyhow::Result<Scheduler> {
         }
         Ok(())
     })?;
+    analysis_jobs(&mut sch)?;
     Ok(sch)
+}
+
+/// Jobs of the analysis features (stage C).
+pub fn analysis_jobs(sch: &mut Scheduler) -> anyhow::Result<()> {
+    sch.register("analysis.indexes", "6h", |s: AppState| async move {
+        let n = fastproof_store::analysis::indexes::ensure_analysis_indexes(s.store.pool()).await?;
+        if n > 0 {
+            tracing::info!(partitions = n, "fingerprint indexes built");
+        }
+        Ok(())
+    })?;
+    sch.register("fingerprints.backfill", "1m", |s: AppState| async move {
+        let n = s
+            .store
+            .backfill_fingerprints(5000, Duration::from_secs(30))
+            .await?;
+        if n > 0 {
+            tracing::info!(attempts = n, "fingerprints filled in");
+        }
+        Ok(())
+    })?;
+    sch.register("mutes.expire", "1m", |s: AppState| async move {
+        while s.store.expire_mutes().await? >= 1000 {}
+        Ok(())
+    })?;
+    sch.register("analysis.tasks", "10s", |s: AppState| async move {
+        let owner = format!("{}-tasks", s.instance);
+        s.store.run_tasks(&owner, Duration::from_secs(90)).await?;
+        Ok(())
+    })?;
+    sch.register("history.rollup", "1h", |s: AppState| async move {
+        let r = s.store.rollup_due(Duration::from_secs(600)).await?;
+        if r.launches > 0 || !r.partitions_dropped.is_empty() {
+            tracing::info!(launches = r.launches, dropped = ?r.partitions_dropped, "history rolled up");
+        }
+        Ok(())
+    })?;
+    sch.register("retention.apply", "1h", |s: AppState| async move {
+        let r = s.store.retention_apply(Duration::from_secs(600)).await?;
+        if r.launches_deleted > 0 || r.blobs_queued > 0 {
+            tracing::info!(
+                launches = r.launches_deleted,
+                blobs = r.blobs_queued,
+                "retention applied"
+            );
+        }
+        Ok(())
+    })?;
+    Ok(())
 }
 
 #[cfg(test)]

@@ -1,4 +1,5 @@
-//! Command line: `serve`, `migrate`, `upload`, `watch`, `launch start|finish`, `version`.
+//! Command line: `serve`, `migrate`, `upload`, `watch`, `launch start|finish`, `testplan`,
+//! `version`.
 
 pub mod archive;
 pub mod ci;
@@ -42,8 +43,29 @@ pub enum Command {
         #[command(subcommand)]
         command: LaunchCommand,
     },
+    /// Print an Allure `testplan.json` of chosen tests (e.g. the failed ones of a launch), so
+    /// Allure adapters run only those (`ALLURE_TESTPLAN_PATH=testplan.json`).
+    Testplan(TestplanArgs),
     /// Print the version.
     Version,
+}
+
+#[derive(Args, Debug)]
+pub struct TestplanArgs {
+    #[command(flatten)]
+    pub conn: Conn,
+    /// Launch id whose tests are taken.
+    #[arg(long)]
+    pub from_launch: Option<uuid::Uuid>,
+    /// Statuses taken from the launch, comma-separated.
+    #[arg(long, default_value = "failed,broken")]
+    pub status: String,
+    /// Test case id to add, repeatable.
+    #[arg(long = "test-case")]
+    pub test_cases: Vec<uuid::Uuid>,
+    /// Name of the stored plan.
+    #[arg(long)]
+    pub name: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -284,6 +306,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<i32> {
             Ok(0)
         }
         Command::Upload(u) => upload(u).await,
+        Command::Testplan(t) => testplan(t).await,
         Command::Watch(w) => watch::run(w).await,
     }
 }
@@ -364,4 +387,35 @@ async fn upload(u: UploadArgs) -> anyhow::Result<i32> {
     };
     print_launch(&l);
     Ok(code)
+}
+
+async fn testplan(t: TestplanArgs) -> anyhow::Result<i32> {
+    if t.from_launch.is_none() && t.test_cases.is_empty() {
+        bail!("give --from-launch or --test-case");
+    }
+    let client = t.conn.client()?;
+    let statuses: Vec<String> = t
+        .status
+        .split(',')
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let name = t.name.clone().unwrap_or_else(|| match t.from_launch {
+        Some(l) => format!("{} of launch {l}", statuses.join(",")),
+        None => "selected tests".into(),
+    });
+    let plan = client
+        .create_test_plan(
+            &t.conn.project,
+            &serde_json::json!({"name": name, "fromLaunchId": t.from_launch, "statuses": statuses,
+                "testCaseIds": (!t.test_cases.is_empty()).then_some(&t.test_cases)}),
+        )
+        .await?;
+    let json = client.testplan_json(&t.conn.project, plan).await?;
+    println!("{}", serde_json::to_string_pretty(&json)?);
+    eprintln!(
+        "test plan {plan}: {} tests",
+        json["tests"].as_array().map(|a| a.len()).unwrap_or(0)
+    );
+    Ok(0)
 }

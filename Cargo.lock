@@ -690,8 +690,10 @@ name = "fastproof-model"
 version = "0.1.0"
 dependencies = [
  "md-5",
+ "regex",
  "serde",
  "serde_json",
+ "sha1",
  "unicode-normalization",
  "utoipa",
 ]
@@ -753,7 +755,9 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "fastproof-model",
+ "metrics",
  "rand 0.9.5",
+ "regex",
  "serde",
  "serde_json",
  "sqlx",

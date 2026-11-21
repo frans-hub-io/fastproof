@@ -391,6 +391,364 @@
         }
       }
     },
+    "/api/v1/projects/{key}/dashboard": {
+      "get": {
+        "tags": [
+          "analysis"
+        ],
+        "operationId": "dashboard",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "branch",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "environment",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "First day (`YYYY-MM-DD` or RFC 3339, UTC); default 30 days before `to`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "Last day (inclusive); default today.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "bucket",
+            "in": "query",
+            "description": "`day` (default) or `week`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Dashboard"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/defect-types": {
+      "get": {
+        "tags": [
+          "analysis"
+        ],
+        "operationId": "defect_types",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DefectTypeList"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "analysis"
+        ],
+        "operationId": "create_defect_type",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewDefectType"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DefectType"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/defect-types/{id}": {
+      "delete": {
+        "tags": [
+          "analysis"
+        ],
+        "operationId": "delete_defect_type",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "analysis"
+        ],
+        "operationId": "patch_defect_type",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DefectTypePatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DefectType"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{key}/events": {
       "get": {
         "tags": [
@@ -433,6 +791,79 @@
             }
           },
           "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/flaky": {
+      "get": {
+        "tags": [
+          "analysis"
+        ],
+        "operationId": "flaky",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "branch",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "environment",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "1..=500, default 50.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FlakyList"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
             "content": {
               "application/json": {
                 "schema": {
@@ -636,6 +1067,73 @@
         }
       }
     },
+    "/api/v1/projects/{key}/launches/{a}/compare/{b}": {
+      "get": {
+        "tags": [
+          "analysis"
+        ],
+        "operationId": "compare",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "a",
+            "in": "path",
+            "description": "base launch",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "b",
+            "in": "path",
+            "description": "compared launch",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Comparison"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{key}/launches/{id}": {
       "get": {
         "tags": [
@@ -717,6 +1215,79 @@
         ],
         "responses": {
           "204": {},
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "launches"
+        ],
+        "operationId": "patch_launch",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LaunchPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Launch"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "403": {
             "content": {
               "application/json": {
@@ -819,6 +1390,62 @@
             }
           },
           "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/launches/{id}/clusters": {
+      "get": {
+        "tags": [
+          "analysis"
+        ],
+        "operationId": "clusters",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClusterList"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
             "content": {
               "application/json": {
                 "schema": {
@@ -1397,6 +2024,677 @@
         }
       }
     },
+    "/api/v1/projects/{key}/results/{id}/similar": {
+      "get": {
+        "tags": [
+          "analysis"
+        ],
+        "operationId": "similar",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "1..=50, default 10.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SimilarList"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/retention/preview": {
+      "get": {
+        "tags": [
+          "analysis"
+        ],
+        "operationId": "retention_preview",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RetentionPreview"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/rules": {
+      "get": {
+        "tags": [
+          "analysis"
+        ],
+        "operationId": "rules",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RuleList"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "analysis"
+        ],
+        "operationId": "create_rule",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewRule"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rule"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/rules/test": {
+      "post": {
+        "tags": [
+          "analysis"
+        ],
+        "operationId": "test_rule",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RuleTest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DryRun"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/rules/{id}": {
+      "delete": {
+        "tags": [
+          "analysis"
+        ],
+        "operationId": "delete_rule",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "analysis"
+        ],
+        "operationId": "patch_rule",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RulePatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rule"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/rules/{id}/apply": {
+      "post": {
+        "tags": [
+          "analysis"
+        ],
+        "operationId": "apply_rule",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "launchId",
+            "in": "query",
+            "description": "One launch; default: the launches of the last 30 days (at most 500).",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/settings": {
+      "get": {
+        "tags": [
+          "analysis"
+        ],
+        "operationId": "get_settings",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectSettings"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "analysis"
+        ],
+        "operationId": "put_settings",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectSettings"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectSettings"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/tasks/{id}": {
+      "get": {
+        "tags": [
+          "analysis"
+        ],
+        "operationId": "task",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{key}/test-cases/{testCaseId}/history": {
       "get": {
         "tags": [
@@ -1453,6 +2751,194 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/HistoryList"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/test-plans": {
+      "post": {
+        "tags": [
+          "analysis"
+        ],
+        "operationId": "create_test_plan",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewTestPlan"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TestPlanCreated"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/test-plans/{id}/testplan.json": {
+      "get": {
+        "tags": [
+          "analysis"
+        ],
+        "operationId": "testplan_json",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TestPlanJson"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/triage": {
+      "post": {
+        "tags": [
+          "analysis"
+        ],
+        "operationId": "triage",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TriageRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TriageOutcome"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -1704,6 +3190,153 @@
           }
         }
       },
+      "Cluster": {
+        "type": "object",
+        "description": "A unique error of a launch.",
+        "required": [
+          "fingerprint",
+          "count",
+          "statuses",
+          "sampleResultId",
+          "isNew"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "defect": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Defect"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "fingerprint": {
+            "type": "string"
+          },
+          "isNew": {
+            "type": "boolean"
+          },
+          "knownSince": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date",
+            "description": "First seen in an earlier launch on this day."
+          },
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sampleResultId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "statuses": {
+            "$ref": "#/components/schemas/ClusterStatuses"
+          }
+        }
+      },
+      "ClusterList": {
+        "type": "object",
+        "description": "`{items}` of clusters.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Cluster"
+            }
+          }
+        }
+      },
+      "ClusterStatuses": {
+        "type": "object",
+        "description": "Failed and broken counts of a cluster.",
+        "required": [
+          "failed",
+          "broken"
+        ],
+        "properties": {
+          "broken": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "failed": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "Comparison": {
+        "type": "object",
+        "description": "Launch B compared with launch A.",
+        "required": [
+          "newFailures",
+          "fixed",
+          "stillFailing",
+          "newTests",
+          "missing",
+          "durationChanges",
+          "truncated"
+        ],
+        "properties": {
+          "durationChanges": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DurationChange"
+            }
+          },
+          "fixed": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ResultSummary"
+            },
+            "description": "Failed or broken in A, passed in B (results of B)."
+          },
+          "missing": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ResultSummary"
+            },
+            "description": "In A only (results of A)."
+          },
+          "newFailures": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ResultSummary"
+            },
+            "description": "Failed or broken in B, passed or skipped in A (results of B)."
+          },
+          "newTests": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ResultSummary"
+            },
+            "description": "In B only."
+          },
+          "stillFailing": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ResultSummary"
+            },
+            "description": "Failed or broken in both (results of B)."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "A list was cut at its limit."
+          }
+        }
+      },
       "Counts": {
         "type": "object",
         "description": "Status counts of a launch (results, not attempts).",
@@ -1752,14 +3385,159 @@
           }
         }
       },
-      "Defect": {
+      "DailyEntry": {
         "type": "object",
-        "description": "Triage of a result (filled in stage C).",
+        "description": "Daily aggregates of a test case (launches that were rolled up).",
         "required": [
-          "type"
+          "day",
+          "runs",
+          "passed",
+          "failed",
+          "broken",
+          "skipped",
+          "flaky"
         ],
         "properties": {
+          "branch": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "broken": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "day": {
+            "type": "string",
+            "format": "date"
+          },
+          "durationMaxMs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "durationMinMs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "environment": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "failed": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "flaky": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "passed": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "runs": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "skipped": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "Dashboard": {
+        "type": "object",
+        "description": "The dashboard.",
+        "required": [
+          "passRate",
+          "durations",
+          "flakyTop",
+          "mostFailing",
+          "defectGroups",
+          "launches"
+        ],
+        "properties": {
+          "defectGroups": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DefectGroupsPoint"
+            }
+          },
+          "durations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DurationPoint"
+            }
+          },
+          "flakyTop": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FlakyItem"
+            }
+          },
+          "launches": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LaunchCountPoint"
+            }
+          },
+          "mostFailing": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FailingTest"
+            }
+          },
+          "passRate": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PassRatePoint"
+            }
+          }
+        }
+      },
+      "Defect": {
+        "type": "object",
+        "description": "Triage of a result: defect type (with its group and name when triaged), comment, issue.",
+        "required": [
+          "typeId",
+          "group",
+          "name",
+          "source",
+          "at",
+          "by"
+        ],
+        "properties": {
+          "accepted": {
+            "type": "boolean",
+            "description": "An accepted (known, tolerated) failure."
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "by": {
+            "type": "string"
+          },
           "comment": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "group": {
+            "type": "string",
+            "description": "`productBug`, `automationBug`, `systemIssue`, `noDefect` or `toInvestigate`."
+          },
+          "issueKey": {
             "type": [
               "string",
               "null"
@@ -1771,8 +3549,222 @@
               "null"
             ]
           },
-          "type": {
+          "name": {
             "type": "string"
+          },
+          "ruleId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "source": {
+            "type": "string",
+            "description": "`user`, `ai` or `rule` (a rule without `ruleId` is the project default for failures)."
+          },
+          "typeId": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "DefectGroupsPoint": {
+        "type": "object",
+        "required": [
+          "t",
+          "productBug",
+          "automationBug",
+          "systemIssue",
+          "noDefect",
+          "toInvestigate"
+        ],
+        "properties": {
+          "automationBug": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "noDefect": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "productBug": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "systemIssue": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "t": {
+            "type": "string",
+            "format": "date"
+          },
+          "toInvestigate": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "DefectType": {
+        "type": "object",
+        "description": "A defect type.",
+        "required": [
+          "id",
+          "group",
+          "name",
+          "shortName",
+          "color",
+          "builtIn"
+        ],
+        "properties": {
+          "builtIn": {
+            "type": "boolean"
+          },
+          "color": {
+            "type": "string"
+          },
+          "group": {
+            "type": "string",
+            "description": "`productBug`, `automationBug`, `systemIssue`, `noDefect` or `toInvestigate`."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "shortName": {
+            "type": "string"
+          }
+        }
+      },
+      "DefectTypeList": {
+        "type": "object",
+        "description": "`{items}` of defect types.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DefectType"
+            }
+          }
+        }
+      },
+      "DefectTypePatch": {
+        "type": "object",
+        "description": "Body of `PATCH .../defect-types/{id}`.",
+        "properties": {
+          "color": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "shortName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "DryRun": {
+        "type": "object",
+        "description": "Result of a dry run.",
+        "required": [
+          "matches",
+          "evaluated",
+          "truncated"
+        ],
+        "properties": {
+          "evaluated": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Results the rule was evaluated on.",
+            "minimum": 0
+          },
+          "matches": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "More matches than listed, or the evaluation budget ran out."
+          }
+        }
+      },
+      "DurationChange": {
+        "type": "object",
+        "description": "A test that became slower or faster.",
+        "required": [
+          "resultIdA",
+          "resultIdB",
+          "name",
+          "deltaMs",
+          "ratio"
+        ],
+        "properties": {
+          "deltaMs": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Duration in B minus duration in A."
+          },
+          "name": {
+            "type": "string"
+          },
+          "ratio": {
+            "type": "number",
+            "format": "double",
+            "description": "Duration in B over duration in A."
+          },
+          "resultIdA": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "resultIdB": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "DurationPoint": {
+        "type": "object",
+        "required": [
+          "t"
+        ],
+        "properties": {
+          "p50Ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "p95Ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "t": {
+            "type": "string",
+            "format": "date"
           }
         }
       },
@@ -1823,6 +3815,27 @@
           }
         }
       },
+      "FailingTest": {
+        "type": "object",
+        "required": [
+          "testCaseId",
+          "name",
+          "failures"
+        ],
+        "properties": {
+          "failures": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "name": {
+            "type": "string"
+          },
+          "testCaseId": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
       "FinishLaunch": {
         "type": "object",
         "description": "Body of `POST .../launches/{id}/finish`.",
@@ -1836,6 +3849,87 @@
           }
         },
         "additionalProperties": false
+      },
+      "FlakyItem": {
+        "type": "object",
+        "description": "A flaky test.",
+        "required": [
+          "testCaseId",
+          "seriesKey",
+          "name",
+          "score",
+          "lastStatuses"
+        ],
+        "properties": {
+          "lastFlakyAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "lastStatuses": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Newest first."
+          },
+          "name": {
+            "type": "string"
+          },
+          "score": {
+            "type": "number",
+            "format": "float",
+            "description": "Share of status changes over the detection window (0..1)."
+          },
+          "seriesKey": {
+            "type": "string"
+          },
+          "testCaseId": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "FlakyList": {
+        "type": "object",
+        "description": "`{items}` of flaky tests.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FlakyItem"
+            }
+          }
+        }
+      },
+      "FlakySettings": {
+        "type": "object",
+        "description": "Flaky detection across runs (Allure 3 `flakyDetection`).",
+        "properties": {
+          "historyDepth": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Past runs that are compared: `-1` disables detection, `0` uses all (up to 50).",
+            "default": 10
+          },
+          "includePassedTests": {
+            "type": "boolean",
+            "description": "Also mark passed tests as flaky.",
+            "default": false
+          },
+          "stabilizationPeriod": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Identical outcomes in a row that reset earlier instability.",
+            "default": 5,
+            "minimum": 0
+          }
+        }
       },
       "HistoryEntry": {
         "type": "object",
@@ -1898,6 +3992,13 @@
           "items"
         ],
         "properties": {
+          "daily": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DailyEntry"
+            },
+            "description": "Daily aggregates before the oldest item, when the raw history is shorter than `limit`\n(launches beyond the raw window)."
+          },
           "items": {
             "type": "array",
             "items": {
@@ -1935,6 +4036,25 @@
             }
           }
         }
+      },
+      "IssueRef": {
+        "type": "object",
+        "description": "An issue link.",
+        "required": [
+          "url"
+        ],
+        "properties": {
+          "key": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
       },
       "JobList": {
         "type": "object",
@@ -2030,7 +4150,8 @@
           "startedAt",
           "attributes",
           "counts",
-          "uploads"
+          "uploads",
+          "important"
         ],
         "properties": {
           "attributes": {
@@ -2088,6 +4209,10 @@
           "id": {
             "type": "string",
             "format": "uuid"
+          },
+          "important": {
+            "type": "boolean",
+            "description": "Kept by retention."
           },
           "name": {
             "type": "string"
@@ -2161,6 +4286,23 @@
           }
         }
       },
+      "LaunchCountPoint": {
+        "type": "object",
+        "required": [
+          "t",
+          "count"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "t": {
+            "type": "string",
+            "format": "date"
+          }
+        }
+      },
       "LaunchEnvironment": {
         "type": "object",
         "description": "The named environment of a launch; `key` is part of every series identity.",
@@ -2183,6 +4325,34 @@
             }
           }
         }
+      },
+      "LaunchPatch": {
+        "type": "object",
+        "description": "Body of `PATCH .../launches/{id}`.",
+        "properties": {
+          "attributes": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/Attribute"
+            }
+          },
+          "important": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
       },
       "LaunchStart": {
         "type": "object",
@@ -2332,6 +4502,72 @@
           }
         }
       },
+      "MuteAction": {
+        "type": "object",
+        "description": "Mute effect of a rule.",
+        "properties": {
+          "days": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Mute for this many days (1..=365); without it the mute has no end.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "MuteRequest": {
+        "type": "object",
+        "description": "Mute part of a triage request.",
+        "required": [
+          "reason"
+        ],
+        "properties": {
+          "reason": {
+            "type": "string"
+          },
+          "until": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "End of the mute; without it the mute lasts until removed."
+          }
+        },
+        "additionalProperties": false
+      },
+      "NewDefectType": {
+        "type": "object",
+        "description": "Body of `POST .../defect-types`.",
+        "required": [
+          "group",
+          "name"
+        ],
+        "properties": {
+          "color": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "group": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "shortName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
       "NewProject": {
         "type": "object",
         "description": "Body of `POST /api/v1/projects`.",
@@ -2352,6 +4588,82 @@
           },
           "name": {
             "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "NewRule": {
+        "type": "object",
+        "description": "Body of `POST .../rules` (and the rule of a dry run).",
+        "required": [
+          "name",
+          "match",
+          "action"
+        ],
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/RuleAction"
+          },
+          "enabled": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "match": {
+            "$ref": "#/components/schemas/RuleMatch"
+          },
+          "name": {
+            "type": "string"
+          },
+          "order": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          }
+        },
+        "additionalProperties": false
+      },
+      "NewTestPlan": {
+        "type": "object",
+        "description": "Body of `POST .../test-plans`.",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "fromLaunchId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Take the tests of this launch with `statuses`."
+          },
+          "name": {
+            "type": "string"
+          },
+          "statuses": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Statuses picked from the launch (default `failed`, `broken`)."
+          },
+          "testCaseIds": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "Test cases added to the plan."
           }
         },
         "additionalProperties": false
@@ -2377,7 +4689,8 @@
                 "startedAt",
                 "attributes",
                 "counts",
-                "uploads"
+                "uploads",
+                "important"
               ],
               "properties": {
                 "attributes": {
@@ -2435,6 +4748,10 @@
                 "id": {
                   "type": "string",
                   "format": "uuid"
+                },
+                "important": {
+                  "type": "boolean",
+                  "description": "Kept by retention."
                 },
                 "name": {
                   "type": "string"
@@ -2500,7 +4817,8 @@
                 "flakyInRun",
                 "attemptCount",
                 "labels",
-                "muted"
+                "muted",
+                "flaky"
               ],
               "properties": {
                 "attemptCount": {
@@ -2530,6 +4848,10 @@
                     "null"
                   ]
                 },
+                "flaky": {
+                  "type": "boolean",
+                  "description": "Flaky across runs (Allure 3 algorithm, project settings)."
+                },
                 "flakyInRun": {
                   "type": "boolean"
                 },
@@ -2556,6 +4878,14 @@
                     "null"
                   ],
                   "description": "Error message of the final attempt (first 500 characters)."
+                },
+                "muteUntil": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time",
+                  "description": "End of the mute, when it has one."
                 },
                 "muted": {
                   "type": "boolean"
@@ -2585,6 +4915,13 @@
                 "testCaseId": {
                   "type": "string",
                   "format": "uuid"
+                },
+                "transition": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Status change against the previous run of the series on the same branch: `new`,\n`fixed`, `regressed` or `malfunctioned`."
                 }
               }
             }
@@ -2646,6 +4983,31 @@
               "string",
               "null"
             ]
+          }
+        }
+      },
+      "PassRatePoint": {
+        "type": "object",
+        "required": [
+          "t",
+          "total"
+        ],
+        "properties": {
+          "passRate": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "passed / (total − skipped); `null` when nothing but skipped results ran."
+          },
+          "t": {
+            "type": "string",
+            "format": "date"
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64"
           }
         }
       },
@@ -2727,6 +5089,64 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/Project"
+            }
+          }
+        }
+      },
+      "ProjectSettings": {
+        "type": "object",
+        "description": "Settings of a project. The analysis parts (`flaky`, `retention`, `rollup`) are typed here;\nthe integration parts (`gates`, `notifications`, `issueTrackers`, `fastmock`, and any other\nkey such as `vcs`) are kept as given and validated by the integrations feature.",
+        "properties": {
+          "fastmock": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "FastMock integration `{url, tokenSecretRef?}`."
+          },
+          "flaky": {
+            "$ref": "#/components/schemas/FlakySettings",
+            "default": {
+              "historyDepth": 10,
+              "stabilizationPeriod": 5,
+              "includePassedTests": false
+            }
+          },
+          "gates": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Quality gates.",
+            "default": []
+          },
+          "issueTrackers": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Issue trackers `{type: jira|gitlab|github, urlTemplate, keyRegex}`; triage builds issue\nURLs from them when only a key is given.",
+            "default": []
+          },
+          "notifications": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Notification targets.",
+            "default": []
+          },
+          "retention": {
+            "$ref": "#/components/schemas/RetentionSettings",
+            "default": {
+              "rawDays": 90,
+              "keepImportant": true
+            }
+          },
+          "rollup": {
+            "$ref": "#/components/schemas/RollupSettings",
+            "default": {
+              "afterDays": 30
             }
           }
         }
@@ -3127,7 +5547,8 @@
           "flakyInRun",
           "attemptCount",
           "labels",
-          "muted"
+          "muted",
+          "flaky"
         ],
         "properties": {
           "attemptCount": {
@@ -3157,6 +5578,10 @@
               "null"
             ]
           },
+          "flaky": {
+            "type": "boolean",
+            "description": "Flaky across runs (Allure 3 algorithm, project settings)."
+          },
           "flakyInRun": {
             "type": "boolean"
           },
@@ -3183,6 +5608,14 @@
               "null"
             ],
             "description": "Error message of the final attempt (first 500 characters)."
+          },
+          "muteUntil": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "End of the mute, when it has one."
           },
           "muted": {
             "type": "boolean"
@@ -3212,8 +5645,319 @@
           "testCaseId": {
             "type": "string",
             "format": "uuid"
+          },
+          "transition": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Status change against the previous run of the series on the same branch: `new`,\n`fixed`, `regressed` or `malfunctioned`."
           }
         }
+      },
+      "RetentionPreview": {
+        "type": "object",
+        "description": "Launches a retention run would delete.",
+        "required": [
+          "launches",
+          "results",
+          "importantKept",
+          "launchIds"
+        ],
+        "properties": {
+          "importantKept": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Important launches kept although beyond the window."
+          },
+          "launchIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "The first launches that would go (oldest first, at most 50)."
+          },
+          "launches": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "oldest": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "results": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "RetentionSettings": {
+        "type": "object",
+        "description": "How long raw results are kept.",
+        "properties": {
+          "keepImportant": {
+            "type": "boolean",
+            "description": "Never delete launches marked important.",
+            "default": true
+          },
+          "launchesKeep": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Keep at most this many launches (important ones are not counted).",
+            "default": null,
+            "minimum": 0
+          },
+          "rawDays": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Launches older than this many days are deleted (after their history is rolled up).",
+            "default": 90,
+            "minimum": 0
+          }
+        }
+      },
+      "RollupSettings": {
+        "type": "object",
+        "description": "When launches are aggregated into daily history.",
+        "properties": {
+          "afterDays": {
+            "type": "integer",
+            "format": "int32",
+            "default": 30,
+            "minimum": 0
+          }
+        }
+      },
+      "Rule": {
+        "type": "object",
+        "description": "A rule.",
+        "required": [
+          "id",
+          "name",
+          "enabled",
+          "order",
+          "match",
+          "action",
+          "createdAt",
+          "updatedAt",
+          "hits"
+        ],
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/RuleAction"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "hits": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "match": {
+            "$ref": "#/components/schemas/RuleMatch"
+          },
+          "name": {
+            "type": "string"
+          },
+          "order": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "RuleAction": {
+        "type": "object",
+        "description": "Effects of a rule.",
+        "properties": {
+          "accept": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Mark the failure as accepted (a known, tolerated failure)."
+          },
+          "comment": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "defectTypeId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "issue": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/IssueRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "mute": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/MuteAction"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "RuleList": {
+        "type": "object",
+        "description": "`{items}` of rules.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Rule"
+            }
+          }
+        }
+      },
+      "RuleMatch": {
+        "type": "object",
+        "description": "Conditions of a rule; all given ones must hold.",
+        "properties": {
+          "environment": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Environment key of the launch."
+          },
+          "fingerprint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "messageRegex": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "statuses": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Result statuses; default `failed` and `broken`."
+          },
+          "testCaseId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "traceRegex": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "RulePatch": {
+        "type": "object",
+        "description": "Body of `PATCH .../rules/{id}`.",
+        "properties": {
+          "action": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RuleAction"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "enabled": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "match": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RuleMatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "order": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          }
+        },
+        "additionalProperties": false
+      },
+      "RuleTest": {
+        "type": "object",
+        "description": "Body of `POST .../rules/test`.",
+        "required": [
+          "rule",
+          "launchId"
+        ],
+        "properties": {
+          "launchId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "rule": {
+            "$ref": "#/components/schemas/NewRule"
+          }
+        },
+        "additionalProperties": false
       },
       "ScheduledJob": {
         "type": "object",
@@ -3326,6 +6070,70 @@
           }
         }
       },
+      "SimilarItem": {
+        "type": "object",
+        "description": "A similar failure.",
+        "required": [
+          "resultId",
+          "launchId",
+          "launchNumber",
+          "name",
+          "score"
+        ],
+        "properties": {
+          "defect": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Defect"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "launchId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "launchNumber": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "resultId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "score": {
+            "type": "number",
+            "format": "double",
+            "description": "1 for the same fingerprint, else the trigram similarity of the normalized messages."
+          }
+        }
+      },
+      "SimilarList": {
+        "type": "object",
+        "description": "`{items}` of similar failures.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SimilarItem"
+            }
+          }
+        }
+      },
       "Status": {
         "type": "string",
         "description": "Final outcome of a test result, attempt or step.",
@@ -3410,6 +6218,50 @@
           }
         }
       },
+      "Task": {
+        "type": "object",
+        "description": "A background task.",
+        "required": [
+          "id",
+          "kind",
+          "status",
+          "progress",
+          "createdAt"
+        ],
+        "properties": {
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "finishedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "progress": {
+            "type": "object"
+          },
+          "status": {
+            "type": "string",
+            "description": "`queued`, `running`, `done` or `failed`."
+          }
+        }
+      },
       "TestCaseView": {
         "type": "object",
         "description": "A test case (logical identity across parameters and environments).",
@@ -3428,6 +6280,63 @@
           },
           "name": {
             "type": "string"
+          }
+        }
+      },
+      "TestPlanCreated": {
+        "type": "object",
+        "description": "A created plan.",
+        "required": [
+          "id",
+          "testCount"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "testCount": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "TestPlanJson": {
+        "type": "object",
+        "description": "Allure `testplan.json` (version 1.0).",
+        "required": [
+          "version",
+          "tests"
+        ],
+        "properties": {
+          "tests": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TestPlanTest"
+            }
+          },
+          "version": {
+            "type": "string"
+          }
+        }
+      },
+      "TestPlanTest": {
+        "type": "object",
+        "description": "One test of an Allure test plan.",
+        "required": [
+          "selector"
+        ],
+        "properties": {
+          "id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`ALLURE_ID` of the test, when it has one."
+          },
+          "selector": {
+            "type": "string",
+            "description": "Full name as the Allure adapter reports it."
           }
         }
       },
@@ -3470,6 +6379,117 @@
             }
           }
         }
+      },
+      "TriageIssue": {
+        "type": "object",
+        "description": "Issue of a triage: a URL, or a key that a project issue tracker turns into one.",
+        "properties": {
+          "key": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "TriageOutcome": {
+        "type": "object",
+        "description": "Outcome of a triage request.",
+        "required": [
+          "updated"
+        ],
+        "properties": {
+          "updated": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "TriageRequest": {
+        "type": "object",
+        "description": "Body of `POST .../triage`.",
+        "properties": {
+          "comment": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Empty string removes the comment."
+          },
+          "defectTypeId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "fingerprint": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "With `launchId`: every result of the launch with this fingerprint."
+          },
+          "issue": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TriageIssue"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "launchId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "mute": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/MuteRequest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "resultIds": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "source": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`user` (default) or `ai`."
+          },
+          "unmute": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
       },
       "Upload": {
         "type": "object",
@@ -3652,6 +6672,9 @@
     },
     {
       "name": "admin"
+    },
+    {
+      "name": "analysis"
     }
   ]
 }

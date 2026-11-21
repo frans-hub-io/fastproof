@@ -574,6 +574,18 @@ impl Store {
             .await?;
         }
         out.results = groups.len() as u64;
+        let analyzed: Vec<crate::analysis::PersistedAttempt<'_>> = prepared
+            .iter()
+            .filter(|p| accepted.contains(&p.client_key))
+            .map(|p| crate::analysis::PersistedAttempt {
+                id: p.id,
+                status: p.r.status,
+                message: p.r.status_details.message.as_deref(),
+                trace: p.r.status_details.trace.as_deref(),
+            })
+            .collect();
+        crate::analysis::after_persist(&mut tx, launch, &analyzed, &affected_v).await?;
+        drop(analyzed);
         out.accepted_keys = accepted;
 
         sqlx::query(

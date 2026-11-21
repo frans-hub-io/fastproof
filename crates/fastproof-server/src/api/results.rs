@@ -9,7 +9,7 @@ use fastproof_model::{AttachmentKind, ReportResult};
 use fastproof_store::ingest::{LaunchRef, NewAttempt};
 use fastproof_store::results::{GroupBy, ResultFilter};
 use fastproof_store::{
-    HistoryEntry, HistoryFilter, Launch, Page, ResultDetail, ResultSummary, TreeNode,
+    DailyEntry, HistoryEntry, HistoryFilter, Launch, Page, ResultDetail, ResultSummary, TreeNode,
 };
 use franshub_auth::Auth;
 use franshub_http::{ApiError, ApiResult};
@@ -435,6 +435,10 @@ pub struct HistoryQuery {
 pub struct HistoryList {
     pub test_case: fastproof_store::TestCaseView,
     pub items: Vec<HistoryEntry>,
+    /// Daily aggregates before the oldest item, when the raw history is shorter than `limit`
+    /// (launches beyond the raw window).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub daily: Vec<DailyEntry>,
 }
 
 #[utoipa::path(get, path = "/api/v1/projects/{key}/test-cases/{testCaseId}/history", tag = "results",
@@ -462,5 +466,21 @@ pub async fn history(
         .history
         .test_case_history(project.id, test_case_id, &f)
         .await?;
-    Ok(Json(HistoryList { test_case, items }))
+    let daily = if (items.len() as i64) < f.limit {
+        let before = items
+            .iter()
+            .filter_map(|i| i.started_at)
+            .min()
+            .map(|t| t.date_naive());
+        s.history
+            .test_case_daily(project.id, test_case_id, &f, before)
+            .await?
+    } else {
+        Vec::new()
+    };
+    Ok(Json(HistoryList {
+        test_case,
+        items,
+        daily,
+    }))
 }

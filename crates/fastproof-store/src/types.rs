@@ -147,6 +147,8 @@ pub struct Launch {
     pub attributes: Vec<Attribute>,
     pub counts: Counts,
     pub uploads: UploadCounts,
+    /// Kept by retention.
+    pub important: bool,
     #[serde(skip)]
     pub project_id: Uuid,
     #[serde(skip)]
@@ -198,14 +200,29 @@ pub struct LabelView {
     pub value: String,
 }
 
-/// Triage of a result (filled in stage C).
+/// Triage of a result: defect type (with its group and name when triaged), comment, issue.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Defect {
-    #[serde(rename = "type")]
-    pub defect_type: String,
+    pub type_id: Uuid,
+    /// `productBug`, `automationBug`, `systemIssue`, `noDefect` or `toInvestigate`.
+    pub group: String,
+    pub name: String,
+    #[serde(default)]
     pub comment: Option<String>,
+    #[serde(default)]
     pub issue_url: Option<String>,
+    #[serde(default)]
+    pub issue_key: Option<String>,
+    /// `user`, `ai` or `rule` (a rule without `ruleId` is the project default for failures).
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule_id: Option<Uuid>,
+    pub at: DateTime<Utc>,
+    pub by: String,
+    /// An accepted (known, tolerated) failure.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub accepted: bool,
 }
 
 /// One result per series per launch.
@@ -226,9 +243,18 @@ pub struct ResultSummary {
     pub started_at: Option<DateTime<Utc>>,
     pub labels: Vec<LabelView>,
     pub muted: bool,
+    /// End of the mute, when it has one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mute_until: Option<DateTime<Utc>>,
     pub fingerprint: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub defect: Option<Defect>,
+    /// Status change against the previous run of the series on the same branch: `new`,
+    /// `fixed`, `regressed` or `malfunctioned`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transition: Option<String>,
+    /// Flaky across runs (Allure 3 algorithm, project settings).
+    pub flaky: bool,
     #[serde(skip)]
     pub series_id: Uuid,
     #[serde(skip)]

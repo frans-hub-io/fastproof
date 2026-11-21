@@ -1,0 +1,44 @@
+{
+  "name": "@franshub/fastproof-playwright",
+  "version": "0.1.0",
+  "description": "Playwright reporter for FastProof: live results, logs, attempts, attachments, trace correlation and an offline spool.",
+  "license": "Apache-2.0",
+  "type": "commonjs",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./fixture": {
+      "types": "./dist/fixture.d.ts",
+      "default": "./dist/fixture.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "fastproof-playwright": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "test": "tsc -p tsconfig.test.json && node --test build-test/test/*.test.js",
+    "prepack": "npm run build"
+  },
+  "peerDependencies": {
+    "@playwright/test": ">=1.45.0 <2"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.65.0",
+    "@types/node": "22.20.5",
+    "typescript": "6.0.3"
+  }
+}

@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling==1.33.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pytest-fastproof"
+version = "0.1.0"
+description = "pytest plugin for FastProof: live results and logs, rerun attempts, attachments, trace correlation and an offline spool."
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.9"
+dependencies = ["pytest>=7.0"]
+classifiers = [
+  "Framework :: Pytest",
+  "Programming Language :: Python :: 3",
+  "Topic :: Software Development :: Testing",
+]
+
+[project.entry-points.pytest11]
+fastproof = "pytest_fastproof.plugin"
+
+[project.scripts]
+pytest-fastproof = "pytest_fastproof.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pytest_fastproof"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

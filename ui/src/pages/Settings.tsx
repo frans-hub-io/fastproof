@@ -330,6 +330,7 @@ const PURPOSES: { value: SecretPurpose; label: string }[] = [
   { value: 'vcs', label: 'GitLab or GitHub token' },
   { value: 'fastmock', label: 'FastMock token' },
   { value: 'slack', label: 'Slack webhook URL' },
+  { value: 'teams', label: 'Microsoft Teams workflow URL' },
   { value: 'webhook', label: 'Webhook signing key or URL' },
   { value: 'telegram', label: 'Telegram bot token' },
 ];
@@ -476,7 +477,7 @@ function Secrets({ project, canWrite }: { project: string; canWrite: boolean }) 
     return <EmptyState title="Secrets are managed by project admins" description="Writing and listing secrets needs the settings:write permission." />;
   }
   const nameError = name && !SECRET_NAME.test(name) ? 'Lowercase letters, digits, . _ -; up to 63 characters' : null;
-  const valueError = value.length > 8192 ? 'At most 8192 characters' : null;
+  const valueError = value.length > 8192 ? 'At most 8192 characters' : purpose === 'teams' && value && !/^https:\/\/\S+$/i.test(value.trim()) ? 'The workflow URL: https://… (its origin is bound automatically)' : null;
   const needsOrigin = purpose === 'vcs' || purpose === 'fastmock';
   const originError = origin && !ORIGIN.test(origin) ? 'An origin such as https://gitlab.example.com' : needsOrigin && !origin ? 'Required for this purpose' : null;
   const valid = SECRET_NAME.test(name) && value.length > 0 && !valueError && !!purpose && !originError;

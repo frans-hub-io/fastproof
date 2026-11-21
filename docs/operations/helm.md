@@ -227,7 +227,7 @@ With `networkPolicy.enabled: true` the chart allows:
   `egress.database.to`, `egress.s3.to`, `egress.oidc.to`, `egress.valkey.to`, `egress.otlp.to`,
   `egress.kafka.to` (port 9092 by default), `egress.clickhouse.to` (8443) and `egress.opensearch.to` (9200),
   each with `ports`, plus `egress.extraRules`. The chart refuses to render when an external service is configured without peers.
-  Integrations (webhooks, Slack, Telegram, GitLab, GitHub, FastMock, the SMTP relay) need their own
+  Integrations (webhooks, Slack, Microsoft Teams, Telegram, GitLab, GitHub, FastMock, the SMTP relay) need their own
   `egress.extraRules`, matching `integrations.egressAllow`.
 
 `networkPolicy.storage` (on by default) restricts ingress to the bundled PostgreSQL, Valkey and Garage pods to

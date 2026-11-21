@@ -2551,6 +2551,83 @@
         }
       }
     },
+    "/api/v1/projects/{key}/notifications/{id}/test": {
+      "post": {
+        "tags": [
+          "integrations"
+        ],
+        "description": "Sends a sample message (a made-up launch with a failed gate and new failures, marked as a test) to one saved notification of the project, once and without retries, and returns how the receiver answered. Every kind can be tested. At most one test per notification every 5 seconds.",
+        "operationId": "integrations_test_notification",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The notification id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationTestResult"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "the project settings are invalid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "a test of this notification was sent less than 5 seconds ago",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{key}/results/{id}": {
       "get": {
         "tags": [
@@ -5072,7 +5149,7 @@
           },
           "kind": {
             "type": "string",
-            "description": "`webhook`, `slack`, `email`, `telegram`, `gitlab` or `github`."
+            "description": "`webhook`, `slack`, `teams`, `email`, `telegram`, `gitlab` or `github`."
           },
           "lastError": {
             "type": [
@@ -6752,7 +6829,7 @@
           },
           "kind": {
             "type": "string",
-            "description": "`webhook`, `slack`, `email` or `telegram`."
+            "description": "`webhook`, `slack`, `teams`, `email` or `telegram`."
           },
           "on": {
             "type": "array",
@@ -6777,15 +6854,25 @@
               "string",
               "null"
             ],
-            "description": "Webhook and Slack: a secret (purpose `webhook` or `slack`) holding the URL, instead of\n`target`."
+            "description": "Webhook and Slack: a secret (purpose `webhook` or `slack`) holding the URL, instead of\n`target`. Teams: the secret (purpose `teams`) holding the workflow URL; required, as\nTeams takes no `target`."
           }
         },
         "additionalProperties": false
       },
       "NotificationFilter": {
         "type": "object",
-        "description": "Which launches a notification is about.",
+        "description": "Which launches a notification is about. Every part that is given must match; within a\nlist of globs one match is enough, while every `attributes` entry must match.",
         "properties": {
+          "attributes": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Launch attributes as `key=value`; the launch needs every one of them (`value` may be a\nglob, `key=*` only asks for the key)."
+          },
           "branches": {
             "type": [
               "array",
@@ -6793,7 +6880,8 @@
             ],
             "items": {
               "type": "string"
-            }
+            },
+            "description": "Branch globs (`*` matches any text)."
           },
           "environments": {
             "type": [
@@ -6802,10 +6890,50 @@
             ],
             "items": {
               "type": "string"
-            }
+            },
+            "description": "Environment globs."
+          },
+          "launchNames": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Launch name globs, e.g. `nightly-*`."
           }
         },
         "additionalProperties": false
+      },
+      "NotificationTestResult": {
+        "type": "object",
+        "description": "The result of a test notification.",
+        "required": [
+          "delivered"
+        ],
+        "properties": {
+          "delivered": {
+            "type": "boolean",
+            "description": "Whether the receiver accepted the message (`2xx`, or the SMTP relay took it)."
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why it was not delivered; never contains the target URL."
+          },
+          "responseStatus": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The HTTP status (or SMTP code) of the answer, when there was one.",
+            "minimum": 0
+          }
+        }
       },
       "Op": {
         "type": "string",
@@ -6867,7 +6995,7 @@
                 },
                 "kind": {
                   "type": "string",
-                  "description": "`webhook`, `slack`, `email`, `telegram`, `gitlab` or `github`."
+                  "description": "`webhook`, `slack`, `teams`, `email`, `telegram`, `gitlab` or `github`."
                 },
                 "lastError": {
                   "type": [
@@ -8520,7 +8648,8 @@
           "slack",
           "telegram",
           "webhook",
-          "smtp"
+          "smtp",
+          "teams"
         ]
       },
       "SecretValue": {
@@ -8536,7 +8665,7 @@
               "string",
               "null"
             ],
-            "description": "The only origin (`https://host[:port]`) the secret may be sent to. Required for `vcs`\n(the GitLab base URL or GitHub API URL) and `fastmock` (the admin URL); optional for the\nothers (for `slack` and a webhook URL it must then be the origin of the URL itself).\nChanging the URL in the settings needs the secret written again for the new origin."
+            "description": "The only origin (`https://host[:port]`) the secret may be sent to. Required for `vcs`\n(the GitLab base URL or GitHub API URL) and `fastmock` (the admin URL); taken from the\nURL for `teams` (the value is the workflow URL, which must be `https`); optional for the\nothers (for `slack` and a webhook URL it must then be the origin of the URL itself).\nChanging the URL in the settings needs the secret written again for the new origin."
           },
           "purpose": {
             "$ref": "#/components/schemas/SecretPurpose",

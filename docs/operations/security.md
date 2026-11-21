@@ -106,14 +106,17 @@ Every parser has size, depth and count limits, and one byte budget per upload co
 - Integrations reach only the hosts in `FASTPROOF_EGRESS_ALLOW` (empty by default: no outbound calls). An
   entry with a port allows only that port. Names matched only by a wildcard must resolve to public addresses,
   every redirect is checked again and loses credential headers when it leaves the origin, calls that carry a
-  token (GitLab, GitHub, FastMock) do not follow redirects, and proxies from the environment are ignored.
+  token (GitLab, GitHub, FastMock) or a credential URL (Microsoft Teams workflows) do not follow redirects, and
+  proxies from the environment are ignored.
 - Merge request comments and commit statuses go only to the repository pinned in the project settings, and text
   from launches is escaped in them.
 - Webhooks are signed with HMAC-SHA256 over a timestamp and the body (`X-FastProof-Timestamp`,
   `X-FastProof-Signature`); verify the signature, the timestamp and the delivery id on the receiving side
   ([Webhook](../guide/notifications.md#webhook)).
 - Notification targets and integration URLs in the project settings are shown only to callers with
-  `settings:write`; changes of those URLs are audited with the old and the new value.
+  `settings:write`; changes of those URLs are audited with the old and the new value. URLs that are
+  credentials (Slack incoming webhooks, Microsoft Teams workflows) belong in project secrets; Teams accepts
+  nothing else.
 - Keep port 9090 (metrics, health, readiness) inside the cluster; the Helm chart's NetworkPolicy allows it
   only from the monitoring namespace.
 

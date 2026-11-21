@@ -41,6 +41,9 @@ pub enum SecretPurpose {
     Webhook,
     /// SMTP credentials (reserved; the server-wide SMTP settings do not use project secrets).
     Smtp,
+    /// Microsoft Teams Workflows webhook URL (`targetSecretRef` of a Teams notification); always
+    /// bound to the origin of the URL.
+    Teams,
 }
 
 impl SecretPurpose {
@@ -52,12 +55,22 @@ impl SecretPurpose {
             SecretPurpose::Telegram => "telegram",
             SecretPurpose::Webhook => "webhook",
             SecretPurpose::Smtp => "smtp",
+            SecretPurpose::Teams => "teams",
         }
     }
 
     /// Whether a secret of this purpose must name the origin it is sent to.
     pub fn needs_origin(self) -> bool {
-        matches!(self, SecretPurpose::Vcs | SecretPurpose::Fastmock)
+        matches!(
+            self,
+            SecretPurpose::Vcs | SecretPurpose::Fastmock | SecretPurpose::Teams
+        )
+    }
+
+    /// Whether the value is itself the URL the secret is sent to (its origin is then taken
+    /// from the value when none is given).
+    pub fn is_url(self) -> bool {
+        matches!(self, SecretPurpose::Slack | SecretPurpose::Teams)
     }
 }
 
@@ -68,6 +81,34 @@ pub fn origin_of(u: &str) -> Option<String> {
         return None;
     }
     Some(p.origin().ascii_serialization())
+}
+
+/// Checks the URL of a Teams Workflows webhook: `https`, or `http` to a loopback address (a
+/// local relay or a test receiver), without user info or fragment. The URL carries its
+/// credential (`sig=`) in the query, so it must never travel in clear text over a network.
+pub fn check_teams_url(u: &str) -> Result<(), String> {
+    let err = || "a teams secret is the workflow URL: https://… with its sig parameter".to_string();
+    let p = url::Url::parse(u.trim()).map_err(|_| err())?;
+    let loopback = match p.host() {
+        Some(url::Host::Ipv4(a)) => a.is_loopback(),
+        Some(url::Host::Ipv6(a)) => a.is_loopback(),
+        Some(url::Host::Domain(d)) => d.eq_ignore_ascii_case("localhost"),
+        None => false,
+    };
+    match p.scheme() {
+        "https" => {}
+        "http" if loopback => {}
+        "http" => return Err("the workflow URL must use https".into()),
+        _ => return Err(err()),
+    }
+    if p.host_str().is_none()
+        || !p.username().is_empty()
+        || p.password().is_some()
+        || p.fragment().is_some()
+    {
+        return Err(err());
+    }
+    Ok(())
 }
 
 /// Normalizes an origin given when a secret is written: an http(s) URL without user info,
@@ -364,5 +405,27 @@ mod tests {
             Some("https://hooks.example.com")
         );
         assert_eq!(origin_of("not a url"), None);
+    }
+
+    #[test]
+    fn teams_urls() {
+        for ok in [
+            "https://default0123.45.environment.api.powerplatform.com:443/powerautomate/automations/direct/workflows/abc/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=x",
+            "https://prod-01.westeurope.logic.azure.com/workflows/abc/triggers/manual/paths/invoke?sig=x",
+            "http://127.0.0.1:8080/teams",
+            "http://localhost/teams",
+        ] {
+            assert!(check_teams_url(ok).is_ok(), "{ok}");
+        }
+        for bad in [
+            "http://teams.example.com/hook",
+            "ftp://example.com/x",
+            "https://u:p@example.com/x",
+            "https://example.com/x#frag",
+            "not a url",
+        ] {
+            assert!(check_teams_url(bad).is_err(), "{bad}");
+        }
+        assert!(SecretPurpose::Teams.needs_origin() && SecretPurpose::Teams.is_url());
     }
 }

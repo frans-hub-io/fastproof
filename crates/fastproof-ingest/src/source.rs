@@ -2,13 +2,15 @@
 //! by one; nothing is extracted to disk.
 
 use std::fs::File;
-use std::io::{BufReader, Read};
+use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use flate2::read::MultiGzDecoder;
 use serde::{Deserialize, Serialize};
 
-use crate::error::IngestError;
+use crate::error::{IngestError, LimitIoError};
 use crate::limits::{Budget, BudgetReader, LimitedReader, Limits, read_bounded};
 
 /// Kind of the upload container.
@@ -196,9 +198,28 @@ impl Upload {
         skipped: &mut dyn FnMut(&str, &'static str),
         visit: &mut EntryVisitor<'_>,
     ) -> Result<(), IngestError> {
-        let f = File::open(&self.path)?;
-        let mut zip = zip::ZipArchive::new(BufReader::new(f))
-            .map_err(|e| IngestError::Archive(format!("zip: {e}")))?;
+        let mut f = File::open(&self.path)?;
+        check_zip_directory(&mut f, limits)?;
+        // The zip crate reads the whole central directory while opening the archive; bound
+        // what it may read (and so build in memory) until it is open.
+        let open_cap = Arc::new(AtomicU64::new(
+            limits
+                .max_zip_directory_bytes
+                .saturating_add(ZIP_TAIL_BYTES * 2),
+        ));
+        let reader = CappedReader {
+            inner: f,
+            remaining: open_cap.clone(),
+            max: limits.max_zip_directory_bytes,
+        };
+        let mut zip = zip::ZipArchive::new(BufReader::new(reader)).map_err(|e| match e {
+            zip::result::ZipError::Io(io) => match IngestError::from_io(io) {
+                IngestError::Io(io) => IngestError::Archive(format!("zip: {io}")),
+                limit => limit,
+            },
+            other => IngestError::Archive(format!("zip: {other}")),
+        })?;
+        open_cap.store(u64::MAX, Ordering::Relaxed);
         if zip.len() as u64 > limits.max_archive_entries {
             return Err(IngestError::limit(
                 "max_archive_entries",
@@ -385,6 +406,132 @@ impl Upload {
             let _ = &skipped;
         }
         Ok(())
+    }
+}
+
+/// Bytes at the end of a zip file that can hold the end-of-central-directory record: the
+/// record itself (22 bytes) and a comment of up to 64 KiB.
+const ZIP_TAIL_BYTES: u64 = 22 + 0xFFFF;
+
+const EOCD_SIG: &[u8; 4] = b"PK\x05\x06";
+const EOCD64_LOCATOR_SIG: &[u8; 4] = b"PK\x06\x07";
+const EOCD64_SIG: &[u8; 4] = b"PK\x06\x06";
+
+fn le16(b: &[u8], at: usize) -> u64 {
+    u16::from_le_bytes([b[at], b[at + 1]]) as u64
+}
+
+fn le32(b: &[u8], at: usize) -> u64 {
+    u32::from_le_bytes(b[at..at + 4].try_into().expect("4 bytes")) as u64
+}
+
+fn le64(b: &[u8], at: usize) -> u64 {
+    u64::from_le_bytes(b[at..at + 8].try_into().expect("8 bytes"))
+}
+
+fn read_at(f: &mut File, offset: u64, len: usize) -> Result<Vec<u8>, IngestError> {
+    f.seek(SeekFrom::Start(offset))?;
+    let mut buf = Vec::with_capacity(len);
+    f.take(len as u64).read_to_end(&mut buf)?;
+    Ok(buf)
+}
+
+/// Reads the end-of-central-directory records (zip64 included) before the zip crate parses
+/// the central directory, and rejects declared entry counts and directory sizes over the
+/// limits. Every candidate record in the tail is checked, as a reader may fall back to an
+/// earlier one.
+fn check_zip_directory(f: &mut File, limits: &Limits) -> Result<(), IngestError> {
+    let len = f.metadata()?.len();
+    let tail_start = len.saturating_sub(ZIP_TAIL_BYTES);
+    let tail = read_at(f, tail_start, (len - tail_start) as usize)?;
+    let check = |entries: u64, dir_bytes: u64| -> Result<(), IngestError> {
+        if entries > limits.max_archive_entries {
+            return Err(IngestError::limit_at(
+                "max_archive_entries",
+                limits.max_archive_entries,
+                format!("zip central directory declares {entries} entries"),
+            ));
+        }
+        if dir_bytes > limits.max_zip_directory_bytes {
+            return Err(IngestError::limit_at(
+                "max_zip_directory_bytes",
+                limits.max_zip_directory_bytes,
+                format!("zip central directory declares {dir_bytes} bytes"),
+            ));
+        }
+        Ok(())
+    };
+    let mut pos = tail.len().saturating_sub(22);
+    loop {
+        if tail.len() >= 22 && &tail[pos..pos + 4] == EOCD_SIG {
+            let rec = &tail[pos..];
+            let disk_entries = le16(rec, 8);
+            let entries = le16(rec, 10);
+            let dir_bytes = le32(rec, 12);
+            let dir_offset = le32(rec, 16);
+            let zip64 = entries == 0xFFFF
+                || disk_entries == 0xFFFF
+                || dir_bytes == 0xFFFF_FFFF
+                || dir_offset == 0xFFFF_FFFF;
+            // Saturated fields are placeholders for the zip64 record checked below.
+            let real = |v: u64, placeholder: u64| if v == placeholder { 0 } else { v };
+            check(
+                real(entries, 0xFFFF).max(real(disk_entries, 0xFFFF)),
+                real(dir_bytes, 0xFFFF_FFFF),
+            )?;
+            let eocd_offset = tail_start + pos as u64;
+            if zip64 && eocd_offset >= 20 {
+                let loc = read_at(f, eocd_offset - 20, 20)?;
+                if loc.len() == 20 && &loc[..4] == EOCD64_LOCATOR_SIG {
+                    let eocd64_offset = le64(&loc, 8);
+                    if eocd64_offset < eocd_offset {
+                        let rec64 = read_at(f, eocd64_offset, 56)?;
+                        if rec64.len() == 56 && &rec64[..4] == EOCD64_SIG {
+                            let disk_entries = le64(&rec64, 24);
+                            let entries = le64(&rec64, 32);
+                            check(entries.max(disk_entries), le64(&rec64, 40))?;
+                        }
+                    }
+                }
+            }
+        }
+        if pos == 0 {
+            break;
+        }
+        pos -= 1;
+    }
+    Ok(())
+}
+
+/// Reader that fails once a shared allowance of bytes is used up.
+struct CappedReader {
+    inner: File,
+    remaining: Arc<AtomicU64>,
+    /// Limit reported when the allowance is used up.
+    max: u64,
+}
+
+impl Read for CappedReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        let left = self.remaining.load(Ordering::Relaxed);
+        if left != u64::MAX {
+            if n as u64 > left {
+                return Err(LimitIoError::io(
+                    "max_zip_directory_bytes",
+                    self.max,
+                    "zip central directory",
+                ));
+            }
+            self.remaining.store(left - n as u64, Ordering::Relaxed);
+        }
+        Ok(n)
+    }
+}
+
+impl Seek for CappedReader {
+    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+        self.inner.seek(pos)
     }
 }
 

@@ -40,6 +40,23 @@ pub struct Limits {
     pub max_attachments: u64,
     /// Results per upload (each attempt counts).
     pub max_results: u64,
+    /// Attempts (retries included) of one test in one report; each attempt copies the
+    /// shared parts of the test.
+    pub max_attempts_per_result: u64,
+    /// Labels (tags, properties, annotations) per result.
+    pub max_labels_per_result: u64,
+    /// Kept length of a test name and full name; longer names are truncated with a warning.
+    pub max_name_bytes: u64,
+    /// JSON values (scalars, arrays and objects, object members counted once) in one
+    /// document, checked before the document is parsed.
+    pub max_json_values: u64,
+    /// Attachment references per result, steps included.
+    pub max_attachments_per_result: u64,
+    /// Size of a zip central directory, declared or read while the archive is opened.
+    pub max_zip_directory_bytes: u64,
+    /// Decoded inline attachment bodies (Playwright `body`) held in memory per upload
+    /// until they are passed to the sink.
+    pub max_inline_attachment_bytes: u64,
 }
 
 impl Default for Limits {
@@ -57,8 +74,15 @@ impl Default for Limits {
             max_string_bytes: 8 * MIB,
             max_log_bytes: MIB,
             max_steps_per_result: 10_000,
-            max_attachments: 50_000,
+            max_attachments: 200_000,
             max_results: 200_000,
+            max_attempts_per_result: 100,
+            max_labels_per_result: 500,
+            max_name_bytes: 4 * KIB,
+            max_json_values: 5_000_000,
+            max_attachments_per_result: 1000,
+            max_zip_directory_bytes: 64 * MIB,
+            max_inline_attachment_bytes: 256 * MIB,
         }
     }
 }

@@ -105,10 +105,11 @@ pub(crate) fn parse(
     file: &str,
     ctx: &mut Ctx<'_>,
 ) -> Result<PlaywrightDoc, IngestError> {
-    let config = v.get("config").cloned().unwrap_or(Value::Null);
+    let null = Value::Null;
+    let config = v.get("config").unwrap_or(&null);
     let mut meta = LaunchMeta::default();
     meta.set_attribute("tool", "playwright");
-    if let Some(ver) = text_field(&config, "version") {
+    if let Some(ver) = text_field(config, "version") {
         meta.set_attribute("tool.version", ver);
     }
     if let Some(shard) = config.get("shard").filter(|s| s.is_object())
@@ -125,14 +126,14 @@ pub(crate) fn parse(
             meta.ci.url = text_field(ci, "buildHref");
         }
     }
-    let stats = v.get("stats").cloned().unwrap_or(Value::Null);
+    let stats = v.get("stats").unwrap_or(&null);
     meta.start = stats
         .get("startTime")
         .and_then(Value::as_str)
         .and_then(parse_timestamp_ms);
     meta.stop = meta
         .start
-        .zip(f64_field(&stats, "duration"))
+        .zip(f64_field(stats, "duration"))
         .map(|(s, d)| s + d.round() as i64);
     let max = ctx.limits.max_log_bytes;
     let errors = arr(v, "errors")
@@ -145,7 +146,7 @@ pub(crate) fn parse(
         .collect();
 
     let mut prefixes = ctx.options.path_prefixes();
-    let root = str_field(&config, "rootDir");
+    let root = str_field(config, "rootDir");
     if let Some(r) = root.as_deref() {
         prefixes.insert(0, r);
     }
@@ -176,9 +177,11 @@ fn visit_suite(
     ctx: &mut Ctx<'_>,
     out: &mut Vec<ParsedResult>,
 ) -> Result<(), IngestError> {
+    // Every suite copies the titles of its ancestors.
+    ctx.charge_copy(titles.iter().map(|t| t.len() as u64 + 24).sum(), walk.file)?;
     let mut path = titles.to_vec();
     if !top && let Some(t) = text_field(s, "title") {
-        path.push(t);
+        path.push(ctx.name(t, "suite title", walk.file));
     }
     for spec in arr(s, "specs") {
         visit_spec(spec, &path, walk, ctx, out)?;
@@ -197,7 +200,11 @@ fn visit_spec(
     out: &mut Vec<ParsedResult>,
 ) -> Result<(), IngestError> {
     let max = ctx.limits.max_log_bytes;
-    let title = text_field(spec, "title").unwrap_or_default();
+    let title = ctx.name(
+        text_field(spec, "title").unwrap_or_default(),
+        "title",
+        walk.file,
+    );
     let spec_file = text_field(spec, "file")
         .map(|f| normalize_path(&f, &walk.prefixes))
         .unwrap_or_default();
@@ -207,15 +214,30 @@ fn visit_spec(
     }
     segs.extend(titles.iter().map(|t| normalize_text(t)));
     segs.push(normalize_text(&title));
-    let full_name = segs.join(" \u{203a} ");
-    let display = titles
-        .iter()
-        .cloned()
-        .chain(std::iter::once(title.clone()))
-        .collect::<Vec<_>>()
-        .join(" \u{203a} ");
+    // Names built from the titles of all ancestors are copies too.
+    ctx.charge_copy(
+        2 * segs.iter().map(|t| t.len() as u64 + 3).sum::<u64>(),
+        walk.file,
+    )?;
+    let full_name = ctx.name(segs.join(" \u{203a} "), "full name", walk.file);
+    let display = ctx.name(
+        titles
+            .iter()
+            .cloned()
+            .chain(std::iter::once(title.clone()))
+            .collect::<Vec<_>>()
+            .join(" \u{203a} "),
+        "display name",
+        walk.file,
+    );
     let spec_tags: Vec<String> = arr(spec, "tags").iter().filter_map(as_string).collect();
-    for test in arr(spec, "tests") {
+    ctx.check_labels(spec_tags.len(), walk.file)?;
+    let tag_bytes: u64 = spec_tags.iter().map(|t| t.len() as u64 + 48).sum();
+    for (test_index, test) in arr(spec, "tests").iter().enumerate() {
+        // Every test of the spec copies the spec tags.
+        if test_index > 0 {
+            ctx.charge_copy(tag_bytes, walk.file)?;
+        }
         let project = text_field(test, "projectName").or_else(|| text_field(test, "projectId"));
         let expected_status = text_field(test, "expectedStatus").unwrap_or_else(|| "passed".into());
         let mut labels: Vec<Label> = spec_tags
@@ -246,10 +268,13 @@ fn visit_spec(
                 });
             }
             labels.push(Label::new(ty, desc));
+            ctx.check_labels(labels.len(), walk.file)?;
         }
         if let Some(p) = &project {
             labels.push(Label::new("project", p.clone()));
         }
+        // The worker label is added per result.
+        ctx.check_labels(labels.len() + 1, walk.file)?;
         let identity = TestIdentity::build(IdentityInput {
             format: Some(SourceFormat::PlaywrightJson),
             allure_id: allure_id.as_deref(),
@@ -265,7 +290,17 @@ fn visit_spec(
         });
         let results_v = arr(test, "results");
         let count = results_v.len();
+        ctx.check_attempts(count, walk.file)?;
+        // Every result of the test copies its identity, names, labels and links.
+        let copy_bytes = 512
+            + crate::ctx::identity_bytes(&identity)
+            + crate::ctx::labels_bytes(&labels)
+            + crate::ctx::links_bytes(&links)
+            + (title.len() + full_name.len() + spec_file.len()) as u64;
         for (i, rv) in results_v.iter().enumerate() {
+            if i > 0 {
+                ctx.charge_copy(copy_bytes, walk.file)?;
+            }
             if out.len() as u64 >= ctx.limits.max_results {
                 return Err(IngestError::limit_at(
                     "max_results",
@@ -283,12 +318,12 @@ fn visit_spec(
                 "interrupted" => Status::Broken,
                 _ => Status::Unknown,
             };
+            let null = Value::Null;
             let err = arr(rv, "errors")
                 .first()
-                .cloned()
-                .or_else(|| rv.get("error").cloned())
-                .unwrap_or(Value::Null);
-            let message = text_field(&err, "message");
+                .or_else(|| rv.get("error"))
+                .unwrap_or(&null);
+            let message = text_field(err, "message");
             let ea = message
                 .as_deref()
                 .map(strip_ansi)
@@ -310,6 +345,8 @@ fn visit_spec(
                 }
                 let name = text_field(a, "name").unwrap_or_else(|| "attachment".into());
                 if let Some(p) = text_field(a, "path") {
+                    budget.attachment()?;
+                    ctx.count_ref(walk.file)?;
                     let mut r = AttachmentRef::new(name, p.clone(), ct);
                     if !p.starts_with('/') && !p.contains(":\\") {
                         r.resolved_path = Some(crate::allure::join(&walk.dir, &p));
@@ -318,6 +355,7 @@ fn visit_spec(
                 } else if let Some(b) = text_field(a, "body") {
                     match base64_decode(&b) {
                         Some(bytes) => {
+                            budget.attachment()?;
                             attachments.push(ctx.add_inline(&name, ct, bytes, walk.file)?)
                         }
                         None => ctx.warn(
@@ -341,7 +379,7 @@ fn visit_spec(
                 raw_status: Some(raw.clone()),
                 status_details: StatusDetails {
                     message: message.map(|m| cap(m, max)),
-                    trace: text_field(&err, "stack").map(|m| cap(m, max)),
+                    trace: text_field(err, "stack").map(|m| cap(m, max)),
                     expected: ea.as_ref().map(|e| e.0.clone()),
                     actual: ea.map(|e| e.1),
                     flaky: i + 1 == count

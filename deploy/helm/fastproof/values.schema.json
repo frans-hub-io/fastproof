@@ -155,6 +155,189 @@
           "type": "boolean"
         }
       }
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repository": {
+          "$ref": "#/definitions/nonEmptyString"
+        },
+        "tag": {
+          "type": "string"
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^$|^sha256:[a-f0-9]{64}$"
+        },
+        "pullPolicy": {
+          "enum": ["Always", "IfNotPresent", "Never"]
+        }
+      }
+    },
+    "passwordRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "existingSecret": {
+          "type": "string"
+        },
+        "key": {
+          "$ref": "#/definitions/nonEmptyString"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "not": {
+        "properties": {
+          "existingSecret": {
+            "minLength": 1
+          },
+          "value": {
+            "minLength": 1
+          }
+        },
+        "required": ["existingSecret", "value"]
+      }
+    },
+    "secretKeyRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "existingSecret": {
+          "type": "string"
+        },
+        "key": {
+          "$ref": "#/definitions/nonEmptyString"
+        }
+      }
+    },
+    "persistence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "storageClass": {
+          "type": "string"
+        },
+        "size": {
+          "$ref": "#/definitions/quantity"
+        }
+      }
+    },
+    "role": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "replicaCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "extraRoles": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": ["api", "ingest", "writer", "sink", "scheduler"]
+          }
+        },
+        "resources": {
+          "$ref": "#/definitions/resources"
+        },
+        "startupProbe": {
+          "$ref": "#/definitions/probe"
+        },
+        "readinessProbe": {
+          "$ref": "#/definitions/probe"
+        },
+        "livenessProbe": {
+          "$ref": "#/definitions/probe"
+        },
+        "autoscaling": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "minReplicas": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "maxReplicas": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "targetCPUUtilizationPercentage": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            },
+            "targetMemoryUtilizationPercentage": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100
+            }
+          }
+        },
+        "pdb": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "maxUnavailable": {
+              "type": ["integer", "string"]
+            }
+          }
+        },
+        "podAnnotations": {
+          "$ref": "#/definitions/stringMap"
+        },
+        "podLabels": {
+          "$ref": "#/definitions/stringMap"
+        },
+        "nodeSelector": {
+          "$ref": "#/definitions/stringMap"
+        },
+        "tolerations": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "affinity": {
+          "type": "object"
+        },
+        "topologySpreadConstraints": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    "externalService": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "url": {
+          "type": "string",
+          "pattern": "^$|^https?://"
+        },
+        "user": {
+          "type": "string"
+        },
+        "password": {
+          "$ref": "#/definitions/passwordRef"
+        },
+        "ca": {
+          "$ref": "#/definitions/caRef"
+        }
+      }
     }
   },
   "properties": {
@@ -799,6 +982,15 @@
               "items": {
                 "type": "object"
               }
+            },
+            "kafka": {
+              "$ref": "#/definitions/egressTarget"
+            },
+            "clickhouse": {
+              "$ref": "#/definitions/egressTarget"
+            },
+            "opensearch": {
+              "$ref": "#/definitions/egressTarget"
             }
           }
         },
@@ -1042,6 +1234,386 @@
           "type": "object"
         }
       }
+    },
+    "ingest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "enum": ["direct", "kafka"]
+        }
+      }
+    },
+    "search": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "backend": {
+          "enum": ["postgres", "clickhouse", "opensearch"]
+        }
+      }
+    },
+    "roles": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "split": {
+          "type": "boolean"
+        },
+        "api": {
+          "$ref": "#/definitions/role"
+        },
+        "ingest": {
+          "$ref": "#/definitions/role"
+        },
+        "writer": {
+          "$ref": "#/definitions/role"
+        },
+        "sink": {
+          "$ref": "#/definitions/role"
+        }
+      }
+    },
+    "kafka": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "topics": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "prefix": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._-]*$",
+              "maxLength": 100
+            },
+            "create": {
+              "type": "boolean"
+            },
+            "partitions": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000
+            }
+          }
+        },
+        "trustedProducers": {
+          "type": "boolean"
+        },
+        "external": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "brokers": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9.-]+:[0-9]{1,5}$"
+              }
+            },
+            "tls": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "ca": {
+                  "$ref": "#/definitions/caRef"
+                }
+              }
+            },
+            "sasl": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "mechanism": {
+                  "enum": ["", "plain", "scram-sha-256", "scram-sha-512"]
+                },
+                "username": {
+                  "type": "string"
+                },
+                "password": {
+                  "$ref": "#/definitions/passwordRef"
+                }
+              }
+            }
+          }
+        },
+        "bundled": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "mode": {
+              "enum": ["simple", "chart"]
+            },
+            "simple": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "image": {
+                  "$ref": "#/definitions/image"
+                },
+                "clusterId": {
+                  "type": "string",
+                  "pattern": "^$|^[A-Za-z0-9_-]{22}$"
+                },
+                "username": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9._-]+$"
+                },
+                "saslMechanism": {
+                  "enum": ["plain", "scram-sha-256", "scram-sha-512"]
+                },
+                "credentials": {
+                  "$ref": "#/definitions/secretKeyRef"
+                },
+                "tls": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "existingSecret": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "heapOpts": {
+                  "$ref": "#/definitions/nonEmptyString"
+                },
+                "logRetentionHours": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "extraConfig": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[a-z0-9.]+=.*$"
+                  }
+                },
+                "persistence": {
+                  "$ref": "#/definitions/persistence"
+                },
+                "resources": {
+                  "$ref": "#/definitions/resources"
+                },
+                "podSecurityContext": {
+                  "type": "object",
+                  "required": ["runAsNonRoot", "seccompProfile"],
+                  "properties": {
+                    "runAsNonRoot": {
+                      "const": true
+                    }
+                  }
+                },
+                "securityContext": {
+                  "type": "object",
+                  "required": ["runAsNonRoot", "allowPrivilegeEscalation"],
+                  "properties": {
+                    "runAsNonRoot": {
+                      "const": true
+                    },
+                    "allowPrivilegeEscalation": {
+                      "const": false
+                    }
+                  }
+                },
+                "nodeSelector": {
+                  "$ref": "#/definitions/stringMap"
+                },
+                "tolerations": {
+                  "type": "array",
+                  "items": {
+                    "type": "object"
+                  }
+                },
+                "affinity": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      },
+      "required": ["enabled"]
+    },
+    "sinks": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "clickhouse": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "database": {
+              "type": "string",
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+            },
+            "rawTtlDays": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "external": {
+              "$ref": "#/definitions/externalService"
+            },
+            "bundled": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "image": {
+                  "$ref": "#/definitions/image"
+                },
+                "user": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                },
+                "credentials": {
+                  "$ref": "#/definitions/secretKeyRef"
+                },
+                "tls": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "existingSecret": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "server": {
+                  "type": "object",
+                  "propertyNames": {
+                    "pattern": "^[a-z_]+$"
+                  },
+                  "additionalProperties": {
+                    "type": ["string", "integer", "number"]
+                  }
+                },
+                "profile": {
+                  "type": "object",
+                  "propertyNames": {
+                    "pattern": "^[a-z_]+$"
+                  },
+                  "additionalProperties": {
+                    "type": ["string", "integer", "number"]
+                  }
+                },
+                "queryLogTtlDays": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "persistence": {
+                  "$ref": "#/definitions/persistence"
+                },
+                "resources": {
+                  "$ref": "#/definitions/resources"
+                },
+                "podSecurityContext": {
+                  "type": "object",
+                  "required": ["runAsNonRoot", "seccompProfile"],
+                  "properties": {
+                    "runAsNonRoot": {
+                      "const": true
+                    }
+                  }
+                },
+                "securityContext": {
+                  "type": "object",
+                  "required": ["runAsNonRoot", "allowPrivilegeEscalation"],
+                  "properties": {
+                    "runAsNonRoot": {
+                      "const": true
+                    },
+                    "allowPrivilegeEscalation": {
+                      "const": false
+                    }
+                  }
+                },
+                "nodeSelector": {
+                  "$ref": "#/definitions/stringMap"
+                },
+                "tolerations": {
+                  "type": "array",
+                  "items": {
+                    "type": "object"
+                  }
+                },
+                "affinity": {
+                  "type": "object"
+                },
+                "mergeTree": {
+                  "type": "object",
+                  "propertyNames": {
+                    "pattern": "^[a-z_]+$"
+                  },
+                  "additionalProperties": {
+                    "type": ["string", "integer", "number"]
+                  }
+                },
+                "extraGrants": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^GRANT [A-Za-z0-9_ ,.*()]+$"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "opensearch": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "indexPrefix": {
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9._-]*$"
+            },
+            "rawTtlDays": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "external": {
+              "$ref": "#/definitions/externalService"
+            },
+            "bundled": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "user": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9._-]+$"
+                },
+                "credentialsSecret": {
+                  "$ref": "#/definitions/nonEmptyString"
+                },
+                "tlsSecret": {
+                  "$ref": "#/definitions/nonEmptyString"
+                },
+                "generateTls": {
+                  "type": "boolean"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "opensearch": {
+      "$ref": "#/definitions/subchart"
     }
   }
 }

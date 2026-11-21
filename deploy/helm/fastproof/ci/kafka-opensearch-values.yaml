@@ -1,0 +1,68 @@
+publicUrl: https://fastproof.example.com
+
+database:
+  existingSecret: fastproof-database
+
+blob:
+  backend: s3
+  s3:
+    endpoint: https://s3.example.com
+    bucket: fastproof
+    credentials:
+      existingSecret: fastproof-s3
+
+auth:
+  adminTokens:
+    existingSecret: fastproof-admin-tokens
+
+ingest:
+  mode: kafka
+
+search:
+  backend: opensearch
+
+kafka:
+  topics:
+    prefix: qa.fastproof.
+    partitions: 24
+  external:
+    brokers:
+      - kafka-0.example.com:9093
+      - kafka-1.example.com:9093
+      - kafka-2.example.com:9093
+    tls:
+      enabled: true
+      ca:
+        existingConfigMap: corporate-ca
+    sasl:
+      mechanism: scram-sha-512
+      username: fastproof
+      password:
+        existingSecret: fastproof-kafka
+
+sinks:
+  opensearch:
+    enabled: true
+    bundled:
+      generateTls: true
+
+opensearch:
+  enabled: true
+
+networkPolicy:
+  enabled: true
+  egress:
+    database:
+      to:
+        - ipBlock:
+            cidr: 198.51.100.10/32
+    s3:
+      to:
+        - ipBlock:
+            cidr: 198.51.100.20/32
+    kafka:
+      to:
+        - ipBlock:
+            cidr: 198.51.100.32/29
+      ports:
+        - 9093

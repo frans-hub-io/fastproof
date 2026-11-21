@@ -23,6 +23,14 @@ evaluation and small installations; use an external S3-compatible service for pr
 Attachments are stored on the volume {{ default (printf "%s-blobs" (include "fastproof.fullname" .)) .Values.blob.fs.persistence.existingClaim }}; it is kept when the release is uninstalled.
 {{- end }}
 
+Ingest mode: {{ .Values.ingest.mode }}{{ if .Values.roles.split }}; roles run as separate Deployments ({{ range $i, $r := include "fastproof.roleList" . | fromJsonArray }}{{ if $i }}, {{ end }}{{ $r.name }}{{ end }}){{ end }}; search backend: {{ .Values.search.backend }}{{ with include "fastproof.sinks" . }}; sinks: {{ . }}{{ end }}.
+{{- if .Values.kafka.bundled.enabled }}
+The bundled Kafka ({{ include "fastproof.kafkaName" . }}, {{ .Values.kafka.bundled.mode }} mode) is a single broker without replication: fine for a lab, use a managed or operator-run cluster in production.
+{{- end }}
+{{- if and .Values.sinks.clickhouse.enabled .Values.sinks.clickhouse.bundled.enabled }}
+The bundled ClickHouse ({{ include "fastproof.clickhouseName" . }}) is a single node; see the Scaling and big data page for the operator-based setup.
+{{- end }}
+
 Upload a report:
   FASTPROOF_URL=http://localhost:8080 FASTPROOF_TOKEN=<token> FASTPROOF_PROJECT=<key> fastproof upload ./allure-results
 

@@ -8,10 +8,9 @@ in order of the stages, without dates:
 - **Allure history import:** bring the history of existing Allure 2 reports and Allure 3 history files into
   FastProof, joined to the same test identities.
 - **Launch tools:** debug launches, merging launches, reruns, and HTML and PDF export of a launch.
-- **Own reporters (agents)** that write the FastProof JSON format directly: live streaming of results and
-  logs, a `traceparent` on every attempt for FastMock correlation, correct retries where today's writers lose
-  them, attachments uploaded straight to object storage, and an offline buffer when the server is not
-  reachable.
+- **More own reporters:** the [Playwright and pytest reporters](guide/reporters.md) come first, with live
+  results and logs, a `traceparent` on every attempt, correct retries, and an offline spool. Reporters for
+  more frameworks follow, chosen by how much today's writers lose.
 
 ## Test management
 
@@ -25,13 +24,21 @@ kept in sync.
 Accept the ReportPortal agent protocol, so the existing ReportPortal agents of about twenty frameworks report
 to FastProof without changes, and import data from ReportPortal.
 
+## Available now for large installations
+
+- **Kafka ingest:** uploads and live logs through Kafka, with the API, parsers, writers and sinks as separate
+  Deployments.
+- **ClickHouse sink:** results, attempts, steps and logs copied to ClickHouse for log search, similar
+  failures and long-term aggregates. **OpenSearch** is supported as a sink and search backend too.
+
+See [Scaling and big data](operations/scaling.md).
+
 ## FastProof Analysis
 
-An optional bundle, switched on in the Helm chart, for large installations and deeper analysis; the core stays
+An optional bundle, switched on in the Helm chart, for deeper analysis on top of the sinks; the core stays
 light without it:
 
-- an analytical store fed from FastProof's event outbox, for full-text search over large volumes of logs,
-  "similar failures" across projects, and long-term aggregates;
+- failure clustering and "similar failures" across projects over the ClickHouse or OpenSearch store;
 - an MCP endpoint (same tokens and permissions as the API) for local GitHub Copilot agents: read launches,
   failures, clusters, history, logs, attachments and FastMock interactions, and write triage (defect type,
   comment, issue link, mute, apply to a cluster), every AI change marked, audited and revertible;

@@ -70,3 +70,48 @@ tests:
             ports:
               - port: 443
                 protocol: TCP
+
+  - it: lets the server reach the bundled Kafka and ClickHouse and nothing else reach them
+    values:
+      - ../ci/bigdata-values.yaml
+    asserts:
+      - contains:
+          path: spec.egress
+          content:
+            to:
+              - podSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: kafka
+                    app.kubernetes.io/instance: fp
+            ports:
+              - port: 9092
+                protocol: TCP
+        documentIndex: 0
+      - contains:
+          path: spec.egress
+          content:
+            to:
+              - podSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: clickhouse
+                    app.kubernetes.io/instance: fp
+            ports:
+              - port: 8123
+                protocol: TCP
+        documentIndex: 0
+      - equal:
+          path: metadata.name
+          value: fp-fastproof-kafka
+        documentIndex: 2
+      - equal:
+          path: spec.ingress[0].ports[0].port
+          value: 9092
+        documentIndex: 2
+      - equal:
+          path: metadata.name
+          value: fp-fastproof-clickhouse
+        documentIndex: 3
+      - lengthEqual:
+          path: spec.ingress
+          count: 1
+        documentIndex: 3

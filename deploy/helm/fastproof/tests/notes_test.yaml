@@ -1,0 +1,15 @@
+suite: notes
+templates:
+  - templates/NOTES.txt
+release:
+  name: fp
+  namespace: qa
+values:
+  - ../ci/bigdata-values.yaml
+tests:
+  - it: summarises the streaming setup
+    asserts:
+      - matchRegexRaw:
+          pattern: 'Ingest mode: kafka; roles run as separate Deployments \(api, ingest, writer, sink\); search backend: clickhouse; sinks: clickhouse\.'
+      - matchRegexRaw:
+          pattern: 'The bundled Kafka \(fp-kafka, simple mode\) is a single broker'

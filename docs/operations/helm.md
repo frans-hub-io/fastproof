@@ -11,6 +11,7 @@ git clone https://github.com/frans-hub-io/fastproof.git
 cd fastproof
 helm repo add cnpg https://cloudnative-pg.github.io/charts
 helm repo add valkey https://valkey.io/valkey-helm/
+helm repo add opensearch https://opensearch-project.github.io/helm-charts
 helm dependency build deploy/helm/fastproof
 ```
 
@@ -66,6 +67,59 @@ Optional. Without it, replicas exchange live updates through PostgreSQL `LISTEN/
 `valkey.enabled: true` for the official Valkey chart 0.12.1 (image 9.1.4, password generated into
 `<release>-fastproof-valkey`), or `externalValkey.existingSecret` with a `url` key.
 
+### Kafka, ClickHouse and OpenSearch
+
+Optional, for large installations; see [Scaling and big data](scaling.md) for when they pay off.
+
+| Values | What it does |
+|---|---|
+| `ingest.mode: kafka` | Uploads and live logs go through Kafka |
+| `kafka.external.*` | Your Kafka: `brokers`, `tls.enabled`, `tls.ca`, `sasl.mechanism` (`plain`, `scram-sha-256`, `scram-sha-512`), `sasl.username`, `sasl.password.existingSecret` |
+| `kafka.bundled.enabled: true`, `kafka.bundled.mode: simple` | A single-node KRaft broker from this chart (`apache/kafka` 4.4.0): non-root, read-only root filesystem, own ServiceAccount, SCRAM-SHA-512 (or PLAIN) with a generated password, optional TLS from `kafka.bundled.simple.tls.existingSecret` |
+| `kafka.bundled.mode: chart` with `kafka.enabled: true` | The CloudPirates `kafka` chart 0.2.1 (values under `kafka.*`). SASL PLAIN only, and no dedicated ServiceAccount yet, so it fails policies that forbid the `default` ServiceAccount; use `simple` there |
+| `sinks.clickhouse.enabled` with `sinks.clickhouse.external.*` | Your ClickHouse: `url` (HTTP interface), `user`, `password`, `ca` |
+| `sinks.clickhouse.bundled.enabled: true` | A single-node ClickHouse 26.8 LTS (distroless image) from this chart: non-root, read-only root filesystem, probes on `/ping`, memory caps for about 2 GiB, a `fastproof` user limited to its database, native/MySQL/PostgreSQL ports closed, optional HTTPS from `sinks.clickhouse.bundled.tls.existingSecret` |
+| `sinks.opensearch.enabled` with `sinks.opensearch.external.*` | Your OpenSearch 2.19 or 3.x |
+| `sinks.opensearch.enabled` with `opensearch.enabled: true` | The official OpenSearch chart 3.9.0 (values under `opensearch.*`), hardened: one node, no root init container, liveness probe, heap from `opensearch.opensearchJavaOpts`, security plugin with generated TLS and a `fastproof` user limited to `fastproof-*` |
+| `search.backend` | `postgres`, `clickhouse` or `opensearch`; needs the matching sink |
+| `roles.split: true` | Separate Deployments per role; see [Several replicas](#several-replicas) |
+
+Helm conditions cannot read strings, so the CloudPirates chart needs both `kafka.bundled.mode: chart` and
+`kafka.enabled: true`; the chart fails with a clear message when they disagree.
+
+The bundled OpenSearch keeps the official chart's fixed names (`fastproof-opensearch-node`, Secrets
+`fastproof-opensearch-tls`, `fastproof-opensearch-security`, `fastproof-opensearch-credentials`), so install
+one per namespace or change `opensearch.clusterName`, `opensearch.masterService`, `opensearch.secretMounts`,
+`opensearch.securityConfig.config.securityConfigSecret` and `sinks.opensearch.bundled.*` together. The security
+configuration is loaded into the cluster on first start only; change users later with `securityadmin.sh` or
+the security REST API. Set `sinks.opensearch.bundled.generateTls: false` to bring your own certificate (for
+example from cert-manager with `privateKey.encoding: PKCS8`) in `fastproof-opensearch-tls` with `ca.crt`,
+`tls.crt` and `tls.key` and the subject `CN=fastproof-opensearch-node`.
+
+The bundled Kafka bootstraps the SCRAM user when its volume is first formatted. To rotate the password later,
+change it with `kafka-configs.sh --alter --add-config` and then in the Secret. Keep generated and supplied
+passwords alphanumeric.
+
+### Mirror registries
+
+Every image can be pulled from a mirror. Each one takes a repository, tag and (where the chart supports it)
+digest:
+
+| Image | Values |
+|---|---|
+| FastProof | `image.repository`, `image.tag`, `image.digest` |
+| Garage | `garage.image.repository`, `tag`, `digest` |
+| Bundled Kafka (`simple`) | `kafka.bundled.simple.image.repository`, `tag`, `digest` |
+| Bundled ClickHouse | `sinks.clickhouse.bundled.image.repository`, `tag`, `digest` |
+| CloudPirates PostgreSQL | `postgresql.image.registry`, `repository`, `tag` (tag may end in `@sha256:...`) |
+| Valkey | `valkey.image.registry`, `repository`, `tag` |
+| CloudNativePG | `cnpg.cluster.imageName` |
+| CloudPirates Kafka | `kafka.image.registry`, `repository`, `tag` |
+| OpenSearch | `opensearch.image.repository`, `tag` (and `opensearch.imagePullSecrets`) |
+
+`imagePullSecrets` applies to FastProof, the migration Job, Garage, Kafka (`simple`) and ClickHouse. The chart's
+`ci/mirror-values.yaml` shows every key with a mirror under one prefix.
+
 ## Main values
 
 | Key | Default | Meaning |
@@ -95,14 +149,21 @@ Optional. Without it, replicas exchange live updates through PostgreSQL `LISTEN/
 | `pdb.enabled`, `pdb.maxUnavailable` | `true`, `1` | PodDisruptionBudget, rendered with more than one replica |
 | `autoscaling.*` | off | HorizontalPodAutoscaler on CPU (and memory) |
 | `resources` | 100m/128Mi requests, 2 CPU/1Gi limits | Container resources, including ephemeral storage for the spool |
+| `ingest.mode` | `direct` | `direct` or `kafka` |
+| `search.backend` | `postgres` | `postgres`, `clickhouse` or `opensearch` |
+| `roles.split`, `roles.<role>.*` | `false` | Separate Deployments per role |
+| `kafka.*`, `sinks.*`, `opensearch.*` | off | Kafka, ClickHouse and OpenSearch; see above |
 
-Every secret (database URL, S3 keys, token file, OIDC client secret) is mounted as a file under
+Every secret (database URL, S3 keys, token file, OIDC client secret, Kafka, ClickHouse and OpenSearch
+passwords) is mounted as a file under
 `/etc/fastproof/secrets`; CAs under `/etc/fastproof/ca`. Use existing Secrets in production; values such as
 `database.url` or `blob.s3.credentials.secretKey` make the chart create the Secret, which puts the secret in
 the Helm release data.
 
 The `ci/` directory of the chart has complete examples: `minimal-fs-values.yaml`,
-`cloudpirates-garage-values.yaml`, `cnpg-external-s3-values.yaml`, `oidc-values.yaml`, `ha-values.yaml`.
+`cloudpirates-garage-values.yaml`, `cnpg-external-s3-values.yaml`, `oidc-values.yaml`, `ha-values.yaml`,
+`kafka-clickhouse-values.yaml`, `kafka-opensearch-values.yaml`, `split-roles-values.yaml`,
+`bigdata-values.yaml` (a small-footprint big-data setup) and `mirror-values.yaml`.
 
 ## Exposing FastProof
 
@@ -147,14 +208,16 @@ With `networkPolicy.enabled: true` the chart allows:
 - ingress to port 8080 from `networkPolicy.ingress.from` (any source when empty), and to port 9090 only from
   the namespace selected by `networkPolicy.ingress.metrics.namespaceSelector` (default `monitoring`);
 - egress (`networkPolicy.egress.enabled`, on by default) to DNS, to the bundled PostgreSQL, CloudNativePG,
-  Valkey and Garage pods, and to the peers you list for external services: `egress.database.to`,
-  `egress.s3.to`, `egress.oidc.to`, `egress.valkey.to`, `egress.otlp.to` (each with `ports`), plus
-  `egress.extraRules`. The chart refuses to render when an external service is configured without peers.
+  Valkey, Garage, Kafka, ClickHouse and OpenSearch pods, and to the peers you list for external services:
+  `egress.database.to`, `egress.s3.to`, `egress.oidc.to`, `egress.valkey.to`, `egress.otlp.to`,
+  `egress.kafka.to` (port 9092 by default), `egress.clickhouse.to` (8443) and `egress.opensearch.to` (9200),
+  each with `ports`, plus `egress.extraRules`. The chart refuses to render when an external service is configured without peers.
 
 `networkPolicy.storage` (on by default) restricts ingress to the bundled PostgreSQL, Valkey and Garage pods to
 FastProof's own pods. Pods managed by CloudNativePG are excluded from it (`cnpg.io/cluster DoesNotExist`),
 because they carry the same `app.kubernetes.io/name: postgresql` label and the operator must keep reaching
-them.
+them. The bundled Kafka, ClickHouse and OpenSearch get their own policies: only FastProof pods reach their
+client port, and Kafka and OpenSearch pods may also talk to themselves.
 
 ```yaml
 networkPolicy:
@@ -226,6 +289,25 @@ topologySpreadConstraints:
 - Size the database connections: replicas × `database.maxConnections` plus the migration Job must stay below
   the server's `max_connections` (the CloudNativePG values set 200).
 - A PodDisruptionBudget (`maxUnavailable: 1`) is rendered when there is more than one replica.
+
+### Separate roles
+
+With `roles.split: true` the chart runs each role as its own Deployment, so the HTTP API, the parsers, the
+Kafka writers and the sinks scale and fail independently:
+
+| Deployment | `FASTPROOF_ROLES` | Rendered |
+|---|---|---|
+| `<release>-fastproof-api` | `api,scheduler` | Always; the Service, HTTPRoute and Ingress point here |
+| `<release>-fastproof-ingest` | `ingest` | Always |
+| `<release>-fastproof-writer` | `writer` | With `ingest.mode: kafka` |
+| `<release>-fastproof-sink` | `sink` | With a ClickHouse or OpenSearch sink |
+
+Each `roles.<role>` takes `replicaCount`, `extraRoles`, `resources`, probe overrides (`startupProbe`,
+`readinessProbe`, `livenessProbe`, merged over the top-level ones), `autoscaling`, `pdb`, pod labels and
+annotations, and scheduling (`nodeSelector`, `tolerations`, `affinity`, `topologySpreadConstraints`). Empty
+values fall back to the top-level ones. The top-level `replicaCount` and `autoscaling` apply only without
+the split. A headless `<release>-fastproof-ops` Service lets the ServiceMonitor scrape every role. Split roles
+share attachments, so they need S3 or a ReadWriteMany volume.
 
 ## Monitoring
 

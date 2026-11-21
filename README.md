@@ -4,7 +4,9 @@ FastProof is an open-source (Apache-2.0), self-hosted test reporting server. CI 
 writes (allure-results, JUnit XML, CTRF, Playwright JSON or the FastProof JSON format); FastProof keeps every
 launch with history per test, using Allure-compatible test identity, detects flaky tests, groups failures and
 helps the team triage them. One Rust binary serves the API, the ingest queue and the web UI, with PostgreSQL
-and S3-compatible storage (or a directory); Valkey is optional.
+and S3-compatible storage (or a directory); Valkey is optional. Large installations can add Kafka between the
+API and the database, run the roles as separate Deployments, and copy results and logs to ClickHouse or
+OpenSearch for search.
 
 Status: early development (`0.1.0-dev1`).
 

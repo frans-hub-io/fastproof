@@ -69,6 +69,14 @@ S3-compatible bucket or a directory.
 
     allure-results, JUnit XML variants, CTRF, Playwright JSON and the FastProof JSON report.
 
+-   :material-access-point:{ .fp-card__icon } **[Reporters](guide/reporters.md)**
+
+    Playwright and pytest reporters with live results, live logs and an offline spool.
+
+-   :material-text-box-search-outline:{ .fp-card__icon } **[Live logs](guide/live-logs.md)**
+
+    Follow test output while tests run, and search logs across launches.
+
 -   :material-import:{ .fp-card__icon } **[Migrating from Allure Report](guide/migrating-from-allure.md)**
 
     Keep your tests and adapters; point the upload at FastProof.
@@ -87,6 +95,10 @@ S3-compatible bucket or a directory.
 
     Values, PostgreSQL and S3 options, upgrades and running several replicas.
 
+-   :material-chart-timeline-variant:{ .fp-card__icon } **[Scaling and big data](operations/scaling.md)**
+
+    Kafka ingest, separate roles, ClickHouse and OpenSearch sinks, sizing.
+
 -   :material-shield-check-outline:{ .fp-card__icon } **[Security](operations/security.md)**
 
     Authentication, roles and permissions, attachment sandboxing, reporting vulnerabilities.
@@ -97,7 +109,7 @@ S3-compatible bucket or a directory.
 
 -   :material-map-outline:{ .fp-card__icon } **[Roadmap](roadmap.md)**
 
-    Test management, ReportPortal agent compatibility, own reporters, FastProof Analysis.
+    Test management, ReportPortal agent compatibility, more reporters, FastProof Analysis.
 
 </div>
 

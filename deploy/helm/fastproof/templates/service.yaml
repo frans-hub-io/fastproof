@@ -15,7 +15,7 @@ metadata:
 spec:
   type: {{ .Values.service.type }}
   selector:
-    {{- include "fastproof.selector" . | nindent 4 }}
+    {{- include "fastproof.workloadSelector" (dict "root" . "role" (ternary "api" "" .Values.roles.split)) | nindent 4 }}
   ports:
     - name: http
       port: {{ .Values.service.port }}
@@ -28,3 +28,24 @@ spec:
       port: {{ .Values.service.opsPort }}
       targetPort: ops
       protocol: TCP
+{{- if .Values.roles.split }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "fastproof.fullname" . }}-ops
+  labels:
+    {{- include "fastproof.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+    fastproof.franshub.io/service: ops
+spec:
+  type: ClusterIP
+  clusterIP: None
+  selector:
+    {{- include "fastproof.selector" . | nindent 4 }}
+  ports:
+    - name: ops
+      port: {{ .Values.service.opsPort }}
+      targetPort: ops
+      protocol: TCP
+{{- end }}

@@ -1,0 +1,84 @@
+publicUrl: https://fastproof.example.com
+
+database:
+  existingSecret: fastproof-database
+
+blob:
+  backend: s3
+  s3:
+    endpoint: https://s3.example.com
+    bucket: fastproof
+    credentials:
+      existingSecret: fastproof-s3
+
+valkey:
+  enabled: true
+
+auth:
+  adminTokens:
+    existingSecret: fastproof-admin-tokens
+
+ingest:
+  mode: kafka
+
+kafka:
+  bundled:
+    enabled: true
+    mode: simple
+
+sinks:
+  clickhouse:
+    enabled: true
+    external:
+      url: https://clickhouse.example.com:8443
+      user: fastproof
+      password:
+        existingSecret: fastproof-clickhouse
+      ca:
+        existingSecret: clickhouse-ca
+
+roles:
+  split: true
+  api:
+    replicaCount: 2
+    autoscaling:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 5
+  ingest:
+    replicaCount: 2
+    resources:
+      requests:
+        cpu: 200m
+        memory: 256Mi
+        ephemeral-storage: 512Mi
+      limits:
+        cpu: "2"
+        memory: 2Gi
+        ephemeral-storage: 8Gi
+  writer:
+    replicaCount: 2
+    readinessProbe:
+      periodSeconds: 10
+  sink:
+    replicaCount: 1
+
+metrics:
+  serviceMonitor:
+    enabled: true
+
+networkPolicy:
+  enabled: true
+  egress:
+    database:
+      to:
+        - ipBlock:
+            cidr: 198.51.100.10/32
+    s3:
+      to:
+        - ipBlock:
+            cidr: 198.51.100.20/32
+    clickhouse:
+      to:
+        - ipBlock:
+            cidr: 198.51.100.40/32

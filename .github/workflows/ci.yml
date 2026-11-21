@@ -229,6 +229,7 @@ jobs:
         run: |
           helm repo add cnpg https://cloudnative-pg.github.io/charts
           helm repo add valkey https://valkey.io/valkey-helm/
+          helm repo add opensearch https://opensearch-project.github.io/helm-charts
           helm dependency build .
       - name: lint
         run: |

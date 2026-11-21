@@ -1,0 +1,70 @@
+suite: image overrides
+templates:
+  - templates/deployment.yaml
+  - templates/migrate-job.yaml
+  - templates/kafka.yaml
+  - templates/clickhouse.yaml
+  - templates/garage.yaml
+  - templates/configmap.yaml
+release:
+  name: fp
+  namespace: qa
+values:
+  - ../ci/mirror-values.yaml
+tests:
+  - it: pulls the server from the mirror by digest
+    template: templates/deployment.yaml
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: registry.example.com/mirror/franshub/fastproof:0.1.0-dev1@sha256:0000000000000000000000000000000000000000000000000000000000000000
+      - equal:
+          path: spec.template.spec.imagePullSecrets[0].name
+          value: mirror-pull
+
+  - it: pulls the migration job from the mirror
+    template: templates/migrate-job.yaml
+    documentSelector:
+      path: kind
+      value: Job
+    asserts:
+      - matchRegex:
+          path: spec.template.spec.containers[0].image
+          pattern: '^registry\.example\.com/mirror/franshub/fastproof:'
+
+  - it: pulls bundled Kafka, ClickHouse and Garage from the mirror
+    asserts:
+      - matchRegex:
+          path: spec.template.spec.containers[0].image
+          pattern: '^registry\.example\.com/mirror/apache/kafka:4\.4\.0@sha256:'
+        template: templates/kafka.yaml
+        documentSelector:
+          path: kind
+          value: StatefulSet
+      - matchRegex:
+          path: spec.template.spec.containers[0].image
+          pattern: '^registry\.example\.com/mirror/clickhouse/clickhouse-server:26\.8\.36\.3-distroless@sha256:'
+        template: templates/clickhouse.yaml
+        documentSelector:
+          path: kind
+          value: StatefulSet
+      - matchRegex:
+          path: spec.template.spec.containers[0].image
+          pattern: '^registry\.example\.com/mirror/dxflrs/garage:v2\.5\.0@sha256:'
+        template: templates/garage.yaml
+        documentSelector:
+          path: kind
+          value: StatefulSet
+
+  - it: accepts a digest without a tag
+    template: templates/kafka.yaml
+    set:
+      kafka.bundled.simple.image.tag: ""
+    documentSelector:
+      path: kind
+      value: StatefulSet
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: registry.example.com/mirror/apache/kafka@sha256:833b867a9585a141da455dc2b57431c65cbccb27f11c91f694444cca9f777e0f

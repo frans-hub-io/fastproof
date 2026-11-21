@@ -1,0 +1,60 @@
+publicUrl: https://fastproof.example.com
+
+image:
+  repository: registry.example.com/mirror/franshub/fastproof
+  tag: 0.1.0-dev1
+  digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+
+imagePullSecrets:
+  - name: mirror-pull
+
+postgresql:
+  enabled: true
+  image:
+    registry: registry.example.com/mirror
+    repository: library/postgres
+
+valkey:
+  enabled: true
+  image:
+    registry: registry.example.com/mirror
+
+garage:
+  enabled: true
+  image:
+    repository: registry.example.com/mirror/dxflrs/garage
+
+blob:
+  backend: s3
+
+auth:
+  adminTokens:
+    generate: true
+
+ingest:
+  mode: kafka
+
+kafka:
+  bundled:
+    enabled: true
+    mode: simple
+    simple:
+      image:
+        repository: registry.example.com/mirror/apache/kafka
+
+sinks:
+  clickhouse:
+    enabled: true
+    bundled:
+      enabled: true
+      image:
+        repository: registry.example.com/mirror/clickhouse/clickhouse-server
+  opensearch:
+    enabled: true
+
+opensearch:
+  enabled: true
+  image:
+    repository: registry.example.com/mirror/opensearchproject/opensearch
+  imagePullSecrets:
+    - name: mirror-pull

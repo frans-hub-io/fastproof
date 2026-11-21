@@ -1,50 +1,67 @@
 {{- $fullname := include "fastproof.fullname" . -}}
-{{- if and .Values.pdb.enabled (include "fastproof.replicasAboveOne" .) }}
+{{- $split := .Values.roles.split -}}
+{{- $docs := list -}}
+{{- range $w := include "fastproof.workloads" . | fromJsonArray }}
+{{- $many := or $w.autoscaling.enabled (gt (int $w.replicaCount) 1) }}
+{{- if and $w.pdb.enabled $many }}
+{{- $docs = append $docs (dict "kind" "pdb" "w" $w) }}
+{{- end }}
+{{- if $w.autoscaling.enabled }}
+{{- $docs = append $docs (dict "kind" "hpa" "w" $w) }}
+{{- end }}
+{{- end }}
+{{- range $i, $d := $docs }}
+{{- $w := $d.w }}
+{{- if $i }}
+---
+{{- end }}
+{{- if eq $d.kind "pdb" }}
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: {{ $fullname }}
+  name: {{ $w.name }}
   labels:
-    {{- include "fastproof.labels" . | nindent 4 }}
+    {{- include "fastproof.labels" $ | nindent 4 }}
 spec:
-  maxUnavailable: {{ .Values.pdb.maxUnavailable }}
+  maxUnavailable: {{ $w.pdb.maxUnavailable }}
   selector:
     matchLabels:
-      {{- include "fastproof.selector" . | nindent 6 }}
-{{- end }}
-{{- if .Values.autoscaling.enabled }}
----
+      {{- include "fastproof.workloadSelector" (dict "root" $ "role" $w.role) | nindent 6 }}
+{{- else }}
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
-  name: {{ $fullname }}
+  name: {{ $w.name }}
   labels:
-    {{- include "fastproof.labels" . | nindent 4 }}
+    {{- include "fastproof.labels" $ | nindent 4 }}
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
     kind: Deployment
-    name: {{ $fullname }}
-  minReplicas: {{ .Values.autoscaling.minReplicas }}
-  maxReplicas: {{ .Values.autoscaling.maxReplicas }}
+    name: {{ $w.name }}
+  minReplicas: {{ $w.autoscaling.minReplicas }}
+  maxReplicas: {{ $w.autoscaling.maxReplicas }}
   metrics:
     - type: Resource
       resource:
         name: cpu
         target:
           type: Utilization
-          averageUtilization: {{ .Values.autoscaling.targetCPUUtilizationPercentage }}
-    {{- if .Values.autoscaling.targetMemoryUtilizationPercentage }}
+          averageUtilization: {{ $w.autoscaling.targetCPUUtilizationPercentage }}
+    {{- if $w.autoscaling.targetMemoryUtilizationPercentage }}
     - type: Resource
       resource:
         name: memory
         target:
           type: Utilization
-          averageUtilization: {{ .Values.autoscaling.targetMemoryUtilizationPercentage }}
+          averageUtilization: {{ $w.autoscaling.targetMemoryUtilizationPercentage }}
     {{- end }}
 {{- end }}
+{{- end }}
 {{- if .Values.metrics.serviceMonitor.enabled }}
+{{- if $docs }}
 ---
+{{- end }}
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
@@ -58,6 +75,9 @@ spec:
   selector:
     matchLabels:
       {{- include "fastproof.selector" . | nindent 6 }}
+      {{- if $split }}
+      fastproof.franshub.io/service: ops
+      {{- end }}
   endpoints:
     - port: ops
       path: /metrics

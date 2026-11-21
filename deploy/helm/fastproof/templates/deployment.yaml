@@ -5,21 +5,33 @@
 {{- $dbCa := include "fastproof.databaseCa" . -}}
 {{- $valkey := include "fastproof.valkeyUrlSecret" . -}}
 {{- $recreate := and (include "fastproof.fsPvc" .) (not (has "ReadWriteMany" .Values.blob.fs.persistence.accessModes)) -}}
+{{- $kafka := include "fastproof.kafkaMode" . -}}
+{{- $kafkaSasl := include "fastproof.kafkaSasl" . -}}
+{{- $streamingCas := include "fastproof.streamingCas" . | fromJsonArray -}}
+{{- $checksum := include (print $.Template.BasePath "/configmap.yaml") . | sha256sum -}}
+{{- range $i, $w := include "fastproof.workloads" . | fromJsonArray }}
+{{- with $ }}
+{{- if $i }}
+---
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ $fullname }}
+  name: {{ $w.name }}
   labels:
     {{- include "fastproof.labels" . | nindent 4 }}
     app.kubernetes.io/component: server
+    {{- with $w.role }}
+    fastproof.franshub.io/role: {{ . }}
+    {{- end }}
 spec:
-  {{- if not .Values.autoscaling.enabled }}
-  replicas: {{ .Values.replicaCount }}
+  {{- if not $w.autoscaling.enabled }}
+  replicas: {{ $w.replicaCount }}
   {{- end }}
   revisionHistoryLimit: 5
   selector:
     matchLabels:
-      {{- include "fastproof.selector" . | nindent 6 }}
+      {{- include "fastproof.workloadSelector" (dict "root" . "role" $w.role) | nindent 6 }}
   strategy:
     {{- if $recreate }}
     type: Recreate
@@ -34,12 +46,15 @@ spec:
       labels:
         {{- include "fastproof.labels" . | nindent 8 }}
         app.kubernetes.io/component: server
-        {{- with .Values.podLabels }}
+        {{- with $w.role }}
+        fastproof.franshub.io/role: {{ . }}
+        {{- end }}
+        {{- with $w.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
       annotations:
-        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
-        {{- with .Values.podAnnotations }}
+        checksum/config: {{ $checksum }}
+        {{- with $w.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
@@ -70,6 +85,8 @@ spec:
             {{- toYaml . | nindent 12 }}
             {{- end }}
           env:
+            - name: FASTPROOF_ROLES
+              value: {{ $w.roles | quote }}
             - name: FASTPROOF_MIGRATE
               value: {{ include "fastproof.migrateEnv" . | quote }}
             {{- with $valkey }}
@@ -84,9 +101,11 @@ spec:
             {{- toYaml . | nindent 12 }}
             {{- end }}
           ports:
+            {{- if $w.service }}
             - name: http
               containerPort: 8080
               protocol: TCP
+            {{- end }}
             - name: ops
               containerPort: 9090
               protocol: TCP
@@ -94,25 +113,25 @@ spec:
             httpGet:
               path: /healthz
               port: ops
-            periodSeconds: {{ .Values.startupProbe.periodSeconds }}
-            timeoutSeconds: {{ .Values.startupProbe.timeoutSeconds }}
-            failureThreshold: {{ .Values.startupProbe.failureThreshold }}
+            periodSeconds: {{ index $w.startupProbe "periodSeconds" }}
+            timeoutSeconds: {{ index $w.startupProbe "timeoutSeconds" }}
+            failureThreshold: {{ index $w.startupProbe "failureThreshold" }}
           readinessProbe:
             httpGet:
               path: /readyz
               port: ops
-            periodSeconds: {{ .Values.readinessProbe.periodSeconds }}
-            timeoutSeconds: {{ .Values.readinessProbe.timeoutSeconds }}
-            failureThreshold: {{ .Values.readinessProbe.failureThreshold }}
+            periodSeconds: {{ index $w.readinessProbe "periodSeconds" }}
+            timeoutSeconds: {{ index $w.readinessProbe "timeoutSeconds" }}
+            failureThreshold: {{ index $w.readinessProbe "failureThreshold" }}
           livenessProbe:
             httpGet:
               path: /healthz
               port: ops
-            periodSeconds: {{ .Values.livenessProbe.periodSeconds }}
-            timeoutSeconds: {{ .Values.livenessProbe.timeoutSeconds }}
-            failureThreshold: {{ .Values.livenessProbe.failureThreshold }}
+            periodSeconds: {{ index $w.livenessProbe "periodSeconds" }}
+            timeoutSeconds: {{ index $w.livenessProbe "timeoutSeconds" }}
+            failureThreshold: {{ index $w.livenessProbe "failureThreshold" }}
           resources:
-            {{- toYaml .Values.resources | nindent 12 }}
+            {{- toYaml $w.resources | nindent 12 }}
           volumeMounts:
             - name: tmp
               mountPath: /tmp
@@ -183,6 +202,30 @@ spec:
                     - key: {{ $o.key }}
                       path: oidc-client-secret
               {{- end }}
+              {{- if and $kafka $kafkaSasl }}
+              {{- $k := $kafkaSasl | fromJson }}
+              - secret:
+                  name: {{ $k.secret }}
+                  items:
+                    - key: {{ $k.key }}
+                      path: kafka-password
+              {{- end }}
+              {{- if .Values.sinks.clickhouse.enabled }}
+              {{- $c := include "fastproof.clickhouseConn" . | fromJson }}
+              - secret:
+                  name: {{ $c.secret }}
+                  items:
+                    - key: {{ $c.key }}
+                      path: clickhouse-password
+              {{- end }}
+              {{- if .Values.sinks.opensearch.enabled }}
+              {{- $c := include "fastproof.opensearchConn" . | fromJson }}
+              - secret:
+                  name: {{ $c.secret }}
+                  items:
+                    - key: {{ $c.key }}
+                      path: opensearch-password
+              {{- end }}
         {{- if include "fastproof.needsCa" . }}
         - name: ca
           projected:
@@ -199,6 +242,9 @@ spec:
               {{- end }}
               {{- if and .Values.tls.existingSecret (or .Values.tls.clientCa.existingSecret .Values.tls.clientCa.existingConfigMap) }}
               {{- include "fastproof.caSource" (dict "ca" (dict "secret" .Values.tls.clientCa.existingSecret "configMap" .Values.tls.clientCa.existingConfigMap "key" .Values.tls.clientCa.key) "path" "tls-client.crt") | nindent 14 }}
+              {{- end }}
+              {{- range $streamingCas }}
+              {{- include "fastproof.caSource" . | nindent 14 }}
               {{- end }}
         {{- end }}
         {{- if include "fastproof.accessEnabled" . }}
@@ -232,22 +278,24 @@ spec:
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- with .Values.nodeSelector }}
+      {{- with $w.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.tolerations }}
+      {{- with $w.tolerations }}
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.affinity }}
+      {{- with $w.affinity }}
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.topologySpreadConstraints }}
+      {{- with $w.topologySpreadConstraints }}
       topologySpreadConstraints:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+{{- end }}
+{{- end }}
 {{- if and (include "fastproof.fsPvc" .) (not .Values.blob.fs.persistence.existingClaim) }}
 ---
 apiVersion: v1

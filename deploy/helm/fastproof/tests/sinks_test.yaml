@@ -1,0 +1,251 @@
+suite: sinks
+templates:
+  - templates/configmap.yaml
+  - templates/clickhouse.yaml
+  - templates/opensearch.yaml
+  - templates/secrets.yaml
+  - templates/deployment.yaml
+  - charts/opensearch/templates/statefulset.yaml
+  - charts/opensearch/templates/configmap.yaml
+  - charts/opensearch/templates/securityconfig.yaml
+release:
+  name: fp
+  namespace: qa
+values:
+  - ../ci/minimal-fs-values.yaml
+tests:
+  - it: runs the bundled ClickHouse distroless, non-root, with probes and memory caps
+    template: templates/clickhouse.yaml
+    set:
+      sinks.clickhouse.enabled: true
+      sinks.clickhouse.bundled.enabled: true
+    documentSelector:
+      path: kind
+      value: StatefulSet
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: docker.io/clickhouse/clickhouse-server:26.8.36.3-distroless@sha256:d149c739994af7d3687b05ce3111b6a748e0f17702c80b52a93c0161a439a091
+      - equal:
+          path: spec.template.spec.securityContext.runAsUser
+          value: 101
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem
+          value: true
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.httpGet.path
+          value: /ping
+      - equal:
+          path: spec.template.spec.containers[0].resources.limits.memory
+          value: 2Gi
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: CLICKHOUSE_SKIP_USER_SETUP
+            value: "1"
+      - equal:
+          path: spec.template.spec.automountServiceAccountToken
+          value: false
+
+  - it: closes the native, MySQL and PostgreSQL ports and caps memory
+    template: templates/clickhouse.yaml
+    set:
+      sinks.clickhouse.enabled: true
+      sinks.clickhouse.bundled.enabled: true
+    documentSelector:
+      path: kind
+      value: ConfigMap
+    asserts:
+      - matchRegex:
+          path: data["fastproof-server.xml"]
+          pattern: '<tcp_port remove="1"/>'
+      - matchRegex:
+          path: data["fastproof-server.xml"]
+          pattern: '<max_server_memory_usage_to_ram_ratio>0.75</max_server_memory_usage_to_ram_ratio>'
+      - matchRegex:
+          path: data["fastproof-server.xml"]
+          pattern: '<number_of_free_entries_in_pool_to_execute_mutation>2</number_of_free_entries_in_pool_to_execute_mutation>'
+      - matchRegex:
+          path: data["fastproof-users.xml"]
+          pattern: '<default remove="1"/>'
+      - matchRegex:
+          path: data["fastproof-users.xml"]
+          pattern: '<password from_env="CLICKHOUSE_FASTPROOF_PASSWORD"/>'
+      - matchRegex:
+          path: data["fastproof-users.xml"]
+          pattern: 'GRANT ALL ON fastproof\.\*'
+
+  - it: serves the bundled ClickHouse over HTTPS with a TLS secret
+    template: templates/clickhouse.yaml
+    set:
+      sinks.clickhouse.enabled: true
+      sinks.clickhouse.bundled.enabled: true
+      sinks.clickhouse.bundled.tls.existingSecret: ch-tls
+    documentSelector:
+      path: kind
+      value: StatefulSet
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.httpGet.scheme
+          value: HTTPS
+      - equal:
+          path: spec.template.spec.containers[0].ports[0].containerPort
+          value: 8443
+
+  - it: configures the ClickHouse sink and search backend
+    template: templates/configmap.yaml
+    documentIndex: 0
+    set:
+      search.backend: clickhouse
+      sinks.clickhouse.enabled: true
+      sinks.clickhouse.bundled.enabled: true
+      sinks.clickhouse.rawTtlDays: 30
+    asserts:
+      - equal:
+          path: data.FASTPROOF_SINKS
+          value: clickhouse
+      - equal:
+          path: data.FASTPROOF_SEARCH_BACKEND
+          value: clickhouse
+      - equal:
+          path: data.FASTPROOF_CLICKHOUSE_URL
+          value: http://fp-clickhouse:8123
+      - equal:
+          path: data.FASTPROOF_CLICKHOUSE_DATABASE
+          value: fastproof
+      - equal:
+          path: data.FASTPROOF_CLICKHOUSE_PASSWORD_FILE
+          value: /etc/fastproof/secrets/clickhouse-password
+      - equal:
+          path: data.FASTPROOF_CLICKHOUSE_RAW_TTL_DAYS
+          value: "30"
+      - notExists:
+          path: data.FASTPROOF_CLICKHOUSE_CA_FILE
+
+  - it: configures an external ClickHouse with a CA
+    template: templates/configmap.yaml
+    documentIndex: 0
+    set:
+      sinks.clickhouse.enabled: true
+      sinks.clickhouse.external.url: https://clickhouse.example.com:8443
+      sinks.clickhouse.external.user: fastproof
+      sinks.clickhouse.external.password.existingSecret: ch-user
+      sinks.clickhouse.external.ca.existingSecret: ch-ca
+    asserts:
+      - equal:
+          path: data.FASTPROOF_CLICKHOUSE_URL
+          value: https://clickhouse.example.com:8443
+      - equal:
+          path: data.FASTPROOF_CLICKHOUSE_CA_FILE
+          value: /etc/fastproof/ca/clickhouse.crt
+
+  - it: configures OpenSearch with both sinks
+    template: templates/configmap.yaml
+    documentIndex: 0
+    set:
+      search.backend: opensearch
+      sinks.clickhouse.enabled: true
+      sinks.clickhouse.bundled.enabled: true
+      sinks.opensearch.enabled: true
+      sinks.opensearch.external.url: https://opensearch.example.com:9200
+      sinks.opensearch.external.user: fastproof
+      sinks.opensearch.external.password.value: s3cret
+      sinks.opensearch.indexPrefix: qa-
+    asserts:
+      - equal:
+          path: data.FASTPROOF_SINKS
+          value: clickhouse,opensearch
+      - equal:
+          path: data.FASTPROOF_OPENSEARCH_URL
+          value: https://opensearch.example.com:9200
+      - equal:
+          path: data.FASTPROOF_OPENSEARCH_INDEX_PREFIX
+          value: qa-
+      - equal:
+          path: data.FASTPROOF_OPENSEARCH_RAW_TTL_DAYS
+          value: "90"
+      - notExists:
+          path: data.FASTPROOF_OPENSEARCH_PASSWORD
+
+  - it: generates TLS, a bcrypt user and a role limited to the index prefix for the bundled OpenSearch
+    template: templates/opensearch.yaml
+    set:
+      sinks.opensearch.enabled: true
+      opensearch.enabled: true
+    asserts:
+      - hasDocuments:
+          count: 3
+      - matchRegex:
+          path: stringData["internal_users.yml"]
+          pattern: 'hash: "\$2a\$'
+        documentIndex: 1
+      - matchRegex:
+          path: stringData["roles.yml"]
+          pattern: '"fastproof-\*"'
+        documentIndex: 1
+      - equal:
+          path: type
+          value: kubernetes.io/tls
+        documentIndex: 2
+      - isNotEmpty:
+          path: data["tls.key"]
+        documentIndex: 2
+
+  - it: points the server at the bundled OpenSearch with its CA
+    template: templates/configmap.yaml
+    documentIndex: 0
+    set:
+      sinks.opensearch.enabled: true
+      opensearch.enabled: true
+    asserts:
+      - equal:
+          path: data.FASTPROOF_OPENSEARCH_URL
+          value: https://fastproof-opensearch-node:9200
+      - equal:
+          path: data.FASTPROOF_OPENSEARCH_CA_FILE
+          value: /etc/fastproof/ca/opensearch.crt
+
+  - it: hardens the official OpenSearch chart
+    template: charts/opensearch/templates/statefulset.yaml
+    set:
+      sinks.opensearch.enabled: true
+      opensearch.enabled: true
+    asserts:
+      - equal:
+          path: spec.replicas
+          value: 1
+      - notContains:
+          path: spec.template.spec.initContainers
+          content:
+            name: fsgroup-volume
+          any: true
+      - notContains:
+          path: spec.template.spec.initContainers
+          content:
+            name: sysctl
+          any: true
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.tcpSocket.port
+          value: 9200
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.allowPrivilegeEscalation
+          value: false
+      - equal:
+          path: spec.template.spec.securityContext.seccompProfile.type
+          value: RuntimeDefault
+      - equal:
+          path: spec.template.spec.automountServiceAccountToken
+          value: false
+      - equal:
+          path: spec.template.spec.serviceAccountName
+          value: fastproof-opensearch-node
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: OPENSEARCH_JAVA_OPTS
+            value: -Xms768m -Xmx768m
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DISABLE_INSTALL_DEMO_CONFIG
+            value: "true"

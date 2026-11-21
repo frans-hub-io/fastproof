@@ -72,3 +72,116 @@ tests:
     asserts:
       - failedTemplate:
           errorPattern: "blob.s3.endpoint is required"
+
+  - it: needs Kafka for ingest.mode=kafka
+    values:
+      - ../ci/minimal-fs-values.yaml
+    set:
+      ingest.mode: kafka
+    asserts:
+      - failedTemplate:
+          errorPattern: "ingest.mode=kafka needs Kafka"
+
+  - it: refuses Kafka settings in direct mode
+    values:
+      - ../ci/minimal-fs-values.yaml
+    set:
+      kafka.bundled.enabled: true
+    asserts:
+      - failedTemplate:
+          errorPattern: "Kafka is only used with ingest.mode=kafka"
+
+  - it: needs kafka.enabled for the chart mode
+    values:
+      - ../ci/minimal-fs-values.yaml
+    set:
+      ingest.mode: kafka
+      kafka.bundled.enabled: true
+      kafka.bundled.mode: chart
+    asserts:
+      - failedTemplate:
+          errorPattern: "also set kafka.enabled=true"
+
+  - it: refuses the CloudPirates chart outside the chart mode
+    values:
+      - ../ci/minimal-fs-values.yaml
+    set:
+      ingest.mode: kafka
+      kafka.enabled: true
+      kafka.bundled.enabled: true
+    asserts:
+      - failedTemplate:
+          errorPattern: "kafka.enabled switches on the CloudPirates kafka chart"
+
+  - it: needs credentials for external Kafka SASL
+    values:
+      - ../ci/minimal-fs-values.yaml
+    set:
+      ingest.mode: kafka
+      kafka.external.brokers: [kafka.example.com:9092]
+      kafka.external.sasl.mechanism: plain
+      kafka.external.sasl.username: fastproof
+    asserts:
+      - failedTemplate:
+          errorPattern: "kafka.external.sasl.password.existingSecret"
+
+  - it: needs a ClickHouse target for the ClickHouse sink
+    values:
+      - ../ci/minimal-fs-values.yaml
+    set:
+      sinks.clickhouse.enabled: true
+    asserts:
+      - failedTemplate:
+          errorPattern: "needs sinks.clickhouse.external.url or sinks.clickhouse.bundled.enabled"
+
+  - it: needs the matching sink for the search backend
+    values:
+      - ../ci/minimal-fs-values.yaml
+    set:
+      search.backend: opensearch
+    asserts:
+      - failedTemplate:
+          errorPattern: "search.backend=opensearch needs sinks.opensearch.enabled"
+
+  - it: needs the OpenSearch sink for the bundled OpenSearch
+    values:
+      - ../ci/minimal-fs-values.yaml
+    set:
+      opensearch.enabled: true
+    asserts:
+      - failedTemplate:
+          errorPattern: "opensearch.enabled needs sinks.opensearch.enabled"
+
+  - it: needs a shared blob volume for split roles
+    values:
+      - ../ci/minimal-fs-values.yaml
+    set:
+      roles.split: true
+    asserts:
+      - failedTemplate:
+          errorPattern: "or roles.split"
+
+  - it: keeps replica settings per role when split
+    values:
+      - ../ci/minimal-fs-values.yaml
+    set:
+      roles.split: true
+      replicaCount: 2
+      blob.fs.persistence.accessModes: [ReadWriteMany]
+    asserts:
+      - failedTemplate:
+          errorPattern: "set replicas and autoscaling per role"
+
+  - it: needs egress targets for external Kafka and sinks
+    values:
+      - ../ci/minimal-fs-values.yaml
+    set:
+      networkPolicy.enabled: true
+      networkPolicy.egress.database.to:
+        - ipBlock:
+            cidr: 198.51.100.10/32
+      ingest.mode: kafka
+      kafka.external.brokers: [kafka.example.com:9092]
+    asserts:
+      - failedTemplate:
+          errorPattern: "networkPolicy.egress.kafka.to is required"

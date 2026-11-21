@@ -25,6 +25,7 @@ Keep the operations port internal: it is unauthenticated by design. Expose only 
 | `FASTPROOF_DATABASE_URL_FILE` | none | File holding the URL, instead of `FASTPROOF_DATABASE_URL` |
 | `FASTPROOF_DATABASE_CA_FILE` | none | CA bundle to verify the PostgreSQL server certificate |
 | `FASTPROOF_DATABASE_MAX_CONNECTIONS` | `20` | Connection pool size per replica |
+| `PGSSLMODE`, `PGSSLROOTCERT` | none | Standard libpq variables, used when the URL sets no `sslmode` |
 | `FASTPROOF_MIGRATE` | `auto` | `auto` applies migrations at start under an advisory lock; `off` expects them applied by `fastproof migrate` (the Helm chart runs it as a Job) |
 
 PostgreSQL 14 to 18 is supported; 18 is recommended. PostgreSQL 14 reached end of life in November 2026.
@@ -57,6 +58,71 @@ Attachments are content-addressed by SHA-256 and stored once per project.
 
 Give the spool directory room for `FASTPROOF_INGEST_WORKERS` uploads plus the ones being received. The other
 ingest limits are listed on [Limits](limits.md).
+
+## Ingest mode, roles and search
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `FASTPROOF_INGEST_MODE` | `direct` | `direct`: uploads go through the spool and a PostgreSQL job queue to the ingest workers. `kafka`: the HTTP gateway produces to Kafka and writer consumers persist |
+| `FASTPROOF_ROLES` | `all` | Components this process runs: `all`, or a comma list of `api`, `ingest`, `writer`, `sink`, `scheduler` |
+| `FASTPROOF_SEARCH_BACKEND` | `postgres` | Where log search and similar-failure lookups go: `postgres`, `clickhouse` or `opensearch` |
+| `FASTPROOF_SINKS` | empty | Consumers that copy results, attempts, steps and logs out: empty, or a comma list of `clickhouse`, `opensearch` |
+
+A search backend other than `postgres` needs the matching sink, because the sink is what fills it. See
+[Scaling and big data](scaling.md) for when to use which.
+
+## Kafka
+
+Used only with `FASTPROOF_INGEST_MODE=kafka`.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `FASTPROOF_KAFKA_BROKERS` | required | Bootstrap brokers, a comma list of `host:port` |
+| `FASTPROOF_KAFKA_TLS` | `false` | Connect with TLS |
+| `FASTPROOF_KAFKA_CA_FILE` | none | CA bundle for the brokers' certificates |
+| `FASTPROOF_KAFKA_SASL_MECHANISM` | none | `plain`, `scram-sha-256` or `scram-sha-512` |
+| `FASTPROOF_KAFKA_USERNAME` | none | SASL user |
+| `FASTPROOF_KAFKA_PASSWORD_FILE` | none | File with the SASL password |
+| `FASTPROOF_KAFKA_TOPIC_PREFIX` | `fastproof.` | Prefix of the topics `ingest.results`, `ingest.logs`, `ingest.uploads` and `events` |
+| `FASTPROOF_KAFKA_CREATE_TOPICS` | `false` | Create missing topics at start (needs the Kafka `Create` permission) |
+| `FASTPROOF_KAFKA_PARTITIONS` | `12` | Partitions of topics FastProof creates |
+| `FASTPROOF_KAFKA_TRUSTED_PRODUCERS` | `false` | Accept records written straight to Kafka by other producers. Leave it off unless Kafka ACLs restrict who can write |
+
+Consumer offsets and partition leases live in PostgreSQL, so Kafka needs only topic `Read`, `Describe` and
+`Write` for the FastProof user (plus `Create` when FastProof creates the topics). Use SASL over TLS outside a
+trusted network.
+
+## ClickHouse sink
+
+Used when `FASTPROOF_SINKS` contains `clickhouse` or `FASTPROOF_SEARCH_BACKEND=clickhouse`.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `FASTPROOF_CLICKHOUSE_URL` | required | HTTP interface URL, for example `https://clickhouse.example.com:8443` |
+| `FASTPROOF_CLICKHOUSE_DATABASE` | `fastproof` | Database; FastProof creates its tables there |
+| `FASTPROOF_CLICKHOUSE_USER` | none | User |
+| `FASTPROOF_CLICKHOUSE_PASSWORD_FILE` | none | File with the password |
+| `FASTPROOF_CLICKHOUSE_CA_FILE` | none | CA bundle for an `https://` URL |
+| `FASTPROOF_CLICKHOUSE_RAW_TTL_DAYS` | `90` | Days raw rows (results, attempts, steps, logs) are kept; daily aggregates stay |
+
+FastProof uses only the HTTP interface. The user needs all privileges on its database and nothing else; keep
+the native port 9000 closed.
+
+## OpenSearch sink
+
+Used when `FASTPROOF_SINKS` contains `opensearch` or `FASTPROOF_SEARCH_BACKEND=opensearch`.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `FASTPROOF_OPENSEARCH_URL` | required | Cluster URL, for example `https://opensearch.example.com:9200` |
+| `FASTPROOF_OPENSEARCH_USER` | none | User |
+| `FASTPROOF_OPENSEARCH_PASSWORD_FILE` | none | File with the password |
+| `FASTPROOF_OPENSEARCH_CA_FILE` | none | CA bundle for the cluster certificate |
+| `FASTPROOF_OPENSEARCH_INDEX_PREFIX` | `fastproof-` | Prefix of index templates, data streams (`<prefix>logs-*`) and the ISM policy |
+| `FASTPROOF_OPENSEARCH_RAW_TTL_DAYS` | `90` | Days raw documents are kept (through an ISM policy) |
+
+OpenSearch 2.19 and 3.x are supported. The user needs `indices_all` on `<prefix>*` and `.ds-<prefix>*`, index
+template and ISM policy management, and `cluster_monitor`.
 
 ## Access
 
@@ -119,4 +185,5 @@ The same binary is the CLI (`fastproof upload`, `watch`, `launch start`, `launch
 | `FASTPROOF_PROJECT` | Project key |
 | `FASTPROOF_LAUNCH` | External launch id; uploads with the same id join one launch |
 
-`fastproof migrate` uses the database variables above and exits when the schema is up to date.
+`fastproof migrate` needs only the database variables above (`FASTPROOF_DATABASE_*`, `PGSSLMODE`,
+`PGSSLROOTCERT`) and exits when the schema is up to date.

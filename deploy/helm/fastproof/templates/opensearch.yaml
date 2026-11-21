@@ -1,0 +1,150 @@
+{{- if and .Values.sinks.opensearch.enabled .Values.opensearch.enabled }}
+{{- $o := .Values.sinks.opensearch.bundled -}}
+{{- $ns := .Release.Namespace -}}
+{{- $svc := include "fastproof.opensearchService" . -}}
+{{- $securitySecret := .Values.opensearch.securityConfig.config.securityConfigSecret -}}
+{{- $prevCreds := (lookup "v1" "Secret" $ns $o.credentialsSecret) | default dict -}}
+{{- $credsData := $prevCreds.data | default dict -}}
+{{- $password := "" -}}
+{{- $reuse := false -}}
+{{- if hasKey $credsData "password" -}}
+{{- $password = index $credsData "password" | b64dec -}}
+{{- $reuse = true -}}
+{{- else -}}
+{{- $password = randAlphaNum 32 -}}
+{{- end -}}
+{{- $prevSecurity := (lookup "v1" "Secret" $ns $securitySecret) | default dict -}}
+{{- $securityData := $prevSecurity.data | default dict -}}
+{{- $users := "" -}}
+{{- if and $reuse (hasKey $securityData "internal_users.yml") -}}
+{{- $users = index $securityData "internal_users.yml" | b64dec -}}
+{{- else -}}
+{{- $hash := htpasswd $o.user $password | splitList ":" | last -}}
+{{- $users = printf "_meta:\n  type: internalusers\n  config_version: 2\n%s:\n  hash: %s\n  reserved: true\n  description: FastProof sink\n" $o.user ($hash | quote) -}}
+{{- end -}}
+{{- $prefix := .Values.sinks.opensearch.indexPrefix -}}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $o.credentialsSecret }}
+  labels:
+    {{- include "fastproof.labels" . | nindent 4 }}
+    app.kubernetes.io/component: opensearch
+type: Opaque
+data:
+  username: {{ $o.user | b64enc | quote }}
+  password: {{ $password | b64enc | quote }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $securitySecret }}
+  labels:
+    {{- include "fastproof.labels" . | nindent 4 }}
+    app.kubernetes.io/component: opensearch
+type: Opaque
+stringData:
+  internal_users.yml: |
+    {{- $users | nindent 4 }}
+  config.yml: |
+    _meta:
+      type: config
+      config_version: 2
+    config:
+      dynamic:
+        http:
+          anonymous_auth_enabled: false
+        authc:
+          basic_internal_auth_domain:
+            http_enabled: true
+            transport_enabled: true
+            order: 0
+            http_authenticator:
+              type: basic
+              challenge: true
+            authentication_backend:
+              type: intern
+  roles.yml: |
+    _meta:
+      type: roles
+      config_version: 2
+    fastproof:
+      reserved: true
+      cluster_permissions:
+        - cluster_monitor
+        - cluster_composite_ops
+        - "indices:admin/index_template/*"
+        - "indices:admin/template/*"
+        - "cluster:admin/opendistro/ism/*"
+        - "cluster:admin/opensearch/ism/*"
+      index_permissions:
+        - index_patterns:
+            - {{ printf "%s*" $prefix | quote }}
+            - {{ printf ".ds-%s*" $prefix | quote }}
+          allowed_actions:
+            - indices_all
+  roles_mapping.yml: |
+    _meta:
+      type: rolesmapping
+      config_version: 2
+    fastproof:
+      reserved: true
+      users:
+        - {{ $o.user | quote }}
+  action_groups.yml: |
+    _meta:
+      type: actiongroups
+      config_version: 2
+  tenants.yml: |
+    _meta:
+      type: tenants
+      config_version: 2
+  nodes_dn.yml: |
+    _meta:
+      type: nodesdn
+      config_version: 2
+  allowlist.yml: |
+    _meta:
+      type: allowlist
+      config_version: 2
+    config:
+      enabled: false
+  audit.yml: |
+    _meta:
+      type: audit
+      config_version: 2
+    config:
+      enabled: false
+{{- if $o.generateTls }}
+{{- $prevTls := (lookup "v1" "Secret" $ns $o.tlsSecret) | default dict }}
+{{- $tlsData := $prevTls.data | default dict }}
+{{- $ca := "" }}
+{{- $crt := "" }}
+{{- $key := "" }}
+{{- if and (hasKey $tlsData "ca.crt") (hasKey $tlsData "tls.crt") (hasKey $tlsData "tls.key") }}
+{{- $ca = index $tlsData "ca.crt" | b64dec }}
+{{- $crt = index $tlsData "tls.crt" | b64dec }}
+{{- $key = index $tlsData "tls.key" | b64dec }}
+{{- else }}
+{{- $caPair := genCA "fastproof-opensearch-ca" 3650 }}
+{{- $sans := list $svc (printf "%s-headless" $svc) (printf "%s.%s" $svc $ns) (printf "%s.%s.svc" $svc $ns) (printf "*.%s-headless.%s.svc" $svc $ns) (printf "*.%s-headless" $svc) "localhost" }}
+{{- $cert := genSignedCert "fastproof-opensearch-node" (list "127.0.0.1") $sans 3650 $caPair }}
+{{- $ca = $caPair.Cert }}
+{{- $crt = $cert.Cert }}
+{{- $key = $cert.Key }}
+{{- end }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $o.tlsSecret }}
+  labels:
+    {{- include "fastproof.labels" . | nindent 4 }}
+    app.kubernetes.io/component: opensearch
+type: kubernetes.io/tls
+data:
+  ca.crt: {{ $ca | b64enc | quote }}
+  tls.crt: {{ $crt | b64enc | quote }}
+  tls.key: {{ $key | b64enc | quote }}
+{{- end }}
+{{- end }}

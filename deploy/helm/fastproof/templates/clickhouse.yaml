@@ -1,0 +1,284 @@
+{{- $c := .Values.sinks.clickhouse -}}
+{{- if and $c.enabled $c.bundled.enabled }}
+{{- $b := $c.bundled -}}
+{{- $name := include "fastproof.clickhouseName" . -}}
+{{- $secret := include "fastproof.clickhouseSecretName" . -}}
+{{- $tls := not (empty $b.tls.existingSecret) -}}
+{{- $port := ternary 8443 8123 $tls -}}
+{{- if not $b.credentials.existingSecret }}
+{{- $prev := (lookup "v1" "Secret" .Release.Namespace $secret) | default dict }}
+{{- $data := $prev.data | default dict }}
+{{- $password := "" }}
+{{- if hasKey $data "password" }}
+{{- $password = index $data "password" | b64dec }}
+{{- else }}
+{{- $password = randAlphaNum 32 }}
+{{- end }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $secret }}
+  labels:
+    {{- include "fastproof.labels" . | nindent 4 }}
+    app.kubernetes.io/component: clickhouse
+type: Opaque
+data:
+  password: {{ $password | b64enc | quote }}
+---
+{{- end }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "fastproof.labels" . | nindent 4 }}
+    app.kubernetes.io/component: clickhouse
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "fastproof.labels" . | nindent 4 }}
+    app.kubernetes.io/component: clickhouse
+data:
+  fastproof-server.xml: |
+    <clickhouse>
+        <logger>
+            <level>information</level>
+            <console>1</console>
+            <log remove="1"/>
+            <errorlog remove="1"/>
+        </logger>
+        <tcp_port remove="1"/>
+        <mysql_port remove="1"/>
+        <postgresql_port remove="1"/>
+        <interserver_http_port remove="1"/>
+        {{- if $tls }}
+        <http_port remove="1"/>
+        <https_port>8443</https_port>
+        <openSSL>
+            <server>
+                <certificateFile>/etc/clickhouse-server/tls/tls.crt</certificateFile>
+                <privateKeyFile>/etc/clickhouse-server/tls/tls.key</privateKeyFile>
+                <caConfig>/etc/clickhouse-server/tls/ca.crt</caConfig>
+                <verificationMode>none</verificationMode>
+                <loadDefaultCAFile>false</loadDefaultCAFile>
+                <disableProtocols>sslv2,sslv3,tlsv1,tlsv1_1</disableProtocols>
+                <preferServerCiphers>true</preferServerCiphers>
+            </server>
+        </openSSL>
+        {{- end }}
+        {{- range $k, $v := $b.server }}
+        <{{ $k }}>{{ $v }}</{{ $k }}>
+        {{- end }}
+        <merge_tree>
+            {{- range $k, $v := $b.mergeTree }}
+            <{{ $k }}>{{ $v }}</{{ $k }}>
+            {{- end }}
+        </merge_tree>
+        <trace_log remove="1"/>
+        <metric_log remove="1"/>
+        <asynchronous_metric_log remove="1"/>
+        <text_log remove="1"/>
+        <part_log remove="1"/>
+        <processors_profile_log remove="1"/>
+        <query_metric_log remove="1"/>
+        <query_log replace="1">
+            <database>system</database>
+            <table>query_log</table>
+            <partition_by>event_date</partition_by>
+            <ttl>event_date + INTERVAL {{ $b.queryLogTtlDays }} DAY DELETE</ttl>
+            <flush_interval_milliseconds>7500</flush_interval_milliseconds>
+        </query_log>
+    </clickhouse>
+  fastproof-users.xml: |
+    <clickhouse>
+        <profiles>
+            <fastproof>
+                {{- range $k, $v := $b.profile }}
+                <{{ $k }}>{{ $v }}</{{ $k }}>
+                {{- end }}
+            </fastproof>
+        </profiles>
+        <users>
+            <default remove="1"/>
+            <{{ $b.user }}>
+                <password from_env="CLICKHOUSE_FASTPROOF_PASSWORD"/>
+                <networks>
+                    <ip>::/0</ip>
+                </networks>
+                <profile>fastproof</profile>
+                <quota>default</quota>
+                <grants>
+                    <query>GRANT ALL ON {{ $c.database }}.*</query>
+                    {{- range $b.extraGrants }}
+                    <query>{{ . }}</query>
+                    {{- end }}
+                </grants>
+            </{{ $b.user }}>
+        </users>
+    </clickhouse>
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "fastproof.labels" . | nindent 4 }}
+    app.kubernetes.io/component: clickhouse
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: clickhouse
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - name: {{ ternary "https" "http" $tls }}
+      port: {{ $port }}
+      targetPort: {{ ternary "https" "http" $tls }}
+      protocol: TCP
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "fastproof.labels" . | nindent 4 }}
+    app.kubernetes.io/component: clickhouse
+spec:
+  replicas: 1
+  serviceName: {{ $name }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: clickhouse
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: clickhouse
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: clickhouse
+        app.kubernetes.io/part-of: fastproof
+        app.kubernetes.io/version: {{ $b.image.tag | quote }}
+      annotations:
+        checksum/config: {{ list $b $c.database | toJson | sha256sum }}
+    spec:
+      serviceAccountName: {{ $name }}
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml $b.podSecurityContext | nindent 8 }}
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: clickhouse
+          image: {{ include "fastproof.imageRef" $b.image | quote }}
+          imagePullPolicy: {{ $b.image.pullPolicy }}
+          securityContext:
+            {{- toYaml $b.securityContext | nindent 12 }}
+          env:
+            - name: CLICKHOUSE_SKIP_USER_SETUP
+              value: "1"
+            - name: CLICKHOUSE_FASTPROOF_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: {{ $b.credentials.key }}
+          ports:
+            - name: {{ ternary "https" "http" $tls }}
+              containerPort: {{ $port }}
+              protocol: TCP
+          startupProbe:
+            httpGet:
+              path: /ping
+              port: {{ ternary "https" "http" $tls }}
+              scheme: {{ ternary "HTTPS" "HTTP" $tls }}
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: {{ ternary "https" "http" $tls }}
+              scheme: {{ ternary "HTTPS" "HTTP" $tls }}
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: {{ ternary "https" "http" $tls }}
+              scheme: {{ ternary "HTTPS" "HTTP" $tls }}
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            {{- toYaml $b.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/clickhouse-server/config.d/fastproof-server.xml
+              subPath: fastproof-server.xml
+              readOnly: true
+            - name: config
+              mountPath: /etc/clickhouse-server/users.d/fastproof-users.xml
+              subPath: fastproof-users.xml
+              readOnly: true
+            - name: data
+              mountPath: /var/lib/clickhouse
+            - name: logs
+              mountPath: /var/log/clickhouse-server
+            - name: tmp
+              mountPath: /tmp
+            {{- if $tls }}
+            - name: tls
+              mountPath: /etc/clickhouse-server/tls
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $name }}
+        - name: logs
+          emptyDir:
+            sizeLimit: 256Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 2Gi
+        {{- if $tls }}
+        - name: tls
+          secret:
+            secretName: {{ $b.tls.existingSecret }}
+            defaultMode: 0440
+        {{- end }}
+        {{- if not $b.persistence.enabled }}
+        - name: data
+          emptyDir: {}
+        {{- end }}
+      {{- with $b.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $b.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $b.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  {{- if $b.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- with $b.persistence.storageClass }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ $b.persistence.size }}
+  {{- end }}
+{{- end }}

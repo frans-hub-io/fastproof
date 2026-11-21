@@ -100,10 +100,13 @@ nav:
       - guide/ci-recipes.md
   - Reports:
       - guide/formats.md
+      - guide/reporters.md
+      - guide/live-logs.md
       - guide/migrating-from-allure.md
   - Operations:
       - operations/configuration.md
       - operations/helm.md
+      - operations/scaling.md
       - operations/security.md
       - operations/limits.md
   - Reference:

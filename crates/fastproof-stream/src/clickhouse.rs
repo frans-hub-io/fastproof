@@ -14,7 +14,31 @@ use uuid::Uuid;
 
 use crate::config::ClickHouseConfig;
 use crate::http::{HttpBackend, error_text};
-use crate::sink::{SearchBackend, Sink, SinkBatch, flatten_steps, match_key};
+use crate::sink::{Deletions, SearchBackend, Sink, SinkBatch, flatten_steps, match_key};
+
+/// Settings of every read query: a time limit and a memory limit per query.
+const READ_SETTINGS: [(&str, &str); 3] = [
+    ("max_execution_time", "30"),
+    ("timeout_overflow_mode", "throw"),
+    ("max_memory_usage", "2147483648"),
+];
+
+/// A query parameter value in ClickHouse's escaped format, so that backslashes, tabs and line
+/// breaks in user text reach the query as written.
+pub fn escape_param(v: &str) -> String {
+    let mut out = String::with_capacity(v.len());
+    for c in v.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '\t' => out.push_str("\\t"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\0' => out.push_str("\\0"),
+            c => out.push(c),
+        }
+    }
+    out
+}
 
 /// The ClickHouse backend.
 #[derive(Clone, Debug)]
@@ -56,16 +80,29 @@ impl ClickHouse {
         &self.cfg.database
     }
 
-    /// Runs a statement; `params` bind `{name:Type}` placeholders.
+    /// Runs a statement; `params` bind `{name:Type}` placeholders (values are escaped).
     pub async fn exec(
         &self,
         sql: &str,
         params: &[(&str, String)],
         body: Option<String>,
     ) -> anyhow::Result<String> {
+        self.exec_with(sql, params, body, &[]).await
+    }
+
+    async fn exec_with(
+        &self,
+        sql: &str,
+        params: &[(&str, String)],
+        body: Option<String>,
+        settings: &[(&str, &str)],
+    ) -> anyhow::Result<String> {
         let mut q: Vec<(String, String)> = Vec::new();
         for (k, v) in params {
-            q.push((format!("param_{k}"), v.clone()));
+            q.push((format!("param_{k}"), escape_param(v)));
+        }
+        for (k, v) in settings {
+            q.push((k.to_string(), v.to_string()));
         }
         q.push(("date_time_input_format".into(), "best_effort".into()));
         // A statement without data goes in the body; with data, the statement is the `query`
@@ -90,13 +127,13 @@ impl ClickHouse {
         Ok(r.text().await?)
     }
 
-    /// Reads rows of a `FORMAT JSONEachRow` query.
+    /// Reads rows of a `FORMAT JSONEachRow` query (with [`READ_SETTINGS`]).
     pub async fn rows<T: for<'de> Deserialize<'de>>(
         &self,
         sql: &str,
         params: &[(&str, String)],
     ) -> anyhow::Result<Vec<T>> {
-        let text = self.exec(sql, params, None).await?;
+        let text = self.exec_with(sql, params, None, &READ_SETTINGS).await?;
         text.lines()
             .filter(|l| !l.trim().is_empty())
             .map(|l| serde_json::from_str(l).with_context(|| "decoding a ClickHouse row"))
@@ -291,6 +328,57 @@ impl Sink for ClickHouse {
         self.insert("logs", &logs, token).await?;
         Ok(())
     }
+
+    async fn delete(&self, d: &Deletions) -> anyhow::Result<()> {
+        let db = self.db().to_string();
+        let mut by_project: std::collections::BTreeMap<&str, Vec<String>> = Default::default();
+        for (p, l) in &d.launches {
+            by_project
+                .entry(p.as_str())
+                .or_default()
+                .push(l.to_string());
+        }
+        for (project, ids) in by_project {
+            for part in ids.chunks(1000) {
+                let ids = serde_json::to_string(part)?.replace('"', "'");
+                for table in ["results", "attempts", "steps", "logs"] {
+                    self.exec(
+                        &format!(
+                            "DELETE FROM {db}.{table} WHERE project = {{p:String}} AND launch_id IN {{ids:Array(UUID)}}"
+                        ),
+                        &[("p", project.to_string()), ("ids", ids.clone())],
+                        None,
+                    )
+                    .await
+                    .with_context(|| format!("deleting launches from {table}"))?;
+                }
+            }
+        }
+        for (project, at) in &d.projects {
+            let params = [("p", project.clone()), ("at", ts(*at))];
+            for table in ["results", "attempts", "steps", "logs"] {
+                self.exec(
+                    &format!(
+                        "DELETE FROM {db}.{table} WHERE project = {{p:String}} AND launch_created_at <= {{at:DateTime64(3, 'UTC')}}"
+                    ),
+                    &params,
+                    None,
+                )
+                .await
+                .with_context(|| format!("deleting a project from {table}"))?;
+            }
+            self.exec(
+                &format!(
+                    "DELETE FROM {db}.series_daily WHERE project = {{p:String}} AND day <= toDate({{at:DateTime64(3, 'UTC')}})"
+                ),
+                &params,
+                None,
+            )
+            .await
+            .context("deleting a project from series_daily")?;
+        }
+        Ok(())
+    }
 }
 
 /// The stream as its JSON name.
@@ -460,5 +548,12 @@ mod tests {
         );
         assert!(super::tokens("  ::  ").is_empty());
         assert_eq!(super::ts_ms(-5), "1970-01-01 00:00:00.000");
+    }
+
+    #[test]
+    fn params_are_escaped() {
+        assert_eq!(super::escape_param("a\\b"), "a\\\\b");
+        assert_eq!(super::escape_param("x\ty\nz"), "x\\ty\\nz");
+        assert_eq!(super::escape_param("plain 'text'"), "plain 'text'");
     }
 }

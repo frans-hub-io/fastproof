@@ -16,7 +16,10 @@ use uuid::Uuid;
 use crate::clickhouse::stream_str;
 use crate::config::OpenSearchConfig;
 use crate::http::{HttpBackend, error_text};
-use crate::sink::{SearchBackend, Sink, SinkBatch, flatten_steps, match_key};
+use crate::sink::{Deletions, SearchBackend, Sink, SinkBatch, flatten_steps, match_key};
+
+/// Time limit of a search request inside OpenSearch.
+const SEARCH_TIMEOUT: &str = "30s";
 
 /// The OpenSearch backend.
 #[derive(Clone, Debug)]
@@ -298,6 +301,37 @@ impl Sink for OpenSearch {
         }
         Ok(())
     }
+
+    async fn delete(&self, d: &Deletions) -> anyhow::Result<()> {
+        let p = self.p();
+        let path = format!(
+            "/{p}results-*,{p}attempts-*,{p}logs-*/_delete_by_query?ignore_unavailable=true&allow_no_indices=true&conflicts=proceed&refresh=true"
+        );
+        let mut by_project: std::collections::BTreeMap<&str, Vec<String>> = Default::default();
+        for (project, l) in &d.launches {
+            by_project
+                .entry(project.as_str())
+                .or_default()
+                .push(l.to_string());
+        }
+        for (project, ids) in by_project {
+            for part in ids.chunks(1000) {
+                let body = json!({"query": {"bool": {"filter": [
+                    {"term": {"project": project}}, {"terms": {"launch_id": part}}]}}});
+                self.ok(reqwest::Method::POST, &path, Some(body))
+                    .await
+                    .context("deleting launches")?;
+            }
+        }
+        for (project, at) in &d.projects {
+            let body = json!({"query": {"bool": {"filter": [
+                {"term": {"project": project}}, {"range": {"launch_created_at": {"lte": at}}}]}}});
+            self.ok(reqwest::Method::POST, &path, Some(body))
+                .await
+                .context("deleting a project")?;
+        }
+        Ok(())
+    }
 }
 
 fn trigram_score(a: &str, b: &str) -> f64 {
@@ -336,7 +370,7 @@ impl SearchBackend for OpenSearch {
             .collect();
             filter.push(json!({"terms": {"level": levels}}));
         }
-        let body = json!({"size": s.limit.clamp(1, 1000), "track_total_hits": false,
+        let body = json!({"size": s.limit.clamp(1, 1000), "track_total_hits": false, "timeout": SEARCH_TIMEOUT,
             "sort": [{"@timestamp": "desc"}, {"seq": "desc"}],
             "query": {"bool": {"filter": filter, "must": [{"match_phrase": {"message": s.q}}]}}});
         let v = self
@@ -394,7 +428,7 @@ impl SearchBackend for OpenSearch {
         };
         let key = match_key(src.fingerprint.as_deref(), message);
         let norm = normalize_message(message);
-        let body = json!({"size": (limit.clamp(1, 100) * 3), "track_total_hits": false,
+        let body = json!({"size": (limit.clamp(1, 100) * 3), "track_total_hits": false, "timeout": SEARCH_TIMEOUT,
             "_source": ["launch_id", "launch_number", "name", "message", "message_norm", "match_key"],
             "query": {"bool": {
                 "filter": [{"term": {"project": project_key}}, {"terms": {"status": ["failed", "broken"]}}],

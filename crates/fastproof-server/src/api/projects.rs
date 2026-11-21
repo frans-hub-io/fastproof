@@ -89,6 +89,15 @@ pub async fn create(
     check_name(&body.name)?;
     let description = body.description.unwrap_or_default();
     check_description(&description)?;
+    if s.store.deleted_key(&body.key).await?.is_some() {
+        if key_bound(&s, &body.key) {
+            return Err(ApiError::conflict(
+                "a deleted project used this key and the access file still grants roles in it; \
+                 remove those bindings (or choose another key) first",
+            ));
+        }
+        s.store.forget_deleted_key(&body.key).await?;
+    }
     match s
         .store
         .create_project(&body.key, body.name.trim(), &description)
@@ -170,7 +179,53 @@ pub async fn delete(
     if !fastproof_blob::valid_project_key(&key) || !s.store.delete_project(&key).await? {
         return Err(ApiError::not_found("project"));
     }
-    s.audit(&auth, "project.delete", Some(&key), serde_json::json!({}))
-        .await;
+    let revoked = revoke_scoped_tokens(&s, &key).await;
+    s.audit(
+        &auth,
+        "project.delete",
+        Some(&key),
+        serde_json::json!({"tokensRevoked": revoked}),
+    )
+    .await;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Whether a binding of the access file names `key` among its scopes.
+fn key_bound(s: &AppState, key: &str) -> bool {
+    s.platform.policy().bindings().iter().any(
+        |b| matches!(&b.scopes, franshub_access::Scopes::List(l) if l.iter().any(|k| k == key)),
+    )
+}
+
+/// Revokes the managed tokens scoped to a deleted project (tokens for every project or global
+/// tokens stay), so that they do not open a later project with the same key. Returns how many.
+async fn revoke_scoped_tokens(s: &AppState, key: &str) -> u64 {
+    let Some(svc) = s.platform.tokens() else {
+        return 0;
+    };
+    let tokens = match svc.store().list().await {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::error!(error = %format!("{e:#}"), project = %key, "listing tokens of a deleted project failed");
+            return 0;
+        }
+    };
+    let now = chrono::Utc::now();
+    let mut n = 0;
+    for t in tokens {
+        if t.global || t.revoked || !t.scopes.iter().any(|k| k == key) {
+            continue;
+        }
+        match svc.store().revoke(t.id, now).await {
+            Ok(true) => {
+                svc.forget(&t.sha256);
+                n += 1;
+            }
+            Ok(false) => {}
+            Err(e) => {
+                tracing::error!(error = %format!("{e:#}"), token = %t.name, "revoking a token of a deleted project failed")
+            }
+        }
+    }
+    n
 }

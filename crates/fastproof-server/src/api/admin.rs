@@ -71,10 +71,20 @@ pub async fn audit(
     if q.limit.is_some_and(|l| l == 0 || l > 500) {
         return Err(ApiError::bad_request("limit must be 1..=500"));
     }
+    // A caller with audit:read in one project sees that project's records only, not those of
+    // an earlier, deleted project with the same key.
+    let since = match q.scope.as_deref() {
+        Some(k) if !auth.allowed(&s.perms.audit_read, None) => match s.store.project(k).await? {
+            Some(p) => Some(p.created_at),
+            None => return Err(ApiError::not_found("project")),
+        },
+        _ => None,
+    };
     let f = AuditFilter {
         action: q.action,
         principal: q.principal,
         scope: q.scope,
+        since,
         before,
         limit: Some(q.limit.unwrap_or(50)),
         ..AuditFilter::default()

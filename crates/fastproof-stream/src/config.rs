@@ -142,6 +142,8 @@ pub struct KafkaConfig {
     pub client_id: String,
     /// Largest record value produced (uncompressed).
     pub max_record_bytes: usize,
+    /// Signed records older than this are rejected (`FASTPROOF_KAFKA_SIGNATURE_MAX_AGE_HOURS`).
+    pub signature_max_age: std::time::Duration,
 }
 
 impl KafkaConfig {
@@ -213,7 +215,12 @@ impl KafkaConfig {
         if !(16 * 1024..=64 * 1024 * 1024).contains(&max_record_bytes) {
             bail!("FASTPROOF_KAFKA_MAX_RECORD_BYTES: 16384..=67108864");
         }
+        let max_age_hours: u64 = v.parse("FASTPROOF_KAFKA_SIGNATURE_MAX_AGE_HOURS", 168)?;
+        if !(1..=24 * 365).contains(&max_age_hours) {
+            bail!("FASTPROOF_KAFKA_SIGNATURE_MAX_AGE_HOURS: 1..=8760");
+        }
         Ok(Some(Self {
+            signature_max_age: std::time::Duration::from_secs(max_age_hours * 3600),
             brokers,
             tls,
             ca_file,

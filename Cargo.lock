@@ -827,6 +827,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "fastproof-model",
+ "futures",
  "hex",
  "metrics",
  "rand 0.9.5",

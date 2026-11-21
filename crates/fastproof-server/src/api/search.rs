@@ -13,7 +13,13 @@ use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
 use super::{ErrorBody, P, Q};
+use crate::limits::heavy_error;
 use crate::state::AppState;
+
+/// Default search window before `to`, in days.
+pub const DEFAULT_SEARCH_DAYS: i64 = 7;
+/// Longest search window, in days.
+pub const MAX_SEARCH_DAYS: i64 = 31;
 
 /// Query of the log search.
 #[derive(Deserialize, IntoParams)]
@@ -23,7 +29,7 @@ pub struct LogSearchQuery {
     /// Text to find (1..=256 bytes; a substring in PostgreSQL and ClickHouse, a phrase in OpenSearch).
     pub q: String,
     pub launch_id: Option<Uuid>,
-    /// RFC 3339; default 7 days before `to`.
+    /// RFC 3339; default 7 days before `to`; at most 31 days before `to`.
     pub from: Option<String>,
     /// RFC 3339; default now.
     pub to: Option<String>,
@@ -54,7 +60,7 @@ fn backend_error(e: anyhow::Error) -> ApiError {
 #[utoipa::path(get, path = "/api/v1/projects/{key}/search/logs", tag = "logs", operation_id = "logs_search",
     params(("key" = String, Path), LogSearchQuery),
     responses((status = 200, body = LogHits), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),
-        (status = 404, body = ErrorBody), (status = 503, body = ErrorBody)))]
+        (status = 404, body = ErrorBody), (status = 429, body = ErrorBody), (status = 503, body = ErrorBody)))]
 pub async fn logs(
     State(s): State<AppState>,
     auth: Auth,
@@ -77,25 +83,49 @@ pub async fn logs(
             ApiError::bad_request("level must be trace, debug, info, warn or error")
         })?),
     };
+    let to = time(q.to.as_deref(), "to")?.unwrap_or_else(Utc::now);
+    let from = time(q.from.as_deref(), "from")?
+        .unwrap_or_else(|| to - chrono::Duration::days(DEFAULT_SEARCH_DAYS));
+    if from > to {
+        return Err(ApiError::bad_request("from must not be after to"));
+    }
+    if to - from > chrono::Duration::days(MAX_SEARCH_DAYS) {
+        return Err(ApiError::bad_request(format!(
+            "the search window must be at most {MAX_SEARCH_DAYS} days"
+        )));
+    }
     let search = LogSearch {
         q: text,
         launch_id: q.launch_id,
-        from: time(q.from.as_deref(), "from")?,
-        to: time(q.to.as_deref(), "to")?,
+        from: Some(from),
+        to: Some(to),
         level,
         limit,
     };
-    if let (Some(f), Some(t)) = (search.from, search.to)
-        && f > t
-    {
-        return Err(ApiError::bad_request("from must not be after to"));
-    }
+    let _permit = s.guards.heavy(&auth).await?;
     let hits = match &s.search {
-        Some(b) => b
-            .search_logs(&project.key, &search)
+        Some(b) => {
+            let mut hits = b
+                .search_logs(&project.key, &search)
+                .await
+                .map_err(backend_error)?;
+            let live = s
+                .store
+                .live_launches(project.id, hits.items.iter().map(|h| h.launch_id))
+                .await?;
+            let before = hits.items.len();
+            hits.items.retain(|h| live.contains(&h.launch_id));
+            if hits.items.len() < before {
+                metrics::counter!("fastproof_search_stale_hits_total")
+                    .increment((before - hits.items.len()) as u64);
+            }
+            hits
+        }
+        None => s
+            .store
+            .search_logs(project.id, &search)
             .await
-            .map_err(backend_error)?,
-        None => s.store.search_logs(project.id, &search).await?,
+            .map_err(heavy_error)?,
     };
     Ok(Json(hits))
 }
@@ -117,7 +147,8 @@ pub struct SimilarList {
 #[utoipa::path(get, path = "/api/v1/projects/{key}/results/{id}/similar", tag = "results", operation_id = "results_similar",
     params(("key" = String, Path), ("id" = Uuid, Path), SimilarQuery),
     responses((status = 200, body = SimilarList, description = "The same fingerprint first (the normalized message hash while results carry no fingerprint), then text similarity"),
-        (status = 400, body = ErrorBody), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody), (status = 503, body = ErrorBody)))]
+        (status = 400, body = ErrorBody), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody),
+        (status = 429, body = ErrorBody), (status = 503, body = ErrorBody)))]
 pub async fn similar(
     State(s): State<AppState>,
     auth: Auth,
@@ -130,20 +161,30 @@ pub async fn similar(
         Some(n) if (1..=100).contains(&n) => n,
         Some(_) => return Err(ApiError::bad_request("limit must be 1..=100")),
     };
+    let _permit = s.guards.heavy(&auth).await?;
     let src = s
         .store
         .similar_source(project.id, id)
         .await?
         .ok_or_else(|| ApiError::not_found("result"))?;
     let items = match &s.search {
-        Some(b) => b
-            .similar(&project.key, &src, limit)
-            .await
-            .map_err(backend_error)?,
+        Some(b) => {
+            let mut items = b
+                .similar(&project.key, &src, limit)
+                .await
+                .map_err(backend_error)?;
+            let live = s
+                .store
+                .live_launches(project.id, items.iter().map(|i| i.launch_id))
+                .await?;
+            items.retain(|i| live.contains(&i.launch_id));
+            items
+        }
         None => s
             .store
             .similar_results(project.id, src.id, limit, None)
-            .await?
+            .await
+            .map_err(heavy_error)?
             .unwrap_or_default()
             .into_iter()
             .map(|i| SimilarResult {

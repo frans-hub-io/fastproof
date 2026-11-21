@@ -164,6 +164,8 @@ pub struct Config {
     pub opensearch: Option<fastproof_stream::OpenSearchConfig>,
     pub sink_tuning: fastproof_stream::SinkTuning,
     pub log_limits: LogLimits,
+    /// Per-caller and per-replica guards (`crate::limits::GuardSettings`).
+    pub guards: crate::limits::GuardSettings,
 }
 
 fn redact_url(u: &str) -> String {
@@ -227,6 +229,7 @@ impl fmt::Debug for Config {
             .field("clickhouse", &self.clickhouse)
             .field("opensearch", &self.opensearch)
             .field("log_limits", &self.log_limits)
+            .field("guards", &self.guards)
             .finish_non_exhaustive()
     }
 }
@@ -554,6 +557,7 @@ impl Config {
             opensearch,
             sink_tuning: fastproof_stream::SinkTuning::from_vars(&vars)?,
             log_limits,
+            guards: crate::limits::GuardSettings::from_env(&env)?,
         })
     }
 }

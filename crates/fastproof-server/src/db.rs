@@ -18,6 +18,12 @@ pub struct DbSettings {
     pub url: Secret,
     pub ca_file: Option<PathBuf>,
     pub max_connections: u32,
+    /// Longest statement on pooled connections (`FASTPROOF_DATABASE_STATEMENT_TIMEOUT_SECONDS`,
+    /// `None` when 0). Migrations and index builds run on connections without it.
+    pub statement_timeout: Option<Duration>,
+    /// Connections heavy reads leave free for ingest and workers
+    /// (`FASTPROOF_DATABASE_INGEST_RESERVE`).
+    pub ingest_reserve: u32,
 }
 
 impl std::fmt::Debug for DbSettings {
@@ -25,6 +31,8 @@ impl std::fmt::Debug for DbSettings {
         f.debug_struct("DbSettings")
             .field("ca_file", &self.ca_file)
             .field("max_connections", &self.max_connections)
+            .field("statement_timeout", &self.statement_timeout)
+            .field("ingest_reserve", &self.ingest_reserve)
             .finish_non_exhaustive()
     }
 }
@@ -49,13 +57,43 @@ impl DbSettings {
                     anyhow!("FASTPROOF_DATABASE_MAX_CONNECTIONS: a number of at least 2")
                 })?,
         };
+        let statement_timeout = match env.var("FASTPROOF_DATABASE_STATEMENT_TIMEOUT_SECONDS") {
+            None => Some(DEFAULT_STATEMENT_TIMEOUT),
+            Some(v) => match v.trim().parse::<u64>() {
+                Ok(0) => None,
+                Ok(n) if n <= 86_400 => Some(Duration::from_secs(n)),
+                _ => bail!("FASTPROOF_DATABASE_STATEMENT_TIMEOUT_SECONDS: 0 (off) or 1..=86400"),
+            },
+        };
+        let ingest_reserve = match env.var("FASTPROOF_DATABASE_INGEST_RESERVE") {
+            None => (max_connections / 4).max(1),
+            Some(v) => v
+                .trim()
+                .parse::<u32>()
+                .ok()
+                .filter(|n| *n < max_connections)
+                .ok_or_else(|| {
+                    anyhow!(
+                        "FASTPROOF_DATABASE_INGEST_RESERVE: a number below FASTPROOF_DATABASE_MAX_CONNECTIONS"
+                    )
+                })?,
+        };
         Ok(Self {
             url,
             ca_file: env
                 .var("FASTPROOF_DATABASE_CA_FILE")
                 .map(|v| PathBuf::from(v.trim())),
             max_connections,
+            statement_timeout,
+            ingest_reserve,
         })
+    }
+
+    /// Heavy reads that may run at once: the pool minus the ingest reserve.
+    pub fn heavy_slots(&self) -> usize {
+        self.max_connections
+            .saturating_sub(self.ingest_reserve)
+            .max(1) as usize
     }
 
     /// Connect options: the URL, then `PGSSLMODE`/`PGSSLROOTCERT` when the URL sets no
@@ -89,6 +127,9 @@ impl DbSettings {
                 bail!("FASTPROOF_DATABASE_CA_FILE: {} is not a file", ca.display());
             }
             opts = opts.ssl_root_cert(ca);
+        }
+        if let Some(t) = self.statement_timeout {
+            opts = opts.options([("statement_timeout", format!("{}ms", t.as_millis()))]);
         }
         Ok(opts)
     }
@@ -128,15 +169,39 @@ pub fn ssl_mode_name(m: PgSslMode) -> &'static str {
     }
 }
 
-/// Runs the platform and FastProof migrations (each under its advisory lock).
+/// Default of `FASTPROOF_DATABASE_STATEMENT_TIMEOUT_SECONDS`.
+pub const DEFAULT_STATEMENT_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// A one-connection pool like `pool` but without a statement timeout, for migrations, index
+/// builds and other maintenance that may legitimately run long. Close it when done.
+pub async fn unbounded(pool: &PgPool) -> anyhow::Result<PgPool> {
+    let opts = (*pool.connect_options())
+        .clone()
+        .options([("statement_timeout", "0")]);
+    Ok(PgPoolOptions::new()
+        .max_connections(1)
+        .min_connections(0)
+        .acquire_timeout(Duration::from_secs(30))
+        .connect_with(opts)
+        .await?)
+}
+
+/// Runs the platform and FastProof migrations (each under its advisory lock), on a connection
+/// without a statement timeout.
 pub async fn migrate(pool: &PgPool) -> anyhow::Result<()> {
-    franshub_store_pg::migrate(pool)
-        .await
-        .context("platform migrations")?;
-    fastproof_store::migrate(pool)
-        .await
-        .context("FastProof migrations")?;
-    Ok(())
+    let m = unbounded(pool).await.context("connecting for migrations")?;
+    let r = async {
+        franshub_store_pg::migrate(&m)
+            .await
+            .context("platform migrations")?;
+        fastproof_store::migrate(&m)
+            .await
+            .context("FastProof migrations")?;
+        Ok(())
+    }
+    .await;
+    m.close().await;
+    r
 }
 
 #[cfg(test)]
@@ -148,6 +213,8 @@ mod tests {
             url: Secret::new(url),
             ca_file: ca.map(PathBuf::from),
             max_connections: 5,
+            statement_timeout: None,
+            ingest_reserve: 1,
         }
     }
 
@@ -182,5 +249,29 @@ mod tests {
         );
         let e = DbSettings::from_lookup(&|_| None).unwrap_err().to_string();
         assert!(e.contains("FASTPROOF_DATABASE_URL"));
+    }
+
+    #[test]
+    fn timeouts_and_reserve() {
+        let url = |k: &str| {
+            (k == "FASTPROOF_DATABASE_URL").then(|| "postgres://u@db.example.com/fp".to_string())
+        };
+        let d = DbSettings::from_lookup(&url).unwrap();
+        assert_eq!(d.statement_timeout, Some(DEFAULT_STATEMENT_TIMEOUT));
+        assert_eq!(
+            (d.max_connections, d.ingest_reserve, d.heavy_slots()),
+            (20, 5, 15)
+        );
+        let o = d.connect_options(&|_| None).unwrap();
+        assert_eq!(o.get_options(), Some("-c statement_timeout=120000ms"));
+        let vars = |k: &str| match k {
+            "FASTPROOF_DATABASE_URL" => Some("postgres://u@db.example.com/fp".to_string()),
+            "FASTPROOF_DATABASE_STATEMENT_TIMEOUT_SECONDS" => Some("0".into()),
+            "FASTPROOF_DATABASE_MAX_CONNECTIONS" => Some("4".into()),
+            "FASTPROOF_DATABASE_INGEST_RESERVE" => Some("4".into()),
+            _ => None,
+        };
+        let e = DbSettings::from_lookup(&vars).unwrap_err().to_string();
+        assert!(e.contains("FASTPROOF_DATABASE_INGEST_RESERVE"), "{e}");
     }
 }

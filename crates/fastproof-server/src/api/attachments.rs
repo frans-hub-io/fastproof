@@ -77,7 +77,7 @@ pub fn inline_safe(ct: &str) -> bool {
         ("X-FastProof-Attachment-Name" = Option<String>, Header, description = "file name")),
     request_body(content = Vec<u8>, content_type = "application/octet-stream"),
     responses((status = 201, body = AttachmentCreated), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody),
-        (status = 413, body = ErrorBody)))]
+        (status = 413, body = ErrorBody), (status = 503, body = ErrorBody)))]
 pub async fn upload(
     State(s): State<AppState>,
     auth: Auth,
@@ -97,6 +97,7 @@ pub async fn upload(
         .get(NAME_HEADER)
         .and_then(|v| v.to_str().ok())
         .and_then(clean_file_name);
+    let _spool = s.guards.spool().await?;
     let dir = s.cfg.spool_dir.join("attachments");
     tokio::fs::create_dir_all(&dir)
         .await
@@ -117,6 +118,9 @@ pub async fn upload(
             .await?;
         let blob_key = BlobKey::attachment(&project.key, &spooled.sha256)?;
         if !existing.contains_key(&spooled.sha256) {
+            s.store
+                .cancel_blob_deletions(&[blob_key.to_string()])
+                .await?;
             s.blobs.put_file(&blob_key, &spooled.path).await?;
         }
         let ids = s

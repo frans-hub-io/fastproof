@@ -227,6 +227,11 @@ pub fn router(state: AppState) -> Router {
     }
     let app = app.with_state(state.clone());
     app.merge(swagger)
+        .layer(middleware::from_fn(crate::limits::catch_panic))
+        .layer(middleware::from_fn_with_state(
+            state.cfg.guards.body_idle_timeout,
+            crate::limits::body_idle_timeout,
+        ))
         .layer(middleware::from_fn_with_state(
             Arc::new(SecurityHeaders::default()),
             security_headers,
@@ -340,7 +345,15 @@ pub async fn start_with_pool(
     {
         let pool = pool.clone();
         tokio::spawn(async move {
-            fastproof_store::search::ensure_trigram(&pool).await;
+            match crate::db::unbounded(&pool).await {
+                Ok(p) => {
+                    fastproof_store::search::ensure_trigram(&p).await;
+                    p.close().await;
+                }
+                Err(e) => {
+                    tracing::warn!(error = %format!("{e:#}"), "connecting for the trigram index failed")
+                }
+            }
         });
     }
     for sub in ["incoming", "work", "attachments"] {
@@ -386,6 +399,7 @@ pub async fn start_with_pool(
         logs: crate::stream::live::LogHub::new(),
         kafka,
         search,
+        guards: crate::limits::Guards::new(cfg.guards, cfg.db.heavy_slots()),
         cfg: Arc::new(cfg),
     }));
     let sched = if state.cfg.roles.scheduler {

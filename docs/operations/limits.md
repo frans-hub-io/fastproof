@@ -53,7 +53,29 @@ over a limit is refused with `413` and a message that names the limit with its u
 
 See [Live logs](../guide/live-logs.md) for the log fields.
 
+## API limits
+
+| Limit | Value | When exceeded |
+|---|---|---|
+| One NDJSON line of `POST .../results` | 16 MiB (and at most `max_document_bytes`) | 413 `max_document_bytes` |
+| JSON values per results or logs request | `max_json_values` (5,000,000) for the whole request, NDJSON lines summed | 413 `max_json_values` |
+| Dashboard days | years 1970 to 9999, window at most 3660 days | 400 |
+| Log search window | default 7 days before `to`, at most 31 days | 400 |
+| `q` and text filters of result and launch lists | 256 bytes | 400 |
+| Test plans per project | 1000; plans are deleted 90 days after creation | 429 |
+| Stored log chunk | 1000 lines and 1 MiB | — |
+| Live log subscriber queue | 2000 lines and 1 MiB; older lines are dropped and reported as `gap` | a subscriber that reads nothing for 60 s while its queue overflows is disconnected |
+| ClickHouse search query | 30 s, 2 GiB memory | 503 |
+| OpenSearch search | 30 s | 503 |
+| SQL statement of a heavy read | `FASTPROOF_DATABASE_STATEMENT_TIMEOUT_SECONDS` | 503 `timeout` |
+
 ## Other protections
+
+- A request that makes a handler fail unexpectedly gets the uniform 500 error body; the connection stays usable.
+- Identical attachment bytes are stored once per project; each upload keeps its own content type and file name.
+- Deleting a project revokes the API tokens scoped to it. Its key cannot be reused while the access file still
+  grants roles in it. Its rows in ClickHouse and OpenSearch are deleted; deleted launches drop out of search at once.
+
 
 - XML is parsed without DTDs and without external entities.
 - Archives with entries that have absolute paths, `..` segments or NUL bytes, or that are symbolic or hard

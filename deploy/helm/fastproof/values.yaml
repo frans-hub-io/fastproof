@@ -25,6 +25,12 @@ server:
     maxLinesPerRequest: 5000
     maxRequestBytes: 8388608
     maxBytesPerLaunch: 268435456
+  guards:
+    sseMaxPerCaller: 16
+    sseRecheckSeconds: 300
+    heavyQueriesPerCaller: 4
+    maxConcurrentSpools: 32
+    bodyIdleTimeoutSeconds: 60
   extraEnv: []
   extraEnvFrom: []
 
@@ -147,6 +153,8 @@ database:
   secretKey: database-url
   url: ""
   maxConnections: 20
+  statementTimeoutSeconds: 120
+  ingestReserve: 0
   sslMode: ""
   ca:
     existingSecret: ""
@@ -572,6 +580,7 @@ kafka:
   trustedProducers: false
   clientId: fastproof
   maxRecordBytes: 900000
+  signatureMaxAgeHours: 168
   external:
     brokers: []
     tls:

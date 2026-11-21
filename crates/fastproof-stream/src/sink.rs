@@ -23,7 +23,7 @@ use uuid::Uuid;
 use crate::config::SinkTuning;
 use crate::consumer::{BatchHandler, OutboxReader};
 use crate::groups::{PartitionCtx, PartitionRunner};
-use crate::kafka::{Kafka, Outgoing, TOPIC_EVENTS};
+use crate::kafka::{Kafka, Outgoing, Signer, TOPIC_EVENTS};
 use crate::messages::EventRecord;
 
 /// Log chunk events per batch, at most (each holds up to 1000 lines).
@@ -62,6 +62,22 @@ impl SinkBatch {
     }
 }
 
+/// Rows to drop from a sink: deleted launches and deleted projects.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Deletions {
+    /// `(project key, launch id)`.
+    pub launches: Vec<(String, Uuid)>,
+    /// `(project key, deletion time)`: rows of launches created up to that time (a later
+    /// project with the same key keeps its rows).
+    pub projects: Vec<(String, chrono::DateTime<chrono::Utc>)>,
+}
+
+impl Deletions {
+    pub fn is_empty(&self) -> bool {
+        self.launches.is_empty() && self.projects.is_empty()
+    }
+}
+
 /// A destination of the outbox.
 #[async_trait]
 pub trait Sink: Send + Sync + 'static {
@@ -69,6 +85,10 @@ pub trait Sink: Send + Sync + 'static {
     /// Creates tables, templates and policies (idempotent).
     async fn prepare(&self) -> anyhow::Result<()>;
     async fn write(&self, batch: &SinkBatch, token: &str) -> anyhow::Result<()>;
+    /// Drops the rows of deleted launches and projects (idempotent).
+    async fn delete(&self, _d: &Deletions) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 /// Log search and similar failures served by an analytics backend.
@@ -166,6 +186,71 @@ fn ids_of(events: &[EventRecord]) -> (Vec<Uuid>, Vec<Uuid>, Vec<i64>) {
     )
 }
 
+/// The deletions the events name, checked against PostgreSQL: a launch must be gone and a
+/// project marked deleted, so a forged or replayed event cannot drop live data.
+pub async fn load_deletions(store: &Store, events: &[EventRecord]) -> anyhow::Result<Deletions> {
+    let mut launches = Vec::new();
+    let mut projects = Vec::new();
+    for e in events {
+        let Some(project) = e.project.clone() else {
+            continue;
+        };
+        match e.kind.as_str() {
+            "launch.deleted" => {
+                if let Some(id) = e
+                    .payload
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .and_then(|v| v.parse::<Uuid>().ok())
+                {
+                    launches.push((project, id));
+                }
+            }
+            "project.deleted" => {
+                let id = e
+                    .payload
+                    .get("projectId")
+                    .and_then(|v| v.as_str())
+                    .and_then(|v| v.parse::<Uuid>().ok());
+                let at = e.payload.get("deletedAt").and_then(|v| {
+                    serde_json::from_value::<chrono::DateTime<chrono::Utc>>(v.clone()).ok()
+                });
+                if let (Some(id), Some(at)) = (id, at) {
+                    projects.push((project, id, at));
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut d = Deletions::default();
+    if !launches.is_empty() {
+        let ids: Vec<Uuid> = launches.iter().map(|l| l.1).collect();
+        let live: Vec<Uuid> = sqlx::query_scalar("select id from launches where id = any($1)")
+            .bind(&ids)
+            .fetch_all(store.pool())
+            .await?;
+        d.launches = launches
+            .into_iter()
+            .filter(|l| !live.contains(&l.1))
+            .collect();
+    }
+    for (key, id, at) in projects {
+        let live: bool = sqlx::query_scalar(
+            "select exists (select 1 from projects where id = $1 and deleted_at is null) \
+             or exists (select 1 from projects where key = $2 and deleted_at is null and created_at <= $3)",
+        )
+        .bind(id)
+        .bind(&key)
+        .bind(at)
+        .fetch_one(store.pool())
+        .await?;
+        if !live {
+            d.projects.push((key, at));
+        }
+    }
+    Ok(d)
+}
+
 /// Loads the rows the events name (rows deleted since are skipped).
 pub async fn load_batch(store: &Store, events: &[EventRecord]) -> anyhow::Result<SinkBatch> {
     let (results, attempts, chunks) = ids_of(events);
@@ -191,6 +276,12 @@ pub async fn write_batch(
             let batch = load_batch(store, events).await?;
             if !batch.is_empty() {
                 sink.write(&batch, &batch.token()).await?;
+            }
+            let deletions = load_deletions(store, events).await?;
+            if !deletions.is_empty() {
+                sink.delete(&deletions).await?;
+                metrics::counter!("fastproof_sink_deletions_total", "sink" => sink.name())
+                    .increment((deletions.launches.len() + deletions.projects.len()) as u64);
             }
             Ok::<_, anyhow::Error>(batch)
         }
@@ -302,10 +393,31 @@ impl PartitionRunner for OutboxSink {
     }
 }
 
-/// Kafka mode: a sink consuming the `events` topic.
+/// Kafka mode: a sink consuming the `events` topic. Only records the relay signed are used.
 pub struct KafkaSink {
     pub store: Store,
     pub sink: Arc<dyn Sink>,
+    pub signer: Signer,
+}
+
+/// Splits events into parts of at most `max_events` events and [`MAX_CHUNKS_PER_BATCH`] log
+/// chunk events (each chunk loads up to a thousand lines).
+pub fn sink_parts(events: &[EventRecord], max_events: usize) -> Vec<&[EventRecord]> {
+    let mut out = Vec::new();
+    let (mut start, mut chunks) = (0, 0);
+    for (i, e) in events.iter().enumerate() {
+        let c = usize::from(e.kind == "log.chunk");
+        if i > start && (i - start >= max_events || chunks + c > MAX_CHUNKS_PER_BATCH) {
+            out.push(&events[start..i]);
+            start = i;
+            chunks = 0;
+        }
+        chunks += c;
+    }
+    if start < events.len() {
+        out.push(&events[start..]);
+    }
+    out
 }
 
 #[async_trait]
@@ -319,6 +431,11 @@ impl BatchHandler for KafkaSink {
     ) -> anyhow::Result<()> {
         let mut events = Vec::with_capacity(records.len());
         for r in records {
+            if !self.signer.verify(&ctx.topic, &r.record) {
+                metrics::counter!("fastproof_kafka_rejected_total", "topic" => ctx.topic.clone(), "reason" => "unsigned")
+                    .increment(1);
+                continue;
+            }
             match r
                 .record
                 .value
@@ -332,7 +449,7 @@ impl BatchHandler for KafkaSink {
                 }
             }
         }
-        for part in events.chunks(MAX_CHUNKS_PER_BATCH * 10) {
+        for part in sink_parts(&events, 1000) {
             write_batch(&self.store, self.sink.as_ref(), part).await?;
         }
         metrics::gauge!("fastproof_sink_lag_events", "sink" => self.sink.name())
@@ -417,5 +534,35 @@ mod tests {
         assert_eq!(match_key(None, " "), "");
         assert!(match_key(Some("abc"), "m").starts_with("f:"));
         assert_eq!(match_key(None, "Timeout 5s"), match_key(None, "timeout 7s"));
+    }
+
+    fn event(kind: &str) -> EventRecord {
+        EventRecord {
+            v: 1,
+            id: 1,
+            kind: kind.into(),
+            project: Some("p".into()),
+            payload: serde_json::json!({}),
+            created_at: chrono::Utc::now(),
+        }
+    }
+
+    #[test]
+    fn kafka_batches_honour_the_chunk_cap() {
+        let events: Vec<EventRecord> = (0..MAX_CHUNKS_PER_BATCH * 10)
+            .map(|i| {
+                event(if i % 2 == 0 {
+                    "log.chunk"
+                } else {
+                    "result.updated"
+                })
+            })
+            .collect();
+        let parts = sink_parts(&events, 1000);
+        assert!(parts.iter().all(|p| p.iter().filter(|e| e.kind == "log.chunk").count()
+            <= MAX_CHUNKS_PER_BATCH));
+        assert!(parts.iter().all(|p| p.len() <= 1000));
+        assert_eq!(parts.iter().map(|p| p.len()).sum::<usize>(), events.len());
+        assert!(sink_parts(&[], 1000).is_empty());
     }
 }

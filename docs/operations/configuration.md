@@ -26,9 +26,21 @@ Keep the operations port internal: it is unauthenticated by design. Expose only 
 | `FASTPROOF_DATABASE_CA_FILE` | none | CA bundle to verify the PostgreSQL server certificate |
 | `FASTPROOF_DATABASE_MAX_CONNECTIONS` | `20` | Connection pool size per replica |
 | `PGSSLMODE`, `PGSSLROOTCERT` | none | Standard libpq variables, used when the URL sets no `sslmode` |
+| `FASTPROOF_DATABASE_STATEMENT_TIMEOUT_SECONDS` | `120` | Longest SQL statement on pooled connections; `0` turns it off. Migrations, index builds and the purge of deleted projects run without it |
+| `FASTPROOF_DATABASE_INGEST_RESERVE` | a quarter of the pool, at least 1 | Connections that heavy reads (dashboard, log search, similar failures, rule dry runs, stored log reads) leave free for ingest and workers; must be below `FASTPROOF_DATABASE_MAX_CONNECTIONS` |
 | `FASTPROOF_MIGRATE` | `auto` | `auto` applies migrations at start under an advisory lock; `off` expects them applied by `fastproof migrate` (the Helm chart runs it as a Job) |
 
 PostgreSQL 14 to 18 is supported; 18 is recommended. PostgreSQL 14 reached end of life in November 2026.
+
+## Request guards
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `FASTPROOF_SSE_MAX_PER_CALLER` | `16` | Open event streams (`/events`, `/logs/stream`) per caller and replica; more answer 429 |
+| `FASTPROOF_SSE_RECHECK_SECONDS` | `300` | How often an open stream checks that its caller still has access; it ends when not |
+| `FASTPROOF_HEAVY_QUERIES_PER_CALLER` | `4` | Heavy reads running at once per caller and replica; more answer 429 |
+| `FASTPROOF_MAX_CONCURRENT_SPOOLS` | `32` | Uploads and attachments written to the spool directory at once per replica; others wait up to 10 s, then 503 |
+| `FASTPROOF_BODY_IDLE_TIMEOUT_SECONDS` | `60` | A request body that sends nothing for this long fails with 400 |
 
 ## Attachment storage
 
@@ -91,6 +103,7 @@ Used only with `FASTPROOF_INGEST_MODE=kafka`.
 | `FASTPROOF_KAFKA_TRUSTED_PRODUCERS` | `false` | Accept records written straight to Kafka by other producers. Leave it off unless Kafka ACLs restrict who can write |
 | `FASTPROOF_KAFKA_CLIENT_ID` | `fastproof` | Client id sent to the brokers (shows up in broker logs and quotas) |
 | `FASTPROOF_KAFKA_MAX_RECORD_BYTES` | `900000` | Largest record FastProof produces (16 KiB to 64 MiB); keep it below the topic's `max.message.bytes` |
+| `FASTPROOF_KAFKA_SIGNATURE_MAX_AGE_HOURS` | `168` | Records FastProof signed longer ago than this are rejected; signatures carry a key id and a time. Upgrade all replicas together: records signed by older versions are rejected |
 
 Consumer offsets and partition leases live in PostgreSQL, so Kafka needs only topic `Read`, `Describe` and
 `Write` for the FastProof user (plus `Create` when FastProof creates the topics). Use SASL over TLS outside a

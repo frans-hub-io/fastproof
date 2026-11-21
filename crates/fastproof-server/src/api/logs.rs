@@ -2,25 +2,24 @@
 //! lines, idempotent by `(resultId, attempt, seq)`), `GET .../logs` (stored lines) and
 //! `GET .../logs/stream` (Server-Sent Events, batched, drop-oldest with `gap` events).
 
-use std::collections::VecDeque;
 use std::convert::Infallible;
 use std::time::Duration;
 
 use axum::Json;
 use axum::extract::{Request, State};
-use axum::http::{StatusCode, header};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
+use fastproof_ingest::{JsonBounds, scan_json};
 use fastproof_store::Page;
 use fastproof_store::logs::{LogFilter, LogLevel, LogLine, contains_ci};
 use franshub_auth::Auth;
 use franshub_http::{ApiError, ApiResult};
 use futures::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
-use tokio::sync::broadcast::error::RecvError;
 use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
-use super::results::Rejected;
+use super::results::{Rejected, json_limit_error};
 use super::uploads::{identity_encoding, too_large};
 use super::{ErrorBody, P, Q};
 use crate::state::AppState;
@@ -31,10 +30,13 @@ pub const MAX_RESULT_ID_BYTES: usize = 256;
 pub const MAX_STEP_BYTES: usize = 1024;
 /// SSE events per second and subscriber, at most.
 pub const EVENTS_PER_SECOND: u64 = 20;
-/// Lines one subscriber buffers; older lines are dropped first.
-pub const SUBSCRIBER_BUFFER: usize = 2000;
+/// Lines one subscriber buffers; older lines are dropped first (also bounded by
+/// [`crate::stream::live::SUBSCRIBER_BYTES`]).
+pub const SUBSCRIBER_BUFFER: usize = crate::stream::live::SUBSCRIBER_LINES;
 /// Lines in one `log` event, at most.
 pub const LINES_PER_EVENT: usize = 500;
+/// Bytes of lines in one `log` event, about (at least one line).
+pub const EVENT_BYTES: usize = 256 * 1024;
 /// A stream ends after this long; clients reconnect and are authenticated again.
 pub const MAX_STREAM: Duration = Duration::from_secs(3600);
 
@@ -78,7 +80,9 @@ pub fn truncate_message(message: &mut String, max: usize) {
     }
 }
 
-fn validate(l: &mut LogLine, max_line: usize) -> Result<(), String> {
+/// Checks one line against the limits of the logs API (also applied by the Kafka writer to
+/// records of trusted producers); cuts an over-long message instead of rejecting it.
+pub fn validate(l: &mut LogLine, max_line: usize) -> Result<(), String> {
     let id = l.result_id.trim();
     if id.is_empty() || id.len() > MAX_RESULT_ID_BYTES {
         return Err(format!(
@@ -159,23 +163,44 @@ pub async fn ingest(
             }
             Ok(())
         };
+    let bounds = JsonBounds::from(&s.limits);
     if ndjson {
+        let mut values_left = s.limits.max_json_values;
         for (i, line) in buf.split(|b| *b == b'\n').enumerate() {
             let line = line.strip_suffix(b"\r").unwrap_or(line);
             if line.iter().all(|b| b.is_ascii_whitespace()) {
                 continue;
             }
-            let v =
-                serde_json::from_slice::<LogLine>(line).map_err(|e| format!("invalid line: {e}"));
+            let v = match scan_json(line, &bounds, "line") {
+                Ok(n) => {
+                    if n > values_left {
+                        return Err(too_large("max_json_values", s.limits.max_json_values));
+                    }
+                    values_left -= n;
+                    serde_json::from_slice::<LogLine>(line)
+                        .map_err(|e| format!("invalid line: {e}"))
+                }
+                Err(e) => Err(format!("invalid line: {e}")),
+            };
             push(i as u64, v, &mut summary)?;
         }
-    } else {
-        let items: Vec<serde_json::Value> = if buf.iter().all(|b| b.is_ascii_whitespace()) {
-            Vec::new()
-        } else {
-            serde_json::from_slice(&buf).map_err(|e| {
-                ApiError::bad_request(format!("expected a JSON array of lines: {e}"))
-            })?
+    } else if !buf.iter().all(|b| b.is_ascii_whitespace()) {
+        scan_json(&buf, &bounds, "body").map_err(|e| json_limit_error(&e))?;
+        let items: Vec<Result<LogLine, String>> = match serde_json::from_slice::<Vec<LogLine>>(&buf)
+        {
+            Ok(v) => v.into_iter().map(Ok).collect(),
+            Err(_) => {
+                let items: Vec<serde_json::Value> = serde_json::from_slice(&buf).map_err(|e| {
+                    ApiError::bad_request(format!("expected a JSON array of lines: {e}"))
+                })?;
+                items
+                    .into_iter()
+                    .map(|v| {
+                        serde_json::from_value::<LogLine>(v)
+                            .map_err(|e| format!("invalid line: {e}"))
+                    })
+                    .collect()
+            }
         };
         if items.len() > limits.max_lines_per_request {
             return Err(too_large(
@@ -184,7 +209,6 @@ pub async fn ingest(
             ));
         }
         for (i, v) in items.into_iter().enumerate() {
-            let v = serde_json::from_value::<LogLine>(v).map_err(|e| format!("invalid line: {e}"));
             push(i as u64, v, &mut summary)?;
         }
     }
@@ -281,7 +305,8 @@ fn text_filter(q: Option<String>) -> ApiResult<Option<String>> {
 #[utoipa::path(get, path = "/api/v1/projects/{key}/launches/{id}/logs", tag = "logs", operation_id = "logs_list",
     params(("key" = String, Path), ("id" = Uuid, Path), LogQuery),
     responses((status = 200, body = Page<LogLine>, description = "The newest matching lines before the cursor, oldest first; `next` pages to older lines"),
-        (status = 400, body = ErrorBody), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
+        (status = 400, body = ErrorBody), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody),
+        (status = 429, body = ErrorBody), (status = 503, body = ErrorBody)))]
 pub async fn list(
     State(s): State<AppState>,
     auth: Auth,
@@ -310,7 +335,13 @@ pub async fn list(
         before: q.before,
         limit,
     };
-    Ok(Json(s.store.launch_logs(launch.id, &f).await?))
+    let _permit = s.guards.heavy(&auth).await?;
+    Ok(Json(
+        s.store
+            .launch_logs(launch.id, &f)
+            .await
+            .map_err(crate::limits::heavy_error)?,
+    ))
 }
 
 /// Query of the live stream.
@@ -325,73 +356,48 @@ pub struct StreamQuery {
 }
 
 struct Subscriber {
-    rx: tokio::sync::broadcast::Receiver<std::sync::Arc<crate::stream::live::LogBatch>>,
-    project: String,
-    launch: Uuid,
-    result_ids: Vec<String>,
-    level: Option<LogLevel>,
-    q: Option<String>,
-    buf: VecDeque<LogLine>,
-    dropped: u64,
+    sub: crate::stream::live::Subscription,
+    pending: Option<Vec<LogLine>>,
     tick: tokio::time::Interval,
-    _guard: StreamGuard,
+    recheck: crate::limits::Recheck,
+    next_check: tokio::time::Instant,
+}
+
+fn log_event(lines: Vec<LogLine>) -> Event {
+    let data = serde_json::to_string(&LogStreamBatch { lines })
+        .unwrap_or_else(|_| "{\"lines\":[]}".into());
+    Event::default().event("log").data(data)
 }
 
 impl Subscriber {
-    fn wants(&self, l: &LogLine) -> bool {
-        if !self.result_ids.is_empty() && !self.result_ids.contains(&l.result_id) {
-            return false;
-        }
-        if self.level.is_some_and(|min| l.level < min) {
-            return false;
-        }
-        self.q.as_deref().is_none_or(|q| contains_ci(&l.message, q))
-    }
-
-    fn take(&mut self, l: LogLine) {
-        if self.buf.len() >= SUBSCRIBER_BUFFER {
-            self.buf.pop_front();
-            self.dropped += 1;
-        }
-        self.buf.push_back(l);
-    }
-
-    /// The next event: at most one per tick, a `gap` first when lines were dropped.
+    /// The next event: at most one per tick, a `gap` first when lines were dropped; `None`
+    /// when the stream ends (dropped as stalled, or the caller lost access).
     async fn next_event(&mut self) -> Option<Event> {
         loop {
-            tokio::select! {
-                biased;
-                _ = self.tick.tick() => {
-                    if self.dropped > 0 {
-                        let n = std::mem::take(&mut self.dropped);
-                        metrics::counter!("fastproof_log_stream_dropped_total").increment(n);
-                        let data = serde_json::to_string(&LogGap { skipped: n }).unwrap_or_default();
-                        return Some(Event::default().event("gap").data(data));
-                    }
-                    if !self.buf.is_empty() {
-                        let n = self.buf.len().min(LINES_PER_EVENT);
-                        let lines: Vec<LogLine> = self.buf.drain(..n).collect();
-                        let data = serde_json::to_string(&LogStreamBatch { lines })
-                            .unwrap_or_else(|_| "{\"lines\":[]}".into());
-                        return Some(Event::default().event("log").data(data));
-                    }
+            self.tick.tick().await;
+            if self.sub.sub.is_closed() {
+                return None;
+            }
+            if tokio::time::Instant::now() >= self.next_check {
+                if !self.recheck.allowed().await {
+                    return None;
                 }
-                r = self.rx.recv() => match r {
-                    Ok(b) => {
-                        if b.launch_id != self.launch || b.project != self.project {
-                            continue;
-                        }
-                        for l in b.lines.iter() {
-                            if self.wants(l) {
-                                self.take(l.clone());
-                            }
-                        }
-                    }
-                    Err(RecvError::Lagged(n)) => {
-                        self.dropped += n.max(1);
-                    }
-                    Err(RecvError::Closed) => return None,
-                },
+                self.next_check = tokio::time::Instant::now() + self.recheck.interval();
+            }
+            if let Some(lines) = self.pending.take() {
+                return Some(log_event(lines));
+            }
+            let (dropped, lines) = self.sub.sub.take(LINES_PER_EVENT, EVENT_BYTES);
+            if dropped > 0 {
+                metrics::counter!("fastproof_log_stream_dropped_total").increment(dropped);
+                if !lines.is_empty() {
+                    self.pending = Some(lines);
+                }
+                let data = serde_json::to_string(&LogGap { skipped: dropped }).unwrap_or_default();
+                return Some(Event::default().event("gap").data(data));
+            }
+            if !lines.is_empty() {
+                return Some(log_event(lines));
             }
         }
     }
@@ -399,11 +405,12 @@ impl Subscriber {
 
 #[utoipa::path(get, path = "/api/v1/projects/{key}/launches/{id}/logs/stream", tag = "logs", operation_id = "logs_stream",
     params(("key" = String, Path), ("id" = Uuid, Path), StreamQuery),
-    responses((status = 200, description = "text/event-stream: `ready` first; `log` events carry `LogStreamBatch` {lines} (at most 20 events per second); `gap` events carry `LogGap` {skipped} when the oldest buffered lines were dropped because the client was slow", content_type = "text/event-stream"),
+    responses((status = 200, description = "text/event-stream: `ready` first; `log` events carry `LogStreamBatch` {lines} (at most 20 events per second); `gap` events carry `LogGap` {skipped} when the oldest buffered lines were dropped because the client was slow. The stream ends when the caller loses access (checked every few minutes) or stops reading", content_type = "text/event-stream"),
         (status = 400, body = ErrorBody), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody), (status = 429, body = ErrorBody)))]
 pub async fn stream(
     State(s): State<AppState>,
     auth: Auth,
+    headers: HeaderMap,
     P((key, id)): P<(String, Uuid)>,
     Q(q): Q<StreamQuery>,
 ) -> ApiResult<Sse<impl Stream<Item = Result<Event, Infallible>>>> {
@@ -411,25 +418,41 @@ pub async fn stream(
     let launch = s.launch_of(&project, id).await?;
     let level = level_of(q.level.as_deref())?;
     let text = text_filter(q.q)?.map(|t| t.to_lowercase());
+    let result_ids = result_keys(&s, launch.id, q.result_id).await?;
+    let slot = s.guards.stream_slot(&auth)?;
     let permit = s
         .sse
         .clone()
         .try_acquire_owned()
         .map_err(|_| ApiError::too_many_requests("too many open event streams"))?;
     metrics::gauge!("fastproof_sse_streams").increment(1.0);
+    let guard = StreamGuard(Some(permit), Some(slot));
     let mut tick = tokio::time::interval(Duration::from_millis(1000 / EVENTS_PER_SECOND));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let wants = move |l: &LogLine| {
+        if !result_ids.is_empty() && !result_ids.contains(&l.result_id) {
+            return false;
+        }
+        if level.is_some_and(|min| l.level < min) {
+            return false;
+        }
+        text.as_deref().is_none_or(|q| contains_ci(&l.message, q))
+    };
+    let sub = s.logs.subscribe(&project.key, launch.id, wants);
+    sub.sub.hold(Box::new(guard));
+    let recheck = crate::limits::Recheck::new(
+        &s,
+        &headers,
+        &s.perms.launches_read,
+        &project.key,
+        project.id,
+    );
     let sub = Subscriber {
-        rx: s.logs.subscribe(),
-        project: project.key,
-        launch: launch.id,
-        result_ids: result_keys(&s, launch.id, q.result_id).await?,
-        level,
-        q: text,
-        buf: VecDeque::new(),
-        dropped: 0,
+        next_check: tokio::time::Instant::now() + recheck.interval(),
+        sub,
+        pending: None,
         tick,
-        _guard: StreamGuard(Some(permit)),
+        recheck,
     };
     let ready = futures::stream::once(async { Ok(Event::default().event("ready").data("{}")) });
     let events = futures::stream::unfold(sub, |mut sub| async move {
@@ -441,7 +464,12 @@ pub async fn stream(
     Ok(Sse::new(body).keep_alive(KeepAlive::new().interval(Duration::from_secs(15))))
 }
 
-struct StreamGuard(Option<tokio::sync::OwnedSemaphorePermit>);
+/// The global and per-caller slots of an open stream; released when the stream ends or the
+/// hub drops the subscriber as stalled.
+pub struct StreamGuard(
+    pub Option<tokio::sync::OwnedSemaphorePermit>,
+    pub Option<crate::limits::CallerSlot>,
+);
 
 impl Drop for StreamGuard {
     fn drop(&mut self) {

@@ -2,16 +2,18 @@
 //! the fingerprint backfill of rows stored before fingerprints existed, and mute expiry.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 use fastproof_model::{Status, fingerprint};
+use futures::TryStreamExt;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
 use super::hook::{is_protected, record_fingerprints, rule_defect, type_refs, upsert_mutes};
-use super::rules::{self, Budget, CompiledRule, Rule, Subject};
+use super::rules::{self, Budget, CompiledRule, MATCH_INPUT_BYTES, Rule, Subject};
 use super::triage::recount_muted;
 use crate::{Defect, Store, json_no_nul, no_nul};
 
@@ -67,6 +69,11 @@ type TaskRow = (
 );
 /// Fingerprints per (project, launch, launch time): message and count.
 type Catalog = BTreeMap<(Uuid, Uuid, DateTime<Utc>), BTreeMap<String, (String, i64)>>;
+/// Rows read and evaluated together (off the async threads).
+const EVAL_BATCH: usize = 500;
+
+/// A candidate row: id, launch time, series, test case, status, message and trace (both cut
+/// to the rule input size in SQL), fingerprint, defect.
 type Candidate = (
     Uuid,
     DateTime<Utc>,
@@ -79,20 +86,67 @@ type Candidate = (
     Option<String>,
 );
 
+/// A matching row, without its texts.
+struct Matched {
+    id: Uuid,
+    created: DateTime<Utc>,
+    series: Uuid,
+    status: String,
+    defect: Option<serde_json::Value>,
+}
+
 /// Outcome of evaluating a rule on a launch.
 struct Evaluated {
-    rows: Vec<Candidate>,
-    matched: Vec<usize>,
+    matched: Vec<Matched>,
     evaluated: u64,
     exhausted: bool,
 }
 
+/// Evaluates a batch of rows; returns the matches and whether the budget ran out.
+fn evaluate_batch(
+    rule: &CompiledRule,
+    rows: Vec<Candidate>,
+    env: Option<&str>,
+    budget: &mut Budget,
+    evaluated: &mut u64,
+    matched: &mut Vec<Matched>,
+) -> bool {
+    for r in rows {
+        let s = Subject {
+            status: &r.4,
+            message: r.5.as_deref(),
+            trace: r.8.as_deref(),
+            test_case_id: r.3,
+            fingerprint: r.6.as_deref(),
+            environment: env,
+        };
+        match rule.matches(&s, budget) {
+            None => return false,
+            Some(m) => {
+                *evaluated += 1;
+                if m {
+                    matched.push(Matched {
+                        id: r.0,
+                        created: r.1,
+                        series: r.2,
+                        status: r.4,
+                        defect: r.7,
+                    });
+                }
+            }
+        }
+    }
+    true
+}
+
 impl Store {
+    /// Streams the candidate rows of a launch (texts cut in SQL) and evaluates them in batches
+    /// on a blocking thread until the launch budget runs out; only the matches are kept.
     async fn evaluate_rule_on_launch(
         &self,
         project_id: Uuid,
         launch_id: Uuid,
-        rule: &CompiledRule,
+        rule: &Arc<CompiledRule>,
     ) -> anyhow::Result<Option<Evaluated>> {
         let l: Option<(DateTime<Utc>, Option<String>)> = sqlx::query_as(
             "select created_at, env_key from launches where project_id = $1 and id = $2",
@@ -110,44 +164,61 @@ impl Store {
             .statuses
             .clone()
             .unwrap_or_else(|| vec!["failed".into(), "broken".into()]);
-        let rows: Vec<Candidate> = sqlx::query_as(
-            "select r.id, r.launch_created_at, r.series_id, r.test_case_id, r.status, r.message, r.fingerprint, \
+        let cut = MATCH_INPUT_BYTES as i32;
+        let mut rows = sqlx::query_as::<_, Candidate>(
+            "select r.id, r.launch_created_at, r.series_id, r.test_case_id, r.status, left(r.message, $5), r.fingerprint, \
                r.defect, la.trace from results r \
-             left join lateral (select case when $4 then left(a.trace, 16384) end as trace from attempts a \
+             left join lateral (select case when $4 then left(a.trace, $5) end as trace from attempts a \
                where a.result_id = r.id and a.launch_created_at = r.launch_created_at \
                order by (a.started_at is not null) desc, a.started_at desc nulls last, a.seq desc limit 1) la on true \
-             where r.launch_id = $1 and r.launch_created_at = $2 and r.status = any($3) order by r.full_name, r.id",
+             where r.launch_id = $1 and r.launch_created_at = $2 and r.status = any($3) order by r.full_name, r.id \
+             limit $6",
         )
         .bind(launch_id)
         .bind(created)
         .bind(&statuses)
         .bind(rule.needs_trace())
-        .fetch_all(&self.pool)
-        .await?;
+        .bind(cut)
+        .bind(rules::LAUNCH_EVALUATIONS as i64 + 1)
+        .fetch(&self.pool);
         let mut budget = Budget::launch();
         let mut matched = Vec::new();
-        let mut evaluated = 0;
-        for (i, r) in rows.iter().enumerate() {
-            let s = Subject {
-                status: &r.4,
-                message: r.5.as_deref(),
-                trace: r.8.as_deref(),
-                test_case_id: r.3,
-                fingerprint: r.6.as_deref(),
-                environment: env.as_deref(),
-            };
-            match rule.matches(&s, &mut budget) {
-                None => break,
-                Some(m) => {
-                    evaluated += 1;
-                    if m {
-                        matched.push(i);
+        let mut evaluated = 0u64;
+        let mut batch = Vec::with_capacity(EVAL_BATCH);
+        let mut more = true;
+        while more {
+            batch.clear();
+            while batch.len() < EVAL_BATCH {
+                match rows.try_next().await? {
+                    Some(r) => batch.push(r),
+                    None => {
+                        more = false;
+                        break;
                     }
                 }
             }
+            if batch.is_empty() {
+                break;
+            }
+            let rule = rule.clone();
+            let env = env.clone();
+            let work = std::mem::replace(&mut batch, Vec::with_capacity(EVAL_BATCH));
+            let (b, e, m, go_on) = tokio::task::spawn_blocking(move || {
+                let mut m = Vec::new();
+                let mut e = 0;
+                let go_on =
+                    evaluate_batch(&rule, work, env.as_deref(), &mut budget, &mut e, &mut m);
+                (budget, e, m, go_on)
+            })
+            .await?;
+            budget = b;
+            evaluated += e;
+            matched.extend(m);
+            if !go_on {
+                break;
+            }
         }
         Ok(Some(Evaluated {
-            rows,
             matched,
             evaluated,
             exhausted: budget.exhausted,
@@ -163,7 +234,7 @@ impl Store {
         rule: Rule,
     ) -> anyhow::Result<Option<Result<DryRun, String>>> {
         let compiled = match CompiledRule::compile(rule) {
-            Ok(c) => c,
+            Ok(c) => Arc::new(c),
             Err(e) => return Ok(Some(Err(e))),
         };
         let Some(ev) = self
@@ -178,7 +249,7 @@ impl Store {
                 .matched
                 .iter()
                 .take(MAX_DRY_RUN_IDS)
-                .map(|&i| ev.rows[i].0)
+                .map(|m| m.id)
                 .collect(),
             evaluated: ev.evaluated,
             truncated,
@@ -192,7 +263,7 @@ impl Store {
         project_id: Uuid,
         project_key: &str,
         launch_id: Uuid,
-        rule: &CompiledRule,
+        rule: &Arc<CompiledRule>,
     ) -> anyhow::Result<u64> {
         let Some(ev) = self
             .evaluate_rule_on_launch(project_id, launch_id, rule)
@@ -207,24 +278,23 @@ impl Store {
         let mut created = Vec::new();
         let mut defects = Vec::new();
         let mut series = BTreeSet::new();
-        for &i in &ev.matched {
-            let r = &ev.rows[i];
-            let existing: Option<Defect> = r.7.clone().and_then(|d| serde_json::from_value(d).ok());
+        for r in ev.matched {
+            let existing: Option<Defect> = r.defect.and_then(|d| serde_json::from_value(d).ok());
             if is_protected(existing.as_ref()) {
                 continue;
             }
             let d = rule_defect(
                 rule,
-                Status::parse_lenient(&r.4),
+                Status::parse_lenient(&r.status),
                 existing.as_ref(),
                 &by_id,
                 &by_group,
                 now,
             );
-            ids.push(r.0);
-            created.push(r.1);
+            ids.push(r.id);
+            created.push(r.created);
             defects.push(d.map(serde_json::to_value).transpose()?.map(json_no_nul));
-            series.insert(r.2);
+            series.insert(r.series);
         }
         if ids.is_empty() {
             return Ok(0);
@@ -373,7 +443,7 @@ impl Store {
         let Some(rule) = self.rule(project_id, p.rule_id).await? else {
             anyhow::bail!("the rule was deleted");
         };
-        let compiled = CompiledRule::compile(rule).map_err(|e| anyhow::anyhow!(e))?;
+        let compiled = Arc::new(CompiledRule::compile(rule).map_err(|e| anyhow::anyhow!(e))?);
         let mut updated = 0u64;
         for (i, l) in p.launch_ids.iter().enumerate() {
             updated += self

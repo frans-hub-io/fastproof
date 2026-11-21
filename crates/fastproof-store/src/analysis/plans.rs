@@ -15,6 +15,10 @@ use crate::{Store, json_no_nul, no_nul};
 pub const MAX_PLAN_TESTS: usize = 50_000;
 /// Test case ids listed in a request, at most.
 pub const MAX_PLAN_IDS: usize = 10_000;
+/// Test plans kept per project, at most; creating more is refused until old ones expire.
+pub const MAX_PLANS_PER_PROJECT: i64 = 1000;
+/// Test plans are deleted this many days after they were created (by the retention job).
+pub const TEST_PLAN_DAYS: i64 = 90;
 
 /// Body of `POST .../test-plans`.
 #[derive(Clone, Debug, Deserialize, ToSchema)]
@@ -91,6 +95,8 @@ impl NewTestPlan {
 pub enum PlanRefusal {
     UnknownLaunch,
     TooManyTests,
+    /// The project has [`MAX_PLANS_PER_PROJECT`] plans.
+    TooManyPlans,
 }
 
 impl Store {
@@ -102,6 +108,16 @@ impl Store {
         statuses: &[String],
         by: &str,
     ) -> anyhow::Result<Result<TestPlanCreated, PlanRefusal>> {
+        let plans: i64 = sqlx::query_scalar(
+            "select count(*) from (select 1 from test_plans where project_id = $1 limit $2) x",
+        )
+        .bind(project_id)
+        .bind(MAX_PLANS_PER_PROJECT)
+        .fetch_one(&self.pool)
+        .await?;
+        if plans >= MAX_PLANS_PER_PROJECT {
+            return Ok(Err(PlanRefusal::TooManyPlans));
+        }
         let mut tc_ids: Vec<Uuid> = req.test_case_ids.clone().unwrap_or_default();
         if let Some(l) = req.from_launch_id {
             let created: Option<DateTime<Utc>> = sqlx::query_scalar(
@@ -169,6 +185,19 @@ impl Store {
             id,
             test_count: tests.len() as i64,
         }))
+    }
+
+    /// Deletes up to `batch` plans older than [`TEST_PLAN_DAYS`]; returns how many.
+    pub async fn delete_old_test_plans(&self, batch: i64) -> anyhow::Result<u64> {
+        Ok(sqlx::query(
+            "delete from test_plans where id in (select id from test_plans \
+             where created_at < now() - make_interval(days => $1) order by created_at limit $2)",
+        )
+        .bind(TEST_PLAN_DAYS as i32)
+        .bind(batch)
+        .execute(&self.pool)
+        .await?
+        .rows_affected())
     }
 
     /// A plan as Allure `testplan.json`.

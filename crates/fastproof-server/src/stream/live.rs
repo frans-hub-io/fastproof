@@ -1,10 +1,13 @@
 //! Live log fan-out of one replica: lines reach [`LogHub`] from PostgreSQL `LISTEN` (direct
 //! mode) or from a reader of `ingest.logs` that starts at the latest offset and never commits
-//! (Kafka mode, `fastproof-live-<replica>`), and SSE subscribers filter them.
+//! (Kafka mode, `fastproof-live-<replica>`). Each SSE subscriber has its own queue, bounded in
+//! lines and bytes (oldest lines are dropped first and reported as a gap); a subscriber that
+//! takes nothing for [`STALL_AFTER`] while its queue overflows is dropped.
 
-use std::collections::BTreeMap;
-use std::sync::Arc;
-use std::time::Duration;
+use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use fastproof_store::Store;
 use fastproof_store::logs::{LOGS_CHANNEL, LogLine, LogNotice};
@@ -13,9 +16,15 @@ use fastproof_stream::kafka::{Start, TOPIC_LOGS};
 use fastproof_stream::messages::LogRecord;
 use sqlx::PgPool;
 use sqlx::postgres::PgListener;
-use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
+
+/// Lines one subscriber queues, at most.
+pub const SUBSCRIBER_LINES: usize = 2000;
+/// Bytes one subscriber queues, at most.
+pub const SUBSCRIBER_BYTES: usize = 1024 * 1024;
+/// A subscriber whose queue overflows and that took nothing for this long is dropped.
+pub const STALL_AFTER: Duration = Duration::from_secs(60);
 
 /// Lines of one launch delivered together.
 #[derive(Clone, Debug)]
@@ -25,32 +34,196 @@ pub struct LogBatch {
     pub lines: Vec<LogLine>,
 }
 
+/// Bytes a queued line is counted for.
+pub fn line_bytes(l: &LogLine) -> usize {
+    l.message.len() + l.step.as_ref().map_or(0, |s| s.len()) + l.result_id.len() + 64
+}
+
+type Filter = Box<dyn Fn(&LogLine) -> bool + Send + Sync>;
+
+struct Queue {
+    lines: VecDeque<LogLine>,
+    bytes: usize,
+    dropped: u64,
+    last_take: Instant,
+}
+
+/// One subscriber: the launch it follows, its filter and its bounded queue.
+pub struct LogSub {
+    id: u64,
+    project: String,
+    launch: Uuid,
+    filter: Filter,
+    queue: Mutex<Queue>,
+    closed: AtomicBool,
+    /// Released when the subscriber is dropped as stalled (stream slots and the like).
+    held: Mutex<Option<Box<dyn std::any::Any + Send>>>,
+}
+
+impl LogSub {
+    /// Keeps `v` until the subscription ends or is dropped as stalled.
+    pub fn hold(&self, v: Box<dyn std::any::Any + Send>) {
+        *self.held.lock().unwrap_or_else(|e| e.into_inner()) = Some(v);
+    }
+
+    /// True once the hub dropped this subscriber.
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
+    }
+
+    /// Lines dropped since the last call, then up to `max_lines` lines and about `max_bytes`
+    /// bytes (at least one line) from the queue.
+    pub fn take(&self, max_lines: usize, max_bytes: usize) -> (u64, Vec<LogLine>) {
+        let mut q = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+        q.last_take = Instant::now();
+        let dropped = std::mem::take(&mut q.dropped);
+        let mut out = Vec::new();
+        let mut bytes = 0;
+        while out.len() < max_lines {
+            let Some(l) = q.lines.front() else { break };
+            let b = line_bytes(l);
+            if !out.is_empty() && bytes + b > max_bytes {
+                break;
+            }
+            bytes += b;
+            q.bytes -= b;
+            if let Some(l) = q.lines.pop_front() {
+                out.push(l);
+            }
+        }
+        (dropped, out)
+    }
+
+    /// Queues the wanted lines; false when the subscriber stalled and must be dropped.
+    fn push(&self, lines: &[LogLine]) -> bool {
+        let mut q = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+        let mut overflow = false;
+        for l in lines {
+            if !(self.filter)(l) {
+                continue;
+            }
+            q.bytes += line_bytes(l);
+            q.lines.push_back(l.clone());
+            while q.lines.len() > SUBSCRIBER_LINES || q.bytes > SUBSCRIBER_BYTES {
+                let Some(old) = q.lines.pop_front() else {
+                    break;
+                };
+                q.bytes -= line_bytes(&old);
+                q.dropped += 1;
+                overflow = true;
+            }
+        }
+        !(overflow && q.last_take.elapsed() > STALL_AFTER)
+    }
+
+    fn close(&self) {
+        self.closed.store(true, Ordering::Release);
+        let mut q = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+        q.lines.clear();
+        q.bytes = 0;
+        drop(q);
+        self.held.lock().unwrap_or_else(|e| e.into_inner()).take();
+    }
+}
+
+#[derive(Default)]
+struct Hub {
+    subs: Mutex<HashMap<u64, Arc<LogSub>>>,
+    next: AtomicU64,
+}
+
 /// The in-process side of live logs.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct LogHub {
-    tx: broadcast::Sender<Arc<LogBatch>>,
+    hub: Arc<Hub>,
+}
+
+/// A registered subscriber; unregisters when dropped.
+pub struct Subscription {
+    pub sub: Arc<LogSub>,
+    hub: Arc<Hub>,
+}
+
+impl Drop for Subscription {
+    fn drop(&mut self) {
+        self.hub
+            .subs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.sub.id);
+    }
 }
 
 impl LogHub {
     pub fn new() -> Self {
-        let (tx, _) = broadcast::channel(4096);
-        Self { tx }
+        Self::default()
     }
 
-    pub fn subscribe(&self) -> broadcast::Receiver<Arc<LogBatch>> {
-        self.tx.subscribe()
+    /// Follows the lines of one launch that pass `filter`.
+    pub fn subscribe(
+        &self,
+        project: &str,
+        launch: Uuid,
+        filter: impl Fn(&LogLine) -> bool + Send + Sync + 'static,
+    ) -> Subscription {
+        let sub = Arc::new(LogSub {
+            id: self.hub.next.fetch_add(1, Ordering::Relaxed),
+            project: project.to_string(),
+            launch,
+            filter: Box::new(filter),
+            queue: Mutex::new(Queue {
+                lines: VecDeque::new(),
+                bytes: 0,
+                dropped: 0,
+                last_take: Instant::now(),
+            }),
+            closed: AtomicBool::new(false),
+            held: Mutex::new(None),
+        });
+        self.hub
+            .subs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(sub.id, sub.clone());
+        Subscription {
+            sub,
+            hub: self.hub.clone(),
+        }
+    }
+
+    /// Registered subscribers.
+    pub fn subscribers(&self) -> usize {
+        self.hub
+            .subs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len()
     }
 
     pub fn publish(&self, b: LogBatch) {
-        if !b.lines.is_empty() {
-            let _ = self.tx.send(Arc::new(b));
+        if b.lines.is_empty() {
+            return;
         }
-    }
-}
-
-impl Default for LogHub {
-    fn default() -> Self {
-        Self::new()
+        let targets: Vec<Arc<LogSub>> = self
+            .hub
+            .subs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .filter(|s| s.launch == b.launch_id && s.project == b.project)
+            .cloned()
+            .collect();
+        for sub in targets {
+            if !sub.push(&b.lines) {
+                metrics::counter!("fastproof_log_stream_stalled_total").increment(1);
+                self.hub
+                    .subs
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&sub.id);
+                sub.close();
+            }
+        }
     }
 }
 
@@ -204,5 +377,62 @@ pub async fn listen_kafka(kafka: Arc<Kafka>, hub: LogHub, stop: CancellationToke
     }
     for t in tasks {
         let _ = t.await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fastproof_store::logs::{LogLevel, LogStream};
+
+    fn line(seq: u64, n: usize) -> LogLine {
+        LogLine {
+            result_id: "r".into(),
+            attempt: 0,
+            seq,
+            ts: 0,
+            level: LogLevel::Info,
+            stream: LogStream::Stdout,
+            message: "x".repeat(n),
+            step: None,
+        }
+    }
+
+    #[test]
+    fn queues_are_bounded_and_stalled_subscribers_dropped() {
+        let hub = LogHub::new();
+        let launch = Uuid::now_v7();
+        let s = hub.subscribe("p", launch, |l| l.seq % 2 == 0);
+        let other = hub.subscribe("p", Uuid::now_v7(), |_| true);
+        hub.publish(LogBatch {
+            project: "p".into(),
+            launch_id: launch,
+            lines: (0..100).map(|i| line(i, 64 * 1024)).collect(),
+        });
+        let (dropped, lines) = s.sub.take(10_000, usize::MAX);
+        assert!(lines.iter().all(|l| l.seq % 2 == 0));
+        assert!(lines.iter().map(line_bytes).sum::<usize>() <= SUBSCRIBER_BYTES);
+        assert_eq!(dropped + lines.len() as u64, 50);
+        assert!(other.sub.take(10, 1000).1.is_empty());
+        let (_, few) = {
+            hub.publish(LogBatch {
+                project: "p".into(),
+                launch_id: launch,
+                lines: (0..10).map(|i| line(i * 2, 100)).collect(),
+            });
+            s.sub.take(3, usize::MAX)
+        };
+        assert_eq!(few.len(), 3);
+        s.sub.queue.lock().unwrap().last_take = Instant::now() - STALL_AFTER * 2;
+        hub.publish(LogBatch {
+            project: "p".into(),
+            launch_id: launch,
+            lines: (0..100).map(|i| line(i * 2, 64 * 1024)).collect(),
+        });
+        assert!(s.sub.is_closed());
+        assert_eq!(hub.subscribers(), 1);
+        drop(s);
+        drop(other);
+        assert_eq!(hub.subscribers(), 0);
     }
 }

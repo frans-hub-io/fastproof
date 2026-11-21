@@ -417,6 +417,13 @@ pub(crate) async fn process_inner(
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
     let project_key = job.project_key.clone();
+    let mut missing_keys = Vec::with_capacity(missing.len());
+    for (sha, _) in &missing {
+        missing_keys.push(BlobKey::attachment(&project_key, sha)?.to_string());
+    }
+    for keys in missing_keys.chunks(1000) {
+        s.store.cancel_blob_deletions(keys).await?;
+    }
     let uploads = futures::stream::iter(missing.into_iter().map(|(sha, item)| {
         let s = s.clone();
         let project_key = project_key.clone();

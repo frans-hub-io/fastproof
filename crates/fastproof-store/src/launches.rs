@@ -353,7 +353,7 @@ impl Store {
             &mut tx,
             "launch.deleted",
             Some(project_key),
-            serde_json::json!({"id": id}),
+            serde_json::json!({"id": id, "launchId": id, "projectId": project_id}),
         )
         .await?;
         crate::events::notify_launch(&mut tx, project_key, id).await?;

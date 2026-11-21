@@ -2785,6 +2785,22 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
         };
     };
     analysis_defect_types: {
@@ -2994,7 +3010,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description text/event-stream: `launch.updated` {id}, `upload.updated` {launchId, id}; `ready` first, `resync` after missed events */
+            /** @description text/event-stream: `launch.updated` {id}, `upload.updated` {launchId, id}; `ready` first, `resync` after missed events. The stream ends when the caller loses access (checked every few minutes) */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -3104,6 +3120,14 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Page_Launch"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
                 };
             };
             403: {
@@ -3399,6 +3423,14 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
         };
     };
     analysis_clusters: {
@@ -3586,6 +3618,22 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
         };
     };
     logs_ingest: {
@@ -3680,7 +3728,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description text/event-stream: `ready` first; `log` events carry `LogStreamBatch` {lines} (at most 20 events per second); `gap` events carry `LogGap` {skipped} when the oldest buffered lines were dropped because the client was slow */
+            /** @description text/event-stream: `ready` first; `log` events carry `LogStreamBatch` {lines} (at most 20 events per second); `gap` events carry `LogGap` {skipped} when the oldest buffered lines were dropped because the client was slow. The stream ends when the caller loses access (checked every few minutes) or stops reading */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -3754,6 +3802,14 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Page_ResultSummary"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
                 };
             };
             403: {
@@ -4189,6 +4245,14 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -4377,6 +4441,22 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
         };
     };
     analysis_delete_rule: {
@@ -4520,7 +4600,7 @@ export interface operations {
                 /** @description Text to find (1..=256 bytes; a substring in PostgreSQL and ClickHouse, a phrase in OpenSearch). */
                 q: string;
                 launchId?: string;
-                /** @description RFC 3339; default 7 days before `to`. */
+                /** @description RFC 3339; default 7 days before `to`; at most 31 days before `to`. */
                 from?: string;
                 /** @description RFC 3339; default now. */
                 to?: string;
@@ -4562,6 +4642,14 @@ export interface operations {
                 };
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -4924,6 +5012,14 @@ export interface operations {
                 };
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };

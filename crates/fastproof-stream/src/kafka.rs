@@ -132,44 +132,106 @@ fn builder(cfg: &KafkaConfig) -> anyhow::Result<ClientBuilder> {
     Ok(b)
 }
 
-/// HMAC-SHA256 signatures of gateway records (key shared through PostgreSQL).
+/// HMAC-SHA256 signatures of the records FastProof produces (key shared through PostgreSQL).
+///
+/// The [`SIGNATURE_HEADER`] value is `v2.<key id>.<unix ms>.<hex mac>`; the MAC covers the
+/// version, topic, key id, time, record key and value. Records older than the maximum age (or
+/// more than [`SIGNATURE_SKEW`] in the future) and records signed with another key fail.
 #[derive(Clone)]
 pub struct Signer {
     key: Arc<Vec<u8>>,
+    kid: String,
+    max_age: Duration,
 }
+
+/// Clock difference tolerated for signature times in the future.
+pub const SIGNATURE_SKEW: Duration = Duration::from_secs(300);
+/// Default maximum age of a signed record (`FASTPROOF_KAFKA_SIGNATURE_MAX_AGE_HOURS`).
+pub const SIGNATURE_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 3600);
 
 impl Signer {
     pub fn new(key: Vec<u8>) -> Self {
-        Self { key: Arc::new(key) }
+        let mut h = <Sha256 as sha2::Digest>::new();
+        sha2::Digest::update(&mut h, b"fastproof-kafka-kid\0");
+        sha2::Digest::update(&mut h, &key);
+        let kid = hex::encode(&sha2::Digest::finalize(h)[..8]);
+        Self {
+            key: Arc::new(key),
+            kid,
+            max_age: SIGNATURE_MAX_AGE,
+        }
     }
 
-    fn mac(&self, topic: &str, key: &[u8], value: &[u8]) -> Hmac<Sha256> {
+    /// Records signed longer ago than `max_age` fail verification.
+    pub fn with_max_age(mut self, max_age: Duration) -> Self {
+        self.max_age = max_age;
+        self
+    }
+
+    /// The key id carried in signatures.
+    pub fn key_id(&self) -> &str {
+        &self.kid
+    }
+
+    fn mac(&self, topic: &str, at_ms: i64, key: &[u8], value: &[u8]) -> Hmac<Sha256> {
         let mut m = <Hmac<Sha256> as KeyInit>::new_from_slice(&self.key).expect("any key size");
+        m.update(b"v2\0");
         m.update(topic.as_bytes());
         m.update(&[0]);
+        m.update(self.kid.as_bytes());
+        m.update(&[0]);
+        m.update(&at_ms.to_be_bytes());
         m.update(&(key.len() as u64).to_be_bytes());
         m.update(key);
         m.update(value);
         m
     }
 
+    /// The header value for a record produced now.
     pub fn sign(&self, topic: &str, key: &[u8], value: &[u8]) -> Vec<u8> {
-        hex::encode(self.mac(topic, key, value).finalize().into_bytes()).into_bytes()
+        self.sign_at(topic, chrono::Utc::now().timestamp_millis(), key, value)
+    }
+
+    /// The header value for a record signed at `at_ms` (milliseconds since the epoch).
+    pub fn sign_at(&self, topic: &str, at_ms: i64, key: &[u8], value: &[u8]) -> Vec<u8> {
+        let mac = hex::encode(self.mac(topic, at_ms, key, value).finalize().into_bytes());
+        format!("v2.{}.{at_ms}.{mac}", self.kid).into_bytes()
     }
 
     pub fn verify(&self, topic: &str, r: &Record) -> bool {
         let Some(sig) = r.headers.get(SIGNATURE_HEADER) else {
             return false;
         };
-        let Ok(sig) = hex::decode(sig) else {
+        let Ok(sig) = std::str::from_utf8(sig) else {
+            return false;
+        };
+        let mut parts = sig.splitn(4, '.');
+        let (Some("v2"), Some(kid), Some(at), Some(mac)) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+        else {
+            return false;
+        };
+        if kid != self.kid {
+            return false;
+        }
+        let Ok(at_ms) = at.parse::<i64>() else {
+            return false;
+        };
+        let now = chrono::Utc::now().timestamp_millis();
+        let age = now.saturating_sub(at_ms);
+        if age > self.max_age.as_millis() as i64 || -age > SIGNATURE_SKEW.as_millis() as i64 {
+            return false;
+        }
+        let Ok(mac) = hex::decode(mac) else {
             return false;
         };
         self.mac(
             topic,
+            at_ms,
             r.key.as_deref().unwrap_or_default(),
             r.value.as_deref().unwrap_or_default(),
         )
-        .verify_slice(&sig)
+        .verify_slice(&mac)
         .is_ok()
     }
 }
@@ -481,8 +543,42 @@ mod tests {
             .insert(SIGNATURE_HEADER.into(), s.sign("t", b"k", b"{\"v\":1}"));
         assert!(s.verify("t", &r));
         assert!(!s.verify("other", &r));
+        assert!(!Signer::new(vec![8; 32]).verify("t", &r));
         r.value = Some(b"{\"v\":2}".to_vec());
         assert!(!s.verify("t", &r));
-        assert!(!Signer::new(vec![8; 32]).verify("t", &r));
+    }
+
+    #[test]
+    fn signatures_carry_key_id_and_time() {
+        let s = Signer::new(vec![7; 32]).with_max_age(Duration::from_secs(3600));
+        let rec = |sig: Vec<u8>| Record {
+            key: Some(b"k".to_vec()),
+            value: Some(b"v".to_vec()),
+            headers: BTreeMap::from([(SIGNATURE_HEADER.to_string(), sig)]),
+            timestamp: chrono::Utc::now(),
+        };
+        let now = chrono::Utc::now().timestamp_millis();
+        let sig = String::from_utf8(s.sign("t", b"k", b"v")).unwrap();
+        assert!(sig.starts_with(&format!("v2.{}.", s.key_id())), "{sig}");
+        assert!(s.verify("t", &rec(s.sign_at("t", now - 60_000, b"k", b"v"))));
+        assert!(!s.verify("t", &rec(s.sign_at("t", now - 7_200_000, b"k", b"v"))));
+        assert!(!s.verify("t", &rec(s.sign_at("t", now + 3_600_000, b"k", b"v"))));
+        let replayed = sig.replacen(
+            &format!(".{}.", sig.split('.').nth(2).unwrap()),
+            &format!(".{}.", now - 1234),
+            1,
+        );
+        assert!(!s.verify("t", &rec(replayed.into_bytes())));
+        let mut other_kid = Signer::new(vec![7; 32]);
+        other_kid.kid = "0000000000000000".into();
+        assert!(!s.verify("t", &rec(other_kid.sign("t", b"k", b"v"))));
+        let legacy = {
+            let mut m = <Hmac<Sha256> as KeyInit>::new_from_slice(&[7; 32]).unwrap();
+            m.update(b"t\0");
+            m.update(&1u64.to_be_bytes());
+            m.update(b"kv");
+            hex::encode(m.finalize().into_bytes()).into_bytes()
+        };
+        assert!(!s.verify("t", &rec(legacy)));
     }
 }

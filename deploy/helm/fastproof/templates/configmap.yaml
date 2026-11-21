@@ -15,6 +15,10 @@ data:
   {{- end }}
   FASTPROOF_DATABASE_URL_FILE: /etc/fastproof/secrets/database-url
   FASTPROOF_DATABASE_MAX_CONNECTIONS: {{ .Values.database.maxConnections | quote }}
+  FASTPROOF_DATABASE_STATEMENT_TIMEOUT_SECONDS: {{ .Values.database.statementTimeoutSeconds | int64 | quote }}
+  {{- if gt (int .Values.database.ingestReserve) 0 }}
+  FASTPROOF_DATABASE_INGEST_RESERVE: {{ .Values.database.ingestReserve | int64 | quote }}
+  {{- end }}
   {{- if include "fastproof.databaseCa" . }}
   FASTPROOF_DATABASE_CA_FILE: /etc/fastproof/ca/database.crt
   {{- end }}
@@ -48,6 +52,11 @@ data:
   FASTPROOF_RETAIN_UPLOADS: {{ .Values.server.retainUploads | quote }}
   FASTPROOF_OUTBOX_RETENTION_DAYS: {{ .Values.server.outboxRetentionDays | quote }}
   FASTPROOF_LOG_MAX_LINE_BYTES: {{ .Values.server.logs.maxLineBytes | int64 | quote }}
+  FASTPROOF_SSE_MAX_PER_CALLER: {{ .Values.server.guards.sseMaxPerCaller | int64 | quote }}
+  FASTPROOF_SSE_RECHECK_SECONDS: {{ .Values.server.guards.sseRecheckSeconds | int64 | quote }}
+  FASTPROOF_HEAVY_QUERIES_PER_CALLER: {{ .Values.server.guards.heavyQueriesPerCaller | int64 | quote }}
+  FASTPROOF_MAX_CONCURRENT_SPOOLS: {{ .Values.server.guards.maxConcurrentSpools | int64 | quote }}
+  FASTPROOF_BODY_IDLE_TIMEOUT_SECONDS: {{ .Values.server.guards.bodyIdleTimeoutSeconds | int64 | quote }}
   FASTPROOF_LOG_MAX_LINES_PER_REQUEST: {{ .Values.server.logs.maxLinesPerRequest | int64 | quote }}
   FASTPROOF_LOG_MAX_REQUEST_BYTES: {{ .Values.server.logs.maxRequestBytes | int64 | quote }}
   FASTPROOF_LOG_MAX_BYTES_PER_LAUNCH: {{ .Values.server.logs.maxBytesPerLaunch | int64 | quote }}
@@ -73,6 +82,7 @@ data:
   FASTPROOF_KAFKA_TRUSTED_PRODUCERS: {{ .Values.kafka.trustedProducers | quote }}
   FASTPROOF_KAFKA_CLIENT_ID: {{ .Values.kafka.clientId | quote }}
   FASTPROOF_KAFKA_MAX_RECORD_BYTES: {{ .Values.kafka.maxRecordBytes | int64 | quote }}
+  FASTPROOF_KAFKA_SIGNATURE_MAX_AGE_HOURS: {{ .Values.kafka.signatureMaxAgeHours | int64 | quote }}
   {{- end }}
   {{- if .Values.sinks.clickhouse.enabled }}
   {{- $c := include "fastproof.clickhouseConn" . | fromJson }}

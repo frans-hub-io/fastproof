@@ -160,7 +160,7 @@ pub async fn create(
 
 #[utoipa::path(get, path = "/api/v1/projects/{key}/launches", tag = "launches", operation_id = "launches_list",
     params(("key" = String, Path), LaunchQuery),
-    responses((status = 200, body = Page<Launch>), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
+    responses((status = 200, body = Page<Launch>), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
 pub async fn list(
     State(s): State<AppState>,
     auth: Auth,
@@ -175,6 +175,15 @@ pub async fn list(
                 .map_err(|_| ApiError::bad_request("invalid cursor"))?,
         ),
     };
+    if q.q
+        .as_ref()
+        .is_some_and(|v| v.len() > super::results::MAX_Q_BYTES)
+    {
+        return Err(ApiError::bad_request(format!(
+            "q has at most {} bytes",
+            super::results::MAX_Q_BYTES
+        )));
+    }
     let f = LaunchFilter {
         branch: q.branch,
         environment: q.environment,

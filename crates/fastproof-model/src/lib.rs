@@ -8,6 +8,7 @@ pub mod flaky;
 pub mod identity;
 pub mod launch;
 pub mod normalize;
+pub mod report;
 pub mod result;
 pub mod retry;
 pub mod status;
@@ -18,6 +19,7 @@ pub use identity::{
     ExplicitId, IdSource, IdentityInput, SourceRef, TestIdentity, UNKNOWN_PARAMETER_VALUE,
 };
 pub use launch::{CiInfo, Executor, KeyValue, LaunchMeta, VcsInfo};
+pub use report::{ReportAttachment, ReportError, ReportResult, ReportSource, ReportStep};
 pub use result::{
     BoundedText, Category, Container, Description, Fixtures, GlobalError, Globals, Label, Link,
     Parameter, ParameterMode, ParsedResult, SourceFormat, StatusDetails, Step, StepKind,

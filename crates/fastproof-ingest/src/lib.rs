@@ -14,6 +14,7 @@ mod json;
 mod junit;
 mod limits;
 mod playwright;
+mod report;
 mod resolve;
 mod sink;
 mod source;
@@ -33,6 +34,9 @@ pub use allure::attach_fixtures;
 pub use ctx::Warning;
 pub use error::IngestError;
 pub use limits::Limits;
+pub use report::{
+    MAX_ATTACHMENTS_PER_RESULT, MAX_CLIENT_ID_BYTES, ReportOptions, report_to_parsed,
+};
 pub use sink::{AttachmentSink, MemoryAttachment, MemorySink, NullSink};
 pub use source::UploadKind;
 pub use text::sanitize_html;

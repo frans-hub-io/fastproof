@@ -1,0 +1,26 @@
+[package]
+name = "fastproof-store"
+description = "PostgreSQL schema and repository of FastProof"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+base64.workspace = true
+url.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+fastproof-model.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+utoipa.workspace = true
+uuid.workspace = true
+zstd.workspace = true
+
+[dev-dependencies]
+rand.workspace = true

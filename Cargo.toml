@@ -1,6 +1,12 @@
 [workspace]
 resolver = "2"
-members = ["crates/fastproof-model", "crates/fastproof-ingest"]
+members = [
+    "crates/fastproof-model",
+    "crates/fastproof-ingest",
+    "crates/fastproof-blob",
+    "crates/fastproof-store",
+    "crates/fastproof-server",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -10,6 +16,42 @@ repository = "https://github.com/frans-hub-io/fastproof"
 
 [workspace.dependencies]
 fastproof-model = { path = "crates/fastproof-model" }
+fastproof-ingest = { path = "crates/fastproof-ingest" }
+fastproof-blob = { path = "crates/fastproof-blob" }
+fastproof-store = { path = "crates/fastproof-store" }
+franshub-access = { path = "../franshub-platform/crates/franshub-access" }
+franshub-auth = { path = "../franshub-platform/crates/franshub-auth" }
+franshub-oidc = { path = "../franshub-platform/crates/franshub-oidc" }
+franshub-store-pg = { path = "../franshub-platform/crates/franshub-store-pg" }
+franshub-observe = { path = "../franshub-platform/crates/franshub-observe" }
+franshub-http = { path = "../franshub-platform/crates/franshub-http" }
+anyhow = "1.0.104"
+async-trait = "0.1.92"
+axum = { version = "0.8.9", features = ["macros", "multipart"] }
+base64 = "0.22.1"
+bytes = "=1.12.1"
+chrono = { version = "0.4.45", features = ["serde"] }
+clap = { version = "=4.6.7", features = ["derive", "env"] }
+futures = "0.3.34"
+hex = "0.4.3"
+metrics = "0.24.6"
+metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
+object_store = { version = "=0.14.2", default-features = false, features = ["fs", "aws-base", "reqwest", "ring"] }
+rand = "0.9"
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider", "json", "stream", "query"] }
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+rust-embed = { version = "=8.13.0", features = ["debug-embed"] }
+sha2 = "0.11.1"
+sqlx = { version = "=0.9.0", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json", "migrate", "macros"] }
+tokio = { version = "1.54.1", features = ["full"] }
+tokio-stream = { version = "0.1.19", features = ["sync"] }
+tokio-util = { version = "0.7.20", features = ["io", "io-util"] }
+tracing = "0.1.44"
+url = "2"
+utoipa-axum = "0.3.0"
+utoipa-swagger-ui = { version = "10.0.2", features = ["axum", "vendored"] }
+uuid = { version = "=1.29.1", features = ["v4", "v7", "serde"] }
+zstd = "=0.14.3"
 ammonia = "4.2.5"
 flate2 = "1.1.11"
 md-5 = "0.11.0"
@@ -22,5 +64,5 @@ tempfile = "3.27.0"
 thiserror = "2.0.21"
 time = { version = "0.3.55", features = ["parsing", "formatting", "macros"] }
 unicode-normalization = "0.1.26"
-utoipa = "6.0.0"
+utoipa = { version = "6.0.0", features = ["axum_extras", "uuid", "chrono"] }
 zip = { version = "=9.4.2", default-features = false, features = ["deflate-flate2"] }

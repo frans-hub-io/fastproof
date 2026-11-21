@@ -14,6 +14,8 @@ pub enum SourceFormat {
     JunitXml,
     Ctrf,
     PlaywrightJson,
+    /// The native FastProof report JSON (streaming results API).
+    FastproofJson,
 }
 
 impl SourceFormat {
@@ -23,6 +25,7 @@ impl SourceFormat {
             SourceFormat::JunitXml => "junit-xml",
             SourceFormat::Ctrf => "ctrf",
             SourceFormat::PlaywrightJson => "playwright-json",
+            SourceFormat::FastproofJson => "fastproof-json",
         }
     }
 
@@ -34,6 +37,7 @@ impl SourceFormat {
             "junit" | "junit-xml" | "xunit" => Some(SourceFormat::JunitXml),
             "ctrf" => Some(SourceFormat::Ctrf),
             "playwright" | "playwright-json" => Some(SourceFormat::PlaywrightJson),
+            "fastproof" | "fastproof-json" => Some(SourceFormat::FastproofJson),
             _ => None,
         }
     }

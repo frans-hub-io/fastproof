@@ -1,0 +1,394 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fastproof.franshub.io/schemas/fastproof-report-v1.json",
+  "title": "FastProof report result, version 1",
+  "description": "One attempt of one test. Send one object, an array of objects, or NDJSON (one object per line).",
+  "$ref": "#/$defs/ReportResult",
+  "$defs": {
+    "Label": {
+      "type": "object",
+      "description": "A key/value label (Allure labels, JUnit properties, CTRF tags, Playwright annotations).",
+      "required": [
+        "name",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        }
+      }
+    },
+    "Link": {
+      "type": "object",
+      "description": "A link from a result (`type` is `link`, `issue`, `tms` or a writer-specific value).",
+      "required": [
+        "url"
+      ],
+      "properties": {
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "url": {
+          "type": "string"
+        }
+      }
+    },
+    "Parameter": {
+      "type": "object",
+      "description": "A test or step parameter.\n\n`value` is `None` when the writer omitted it, and also after redaction of masked and\nhidden parameters (see [`Parameter::redact`]); identity hashes are computed before\nredaction, so they still cover secret values.",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "excluded": {
+          "type": "boolean"
+        },
+        "mode": {
+          "$ref": "#/$defs/ParameterMode"
+        },
+        "name": {
+          "type": "string"
+        },
+        "value": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "ParameterMode": {
+      "type": "string",
+      "description": "How a parameter value may be shown.",
+      "enum": [
+        "default",
+        "masked",
+        "hidden"
+      ]
+    },
+    "ReportAttachment": {
+      "type": "object",
+      "description": "A reference to an attachment uploaded with `POST .../attachments`.",
+      "required": [
+        "id"
+      ],
+      "properties": {
+        "contentType": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Content type to show; defaults to the one given at upload."
+        },
+        "id": {
+          "type": "string",
+          "description": "Attachment id returned by the server."
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Name to show; defaults to the name given at upload."
+        }
+      },
+      "additionalProperties": false
+    },
+    "ReportError": {
+      "type": "object",
+      "description": "Error details of a result or step.",
+      "properties": {
+        "actual": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expected": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "message": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "trace": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "ReportResult": {
+      "type": "object",
+      "description": "One attempt of one test, the unit of `POST /api/v1/projects/{key}/launches/{id}/results`.",
+      "required": [
+        "id",
+        "name",
+        "status"
+      ],
+      "properties": {
+        "attachments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ReportAttachment"
+          }
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Plain text or Markdown."
+        },
+        "descriptionHtml": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "HTML; sanitized by the server."
+        },
+        "durationMs": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "error": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ReportError"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fullName": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Stable full name (for example `com.example.CheckoutTest#pays`); identity is computed\nfrom it unless `testCaseId` is given. Defaults to `name`."
+        },
+        "id": {
+          "type": "string",
+          "description": "Client id of this attempt, unique within the launch: sending it again is a no-op."
+        },
+        "labels": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Label"
+          }
+        },
+        "links": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Link"
+          }
+        },
+        "name": {
+          "type": "string",
+          "description": "Short name of the test."
+        },
+        "parameters": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Parameter"
+          },
+          "description": "Parameters; `mode` `masked` or `hidden` values count for identity but are never shown."
+        },
+        "retry": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int32",
+          "description": "Zero-based retry number, when known.",
+          "minimum": 0
+        },
+        "source": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ReportSource"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "start": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64",
+          "description": "Start, milliseconds since the Unix epoch."
+        },
+        "status": {
+          "$ref": "#/$defs/Status"
+        },
+        "stderr": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "stdout": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ReportStep"
+          }
+        },
+        "stop": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64",
+          "description": "Stop, milliseconds since the Unix epoch."
+        },
+        "testCaseId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Explicit stable test case id (takes precedence over the full name)."
+        },
+        "traceparent": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "W3C `traceparent` of the test, for correlation with traces."
+        }
+      },
+      "additionalProperties": false
+    },
+    "ReportSource": {
+      "type": "object",
+      "description": "Source location of a test.",
+      "properties": {
+        "file": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "line": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "ReportStep": {
+      "type": "object",
+      "description": "A step; nested steps form a tree.",
+      "required": [
+        "name",
+        "status"
+      ],
+      "properties": {
+        "attachments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ReportAttachment"
+          }
+        },
+        "durationMs": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "error": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ReportError"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "parameters": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Parameter"
+          }
+        },
+        "start": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64",
+          "description": "Start, milliseconds since the Unix epoch."
+        },
+        "status": {
+          "$ref": "#/$defs/Status"
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ReportStep"
+          }
+        },
+        "stop": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64",
+          "description": "Stop, milliseconds since the Unix epoch."
+        }
+      },
+      "additionalProperties": false
+    },
+    "Status": {
+      "type": "string",
+      "description": "Final outcome of a test result, attempt or step.",
+      "enum": [
+        "passed",
+        "failed",
+        "broken",
+        "skipped",
+        "unknown"
+      ]
+    }
+  }
+}

@@ -1,0 +1,3657 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "FastProof API",
+    "description": "Test reporting server: projects, launches, uploads, results and attachments.",
+    "license": {
+      "name": "Apache-2.0"
+    },
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/api/v1/admin/jobs": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "operationId": "jobs",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobList"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/audit": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "operationId": "audit",
+        "parameters": [
+          {
+            "name": "action",
+            "in": "query",
+            "description": "An action or a `prefix*`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "principal",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "scope",
+            "in": "query",
+            "description": "A project key; with it, `audit:read` in that project is enough.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditList"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "operationId": "list",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectList"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "projects"
+        ],
+        "operationId": "create",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewProject"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Project"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "operationId": "get",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Project"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "projects"
+        ],
+        "operationId": "delete",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "projects"
+        ],
+        "operationId": "patch",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchProject"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Project"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/attachments/{id}/content": {
+      "get": {
+        "tags": [
+          "attachments"
+        ],
+        "operationId": "content",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "download",
+            "in": "query",
+            "description": "`1` forces a download.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "the bytes, with X-Content-Type-Options nosniff and a sandbox CSP"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/events": {
+      "get": {
+        "tags": [
+          "events"
+        ],
+        "operationId": "stream",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "text/event-stream: `launch.updated` {id}, `upload.updated` {launchId, id}; `ready` first, `resync` after missed events",
+            "content": {
+              "text/event-stream": {}
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/launches": {
+      "get": {
+        "tags": [
+          "launches"
+        ],
+        "operationId": "list",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "branch",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "environment",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "description": "`running`, `finished` or `interrupted`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "attr",
+            "in": "query",
+            "description": "`key:value` attribute.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Substring of the name.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "debug",
+            "in": "query",
+            "description": "`false` (default): regular launches; `true`: debug launches only.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "description": "Cursor from `next`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_Launch"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "launches"
+        ],
+        "operationId": "create",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LaunchStart"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "a launch with this externalId exists",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Launch"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Launch"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/launches/{id}": {
+      "get": {
+        "tags": [
+          "launches"
+        ],
+        "operationId": "get",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Launch"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "launches"
+        ],
+        "operationId": "delete",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/launches/{id}/attachments": {
+      "post": {
+        "tags": [
+          "attachments"
+        ],
+        "operationId": "upload",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "X-FastProof-Attachment-Name",
+            "in": "header",
+            "description": "file name",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "int32",
+                  "minimum": 0
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AttachmentCreated"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/launches/{id}/finish": {
+      "post": {
+        "tags": [
+          "launches"
+        ],
+        "operationId": "finish",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "optional",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FinishLaunch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Launch"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/launches/{id}/results": {
+      "get": {
+        "tags": [
+          "results"
+        ],
+        "operationId": "list",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "description": "One status or a comma-separated list.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Substring of the name, or words of the error message.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "suite",
+            "in": "query",
+            "description": "A suite in the suite path.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "label",
+            "in": "query",
+            "description": "`name:value` label.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "flaky",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "fingerprint",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_ResultSummary"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "results"
+        ],
+        "operationId": "ingest",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "One ReportResult, a JSON array of them, or NDJSON (application/x-ndjson), see schemas/fastproof-report-v1.json",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReportResult"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IngestSummary"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/launches/{id}/tree": {
+      "get": {
+        "tags": [
+          "results"
+        ],
+        "operationId": "tree",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "groupBy",
+            "in": "query",
+            "description": "`suite` (default), `feature` or `package`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TreeNode"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/launches/{id}/uploads": {
+      "get": {
+        "tags": [
+          "uploads"
+        ],
+        "operationId": "list",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadList"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "uploads"
+        ],
+        "operationId": "create",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "description": "`auto` (default), `allure`, `junit`, `ctrf` or `playwright`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "fileName",
+            "in": "query",
+            "description": "Original file name of a single-file upload (helps detection).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "zip, tar, tar.gz, a JSON or XML report, or multipart with a `file` field",
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "int32",
+                  "minimum": 0
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Upload"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/results/{id}": {
+      "get": {
+        "tags": [
+          "results"
+        ],
+        "operationId": "detail",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/test-cases/{testCaseId}/history": {
+      "get": {
+        "tags": [
+          "results"
+        ],
+        "operationId": "history",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "testCaseId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "branch",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "environment",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HistoryList"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AttachmentCreated": {
+        "type": "object",
+        "description": "A stored attachment.",
+        "required": [
+          "id",
+          "sha256",
+          "size"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "AttachmentView": {
+        "type": "object",
+        "description": "An attachment as referenced by a result or step.",
+        "required": [
+          "name",
+          "kind"
+        ],
+        "properties": {
+          "contentType": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Attachment id; `null` when the file was not part of any upload."
+          },
+          "kind": {
+            "type": "string",
+            "description": "`image`, `video`, `trace`, `imageDiff`, `httpExchange`, `text`, `log`, `json` or `other`."
+          },
+          "name": {
+            "type": "string"
+          },
+          "size": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "AttemptView": {
+        "type": "object",
+        "description": "One execution of a result.",
+        "required": [
+          "no",
+          "status",
+          "steps",
+          "attachments"
+        ],
+        "properties": {
+          "attachments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AttachmentView"
+            }
+          },
+          "durationMs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "error": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ErrorView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "no": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "startedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "status": {
+            "type": "string"
+          },
+          "stderr": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "stdout": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StepView"
+            }
+          },
+          "stoppedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "traceId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "Attribute": {
+        "type": "object",
+        "description": "A key/value attribute of a launch.",
+        "required": [
+          "key",
+          "value"
+        ],
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        }
+      },
+      "AuditItem": {
+        "type": "object",
+        "description": "An audit record.",
+        "required": [
+          "id",
+          "at",
+          "principal",
+          "roles",
+          "action",
+          "detail"
+        ],
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "detail": {},
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "principal": {
+            "type": "string"
+          },
+          "principalKind": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "roles": {
+            "type": "string"
+          },
+          "scope": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "AuditList": {
+        "type": "object",
+        "description": "A page of audit records, newest first.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AuditItem"
+            }
+          },
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "Counts": {
+        "type": "object",
+        "description": "Status counts of a launch (results, not attempts).",
+        "required": [
+          "total",
+          "passed",
+          "failed",
+          "broken",
+          "skipped",
+          "unknown",
+          "flaky",
+          "muted"
+        ],
+        "properties": {
+          "broken": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "failed": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "flaky": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "muted": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "passed": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "skipped": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "unknown": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "Defect": {
+        "type": "object",
+        "description": "Triage of a result (filled in stage C).",
+        "required": [
+          "type"
+        ],
+        "properties": {
+          "comment": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "issueUrl": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "type": {
+            "type": "string"
+          }
+        }
+      },
+      "ErrorBody": {
+        "type": "object",
+        "description": "The uniform error body (`franshub_http::ErrorBody`), for the documentation.",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "details": {},
+          "message": {
+            "type": "string"
+          }
+        }
+      },
+      "ErrorView": {
+        "type": "object",
+        "description": "Error details of an attempt or step.",
+        "properties": {
+          "actual": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expected": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "trace": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "FinishLaunch": {
+        "type": "object",
+        "description": "Body of `POST .../launches/{id}/finish`.",
+        "properties": {
+          "status": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`finished` (default) or `interrupted`."
+          }
+        },
+        "additionalProperties": false
+      },
+      "HistoryEntry": {
+        "type": "object",
+        "description": "One result of a test case in a launch.",
+        "required": [
+          "launchId",
+          "launchNumber",
+          "resultId",
+          "status"
+        ],
+        "properties": {
+          "branch": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "durationMs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "environment": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "launchId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "launchNumber": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "resultId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "startedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "status": {
+            "type": "string"
+          }
+        }
+      },
+      "HistoryList": {
+        "type": "object",
+        "description": "History of a test case, newest first.",
+        "required": [
+          "testCase",
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HistoryEntry"
+            }
+          },
+          "testCase": {
+            "$ref": "#/components/schemas/TestCaseView"
+          }
+        }
+      },
+      "IngestSummary": {
+        "type": "object",
+        "description": "Outcome of `POST .../results`.",
+        "required": [
+          "accepted",
+          "duplicates",
+          "rejected"
+        ],
+        "properties": {
+          "accepted": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "duplicates": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "rejected": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Rejected"
+            }
+          }
+        }
+      },
+      "JobList": {
+        "type": "object",
+        "description": "Periodic jobs of the scheduler.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ScheduledJob"
+            }
+          }
+        }
+      },
+      "Label": {
+        "type": "object",
+        "description": "A key/value label (Allure labels, JUnit properties, CTRF tags, Playwright annotations).",
+        "required": [
+          "name",
+          "value"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        }
+      },
+      "LabelView": {
+        "type": "object",
+        "description": "A label of a result.",
+        "required": [
+          "name",
+          "value"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        }
+      },
+      "LastLaunch": {
+        "type": "object",
+        "description": "The newest launch of a project.",
+        "required": [
+          "id",
+          "number",
+          "name",
+          "status",
+          "startedAt",
+          "counts"
+        ],
+        "properties": {
+          "counts": {
+            "$ref": "#/components/schemas/Counts"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "number": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "startedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "status": {
+            "type": "string"
+          }
+        }
+      },
+      "Launch": {
+        "type": "object",
+        "description": "A launch: one run of a test suite, made of any number of uploads.",
+        "required": [
+          "id",
+          "number",
+          "name",
+          "status",
+          "debug",
+          "startedAt",
+          "attributes",
+          "counts",
+          "uploads"
+        ],
+        "properties": {
+          "attributes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Attribute"
+            }
+          },
+          "ci": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/LaunchCi"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "counts": {
+            "$ref": "#/components/schemas/Counts"
+          },
+          "debug": {
+            "type": "boolean"
+          },
+          "durationMs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "environment": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/LaunchEnvironment"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "externalId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "finishedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "number": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "startedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "status": {
+            "type": "string",
+            "description": "`running`, `finished` or `interrupted`."
+          },
+          "uploads": {
+            "$ref": "#/components/schemas/UploadCounts"
+          },
+          "vcs": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/LaunchVcs"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "LaunchCi": {
+        "type": "object",
+        "description": "CI metadata of a launch.",
+        "properties": {
+          "buildOrder": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "default": null
+          },
+          "jobId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "pipelineId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          }
+        }
+      },
+      "LaunchEnvironment": {
+        "type": "object",
+        "description": "The named environment of a launch; `key` is part of every series identity.",
+        "properties": {
+          "key": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "values": {
+            "type": "object",
+            "default": {},
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "LaunchStart": {
+        "type": "object",
+        "description": "Body of `POST /api/v1/projects/{key}/launches`.",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "attributes": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/Attribute"
+            }
+          },
+          "ci": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/LaunchCi"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "debug": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "environment": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/LaunchEnvironment"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "externalId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Client key: starting a launch with an external id that exists returns that launch."
+          },
+          "name": {
+            "type": "string"
+          },
+          "vcs": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/LaunchVcs"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "LaunchVcs": {
+        "type": "object",
+        "description": "Version control metadata of a launch.",
+        "properties": {
+          "branch": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "commit": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "commitUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Link to the commit; computed for GitHub and GitLab repositories when not given.",
+            "default": null
+          },
+          "repository": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          }
+        }
+      },
+      "Link": {
+        "type": "object",
+        "description": "A link from a result (`type` is `link`, `issue`, `tms` or a writer-specific value).",
+        "required": [
+          "url"
+        ],
+        "properties": {
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "url": {
+            "type": "string"
+          }
+        }
+      },
+      "LinkView": {
+        "type": "object",
+        "description": "A link of a result.",
+        "required": [
+          "url"
+        ],
+        "properties": {
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "url": {
+            "type": "string"
+          }
+        }
+      },
+      "NewProject": {
+        "type": "object",
+        "description": "Body of `POST /api/v1/projects`.",
+        "required": [
+          "key",
+          "name"
+        ],
+        "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "key": {
+            "type": "string",
+            "description": "`^[a-z0-9][a-z0-9-]{1,62}$`"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "Page_Launch": {
+        "type": "object",
+        "description": "A page of a list.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "A launch: one run of a test suite, made of any number of uploads.",
+              "required": [
+                "id",
+                "number",
+                "name",
+                "status",
+                "debug",
+                "startedAt",
+                "attributes",
+                "counts",
+                "uploads"
+              ],
+              "properties": {
+                "attributes": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Attribute"
+                  }
+                },
+                "ci": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/LaunchCi"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "counts": {
+                  "$ref": "#/components/schemas/Counts"
+                },
+                "debug": {
+                  "type": "boolean"
+                },
+                "durationMs": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int64"
+                },
+                "environment": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/LaunchEnvironment"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "externalId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "finishedAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "number": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "startedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "status": {
+                  "type": "string",
+                  "description": "`running`, `finished` or `interrupted`."
+                },
+                "uploads": {
+                  "$ref": "#/components/schemas/UploadCounts"
+                },
+                "vcs": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/LaunchVcs"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Opaque cursor for the next page (`before=`), `null` on the last page."
+          }
+        }
+      },
+      "Page_ResultSummary": {
+        "type": "object",
+        "description": "A page of a list.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One result per series per launch.",
+              "required": [
+                "id",
+                "launchId",
+                "testCaseId",
+                "seriesKey",
+                "name",
+                "fullName",
+                "suitePath",
+                "status",
+                "flakyInRun",
+                "attemptCount",
+                "labels",
+                "muted"
+              ],
+              "properties": {
+                "attemptCount": {
+                  "type": "integer",
+                  "format": "int32"
+                },
+                "defect": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/Defect"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "durationMs": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int64"
+                },
+                "fingerprint": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "flakyInRun": {
+                  "type": "boolean"
+                },
+                "fullName": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "labels": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/LabelView"
+                  }
+                },
+                "launchId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "message": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Error message of the final attempt (first 500 characters)."
+                },
+                "muted": {
+                  "type": "boolean"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "seriesKey": {
+                  "type": "string"
+                },
+                "startedAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "suitePath": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "testCaseId": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              }
+            }
+          },
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Opaque cursor for the next page (`before=`), `null` on the last page."
+          }
+        }
+      },
+      "Parameter": {
+        "type": "object",
+        "description": "A test or step parameter.\n\n`value` is `None` when the writer omitted it, and also after redaction of masked and\nhidden parameters (see [`Parameter::redact`]); identity hashes are computed before\nredaction, so they still cover secret values.",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "excluded": {
+            "type": "boolean"
+          },
+          "mode": {
+            "$ref": "#/components/schemas/ParameterMode"
+          },
+          "name": {
+            "type": "string"
+          },
+          "value": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "ParameterMode": {
+        "type": "string",
+        "description": "How a parameter value may be shown.",
+        "enum": [
+          "default",
+          "masked",
+          "hidden"
+        ]
+      },
+      "ParameterView": {
+        "type": "object",
+        "description": "A displayable parameter (masked and hidden ones are never returned).",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "value": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "PatchProject": {
+        "type": "object",
+        "description": "Body of `PATCH /api/v1/projects/{key}`.",
+        "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "Project": {
+        "type": "object",
+        "description": "A project.",
+        "required": [
+          "key",
+          "name",
+          "description",
+          "createdAt",
+          "launchCount"
+        ],
+        "properties": {
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "description": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          },
+          "lastLaunch": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/LastLaunch",
+                "description": "The newest launch, if any."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "lastLaunchAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "launchCount": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "ProjectList": {
+        "type": "object",
+        "description": "Projects the caller can read.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Project"
+            }
+          }
+        }
+      },
+      "Rejected": {
+        "type": "object",
+        "description": "A result that was not accepted.",
+        "required": [
+          "index",
+          "message"
+        ],
+        "properties": {
+          "index": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Position in the array or line number (zero-based) in NDJSON.",
+            "minimum": 0
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      },
+      "ReportAttachment": {
+        "type": "object",
+        "description": "A reference to an attachment uploaded with `POST .../attachments`.",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "contentType": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Content type to show; defaults to the one given at upload."
+          },
+          "id": {
+            "type": "string",
+            "description": "Attachment id returned by the server."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Name to show; defaults to the name given at upload."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ReportError": {
+        "type": "object",
+        "description": "Error details of a result or step.",
+        "properties": {
+          "actual": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expected": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "trace": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "ReportResult": {
+        "type": "object",
+        "description": "One attempt of one test, the unit of `POST /api/v1/projects/{key}/launches/{id}/results`.",
+        "required": [
+          "id",
+          "name",
+          "status"
+        ],
+        "properties": {
+          "attachments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReportAttachment"
+            }
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Plain text or Markdown."
+          },
+          "descriptionHtml": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "HTML; sanitized by the server."
+          },
+          "durationMs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "error": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ReportError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "fullName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Stable full name (for example `com.example.CheckoutTest#pays`); identity is computed\nfrom it unless `testCaseId` is given. Defaults to `name`."
+          },
+          "id": {
+            "type": "string",
+            "description": "Client id of this attempt, unique within the launch: sending it again is a no-op."
+          },
+          "labels": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Label"
+            }
+          },
+          "links": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Link"
+            }
+          },
+          "name": {
+            "type": "string",
+            "description": "Short name of the test."
+          },
+          "parameters": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Parameter"
+            },
+            "description": "Parameters; `mode` `masked` or `hidden` values count for identity but are never shown."
+          },
+          "retry": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Zero-based retry number, when known.",
+            "minimum": 0
+          },
+          "source": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ReportSource"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "start": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Start, milliseconds since the Unix epoch."
+          },
+          "status": {
+            "$ref": "#/components/schemas/Status"
+          },
+          "stderr": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "stdout": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReportStep"
+            }
+          },
+          "stop": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Stop, milliseconds since the Unix epoch."
+          },
+          "testCaseId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Explicit stable test case id (takes precedence over the full name)."
+          },
+          "traceparent": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "W3C `traceparent` of the test, for correlation with traces."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ReportSource": {
+        "type": "object",
+        "description": "Source location of a test.",
+        "properties": {
+          "file": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "line": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "ReportStep": {
+        "type": "object",
+        "description": "A step; nested steps form a tree.",
+        "required": [
+          "name",
+          "status"
+        ],
+        "properties": {
+          "attachments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReportAttachment"
+            }
+          },
+          "durationMs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "error": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ReportError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "parameters": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Parameter"
+            }
+          },
+          "start": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Start, milliseconds since the Unix epoch."
+          },
+          "status": {
+            "$ref": "#/components/schemas/Status"
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReportStep"
+            }
+          },
+          "stop": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Stop, milliseconds since the Unix epoch."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ResultDetail": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/ResultSummary"
+          },
+          {
+            "type": "object",
+            "required": [
+              "parameters",
+              "links",
+              "launchNumber",
+              "attempts",
+              "history"
+            ],
+            "properties": {
+              "attempts": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/AttemptView"
+                }
+              },
+              "description": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Sanitized HTML."
+              },
+              "descriptionText": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "history": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/SeriesPoint"
+                }
+              },
+              "launchNumber": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "links": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/LinkView"
+                }
+              },
+              "parameters": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ParameterView"
+                }
+              }
+            }
+          }
+        ],
+        "description": "A result with its attempts, steps and history."
+      },
+      "ResultSummary": {
+        "type": "object",
+        "description": "One result per series per launch.",
+        "required": [
+          "id",
+          "launchId",
+          "testCaseId",
+          "seriesKey",
+          "name",
+          "fullName",
+          "suitePath",
+          "status",
+          "flakyInRun",
+          "attemptCount",
+          "labels",
+          "muted"
+        ],
+        "properties": {
+          "attemptCount": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "defect": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Defect"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "durationMs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "fingerprint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "flakyInRun": {
+            "type": "boolean"
+          },
+          "fullName": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "labels": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LabelView"
+            }
+          },
+          "launchId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Error message of the final attempt (first 500 characters)."
+          },
+          "muted": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "seriesKey": {
+            "type": "string"
+          },
+          "startedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "status": {
+            "type": "string"
+          },
+          "suitePath": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "testCaseId": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "ScheduledJob": {
+        "type": "object",
+        "description": "A periodic job of the scheduler.",
+        "required": [
+          "name",
+          "schedule",
+          "nextRunAt",
+          "runCount",
+          "failureCount"
+        ],
+        "properties": {
+          "failureCount": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "lastDurationMs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "lastError": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lastFinishedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "lastStartedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "lastStatus": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "leaseOwner": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "leaseUntil": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "name": {
+            "type": "string"
+          },
+          "nextRunAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "runCount": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "schedule": {
+            "type": "string"
+          }
+        }
+      },
+      "SeriesPoint": {
+        "type": "object",
+        "description": "One past result of the same series.",
+        "required": [
+          "launchId",
+          "launchNumber",
+          "resultId",
+          "status"
+        ],
+        "properties": {
+          "launchId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "launchNumber": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "resultId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "startedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "status": {
+            "type": "string"
+          }
+        }
+      },
+      "Status": {
+        "type": "string",
+        "description": "Final outcome of a test result, attempt or step.",
+        "enum": [
+          "passed",
+          "failed",
+          "broken",
+          "skipped",
+          "unknown"
+        ]
+      },
+      "StepView": {
+        "type": "object",
+        "description": "A step or fixture.",
+        "required": [
+          "name",
+          "status",
+          "kind",
+          "parameters",
+          "attachments",
+          "steps"
+        ],
+        "properties": {
+          "attachments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AttachmentView"
+            }
+          },
+          "durationMs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "error": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ErrorView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "kind": {
+            "type": "string",
+            "description": "`step` or `fixture`."
+          },
+          "name": {
+            "type": "string"
+          },
+          "parameters": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ParameterView"
+            }
+          },
+          "startedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "status": {
+            "type": "string"
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StepView"
+            }
+          },
+          "stoppedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        }
+      },
+      "TestCaseView": {
+        "type": "object",
+        "description": "A test case (logical identity across parameters and environments).",
+        "required": [
+          "id",
+          "name",
+          "fullName"
+        ],
+        "properties": {
+          "fullName": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "TreeNode": {
+        "type": "object",
+        "description": "A node of the launch tree.",
+        "required": [
+          "name",
+          "path",
+          "counts",
+          "children"
+        ],
+        "properties": {
+          "children": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TreeNode"
+            }
+          },
+          "counts": {
+            "$ref": "#/components/schemas/Counts"
+          },
+          "name": {
+            "type": "string"
+          },
+          "path": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "resultIds": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        }
+      },
+      "Upload": {
+        "type": "object",
+        "description": "One upload (shard) of a launch.",
+        "required": [
+          "id",
+          "launchId",
+          "format",
+          "status",
+          "sizeBytes",
+          "counts",
+          "warnings",
+          "createdAt"
+        ],
+        "properties": {
+          "counts": {
+            "$ref": "#/components/schemas/UploadItemCounts"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "error": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/UploadError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "finishedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "format": {
+            "type": "string",
+            "description": "Requested format (`auto`, `allure`, `junit`, `ctrf`, `playwright`), replaced by the\ndetected one once processed."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "launchId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "sizeBytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "status": {
+            "type": "string",
+            "description": "`queued`, `processing`, `done` or `failed`."
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "UploadCounts": {
+        "type": "object",
+        "description": "Uploads of a launch that are not done.",
+        "required": [
+          "queued",
+          "processing",
+          "failed"
+        ],
+        "properties": {
+          "failed": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "processing": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "queued": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "UploadError": {
+        "type": "object",
+        "description": "Why an upload failed.",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "limit": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      },
+      "UploadItemCounts": {
+        "type": "object",
+        "description": "Counts of an upload.",
+        "properties": {
+          "attachments": {
+            "type": "integer",
+            "format": "int64",
+            "default": 0
+          },
+          "ignored": {
+            "type": "integer",
+            "format": "int64",
+            "default": 0
+          },
+          "results": {
+            "type": "integer",
+            "format": "int64",
+            "default": 0
+          }
+        }
+      },
+      "UploadList": {
+        "type": "object",
+        "description": "Uploads of a launch.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Upload"
+            }
+          }
+        }
+      }
+    },
+    "securitySchemes": {
+      "bearer": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    }
+  },
+  "security": [
+    {
+      "bearer": []
+    }
+  ],
+  "tags": [
+    {
+      "name": "projects"
+    },
+    {
+      "name": "launches"
+    },
+    {
+      "name": "uploads"
+    },
+    {
+      "name": "results"
+    },
+    {
+      "name": "attachments"
+    },
+    {
+      "name": "events"
+    },
+    {
+      "name": "admin"
+    }
+  ]
+}

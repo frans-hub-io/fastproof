@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { openRichLaunch, openRichResult, trackForeignRequests } from './helpers';
+import { openRichLaunch, openRichResult, openRichResults, trackForeignRequests } from './helpers';
 
 test('projects → launches → launch → result', async ({ page, baseURL }) => {
   const foreign = trackForeignRequests(page, baseURL ?? '');
@@ -16,6 +16,8 @@ test('projects → launches → launch → result', async ({ page, baseURL }) =>
   await expect(page.getByTestId('upload-error')).toContainText('limit_exceeded');
   await expect(page.getByTestId('ci-link')).toHaveAttribute('target', '_blank');
 
+  await expect(page.getByTestId('explorer-tree')).toBeVisible();
+  await page.getByRole('tab', { name: 'Results' }).click();
   await page.locator('label').filter({ hasText: /^Failed \d+$/ }).click();
   await expect(page).toHaveURL(/status=failed/);
   await expect.poll(() => page.getByTestId('result-row').count()).toBeLessThan(30);
@@ -24,10 +26,7 @@ test('projects → launches → launch → result', async ({ page, baseURL }) =>
   await page.getByRole('tab', { name: /Failures/ }).click();
   await expect(page.getByTestId('cluster').first()).toBeVisible();
 
-  await page.getByRole('tab', { name: 'Tree' }).click();
-  await page.getByTestId('tree-node').filter({ hasText: 'checkout.spec.ts' }).getByRole('button', { name: /checkout\.spec\.ts/ }).last().click();
-  await expect(page.getByTestId('tree-selection')).toContainText('checkout.spec.ts');
-
+  await page.getByRole('tab', { name: 'Results' }).click();
   await page.getByTestId('result-row').filter({ hasText: 'pays with saved card' }).click();
   await expect(page.getByRole('tab', { name: 'Attempt 2' })).toHaveAttribute('aria-selected', 'true');
   await expect(page.getByTestId('history-strip').locator('[data-current="true"]')).toHaveCount(1);
@@ -44,7 +43,7 @@ test('filters launches by branch from the URL', async ({ page }) => {
 });
 
 test('j and k move through results and Enter opens one', async ({ page }) => {
-  await openRichLaunch(page);
+  await openRichResults(page);
   await page.getByTestId('result-row').first().waitFor();
   await page.locator('body').click({ position: { x: 5, y: 300 } });
   await page.keyboard.press('j');

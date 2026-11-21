@@ -26,7 +26,7 @@ import { renderSafeHtml } from '../lib/safeHtml';
 import { STATUS_LABEL, statusVar } from '../lib/status';
 import { AttachmentList } from '../viewers/AttachmentList';
 
-function HistoryStrip({ project, history, currentLaunch, fullName }: { project: string; history: SeriesHistoryItem[]; currentLaunch: string | undefined; fullName: string }) {
+export function HistoryStrip({ project, history, currentLaunch, fullName }: { project: string; history: SeriesHistoryItem[]; currentLaunch: string | undefined; fullName: string }) {
   const navigate = useNavigate();
   if (!history.length) return null;
   const ordered = [...history].reverse();
@@ -82,7 +82,7 @@ function failing(status: string): boolean {
   return status === 'failed' || status === 'broken';
 }
 
-function DefectCard({ project, r, types }: { project: string; r: ResultDetail; types: Map<string, DefectType> }) {
+export function DefectCard({ project, r, types }: { project: string; r: ResultDetail; types: Map<string, DefectType> }) {
   const canTriage = useCan('results:triage', project);
   const [target, setTarget] = useState<TriageTarget | null>(null);
   const d = r.defect;
@@ -275,7 +275,7 @@ function MockInteractionsView({ project, resultId, attempt }: { project: string;
   );
 }
 
-function Side({ project, r, types }: { project: string; r: ResultDetail; types: Map<string, DefectType> }) {
+export function Side({ project, r, types }: { project: string; r: ResultDetail; types: Map<string, DefectType> }) {
   return (
     <Stack gap="md">
       {failing(r.status) && <SimilarFailures project={project} r={r} types={types} />}
@@ -466,12 +466,13 @@ function AttemptView({ project, attempt, r, launch }: { project: string; attempt
   );
 }
 
-function Attempts({ project, r, launch }: { project: string; r: ResultDetail; launch: Launch | undefined }) {
+export function Attempts({ project, r, launch }: { project: string; r: ResultDetail; launch: Launch | undefined }) {
   const [sp, setSp] = useSearchParams();
   const last = r.attempts[r.attempts.length - 1];
   if (!last) return <Text c="dimmed">No attempts were reported.</Text>;
   if (r.attempts.length === 1) return <AttemptView project={project} attempt={last} r={r} launch={launch} />;
-  const current = sp.get('attempt') ?? String(last.no);
+  const asked = sp.get('attempt');
+  const current = asked && r.attempts.some((a) => String(a.no) === asked) ? asked : String(last.no);
   return (
     <Tabs
       value={current}

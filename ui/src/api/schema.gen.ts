@@ -357,6 +357,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{key}/launches/{id}/tree/tests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["results_tree_tests"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{key}/launches/{id}/uploads": {
         parameters: {
             query?: never;
@@ -1740,6 +1756,30 @@ export interface components {
             /** @description Opaque cursor for the next page (`before=`), `null` on the last page. */
             next?: string | null;
         };
+        /** @description A page of a list. */
+        Page_TreeTest: {
+            items: {
+                /**
+                 * Format: int32
+                 * @description Attempts, when more than one.
+                 */
+                attemptCount?: number | null;
+                defect?: components["schemas"]["TreeDefect"] | null;
+                /** Format: int64 */
+                durationMs?: number | null;
+                flaky?: boolean;
+                flakyInRun?: boolean;
+                /** Format: uuid */
+                id: string;
+                muted?: boolean;
+                /** @description The name shown in the tree (the test title, without the groups above it). */
+                name: string;
+                status: string;
+                transition?: string | null;
+            }[];
+            /** @description Opaque cursor for the next page (`before=`), `null` on the last page. */
+            next?: string | null;
+        };
         /**
          * @description A test or step parameter.
          *
@@ -2335,13 +2375,56 @@ export interface components {
             roles: components["schemas"]["GrantableRole"][];
             scopes: string[];
         };
+        /** @description The parts of a defect that name and color it in the tree. */
+        TreeDefect: {
+            group: string;
+            name: string;
+            source: string;
+            /** Format: uuid */
+            typeId: string;
+        };
         /** @description A node of the launch tree. */
         TreeNode: {
             children: components["schemas"]["TreeNode"][];
             counts: components["schemas"]["Counts"];
+            /**
+             * Format: int64
+             * @description Sum of the durations of the results under the node.
+             */
+            durationMs?: number | null;
             name: string;
             path: string[];
             resultIds?: string[] | null;
+            /**
+             * Format: int64
+             * @description Results directly in this node (not in its children), with `includeTests`.
+             */
+            testCount?: number | null;
+            /**
+             * @description The results directly in this node, with `includeTests`, when they fit the response;
+             *     absent while `testCount` is above zero, they are read page by page from `.../tree/tests`.
+             */
+            tests?: components["schemas"]["TreeTest"][] | null;
+        };
+        /** @description A result as a leaf of the launch tree. */
+        TreeTest: {
+            /**
+             * Format: int32
+             * @description Attempts, when more than one.
+             */
+            attemptCount?: number | null;
+            defect?: components["schemas"]["TreeDefect"] | null;
+            /** Format: int64 */
+            durationMs?: number | null;
+            flaky?: boolean;
+            flakyInRun?: boolean;
+            /** Format: uuid */
+            id: string;
+            muted?: boolean;
+            /** @description The name shown in the tree (the test title, without the groups above it). */
+            name: string;
+            status: string;
+            transition?: string | null;
         };
         /** @description Issue of a triage: a URL, or a key that a project issue tracker turns into one. */
         TriageIssue: {
@@ -3945,6 +4028,19 @@ export interface operations {
             query?: {
                 /** @description `suite` (default), `feature` or `package`. */
                 groupBy?: string;
+                /**
+                 * @description Leaves (`tests`, `testCount`) instead of `resultIds`; groups that do not fit the
+                 *     response are read from `.../tree/tests`.
+                 */
+                includeTests?: boolean;
+                /** @description One status or a comma-separated list; counts are those of the matching results. */
+                status?: string;
+                /** @description Substring of the test name, full name or suite path. */
+                q?: string;
+                /** @description Only results flaky in this run. */
+                flaky?: boolean;
+                /** @description A result whose group is inlined first (to reveal a deep-linked result). */
+                reveal?: string;
             };
             header?: never;
             path: {
@@ -3961,6 +4057,70 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TreeNode"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    results_tree_tests: {
+        parameters: {
+            query: {
+                /** @description `suite` (default), `feature` or `package`. */
+                groupBy?: string;
+                /** @description The group: its `path` as a JSON array of names (`[]` for the root). */
+                path: string;
+                status?: string;
+                q?: string;
+                flaky?: boolean;
+                before?: string;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_TreeTest"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
                 };
             };
             403: {

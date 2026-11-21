@@ -553,7 +553,12 @@ async fn streaming_results_and_attachments() {
             )
         })
         .collect();
-    assert_eq!(groups, vec![("api", 2), ("api.Suite", 1)]);
+    assert_eq!(groups, vec![("api", 2)]);
+    assert_eq!(
+        tree["children"][0]["children"][0]["path"],
+        json!(["api", "Suite"]),
+        "a suite named like the class splits into package and class"
+    );
 
     let r = s
         .req(

@@ -1,6 +1,6 @@
 //! Reading results: lists, the launch tree, and the detail with attempts, steps and fixtures.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use base64::Engine as _;
 use chrono::{DateTime, Utc};
@@ -16,7 +16,7 @@ use crate::launches::like_escape;
 use crate::{
     AttachmentView, AttemptView, Counts, Defect, ErrorView, HistoryStore, LabelView, Launch,
     LinkView, Page, ParameterView, ResultDetail, ResultSummary, SeriesPoint, StepView, Store,
-    TreeNode, codec, json_no_nul, no_nul, ts_ms,
+    TreeDefect, TreeNode, TreeTest, codec, json_no_nul, no_nul, ts_ms,
 };
 
 /// Filters of the result list.
@@ -40,15 +40,121 @@ pub enum GroupBy {
     Package,
 }
 
-type TreeRow = (
-    Uuid,
-    String,
-    Vec<String>,
-    serde_json::Value,
-    String,
-    bool,
-    bool,
-);
+/// Filters of the launch tree.
+#[derive(Clone, Debug, Default)]
+pub struct TreeFilter {
+    pub statuses: Vec<String>,
+    /// Substring of the test name, full name or suite path.
+    pub q: Option<String>,
+    /// Only results flaky in this run.
+    pub flaky: Option<bool>,
+}
+
+/// What the launch tree holds.
+#[derive(Clone, Debug)]
+pub struct TreeOptions {
+    pub by: GroupBy,
+    /// Leaves (`tests`) instead of `resultIds`.
+    pub include_tests: bool,
+    pub filter: TreeFilter,
+    /// A result whose group is inlined first (a deep link to it).
+    pub reveal: Option<Uuid>,
+}
+
+impl TreeOptions {
+    pub fn groups(by: GroupBy) -> Self {
+        Self {
+            by,
+            include_tests: false,
+            filter: TreeFilter::default(),
+            reveal: None,
+        }
+    }
+}
+
+const TREE_SELECT: &str = "select id, name, full_name, suite_path, labels, status, flaky_in_run, muted, \
+    duration_ms, attempt_count, flaky, transition, defect from results ";
+
+struct TreeRow {
+    id: Uuid,
+    name: String,
+    full_name: String,
+    suite_path: Vec<String>,
+    labels: Vec<LabelView>,
+    status: String,
+    flaky_in_run: bool,
+    muted: bool,
+    duration_ms: Option<i64>,
+    attempt_count: i32,
+    flaky: bool,
+    transition: Option<String>,
+    defect: Option<TreeDefect>,
+}
+
+fn tree_row(r: &PgRow) -> Result<TreeRow, sqlx::Error> {
+    let labels: serde_json::Value = r.try_get("labels")?;
+    let defect: Option<serde_json::Value> = r.try_get("defect")?;
+    Ok(TreeRow {
+        id: r.try_get("id")?,
+        name: r.try_get("name")?,
+        full_name: r.try_get("full_name")?,
+        suite_path: r.try_get("suite_path")?,
+        labels: serde_json::from_value(labels).unwrap_or_default(),
+        status: r.try_get("status")?,
+        flaky_in_run: r.try_get("flaky_in_run")?,
+        muted: r.try_get("muted")?,
+        duration_ms: r.try_get("duration_ms")?,
+        attempt_count: r.try_get("attempt_count")?,
+        flaky: r.try_get("flaky")?,
+        transition: r.try_get("transition")?,
+        defect: defect.and_then(|d| serde_json::from_value::<TreeDefect>(d).ok()),
+    })
+}
+
+impl TreeRow {
+    fn leaf(self, name: String) -> TreeTest {
+        TreeTest {
+            id: self.id,
+            name,
+            status: self.status,
+            duration_ms: self.duration_ms,
+            attempt_count: (self.attempt_count > 1).then_some(self.attempt_count),
+            flaky_in_run: self.flaky_in_run,
+            flaky: self.flaky,
+            muted: self.muted,
+            transition: self.transition,
+            defect: self.defect,
+        }
+    }
+}
+
+fn push_tree_filter(qb: &mut QueryBuilder<Postgres>, f: &TreeFilter) {
+    if !f.statuses.is_empty() {
+        qb.push(" and status = any(")
+            .push_bind(f.statuses.clone())
+            .push(")");
+    }
+    if let Some(q) = &f.q {
+        let like = format!("%{}%", like_escape(q));
+        qb.push(" and (name ilike ")
+            .push_bind(like.clone())
+            .push(" or full_name ilike ")
+            .push_bind(like.clone())
+            .push(" or array_to_string(suite_path, ' ') ilike ")
+            .push_bind(like)
+            .push(")");
+    }
+    if let Some(fl) = f.flaky {
+        qb.push(" and flaky_in_run = ").push_bind(fl);
+    }
+}
+
+/// Results inlined in one tree response, at most; the other groups are read page by page.
+pub const MAX_TREE_INLINE: usize = 5000;
+/// Rows read per query while paging the tests of one group.
+const TREE_SCAN_CHUNK: i64 = 2000;
+/// Separator of Playwright titles in full names.
+const TITLE_SEP: &str = " \u{203a} ";
 
 /// Fixture steps attached to one attempt at read time, at most.
 pub const MAX_FIXTURE_STEPS: usize = 10_000;
@@ -220,29 +326,92 @@ fn add_count(c: &mut Counts, status: &str, flaky: bool, muted: bool) {
 #[derive(Default)]
 struct Builder {
     counts: Counts,
+    duration: Option<i64>,
     children: BTreeMap<String, Builder>,
     ids: Vec<Uuid>,
+    tests: Vec<TreeTest>,
 }
 
 impl Builder {
-    fn into_node(self, name: String, path: Vec<String>) -> TreeNode {
+    fn add(&mut self, status: &str, flaky: bool, muted: bool, duration: Option<i64>) {
+        add_count(&mut self.counts, status, flaky, muted);
+        if let Some(d) = duration {
+            self.duration = Some(self.duration.unwrap_or(0).saturating_add(d.max(0)));
+        }
+    }
+
+    /// Groups with direct tests: `(path, tests, failing, holds the revealed result)`.
+    fn groups(
+        &self,
+        path: &mut Vec<String>,
+        reveal: Option<Uuid>,
+        out: &mut Vec<(Vec<String>, usize, bool, bool)>,
+    ) {
+        if !self.tests.is_empty() {
+            let failing = self
+                .tests
+                .iter()
+                .any(|t| matches!(t.status.as_str(), "failed" | "broken"));
+            let revealed = reveal.is_some_and(|r| self.tests.iter().any(|t| t.id == r));
+            out.push((path.clone(), self.tests.len(), failing, revealed));
+        }
+        for (n, b) in &self.children {
+            path.push(n.clone());
+            b.groups(path, reveal, out);
+            path.pop();
+        }
+    }
+
+    fn into_node(
+        self,
+        name: String,
+        path: Vec<String>,
+        include_tests: bool,
+        inline: &HashSet<Vec<String>>,
+    ) -> TreeNode {
         let children = self
             .children
             .into_iter()
             .map(|(n, b)| {
                 let mut p = path.clone();
                 p.push(n.clone());
-                b.into_node(n, p)
+                b.into_node(n, p, include_tests, inline)
             })
             .collect();
+        let test_count = include_tests.then_some(self.tests.len() as i64);
+        let tests = (include_tests && !self.tests.is_empty() && inline.contains(&path))
+            .then_some(self.tests);
         TreeNode {
             name,
             path,
             counts: self.counts,
             children,
-            result_ids: (!self.ids.is_empty()).then_some(self.ids),
+            result_ids: (!include_tests && !self.ids.is_empty()).then_some(self.ids),
+            duration_ms: self.duration,
+            test_count,
+            tests,
         }
     }
+}
+
+/// Groups whose tests fit [`MAX_TREE_INLINE`]: the revealed one, then those with failures,
+/// then the smallest.
+fn inline_groups(mut groups: Vec<(Vec<String>, usize, bool, bool)>) -> HashSet<Vec<String>> {
+    groups.sort_by(|a, b| {
+        b.3.cmp(&a.3)
+            .then(b.2.cmp(&a.2))
+            .then(a.1.cmp(&b.1))
+            .then(a.0.cmp(&b.0))
+    });
+    let mut left = MAX_TREE_INLINE;
+    let mut out = HashSet::new();
+    for (path, n, _, _) in groups {
+        if n <= left {
+            left -= n;
+            out.insert(path);
+        }
+    }
+    out
 }
 
 fn label<'a>(labels: &'a [LabelView], name: &str) -> Option<&'a str> {
@@ -253,31 +422,137 @@ fn label<'a>(labels: &'a [LabelView], name: &str) -> Option<&'a str> {
         .filter(|v| !v.is_empty())
 }
 
+/// Splits a class name into its package and the class: `com.example.Test` is
+/// `["com.example", "Test"]`.
+fn split_class(class: &str) -> Vec<String> {
+    match class.rfind('.') {
+        Some(i) if i > 0 && i + 1 < class.len() => {
+            vec![class[..i].to_string(), class[i + 1..].to_string()]
+        }
+        _ => vec![class.to_string()],
+    }
+}
+
+/// The suite path in the tree: Allure suite labels as stored; Playwright full names
+/// (`file › describe › title`) become `file › describe`; a JUnit suite named like its class
+/// (`package.Class#name`) becomes `package › Class`. The flag tells that the leaf name is the
+/// last title of the full name.
+fn suite_tree_path(
+    suite_path: &[String],
+    labels: &[LabelView],
+    full_name: &str,
+) -> (Vec<String>, bool) {
+    let allure = label(labels, "parentSuite").is_some() || label(labels, "subSuite").is_some();
+    if !allure && suite_path.len() <= 1 {
+        let first = suite_path.first().map(String::as_str).unwrap_or("");
+        if full_name.contains(TITLE_SEP) && full_name.starts_with(first) {
+            let mut segs: Vec<String> = full_name.split(TITLE_SEP).map(str::to_string).collect();
+            segs.pop();
+            if segs.iter().all(|s| !s.is_empty()) {
+                return (segs, true);
+            }
+        }
+        if let Some(i) = full_name.rfind('#')
+            && i > 0
+            && (suite_path.is_empty() || first == &full_name[..i])
+        {
+            return (split_class(&full_name[..i]), false);
+        }
+    }
+    (suite_path.to_vec(), false)
+}
+
+#[cfg(test)]
 fn group_path(
     by: GroupBy,
     suite_path: &[String],
     labels: &[LabelView],
     full_name: &str,
 ) -> Vec<String> {
+    place(by, suite_path, labels, full_name).0
+}
+
+/// The group path of a result and whether its leaf name is the last title of the full name.
+fn place(
+    by: GroupBy,
+    suite_path: &[String],
+    labels: &[LabelView],
+    full_name: &str,
+) -> (Vec<String>, bool) {
     match by {
-        GroupBy::Suite => suite_path.to_vec(),
-        GroupBy::Feature => ["epic", "feature", "story"]
-            .iter()
-            .filter_map(|n| label(labels, n))
-            .map(str::to_string)
-            .collect(),
+        GroupBy::Suite => suite_tree_path(suite_path, labels, full_name),
+        GroupBy::Feature => (
+            ["epic", "feature", "story"]
+                .iter()
+                .filter_map(|n| label(labels, n))
+                .map(str::to_string)
+                .collect(),
+            false,
+        ),
         GroupBy::Package => {
             let base = label(labels, "package")
                 .map(str::to_string)
                 .unwrap_or_else(|| {
+                    if let Some((file, _)) = full_name.split_once(TITLE_SEP) {
+                        return file.to_string();
+                    }
                     let cut = full_name.rfind('#').or_else(|| full_name.rfind('.'));
                     cut.map(|i| full_name[..i].to_string()).unwrap_or_default()
                 });
-            base.split(['.', '/'])
-                .filter(|s| !s.is_empty())
-                .map(str::to_string)
-                .collect()
+            let sep: &[char] =
+                if full_name.contains(TITLE_SEP) && label(labels, "package").is_none() {
+                    &['/']
+                } else {
+                    &['.', '/']
+                };
+            (
+                base.split(sep)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .collect(),
+                false,
+            )
         }
+    }
+}
+
+fn leaf_name(row: &TreeRow, titled: bool) -> String {
+    if titled
+        && let Some((_, title)) = row.full_name.rsplit_once(TITLE_SEP)
+        && !title.is_empty()
+    {
+        return title.to_string();
+    }
+    row.name.clone()
+}
+
+/// SQL conditions that every result of the group `path` meets (a superset, checked in Rust).
+fn push_group_prefilter(qb: &mut QueryBuilder<Postgres>, by: GroupBy, path: &[String]) {
+    let Some(last) = path.last() else { return };
+    match by {
+        GroupBy::Suite => {
+            let titled = format!("{}{}%", like_escape(&path.join(TITLE_SEP)), TITLE_SEP);
+            let class = format!("{}#%", like_escape(&path.join(".")));
+            qb.push(" and (suite_path = ")
+                .push_bind(path.iter().map(|p| no_nul(p)).collect::<Vec<_>>())
+                .push(" or full_name like ")
+                .push_bind(titled)
+                .push(" or full_name like ")
+                .push_bind(class)
+                .push(")");
+        }
+        GroupBy::Feature => {
+            qb.push(" and (");
+            for (i, n) in ["epic", "feature", "story"].iter().enumerate() {
+                if i > 0 {
+                    qb.push(" or ");
+                }
+                qb.push("labels @> ")
+                    .push_bind(json_no_nul(serde_json::json!([{"name": n, "value": last}])));
+            }
+            qb.push(")");
+        }
+        GroupBy::Package => {}
     }
 }
 
@@ -365,28 +640,110 @@ impl Store {
 
     /// The tree of a launch: groups with counts, leaf groups carry result ids.
     pub async fn tree(&self, launch: &Launch, by: GroupBy) -> anyhow::Result<TreeNode> {
-        let rows: Vec<TreeRow> = sqlx::query_as(
-            "select id, full_name, suite_path, labels, status, flaky_in_run, muted from results \
-             where launch_id = $1 and launch_created_at = $2 order by full_name, id limit $3",
-        )
-        .bind(launch.id)
-        .bind(launch.created_at)
-        .bind(MAX_TREE_RESULTS)
-        .fetch_all(&self.pool)
-        .await?;
+        self.tree_with(launch, &TreeOptions::groups(by)).await
+    }
+
+    /// The tree of a launch: groups with counts and durations; with `include_tests`, the
+    /// results of the groups that fit [`MAX_TREE_INLINE`] as leaves, else result ids.
+    pub async fn tree_with(&self, launch: &Launch, o: &TreeOptions) -> anyhow::Result<TreeNode> {
+        let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(TREE_SELECT);
+        qb.push("where launch_id = ")
+            .push_bind(launch.id)
+            .push(" and launch_created_at = ")
+            .push_bind(launch.created_at);
+        push_tree_filter(&mut qb, &o.filter);
+        qb.push(" order by full_name, id limit ")
+            .push_bind(MAX_TREE_RESULTS);
+        let rows = qb.build().fetch_all(&self.pool).await?;
         let mut root = Builder::default();
-        for (id, full_name, suite, labels, status, flaky, muted) in rows {
-            let labels: Vec<LabelView> = serde_json::from_value(labels).unwrap_or_default();
-            let path = group_path(by, &suite, &labels, &full_name);
-            add_count(&mut root.counts, &status, flaky, muted);
+        for r in &rows {
+            let row = tree_row(r)?;
+            let (path, titled) = place(o.by, &row.suite_path, &row.labels, &row.full_name);
+            root.add(&row.status, row.flaky_in_run, row.muted, row.duration_ms);
             let mut node = &mut root;
             for seg in path {
                 node = node.children.entry(seg).or_default();
-                add_count(&mut node.counts, &status, flaky, muted);
+                node.add(&row.status, row.flaky_in_run, row.muted, row.duration_ms);
             }
-            node.ids.push(id);
+            if o.include_tests {
+                let name = leaf_name(&row, titled);
+                node.tests.push(row.leaf(name));
+            } else {
+                node.ids.push(row.id);
+            }
         }
-        Ok(root.into_node(String::new(), Vec::new()))
+        drop(rows);
+        let inline = if o.include_tests {
+            let mut groups = Vec::new();
+            root.groups(&mut Vec::new(), o.reveal, &mut groups);
+            inline_groups(groups)
+        } else {
+            HashSet::new()
+        };
+        Ok(root.into_node(String::new(), Vec::new(), o.include_tests, &inline))
+    }
+
+    /// A page of the results directly in the group `path` of the tree, in full name order.
+    pub async fn tree_tests(
+        &self,
+        launch: &Launch,
+        by: GroupBy,
+        path: &[String],
+        f: &TreeFilter,
+        before: Option<&str>,
+        limit: i64,
+    ) -> anyhow::Result<Page<TreeTest>> {
+        let limit = limit.max(1) as usize;
+        let mut after = before.and_then(decode_cursor);
+        let mut items: Vec<(TreeTest, String)> = Vec::new();
+        let mut scanned: i64 = 0;
+        let mut more = false;
+        while scanned < MAX_TREE_RESULTS {
+            let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(TREE_SELECT);
+            qb.push("where launch_id = ")
+                .push_bind(launch.id)
+                .push(" and launch_created_at = ")
+                .push_bind(launch.created_at);
+            push_tree_filter(&mut qb, f);
+            push_group_prefilter(&mut qb, by, path);
+            if let Some((name, id)) = &after {
+                qb.push(" and (full_name, id) > (")
+                    .push_bind(name.clone())
+                    .push(", ")
+                    .push_bind(*id)
+                    .push(")");
+            }
+            let chunk = TREE_SCAN_CHUNK.min(MAX_TREE_RESULTS - scanned);
+            qb.push(" order by full_name, id limit ").push_bind(chunk);
+            let rows = qb.build().fetch_all(&self.pool).await?;
+            let n = rows.len() as i64;
+            scanned += n;
+            for r in &rows {
+                let row = tree_row(r)?;
+                after = Some((row.full_name.clone(), row.id));
+                let (p, titled) = place(by, &row.suite_path, &row.labels, &row.full_name);
+                if p.as_slice() != path {
+                    continue;
+                }
+                if items.len() == limit {
+                    more = true;
+                    break;
+                }
+                let name = leaf_name(&row, titled);
+                let full_name = row.full_name.clone();
+                items.push((row.leaf(name), full_name));
+            }
+            if more || n < chunk {
+                break;
+            }
+        }
+        let next = more
+            .then(|| items.last().map(|(t, full)| encode_cursor(full, t.id)))
+            .flatten();
+        Ok(Page {
+            items: items.into_iter().map(|(t, _)| t).collect(),
+            next,
+        })
     }
 
     /// A result of the project with its attempts (steps and fixtures included) and the last 20
@@ -601,6 +958,98 @@ mod tests {
         let c = encode_cursor("a.b#c\nd", id);
         assert_eq!(decode_cursor(&c), Some(("a.b#c\nd".to_string(), id)));
         assert_eq!(decode_cursor("!!"), None);
+    }
+
+    fn labels(pairs: &[(&str, &str)]) -> Vec<LabelView> {
+        pairs
+            .iter()
+            .map(|(n, v)| LabelView {
+                name: (*n).into(),
+                value: (*v).into(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn suite_paths_by_format() {
+        let pw = "e2e/checkout.spec.ts \u{203a} Checkout \u{203a} Card \u{203a} pays";
+        assert_eq!(
+            place(GroupBy::Suite, &["e2e/checkout.spec".into()], &[], pw),
+            (
+                vec![
+                    "e2e/checkout.spec.ts".to_string(),
+                    "Checkout".into(),
+                    "Card".into()
+                ],
+                true
+            )
+        );
+        assert_eq!(
+            place(
+                GroupBy::Suite,
+                &["com.example.CheckoutTest".into()],
+                &labels(&[("suite", "com.example.CheckoutTest")]),
+                "com.example.CheckoutTest#pays"
+            )
+            .0,
+            vec!["com.example", "CheckoutTest"]
+        );
+        assert_eq!(
+            place(
+                GroupBy::Suite,
+                &["api".into()],
+                &labels(&[("suite", "api")]),
+                "api.Suite#first"
+            )
+            .0,
+            vec!["api"],
+            "an explicit suite that is not the class stays"
+        );
+        let allure = labels(&[
+            ("parentSuite", "staging"),
+            ("suite", "cart.spec.ts"),
+            ("subSuite", "Cart"),
+        ]);
+        assert_eq!(
+            place(
+                GroupBy::Suite,
+                &["staging".into(), "cart.spec.ts".into(), "Cart".into()],
+                &allure,
+                "cart.spec.ts \u{203a} Cart \u{203a} adds"
+            ),
+            (
+                vec!["staging".to_string(), "cart.spec.ts".into(), "Cart".into()],
+                false
+            )
+        );
+        assert_eq!(split_class("Plain"), vec!["Plain"]);
+        assert_eq!(split_class(".Odd"), vec![".Odd"]);
+        assert_eq!(
+            place(
+                GroupBy::Package,
+                &[],
+                &[],
+                "e2e/shop/cart.spec.ts \u{203a} Cart \u{203a} adds"
+            )
+            .0,
+            vec!["e2e", "shop", "cart.spec.ts"]
+        );
+    }
+
+    #[test]
+    fn inline_prefers_reveal_then_failures_then_small() {
+        let big = MAX_TREE_INLINE - 10;
+        let groups = vec![
+            (vec!["big".to_string()], big, false, false),
+            (vec!["failing".to_string()], 20, true, false),
+            (vec!["revealed".to_string()], 30, false, true),
+            (vec!["small".to_string()], 5, false, false),
+        ];
+        let set = inline_groups(groups);
+        assert!(set.contains(&vec!["revealed".to_string()]));
+        assert!(set.contains(&vec!["failing".to_string()]));
+        assert!(set.contains(&vec!["small".to_string()]));
+        assert!(!set.contains(&vec!["big".to_string()]));
     }
 
     #[test]

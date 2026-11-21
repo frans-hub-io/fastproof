@@ -5,7 +5,7 @@
 // (Allure HTTP exchanges and image diffs) are written by hand at the end. The analysis,
 // integrations and logs aliases live in `types-next.ts`.
 import type { components } from './schema.gen';
-import type { DefectInfo, Transition } from './types-next';
+import type { DefectGroup, DefectInfo, DefectSource, Transition } from './types-next';
 
 type S = components['schemas'];
 
@@ -95,7 +95,28 @@ export interface ResultFilters {
 
 export type TreeGroupBy = 'suite' | 'feature' | 'package';
 
-export type TreeNode = S['TreeNode'];
+export type TreeDefect = Omit<S['TreeDefect'], 'group' | 'source'> & { group: DefectGroup; source: DefectSource };
+
+/** A result as a leaf of the launch tree (`includeTests`). */
+export type TreeTest = Omit<S['TreeTest'], 'status' | 'defect' | 'transition'> & {
+  status: ResultStatus;
+  defect?: TreeDefect | null;
+  transition?: Transition | null;
+};
+
+export type TreeNode = Omit<S['TreeNode'], 'children' | 'tests'> & {
+  children: TreeNode[];
+  tests?: TreeTest[] | null;
+};
+
+/** Filters of the launch tree with leaves. */
+export interface TreeFilters {
+  groupBy: TreeGroupBy;
+  status?: string;
+  q?: string;
+  flaky?: boolean;
+  reveal?: string;
+}
 
 export type AttachmentKind = 'image' | 'video' | 'trace' | 'imageDiff' | 'httpExchange' | 'text' | 'log' | 'json' | 'other';
 

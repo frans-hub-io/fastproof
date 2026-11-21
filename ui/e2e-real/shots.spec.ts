@@ -21,6 +21,16 @@ function pages(): [string, string, (page: Page) => Promise<void>][] {
       await expect(p.getByTestId('launch-row').first()).toBeVisible();
     }],
     ['launch', `${P}/launches/${nightly}`, async (p) => {
+      await expect(p.getByTestId('explorer-test').first()).toBeVisible();
+    }],
+    ['launch-explorer-test', `${P}/launches/${nightly}?test=${s.failedResultId}`, async (p) => {
+      await expect(p.getByTestId('explorer-detail').getByTestId('step-tree').or(p.getByTestId('explorer-detail').getByText('No steps were reported.'))).toBeVisible();
+    }],
+    ['launch-explorer-playwright', `${P}/launches/${s.launches['playwright 1'] ?? ''}?view=suites`, async (p) => {
+      await p.getByTestId('explorer-expand-all').click();
+      await expect(p.getByTestId('explorer-test').first()).toBeVisible();
+    }],
+    ['launch-results', `${P}/launches/${nightly}?tab=results`, async (p) => {
       await expect(p.getByTestId('result-row').first()).toBeVisible();
     }],
     [

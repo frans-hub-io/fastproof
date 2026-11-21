@@ -18,6 +18,7 @@ test('phone width: every page fits and the navigation drawer works', async ({ pa
   await expect(page.getByTestId('counts-donut')).toBeVisible();
   await noHorizontalScroll(page);
 
+  await page.getByRole('tab', { name: 'Results' }).click();
   await page.getByTestId('result-row').filter({ hasText: 'pays with saved card' }).click();
   await expect(page.getByRole('heading', { name: 'pays with saved card' })).toBeVisible();
   await noHorizontalScroll(page);
@@ -41,4 +42,25 @@ test('phone width: notification deliveries show their event', async ({ page }) =
   const event = row.locator('td').nth(2);
   await expect(event).not.toHaveText(/^\s*(—)?\s*$/);
   await noHorizontalScroll(page);
+});
+
+test('phone width: the tree fills the screen and a test opens in a drawer', async ({ page }) => {
+  await page.goto('/p/web-shop');
+  await page.getByRole('link', { name: '#41 web-shop nightly' }).click();
+  await expect(page.getByTestId('explorer-tree')).toBeVisible();
+  await expect(page.getByTestId('explorer-detail-pane')).toHaveCount(0);
+  const tree = await page.getByTestId('explorer-tree').boundingBox();
+  const viewport = page.viewportSize();
+  expect(tree && viewport ? tree.width / viewport.width : 0).toBeGreaterThan(0.85);
+  await noHorizontalScroll(page);
+  const failed = page.locator('[data-testid="explorer-test"][data-status="failed"]').first();
+  const name = (await failed.getAttribute('title')) ?? '';
+  await failed.click();
+  const drawer = page.getByRole('dialog');
+  await expect(drawer.getByTestId('explorer-detail-name')).toHaveText(name);
+  await expect(drawer.getByTestId('step-tree')).toBeVisible();
+  await noHorizontalScroll(page);
+  await page.goBack();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.getByTestId('explorer-tree')).toBeVisible();
 });

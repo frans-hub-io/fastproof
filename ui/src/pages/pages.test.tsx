@@ -33,7 +33,7 @@ describe('pages', () => {
 
   it('shows a launch with counts, failed upload, results and failure groups', async () => {
     const user = userEvent.setup();
-    renderApp(`/p/web-shop/launches/${RICH_LAUNCH_ID}`);
+    renderApp(`/p/web-shop/launches/${RICH_LAUNCH_ID}?tab=results`);
     expect(await screen.findByText('#41 web-shop nightly')).toBeInTheDocument();
     expect(screen.getByTestId('stat-total')).toHaveTextContent('200');
     expect(await screen.findByTestId('upload-error')).toHaveTextContent('limit_exceeded');
@@ -49,7 +49,7 @@ describe('pages', () => {
 
   it('shows a result with attempts, steps, history and links', async () => {
     const user = userEvent.setup();
-    renderApp(`/p/web-shop/launches/${RICH_LAUNCH_ID}?q=pays+with+saved+card`);
+    renderApp(`/p/web-shop/launches/${RICH_LAUNCH_ID}?tab=results&q=pays+with+saved+card`);
     await user.click(await screen.findByText('pays with saved card'));
     expect(await screen.findByRole('tab', { name: /Attempt 2/ })).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByTestId('history-strip').querySelector('[data-current="true"]')).not.toBeNull();
@@ -64,7 +64,7 @@ describe('pages', () => {
 
   it('shows the test case history with filters', async () => {
     const user = userEvent.setup();
-    renderApp(`/p/web-shop/launches/${RICH_LAUNCH_ID}?q=pays+with+saved+card`);
+    renderApp(`/p/web-shop/launches/${RICH_LAUNCH_ID}?tab=results&q=pays+with+saved+card`);
     await user.click(await screen.findByText('pays with saved card'));
     await user.click(await screen.findByTestId('test-case-link'));
     const rows = await screen.findAllByTestId('history-row');

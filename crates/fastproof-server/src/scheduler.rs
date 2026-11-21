@@ -335,54 +335,63 @@ pub fn standard_jobs() -> anyhow::Result<Scheduler> {
     })?;
     sch.register("attachments.gc", "1h", |s: AppState| async move {
         loop {
-            let keys = s
+            let n = s
                 .store
                 .collect_attachments(Duration::from_secs(86_400), 1000)
                 .await?;
-            for k in &keys {
-                if let Ok(k) = fastproof_blob::BlobKey::parse(k) {
-                    s.blobs.delete(&k).await?;
-                }
-            }
-            if keys.len() < 1000 {
+            if n < 1000 {
                 return Ok(());
             }
         }
     })?;
     sch.register("projects.purge", "1m", |s: AppState| async move {
-        for d in s.store.pending_blob_deletions(500).await? {
-            let r = async {
-                if d.project_id.is_none()
-                    && let Ok(k) = fastproof_blob::BlobKey::parse(&d.prefix)
-                {
-                    s.blobs.delete(&k).await?;
-                    s.store.finish_blob_deletion(&d).await?;
-                    return Ok(());
-                }
-                let key = d.prefix.strip_prefix("projects/").unwrap_or_default();
-                let n = s
-                    .blobs
-                    .delete_prefix(&fastproof_blob::BlobKey::project_prefix(key)?)
-                    .await?;
-                s.store.finish_blob_deletion(&d).await?;
-                tracing::info!(prefix = %d.prefix, blobs = n, "deleted project purged");
-                Ok::<_, anyhow::Error>(())
-            }
-            .await;
-            if let Err(e) = r {
-                s.store.fail_blob_deletion(&d, &format!("{e:#}")).await?;
-            }
-        }
-        Ok(())
+        purge_blobs(&s).await
     })?;
     analysis_jobs(&mut sch)?;
     Ok(sch)
 }
 
+/// Runs queued blob deletions: single blobs (collected attachments) are deleted while their
+/// queue entry is held, so an upload of the same content either cancels the deletion or waits
+/// for it and stores the blob again; deleted projects lose their prefix, their rows and their
+/// analytics rows (through the `project.deleted` event).
+pub async fn purge_blobs(s: &AppState) -> anyhow::Result<()> {
+    for d in s.store.pending_blob_deletions(500).await? {
+        let r = async {
+            if d.project_id.is_none() {
+                if let Ok(k) = fastproof_blob::BlobKey::parse(&d.prefix) {
+                    s.store
+                        .delete_blob_locked(&d, || async { s.blobs.delete(&k).await })
+                        .await?;
+                } else {
+                    s.store.finish_blob_deletion(&d).await?;
+                }
+                return Ok(());
+            }
+            let key = d.prefix.strip_prefix("projects/").unwrap_or_default();
+            let n = s
+                .blobs
+                .delete_prefix(&fastproof_blob::BlobKey::project_prefix(key)?)
+                .await?;
+            s.store.finish_blob_deletion(&d).await?;
+            tracing::info!(prefix = %d.prefix, blobs = n, "deleted project purged");
+            Ok::<_, anyhow::Error>(())
+        }
+        .await;
+        if let Err(e) = r {
+            s.store.fail_blob_deletion(&d, &format!("{e:#}")).await?;
+        }
+    }
+    Ok(())
+}
+
 /// Jobs of the analysis features (stage C).
 pub fn analysis_jobs(sch: &mut Scheduler) -> anyhow::Result<()> {
     sch.register("analysis.indexes", "6h", |s: AppState| async move {
-        let n = fastproof_store::analysis::indexes::ensure_analysis_indexes(s.store.pool()).await?;
+        let pool = crate::db::unbounded(s.store.pool()).await?;
+        let n = fastproof_store::analysis::indexes::ensure_analysis_indexes(&pool).await;
+        pool.close().await;
+        let n = n?;
         if n > 0 {
             tracing::info!(partitions = n, "fingerprint indexes built");
         }

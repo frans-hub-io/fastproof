@@ -103,6 +103,7 @@ pub async fn create(
     let launch = s.launch_of(&project, id).await?;
     let format = normalize_format(q.format.as_deref())?;
     identity_encoding(&req)?;
+    let _spool = s.guards.spool().await?;
     let mut file_name = q.file_name.as_deref().and_then(clean_file_name);
     let upload_id = Uuid::now_v7();
     let dir = s.cfg.spool_dir.join("incoming");

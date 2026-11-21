@@ -13,6 +13,7 @@ url.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
 fastproof-model.workspace = true
+futures.workspace = true
 metrics.workspace = true
 regex.workspace = true
 hex.workspace = true

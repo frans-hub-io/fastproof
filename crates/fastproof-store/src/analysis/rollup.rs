@@ -133,6 +133,9 @@ pub struct RollupReport {
 pub struct RetentionReport {
     pub launches_deleted: u64,
     pub blobs_queued: u64,
+    /// Test plans older than [`super::plans::TEST_PLAN_DAYS`] that were deleted.
+    #[serde(default)]
+    pub test_plans_deleted: u64,
 }
 
 /// Launches a retention run would delete.
@@ -441,7 +444,10 @@ impl Store {
     /// blobs of unreferenced attachments. Stops starting new work after `budget`.
     pub async fn retention_apply(&self, budget: Duration) -> anyhow::Result<RetentionReport> {
         let started = Instant::now();
-        let mut report = RetentionReport::default();
+        let mut report = RetentionReport {
+            test_plans_deleted: self.delete_old_test_plans(10_000).await?,
+            ..RetentionReport::default()
+        };
         for (project_id, key, s) in self.all_project_settings().await? {
             let r = &s.retention;
             loop {

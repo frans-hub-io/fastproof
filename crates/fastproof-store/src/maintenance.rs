@@ -1,5 +1,7 @@
 //! Partitions, pending blob deletions and the purge of deleted projects.
 
+use std::future::Future;
+
 use uuid::Uuid;
 
 use crate::Store;
@@ -57,9 +59,46 @@ impl Store {
             .collect())
     }
 
-    /// Completes a blob deletion: the entry goes, and a deleted project's rows with it.
+    /// Deletes one queued blob while holding its queue row: `delete` runs only when the entry
+    /// is still queued, and the entry goes in the same transaction. An upload of the same
+    /// content cancels the entry ([`Store::cancel_blob_deletions`]) and so either removes it
+    /// before this runs or waits until the blob is gone, then stores it again. Returns false
+    /// when the entry was cancelled.
+    pub async fn delete_blob_locked<F, Fut>(
+        &self,
+        d: &BlobDeletion,
+        delete: F,
+    ) -> anyhow::Result<bool>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = anyhow::Result<()>>,
+    {
+        let mut tx = self.pool.begin().await?;
+        let found: Option<i64> =
+            sqlx::query_scalar("select id from blob_deletions where id = $1 for update")
+                .bind(d.id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        if found.is_none() {
+            tx.commit().await?;
+            return Ok(false);
+        }
+        delete().await?;
+        sqlx::query("delete from blob_deletions where id = $1")
+            .bind(d.id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(true)
+    }
+
+    /// Completes a blob deletion: the entry goes, and a deleted project's rows with it (without
+    /// a statement timeout: a large project takes long).
     pub async fn finish_blob_deletion(&self, d: &BlobDeletion) -> anyhow::Result<()> {
         let mut tx = self.pool.begin().await?;
+        sqlx::query("set local statement_timeout = 0")
+            .execute(&mut *tx)
+            .await?;
         if let Some(p) = d.project_id {
             sqlx::query("delete from attempts where project_id = $1")
                 .bind(p)

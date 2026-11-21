@@ -486,6 +486,24 @@
                 }
               }
             }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         }
       }
@@ -767,7 +785,7 @@
         ],
         "responses": {
           "200": {
-            "description": "text/event-stream: `launch.updated` {id}, `upload.updated` {launchId, id}; `ready` first, `resync` after missed events",
+            "description": "text/event-stream: `launch.updated` {id}, `upload.updated` {launchId, id}; `ready` first, `resync` after missed events. The stream ends when the caller loses access (checked every few minutes)",
             "content": {
               "text/event-stream": {}
             }
@@ -976,6 +994,15 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Page_Launch"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -1406,6 +1433,15 @@
                 }
               }
             }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         }
       }
@@ -1718,6 +1754,24 @@
                 }
               }
             }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         }
       },
@@ -1878,7 +1932,7 @@
         ],
         "responses": {
           "200": {
-            "description": "text/event-stream: `ready` first; `log` events carry `LogStreamBatch` {lines} (at most 20 events per second); `gap` events carry `LogGap` {skipped} when the oldest buffered lines were dropped because the client was slow",
+            "description": "text/event-stream: `ready` first; `log` events carry `LogStreamBatch` {lines} (at most 20 events per second); `gap` events carry `LogGap` {skipped} when the oldest buffered lines were dropped because the client was slow. The stream ends when the caller loses access (checked every few minutes) or stops reading",
             "content": {
               "text/event-stream": {}
             }
@@ -2022,6 +2076,15 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Page_ResultSummary"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -2685,6 +2748,15 @@
               }
             }
           },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "503": {
             "content": {
               "application/json": {
@@ -2919,6 +2991,24 @@
             }
           },
           "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
             "content": {
               "application/json": {
                 "schema": {
@@ -3162,7 +3252,7 @@
           {
             "name": "from",
             "in": "query",
-            "description": "RFC 3339; default 7 days before `to`.",
+            "description": "RFC 3339; default 7 days before `to`; at most 31 days before `to`.",
             "required": false,
             "schema": {
               "type": "string"
@@ -3226,6 +3316,15 @@
             }
           },
           "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
             "content": {
               "application/json": {
                 "schema": {
@@ -3724,6 +3823,15 @@
             }
           },
           "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
             "content": {
               "application/json": {
                 "schema": {

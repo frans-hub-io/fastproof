@@ -9,6 +9,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 use fastproof_model::Status;
@@ -415,25 +416,49 @@ pub fn first_match<'r>(
     Ok(None)
 }
 
-type Cache = HashMap<Uuid, (DateTime<Utc>, Arc<CompiledRule>)>;
-static CACHE: LazyLock<Mutex<Cache>> = LazyLock::new(|| Mutex::new(HashMap::new()));
-const CACHE_ENTRIES: usize = 10_000;
+/// Compiled rules by id: version, last use, rule; and when idle entries were last dropped.
+struct Cache {
+    rules: HashMap<Uuid, (DateTime<Utc>, Instant, Arc<CompiledRule>)>,
+    swept: Instant,
+}
+static CACHE: LazyLock<Mutex<Cache>> = LazyLock::new(|| {
+    Mutex::new(Cache {
+        rules: HashMap::new(),
+        swept: Instant::now(),
+    })
+});
+/// Compiled rules kept per replica, at most.
+const CACHE_ENTRIES: usize = 2000;
+/// Compiled rules not used for this long are dropped (deleted rules among them).
+const CACHE_IDLE: Duration = Duration::from_secs(600);
 
 fn compiled(rule: Rule) -> Option<Arc<CompiledRule>> {
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((at, c)) = cache.get(&rule.id)
+    if cache.swept.elapsed() > Duration::from_secs(60) {
+        cache
+            .rules
+            .retain(|_, (_, used, _)| used.elapsed() < CACHE_IDLE);
+        cache.swept = Instant::now();
+    }
+    if let Some((at, used, c)) = cache.rules.get_mut(&rule.id)
         && *at == rule.updated_at
     {
+        *used = Instant::now();
         return Some(c.clone());
     }
     let (id, at) = (rule.id, rule.updated_at);
     match CompiledRule::compile(rule) {
         Ok(c) => {
-            if cache.len() >= CACHE_ENTRIES {
-                cache.clear();
+            if cache.rules.len() >= CACHE_ENTRIES {
+                cache
+                    .rules
+                    .retain(|_, (_, used, _)| used.elapsed() < CACHE_IDLE);
+                if cache.rules.len() >= CACHE_ENTRIES {
+                    cache.rules.clear();
+                }
             }
             let c = Arc::new(c);
-            cache.insert(id, (at, c.clone()));
+            cache.rules.insert(id, (at, Instant::now(), c.clone()));
             Some(c)
         }
         Err(e) => {
@@ -441,6 +466,24 @@ fn compiled(rule: Rule) -> Option<Arc<CompiledRule>> {
             None
         }
     }
+}
+
+/// Drops a rule from this replica's compiled-rule cache (after it changed or was deleted).
+pub fn forget_compiled(id: Uuid) {
+    CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .rules
+        .remove(&id);
+}
+
+/// Rules in this replica's compiled-rule cache (tests).
+pub fn compiled_cached(id: Uuid) -> bool {
+    CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .rules
+        .contains_key(&id)
 }
 
 const COLUMNS: &str = "id, name, enabled, ord, match, action, created_at, updated_at, hits";
@@ -585,6 +628,7 @@ impl Store {
         .bind(json_no_nul(serde_json::to_value(&rule.action)?))
         .fetch_optional(&self.pool)
         .await?;
+        forget_compiled(rule.id);
         Ok(match row {
             Some(r) => RuleChange::Done(Box::new(rule_row(&r)?)),
             None => RuleChange::NotFound,
@@ -597,14 +641,13 @@ impl Store {
             .bind(id)
             .execute(&self.pool)
             .await?;
+        forget_compiled(id);
         Ok(r.rows_affected() == 1)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::time::Instant;
-
     use super::*;
 
     fn rule(m: RuleMatch) -> CompiledRule {

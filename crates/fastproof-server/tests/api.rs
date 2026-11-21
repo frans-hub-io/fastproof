@@ -414,11 +414,17 @@ async fn streaming_results_and_attachments() {
         .unwrap();
     assert_eq!(r.status(), StatusCode::CREATED);
     let a1: Value = r.json().await.unwrap();
-    let r = att(b"{\"ok\":true}", "application/json", "again.json")
+    let r = att(b"{\"ok\":true}", "application/json", "response.json")
         .await
         .unwrap();
     let a2: Value = r.json().await.unwrap();
     assert_eq!(a1["id"], a2["id"], "same bytes, same attachment");
+    let r = att(b"{\"ok\":true}", "application/json", "again.json")
+        .await
+        .unwrap();
+    let a3: Value = r.json().await.unwrap();
+    assert_ne!(a1["id"], a3["id"], "another name is a reference of its own");
+    assert_eq!(a1["sha256"], a3["sha256"], "to the same bytes");
     assert_eq!(a1["size"], 11);
     let aid = a1["id"].as_str().unwrap();
 

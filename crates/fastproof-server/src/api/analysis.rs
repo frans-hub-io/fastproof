@@ -407,7 +407,7 @@ pub struct RuleTest {
 #[utoipa::path(post, path = "/api/v1/projects/{key}/rules/test", tag = "analysis", operation_id = "analysis_test_rule", request_body = RuleTest,
     params(("key" = String, Path)),
     responses((status = 200, body = DryRun), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),
-        (status = 404, body = ErrorBody)))]
+        (status = 404, body = ErrorBody), (status = 429, body = ErrorBody), (status = 503, body = ErrorBody)))]
 pub async fn test_rule(
     State(s): State<AppState>,
     auth: Auth,
@@ -417,6 +417,7 @@ pub async fn test_rule(
     let p = s.project_for(&auth, &key, &s.perms.rules_write).await?;
     let r = body.rule;
     validate_rule(&r.name, &r.matcher, &r.action).map_err(ApiError::bad_request)?;
+    let _permit = s.guards.heavy(&auth).await?;
     let now = Utc::now();
     let rule = Rule {
         id: Uuid::nil(),
@@ -429,7 +430,12 @@ pub async fn test_rule(
         updated_at: now,
         hits: 0,
     };
-    match s.store.rule_dry_run(p.id, body.launch_id, rule).await? {
+    match s
+        .store
+        .rule_dry_run(p.id, body.launch_id, rule)
+        .await
+        .map_err(crate::limits::heavy_error)?
+    {
         None => Err(ApiError::not_found("launch")),
         Some(Err(e)) => Err(ApiError::bad_request(e)),
         Some(Ok(d)) => Ok(Json(d)),
@@ -665,20 +671,29 @@ pub struct DashboardParams {
 
 /// Longest dashboard window, in days.
 pub const MAX_DASHBOARD_DAYS: i64 = 3660;
+/// Years a dashboard day may have.
+pub const DASHBOARD_YEARS: std::ops::RangeInclusive<i32> = 1970..=9999;
 
 fn parse_day(s: &str, what: &str) -> ApiResult<NaiveDate> {
-    if let Ok(d) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
-        return Ok(d);
+    use chrono::Datelike;
+    let d = match NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+        Ok(d) => d,
+        Err(_) => DateTime::parse_from_rfc3339(s)
+            .map(|t| t.with_timezone(&Utc).date_naive())
+            .map_err(|_| ApiError::bad_request(format!("{what} must be YYYY-MM-DD or RFC 3339")))?,
+    };
+    if !DASHBOARD_YEARS.contains(&d.year()) {
+        return Err(ApiError::bad_request(format!(
+            "{what} must be a day of the years 1970 to 9999"
+        )));
     }
-    DateTime::parse_from_rfc3339(s)
-        .map(|t| t.with_timezone(&Utc).date_naive())
-        .map_err(|_| ApiError::bad_request(format!("{what} must be YYYY-MM-DD or RFC 3339")))
+    Ok(d)
 }
 
 #[utoipa::path(get, path = "/api/v1/projects/{key}/dashboard", tag = "analysis", operation_id = "analysis_dashboard",
     params(("key" = String, Path), DashboardParams),
     responses((status = 200, body = Dashboard), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),
-        (status = 404, body = ErrorBody)))]
+        (status = 404, body = ErrorBody), (status = 429, body = ErrorBody), (status = 503, body = ErrorBody)))]
 pub async fn dashboard(
     State(s): State<AppState>,
     auth: Auth,
@@ -692,7 +707,10 @@ pub async fn dashboard(
     };
     let from = match q.from.as_deref() {
         Some(f) => parse_day(f, "from")?,
-        None => to - chrono::Duration::days(29),
+        None => to
+            .checked_sub_days(chrono::Days::new(29))
+            .unwrap_or(to)
+            .max(NaiveDate::from_ymd_opt(1970, 1, 1).unwrap_or(to)),
     };
     if from > to || (to - from).num_days() > MAX_DASHBOARD_DAYS {
         return Err(ApiError::bad_request(format!(
@@ -704,6 +722,7 @@ pub async fn dashboard(
         "week" => Bucket::Week,
         _ => return Err(ApiError::bad_request("bucket must be day or week")),
     };
+    let _permit = s.guards.heavy(&auth).await?;
     let settings = s.store.project_settings(p.id).await?;
     let dq = DashboardQuery {
         branch: q.branch.filter(|b| !b.is_empty()),
@@ -712,7 +731,12 @@ pub async fn dashboard(
         to,
         bucket,
     };
-    Ok(Json(s.store.dashboard(p.id, &settings, &dq).await?))
+    Ok(Json(
+        s.store
+            .dashboard(p.id, &settings, &dq)
+            .await
+            .map_err(crate::limits::heavy_error)?,
+    ))
 }
 
 // Test plans.
@@ -720,7 +744,7 @@ pub async fn dashboard(
 #[utoipa::path(post, path = "/api/v1/projects/{key}/test-plans", tag = "analysis", operation_id = "analysis_create_test_plan", request_body = NewTestPlan,
     params(("key" = String, Path)),
     responses((status = 201, body = TestPlanCreated), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),
-        (status = 404, body = ErrorBody)))]
+        (status = 404, body = ErrorBody), (status = 429, body = ErrorBody)))]
 pub async fn create_test_plan(
     State(s): State<AppState>,
     auth: Auth,
@@ -738,6 +762,11 @@ pub async fn create_test_plan(
         Err(PlanRefusal::UnknownLaunch) => return Err(ApiError::not_found("launch")),
         Err(PlanRefusal::TooManyTests) => {
             return Err(ApiError::bad_request("the plan would have too many tests"));
+        }
+        Err(PlanRefusal::TooManyPlans) => {
+            return Err(ApiError::too_many_requests(
+                "the project has too many test plans; old plans expire after 90 days",
+            ));
         }
     };
     s.audit(

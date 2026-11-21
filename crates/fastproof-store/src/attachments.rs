@@ -41,7 +41,9 @@ impl Store {
     }
 
     /// Inserts attachment rows (existing hashes keep their row) and links them to a launch.
-    /// Returns the id of every hash.
+    /// Returns an id per hash: the attachment's, or, when the hash is stored with another
+    /// content type or name, the id of a reference that keeps this upload's type and name
+    /// (content is stored once per hash, its metadata per upload).
     pub async fn insert_attachments(
         &self,
         project_id: Uuid,
@@ -69,13 +71,18 @@ impl Store {
             names.push(a.original_name.as_deref().map(no_nul));
             keys.push(a.blob_key.clone());
         }
+        let wanted: HashMap<&str, (&str, Option<&str>)> = shas
+            .iter()
+            .zip(cts.iter().zip(names.iter()))
+            .map(|(s, (c, n))| (s.as_str(), (c.as_str(), n.as_deref())))
+            .collect();
         let mut tx = self.pool.begin().await?;
-        let rows: Vec<(Uuid, String)> = sqlx::query_as(
+        let rows: Vec<(Uuid, String, String, Option<String>)> = sqlx::query_as(
             "insert into attachments (id, project_id, sha256, size, content_type, original_name, blob_key) \
              select i, $1, s, z, c, n, k from unnest($2::uuid[], $3::text[], $4::bigint[], $5::text[], $6::text[], $7::text[]) \
                as t(i, s, z, c, n, k) \
              on conflict (project_id, sha256) do update set last_seen_at = now() \
-             returning id, sha256",
+             returning id, sha256, content_type, original_name",
         )
         .bind(project_id)
         .bind(&ids)
@@ -95,8 +102,60 @@ impl Store {
         .bind(launch_id)
         .execute(&mut *tx)
         .await?;
+        let mut out: HashMap<String, Uuid> = HashMap::with_capacity(rows.len());
+        let (mut ref_ids, mut ref_atts, mut ref_cts, mut ref_names, mut ref_shas) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        for (id, sha, ct, name) in rows {
+            match wanted.get(sha.as_str()) {
+                Some((c, n)) if *c != ct.as_str() || *n != name.as_deref() => {
+                    ref_ids.push(Uuid::now_v7());
+                    ref_atts.push(id);
+                    ref_cts.push(c.to_string());
+                    ref_names.push(n.map(str::to_string));
+                    ref_shas.push(sha);
+                }
+                _ => {
+                    out.insert(sha, id);
+                }
+            }
+        }
+        if !ref_ids.is_empty() {
+            let refs: Vec<(Uuid, Uuid)> = sqlx::query_as(
+                "insert into attachment_refs (id, attachment_id, launch_id, content_type, original_name) \
+                 select i, a, $2, c, n from unnest($1::uuid[], $3::uuid[], $4::text[], $5::text[]) as t(i, a, c, n) \
+                 on conflict (attachment_id, launch_id, content_type, coalesce(original_name, '')) \
+                   do update set content_type = excluded.content_type \
+                 returning id, attachment_id",
+            )
+            .bind(&ref_ids)
+            .bind(launch_id)
+            .bind(&ref_atts)
+            .bind(&ref_cts)
+            .bind(&ref_names)
+            .fetch_all(&mut *tx)
+            .await?;
+            let by_att: HashMap<Uuid, Uuid> = refs.into_iter().map(|(r, a)| (a, r)).collect();
+            for (sha, att) in ref_shas.into_iter().zip(ref_atts) {
+                out.insert(sha, by_att.get(&att).copied().unwrap_or(att));
+            }
+        }
         tx.commit().await?;
-        Ok(rows.into_iter().map(|(id, sha)| (sha, id)).collect())
+        Ok(out)
+    }
+
+    /// Cancels queued deletions of these blob keys. Call before storing a blob again: a
+    /// deletion in progress holds its queue row, so this waits for it to finish first.
+    pub async fn cancel_blob_deletions(&self, blob_keys: &[String]) -> anyhow::Result<u64> {
+        if blob_keys.is_empty() {
+            return Ok(0);
+        }
+        Ok(
+            sqlx::query("delete from blob_deletions where project_id is null and prefix = any($1)")
+                .bind(blob_keys)
+                .execute(&self.pool)
+                .await?
+                .rows_affected(),
+        )
     }
 
     /// Links existing attachments to a launch.
@@ -115,17 +174,21 @@ impl Store {
         Ok(())
     }
 
-    /// The subset of `ids` that are attachments of the project, with size and content type.
+    /// The subset of `ids` that are attachments (or attachment references) of the project:
+    /// `id -> (attachment id, size, content type, original name)`.
     pub async fn attachments_in_project(
         &self,
         project_id: Uuid,
         ids: &[Uuid],
-    ) -> anyhow::Result<HashMap<Uuid, (i64, String, Option<String>)>> {
+    ) -> anyhow::Result<HashMap<Uuid, (Uuid, i64, String, Option<String>)>> {
         if ids.is_empty() {
             return Ok(HashMap::new());
         }
-        let rows: Vec<(Uuid, i64, String, Option<String>)> = sqlx::query_as(
-            "select id, size, content_type, original_name from attachments where project_id = $1 and id = any($2)",
+        let rows: Vec<(Uuid, Uuid, i64, String, Option<String>)> = sqlx::query_as(
+            "select id, id, size, content_type, original_name from attachments where project_id = $1 and id = any($2) \
+             union all \
+             select r.id, a.id, a.size, r.content_type, r.original_name from attachment_refs r \
+               join attachments a on a.id = r.attachment_id where a.project_id = $1 and r.id = any($2)",
         )
         .bind(project_id)
         .bind(ids)
@@ -133,10 +196,12 @@ impl Store {
         .await?;
         Ok(rows
             .into_iter()
-            .map(|(id, s, c, n)| (id, (s, c, n)))
+            .map(|(id, a, s, c, n)| (id, (a, s, c, n)))
             .collect())
     }
 
+    /// An attachment by its id or the id of a reference to it (with the reference's content
+    /// type and name).
     pub async fn attachment(
         &self,
         project_id: Uuid,
@@ -150,7 +215,22 @@ impl Store {
         .bind(id)
         .fetch_optional(&self.pool)
         .await?;
-        let Some(r) = r else { return Ok(None) };
+        let r = match r {
+            Some(r) => r,
+            None => {
+                let r = sqlx::query(
+                    "select r.id, a.project_id, a.sha256, a.size, r.content_type, r.original_name, a.blob_key \
+                     from attachment_refs r join attachments a on a.id = r.attachment_id \
+                     where a.project_id = $1 and r.id = $2",
+                )
+                .bind(project_id)
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await?;
+                let Some(r) = r else { return Ok(None) };
+                r
+            }
+        };
         Ok(Some(StoredAttachment {
             id: r.try_get("id")?,
             project_id: r.try_get("project_id")?,
@@ -163,23 +243,22 @@ impl Store {
     }
 
     /// Deletes up to `batch` attachments that no launch links and that were not seen for
-    /// `grace`; returns their blob keys (delete the blobs afterwards).
-    pub async fn collect_attachments(
-        &self,
-        grace: Duration,
-        batch: i64,
-    ) -> anyhow::Result<Vec<String>> {
-        Ok(sqlx::query_scalar(
-            "delete from attachments where id in (select a.id from attachments a \
+    /// `grace`, and queues their blobs in `blob_deletions` (same transaction); returns how
+    /// many. The blobs are deleted by the purge job, which an upload of the same content
+    /// cancels ([`Store::cancel_blob_deletions`]).
+    pub async fn collect_attachments(&self, grace: Duration, batch: i64) -> anyhow::Result<u64> {
+        let r = sqlx::query(
+            "with gone as (delete from attachments where id in (select a.id from attachments a \
                where a.last_seen_at < now() - make_interval(secs => $1) \
                  and not exists (select 1 from attachment_links l where l.attachment_id = a.id) \
-               order by a.last_seen_at limit $2 for update skip locked) \
-             returning blob_key",
+               order by a.last_seen_at limit $2 for update skip locked) returning blob_key) \
+             insert into blob_deletions (prefix, project_id) select blob_key, null from gone",
         )
         .bind(grace.as_secs_f64())
         .bind(batch)
-        .fetch_all(&self.pool)
-        .await?)
+        .execute(&self.pool)
+        .await?;
+        Ok(r.rows_affected())
     }
 
     /// Count of attachment rows of a project (tests, dedup checks).

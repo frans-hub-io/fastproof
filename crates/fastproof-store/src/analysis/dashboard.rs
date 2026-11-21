@@ -147,7 +147,10 @@ impl Store {
         let b = q.bucket.sql();
         let branch = q.branch.as_deref().map(no_nul);
         let env = q.environment.as_deref().map(no_nul);
-        let (from_ts, to_ts) = (midnight(q.from), midnight(q.to + chrono::Duration::days(1)));
+        let after =
+            q.to.checked_add_days(chrono::Days::new(1))
+                .ok_or_else(|| anyhow::anyhow!("dashboard window out of range"))?;
+        let (from_ts, to_ts) = (midnight(q.from), midnight(after));
         let mut acc: BTreeMap<NaiveDate, Acc> = BTreeMap::new();
 
         let agg: Vec<AggRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(

@@ -5,6 +5,7 @@
 use std::collections::{BTreeMap, HashSet};
 
 use chrono::{DateTime, Utc};
+use futures::TryStreamExt;
 use serde::{Deserialize, Serialize};
 use sqlx::{PgConnection, Row};
 use utoipa::ToSchema;
@@ -16,6 +17,8 @@ use crate::{Store, codec, no_nul, opt_no_nul, ts_ms};
 pub const LOGS_CHANNEL: &str = "fastproof_logs";
 /// Lines per stored chunk, at most.
 pub const CHUNK_LINES: usize = 1000;
+/// Decoded bytes per stored chunk, at most (a longer run of lines starts a new chunk).
+pub const CHUNK_BYTES: usize = 1024 * 1024;
 /// Notifications carry the lines when they fit; otherwise listeners read the chunk.
 const NOTIFY_INLINE_BYTES: usize = 7000;
 /// Chunks a read or search decodes per request, at most.
@@ -181,6 +184,26 @@ fn line_bytes(l: &LogLine) -> usize {
     l.message.len() + l.step.as_ref().map_or(0, |s| s.len()) + l.result_id.len() + 32
 }
 
+/// Splits lines into runs of at most [`CHUNK_LINES`] lines and [`CHUNK_BYTES`] bytes (a
+/// single longer line is a run of its own).
+fn byte_chunks(lines: &[LogLine]) -> Vec<&[LogLine]> {
+    let mut out = Vec::new();
+    let (mut start, mut bytes) = (0, 0);
+    for (i, l) in lines.iter().enumerate() {
+        let b = line_bytes(l);
+        if i > start && (i - start >= CHUNK_LINES || bytes + b > CHUNK_BYTES) {
+            out.push(&lines[start..i]);
+            start = i;
+            bytes = 0;
+        }
+        bytes += b;
+    }
+    if start < lines.len() {
+        out.push(&lines[start..]);
+    }
+    out
+}
+
 fn decode_lines(result_id: &str, attempt: i32, z: &[u8]) -> anyhow::Result<Vec<LogLine>> {
     let stored: Vec<StoredLine> = codec::decode(z)?;
     Ok(stored
@@ -245,7 +268,7 @@ pub async fn insert_log_lines(
             .into_values()
             .filter(|l| !stored_seqs.contains(&l.seq))
             .collect();
-        for part in fresh.chunks(CHUNK_LINES) {
+        for part in byte_chunks(&fresh) {
             let stored: Vec<StoredLine> = part
                 .iter()
                 .map(|l| StoredLine {
@@ -422,6 +445,30 @@ impl Store {
         Ok(r.rows_affected() == 1)
     }
 
+    /// The launches among `ids` that exist in the project (search hits from analytics
+    /// backends are checked against it, so deleted launches and projects never show).
+    pub async fn live_launches(
+        &self,
+        project_id: Uuid,
+        ids: impl IntoIterator<Item = Uuid>,
+    ) -> anyhow::Result<HashSet<Uuid>> {
+        let ids: Vec<Uuid> = ids
+            .into_iter()
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        if ids.is_empty() {
+            return Ok(HashSet::new());
+        }
+        let rows: Vec<Uuid> =
+            sqlx::query_scalar("select id from launches where project_id = $1 and id = any($2)")
+                .bind(project_id)
+                .bind(&ids)
+                .fetch_all(&self.pool)
+                .await?;
+        Ok(rows.into_iter().collect())
+    }
+
     /// Writes log lines of one launch in one transaction and notifies the live fan-out.
     pub async fn write_log_lines(
         &self,
@@ -499,8 +546,8 @@ impl Store {
             f.q.as_deref()
                 .map(|q| q.to_lowercase())
                 .filter(|q| !q.is_empty());
-        let rows = sqlx::query(
-            "select id, result_key, attempt, lines_z from attempt_log_chunks where launch_id = $1 \
+        let mut rows = sqlx::query(
+            "select id, result_key, attempt, bytes, lines_z from attempt_log_chunks where launch_id = $1 \
              and (cardinality($2::text[]) = 0 or result_key = any($2)) and ($3::int is null or attempt = $3) \
              and (levels & $4) <> 0 and ($5::bigint is null or id <= $5) order by id desc limit $6",
         )
@@ -510,16 +557,21 @@ impl Store {
         .bind(mask)
         .bind(cursor.map(|c| c.0))
         .bind(MAX_SCAN_CHUNKS)
-        .fetch_all(&self.pool)
-        .await?;
+        .fetch(&self.pool);
         let limit = f.limit.max(1) as usize;
         let mut picked: Vec<(i64, LogLine)> = Vec::new();
         let mut decoded = 0usize;
         let mut stopped_at: Option<(i64, i64)> = None;
-        let exhausted_rows = (rows.len() as i64) < MAX_SCAN_CHUNKS;
+        let mut seen_rows = 0i64;
         let mut last_chunk = None;
-        'chunks: for r in &rows {
+        'chunks: while let Some(r) = rows.try_next().await? {
+            seen_rows += 1;
             let id: i64 = r.try_get("id")?;
+            let size: i32 = r.try_get("bytes")?;
+            if decoded > 0 && decoded + size.max(0) as usize > MAX_SCAN_BYTES {
+                stopped_at = Some((id, i64::MAX));
+                break;
+            }
             let result_id: String = r.try_get("result_key")?;
             let attempt: i32 = r.try_get("attempt")?;
             let z: Vec<u8> = r.try_get("lines_z")?;
@@ -548,6 +600,8 @@ impl Store {
                 break;
             }
         }
+        drop(rows);
+        let exhausted_rows = seen_rows < MAX_SCAN_CHUNKS && stopped_at.is_none();
         let next = match stopped_at {
             Some((id, seq)) => Some(format!("{id}:{seq}")),
             None if !exhausted_rows => last_chunk.map(|id| format!("{id}:0")),
@@ -567,8 +621,8 @@ impl Store {
         let from = s.from.unwrap_or_else(|| to - chrono::Duration::days(7));
         let mask = s.level.map(LogLevel::at_least_mask).unwrap_or(0x1f);
         let q = s.q.to_lowercase();
-        let rows = sqlx::query(
-            "select id, launch_id, result_key, attempt, lines_z from attempt_log_chunks where project_id = $1 \
+        let mut rows = sqlx::query(
+            "select id, launch_id, result_key, attempt, bytes, lines_z from attempt_log_chunks where project_id = $1 \
              and created_at >= $2 and created_at <= $3 and ($4::uuid is null or launch_id = $4) \
              and (levels & $5) <> 0 order by created_at desc, id desc limit $6",
         )
@@ -578,14 +632,17 @@ impl Store {
         .bind(s.launch_id)
         .bind(mask)
         .bind(MAX_SCAN_CHUNKS * 5)
-        .fetch_all(&self.pool)
-        .await?;
-        let mut hits = LogHits {
-            partial: rows.len() as i64 >= MAX_SCAN_CHUNKS * 5,
-            ..Default::default()
-        };
+        .fetch(&self.pool);
+        let mut hits = LogHits::default();
         let mut decoded = 0usize;
-        for r in rows {
+        let mut seen_rows = 0i64;
+        while let Some(r) = rows.try_next().await? {
+            seen_rows += 1;
+            let size: i32 = r.try_get("bytes")?;
+            if decoded > 0 && decoded + size.max(0) as usize > MAX_SCAN_BYTES * 2 {
+                hits.partial = true;
+                return Ok(hits);
+            }
             let launch_id: Uuid = r.try_get("launch_id")?;
             let result_id: String = r.try_get("result_key")?;
             let attempt: i32 = r.try_get("attempt")?;
@@ -606,9 +663,10 @@ impl Store {
             }
             if decoded > MAX_SCAN_BYTES * 2 {
                 hits.partial = true;
-                break;
+                return Ok(hits);
             }
         }
+        hits.partial = seen_rows >= MAX_SCAN_CHUNKS * 5;
         Ok(hits)
     }
 }
@@ -640,5 +698,38 @@ mod tests {
         .unwrap();
         assert_eq!(l.ts, 1500);
         assert!(serde_json::from_str::<LogLine>(r#"{"resultId":"r1"}"#).is_err());
+    }
+
+    #[test]
+    fn chunks_are_bounded_by_bytes() {
+        let line = |n: usize| LogLine {
+            result_id: "r".into(),
+            attempt: 0,
+            seq: 0,
+            ts: 0,
+            level: LogLevel::Info,
+            stream: LogStream::Stdout,
+            message: "x".repeat(n),
+            step: None,
+        };
+        let big: Vec<LogLine> = (0..40).map(|_| line(64 * 1024)).collect();
+        let parts = byte_chunks(&big);
+        assert!(parts.len() >= 3, "{}", parts.len());
+        assert!(
+            parts
+                .iter()
+                .all(|p| p.iter().map(line_bytes).sum::<usize>() <= CHUNK_BYTES)
+        );
+        assert_eq!(parts.iter().map(|p| p.len()).sum::<usize>(), 40);
+        let small: Vec<LogLine> = (0..2500).map(|_| line(10)).collect();
+        assert_eq!(
+            byte_chunks(&small)
+                .iter()
+                .map(|p| p.len())
+                .collect::<Vec<_>>(),
+            vec![1000, 1000, 500]
+        );
+        let huge = vec![line(2 * CHUNK_BYTES)];
+        assert_eq!(byte_chunks(&huge).len(), 1);
     }
 }

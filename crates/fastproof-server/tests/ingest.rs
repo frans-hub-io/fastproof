@@ -314,7 +314,28 @@ async fn shards_containers_and_retries_across_uploads() {
     }
     let a0 = attempts[0]["attachments"][0]["id"].as_str().unwrap();
     let a1 = attempts[1]["attachments"][0]["id"].as_str().unwrap();
-    assert_eq!(a0, a1, "identical bodies are stored once");
+    let body = |id: &str| {
+        let id = id.to_string();
+        let s = &s;
+        async move {
+            s.req(
+                Method::GET,
+                &format!("/api/v1/projects/shards/attachments/{id}/content"),
+                Some(ADMIN_TOKEN),
+            )
+            .send()
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap()
+        }
+    };
+    assert_eq!(
+        body(a0).await,
+        body(a1).await,
+        "identical bodies are stored once"
+    );
     let n: i64 = sqlx::query_scalar("select count(*) from attachments")
         .fetch_one(&db.pool)
         .await

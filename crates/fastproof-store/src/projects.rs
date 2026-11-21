@@ -154,8 +154,32 @@ impl Store {
         self.project(key).await
     }
 
+    /// When a project with this key was deleted (the key may be bound in the access file).
+    pub async fn deleted_key(
+        &self,
+        key: &str,
+    ) -> anyhow::Result<Option<chrono::DateTime<chrono::Utc>>> {
+        Ok(
+            sqlx::query_scalar("select deleted_at from deleted_project_keys where key = $1")
+                .bind(key)
+                .fetch_optional(&self.pool)
+                .await?,
+        )
+    }
+
+    /// Forgets that a key belonged to a deleted project (it is being used again on purpose).
+    pub async fn forget_deleted_key(&self, key: &str) -> anyhow::Result<()> {
+        sqlx::query("delete from deleted_project_keys where key = $1")
+            .bind(key)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     /// Marks a project deleted and queues the deletion of its blobs; the rows are removed by
-    /// the purge job once the blobs are gone. Returns false when there was no such project.
+    /// the purge job once the blobs are gone. Remembers the key in `deleted_project_keys` and
+    /// emits `project.deleted` (`{projectId, key, deletedAt}`) so that analytics sinks drop
+    /// the project's rows. Returns false when there was no such project.
     pub async fn delete_project(&self, key: &str) -> anyhow::Result<bool> {
         let mut tx = self.pool.begin().await?;
         let id: Option<Uuid> = sqlx::query_scalar(
@@ -178,6 +202,22 @@ impl Store {
             .bind(id)
             .execute(&mut *tx)
             .await?;
+        let at: chrono::DateTime<chrono::Utc> = sqlx::query_scalar(
+            "insert into deleted_project_keys (key, project_id, deleted_at) values ($1, $2, now()) \
+             on conflict (key) do update set project_id = excluded.project_id, deleted_at = excluded.deleted_at \
+             returning deleted_at",
+        )
+        .bind(key)
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
+        crate::events::emit(
+            &mut tx,
+            "project.deleted",
+            Some(key),
+            serde_json::json!({"projectId": id, "key": key, "deletedAt": at}),
+        )
+        .await?;
         tx.commit().await?;
         Ok(true)
     }

@@ -189,7 +189,8 @@ pub async fn connect_kafka(
         return Ok(None);
     }
     let key = store.stream_key(SIGNING_KEY).await?;
-    let kafka = Kafka::connect(k, Some(fastproof_stream::kafka::Signer::new(key))).await?;
+    let signer = fastproof_stream::kafka::Signer::new(key).with_max_age(k.signature_max_age);
+    let kafka = Kafka::connect(k, Some(signer)).await?;
     kafka.ensure_topics().await?;
     Ok(Some(Arc::new(kafka)))
 }
@@ -310,9 +311,13 @@ pub async fn start(s: &AppState, stop: &CancellationToken) -> anyhow::Result<Vec
                                 return;
                             }
                         };
+                        let Some(signer) = kafka.signer().cloned() else {
+                            tracing::error!("the events topic needs the signing key");
+                            return;
+                        };
                         let consumer = Arc::new(KafkaConsumer {
                             kafka,
-                            handler: Arc::new(KafkaSink { store: s.store.clone(), sink }),
+                            handler: Arc::new(KafkaSink { store: s.store.clone(), sink, signer }),
                             start: Start::Earliest,
                             max_bytes: 1024 * 1024,
                             max_wait_ms: s.cfg.sink_tuning.flush_interval.as_millis().min(5000) as i32,

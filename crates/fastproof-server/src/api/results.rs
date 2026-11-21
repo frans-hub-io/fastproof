@@ -3,8 +3,8 @@
 use axum::Json;
 use axum::extract::{Request, State};
 use axum::http::{StatusCode, header};
-use bytes::{Buf, BytesMut};
-use fastproof_ingest::{ReportOptions, report_to_parsed};
+use bytes::{Bytes, BytesMut};
+use fastproof_ingest::{IngestError, JsonBounds, ReportOptions, report_to_parsed, scan_json};
 use fastproof_model::{AttachmentKind, ReportResult};
 use fastproof_store::ingest::{LaunchRef, NewAttempt};
 use fastproof_store::results::{GroupBy, ResultFilter};
@@ -26,6 +26,12 @@ use crate::state::AppState;
 pub const CHUNK: usize = 500;
 /// Rejections listed in a response, at most.
 pub const MAX_REJECTED: usize = 1000;
+/// Bytes of one NDJSON line, at most (and at most `max_document_bytes`).
+pub const MAX_LINE_BYTES: u64 = 16 * 1024 * 1024;
+/// Lines up to this size are parsed on the request's task; longer ones on a blocking thread.
+const INLINE_PARSE_BYTES: usize = 256 * 1024;
+/// Bytes of a `q` filter, at most.
+pub const MAX_Q_BYTES: usize = 256;
 
 /// A result that was not accepted.
 #[derive(Serialize, ToSchema)]
@@ -62,14 +68,14 @@ impl ResultBatch<'_> {
         }
     }
 
-    async fn push_value(&mut self, index: u64, v: serde_json::Value) -> ApiResult<()> {
+    async fn push(&mut self, index: u64, r: Result<ReportResult, String>) -> ApiResult<()> {
         self.seen += 1;
         if self.seen > self.s.limits.max_results {
             return Err(too_large("max_results", self.s.limits.max_results));
         }
-        match serde_json::from_value::<ReportResult>(v) {
+        match r {
             Ok(r) => self.pending.push((index, r)),
-            Err(e) => self.reject(index, format!("invalid result: {e}")),
+            Err(e) => self.reject(index, e),
         }
         if self.pending.len() >= CHUNK {
             self.flush().await?;
@@ -192,8 +198,8 @@ pub async fn prepare_reports(
         let mut used = Vec::new();
         parsed.visit_attachments_mut(&mut |a| {
             let id = a.id.as_ref().and_then(|i| i.0.parse::<Uuid>().ok());
-            match id.and_then(|i| known.get(&i).map(|k| (i, k))) {
-                Some((i, (size, ct, name))) => {
+            match id.and_then(|i| known.get(&i)) {
+                Some((i, size, ct, name)) => {
                     a.size = Some(*size as u64);
                     if a.content_type.is_none() {
                         a.content_type = Some(ct.clone());
@@ -202,7 +208,7 @@ pub async fn prepare_reports(
                         a.name = name.clone().unwrap_or_else(|| "attachment".into());
                     }
                     a.kind = AttachmentKind::infer(a.content_type.as_deref(), &a.name);
-                    used.push(i);
+                    used.push(*i);
                 }
                 None => missing = Some(a.source.trim_start_matches("attachment:").to_string()),
             }
@@ -277,10 +283,14 @@ pub async fn ingest(
     };
     let max_total = s.cfg.max_upload_bytes;
     let max_doc = s.limits.max_document_bytes;
+    let bounds = JsonBounds::from(&s.limits);
+    let mut values_left = s.limits.max_json_values;
     let mut body = req.into_body().into_data_stream();
     let mut total = 0u64;
     if ndjson {
+        let max_line = max_doc.min(MAX_LINE_BYTES);
         let mut buf = BytesMut::new();
+        let mut scanned = 0usize;
         let mut line_no = 0u64;
         loop {
             let chunk = body.next().await;
@@ -294,18 +304,23 @@ pub async fn ingest(
                 }
                 buf.extend_from_slice(&c);
             }
-            while let Some(pos) = buf.iter().position(|b| *b == b'\n') {
-                let line = buf.split_to(pos + 1);
-                handle_line(&mut batch, line_no, &line[..pos]).await?;
+            // Only the bytes after the previous scan are searched for the next newline.
+            while let Some(rel) = buf[scanned..].iter().position(|b| *b == b'\n') {
+                let pos = scanned + rel;
+                let mut line = buf.split_to(pos + 1).freeze();
+                line.truncate(pos);
+                scanned = 0;
+                handle_line(&mut batch, line_no, line, &bounds, &mut values_left).await?;
                 line_no += 1;
             }
-            if buf.len() as u64 > max_doc {
-                return Err(too_large("max_document_bytes", max_doc));
+            scanned = buf.len();
+            if buf.len() as u64 > max_line {
+                return Err(too_large("max_document_bytes", max_line));
             }
             if done {
                 if !buf.is_empty() {
-                    let line = buf.split_to(buf.len());
-                    handle_line(&mut batch, line_no, &line).await?;
+                    let line = buf.split().freeze();
+                    handle_line(&mut batch, line_no, line, &bounds, &mut values_left).await?;
                 }
                 break;
             }
@@ -320,17 +335,12 @@ pub async fn ingest(
             }
             buf.extend_from_slice(&c);
         }
-        let v: serde_json::Value = serde_json::from_slice(buf.chunk())
-            .map_err(|e| ApiError::bad_request(format!("the body is not valid JSON: {e}")))?;
-        drop(buf);
-        match v {
-            serde_json::Value::Array(items) => {
-                for (i, v) in items.into_iter().enumerate() {
-                    batch.push_value(i as u64, v).await?;
-                }
-            }
-            v @ serde_json::Value::Object(_) => batch.push_value(0, v).await?,
-            _ => return Err(ApiError::bad_request("expected a JSON object or array")),
+        let bytes = buf.freeze();
+        let items = tokio::task::spawn_blocking(move || parse_body(&bytes, &bounds))
+            .await
+            .map_err(|e| anyhow::anyhow!("the parse thread failed: {e}"))??;
+        for (i, r) in items.into_iter().enumerate() {
+            batch.push(i as u64, r).await?;
         }
     }
     batch.flush().await?;
@@ -344,19 +354,99 @@ pub async fn ingest(
     Ok((StatusCode::ACCEPTED, Json(batch.summary)))
 }
 
-async fn handle_line(batch: &mut ResultBatch<'_>, line_no: u64, line: &[u8]) -> ApiResult<()> {
-    let line = line.strip_suffix(b"\r").unwrap_or(line);
+/// The 413 of a JSON bound (`max_json_values`, `max_json_depth` or `max_string_bytes`).
+pub fn json_limit_error(e: &IngestError) -> ApiError {
+    match e {
+        IngestError::LimitExceeded { limit, max, .. } => too_large(limit, *max),
+        other => ApiError::bad_request(other.to_string()),
+    }
+}
+
+fn strip_bom(b: &[u8]) -> &[u8] {
+    b.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(b)
+}
+
+fn describe(e: &serde_json::Error) -> String {
+    match e.classify() {
+        serde_json::error::Category::Data => format!("invalid result: {e}"),
+        _ => format!("invalid JSON: {e}"),
+    }
+}
+
+/// A JSON body: one result or an array of them, after the bounds check. Arrays are read as
+/// typed results; only when that fails are the elements looked at one by one to tell which
+/// are invalid.
+fn parse_body(bytes: &[u8], bounds: &JsonBounds) -> ApiResult<Vec<Result<ReportResult, String>>> {
+    scan_json(bytes, bounds, "body").map_err(|e| json_limit_error(&e))?;
+    let b = strip_bom(bytes);
+    let not_json =
+        |e: serde_json::Error| ApiError::bad_request(format!("the body is not valid JSON: {e}"));
+    match b.iter().find(|c| !c.is_ascii_whitespace()) {
+        Some(b'[') => match serde_json::from_slice::<Vec<ReportResult>>(b) {
+            Ok(v) => Ok(v.into_iter().map(Ok).collect()),
+            Err(_) => {
+                let items: Vec<serde_json::Value> = serde_json::from_slice(b).map_err(not_json)?;
+                Ok(items
+                    .into_iter()
+                    .map(|v| {
+                        serde_json::from_value::<ReportResult>(v)
+                            .map_err(|e| format!("invalid result: {e}"))
+                    })
+                    .collect())
+            }
+        },
+        Some(b'{') => match serde_json::from_slice::<ReportResult>(b) {
+            Ok(r) => Ok(vec![Ok(r)]),
+            Err(e) if e.classify() == serde_json::error::Category::Data => {
+                Ok(vec![Err(format!("invalid result: {e}"))])
+            }
+            Err(e) => Err(not_json(e)),
+        },
+        _ => {
+            serde_json::from_slice::<serde::de::IgnoredAny>(b).map_err(not_json)?;
+            Err(ApiError::bad_request("expected a JSON object or array"))
+        }
+    }
+}
+
+/// One NDJSON line: bounds check (charged to the request's value budget), then a typed parse.
+fn parse_line(line: &[u8], bounds: &JsonBounds) -> (u64, Result<ReportResult, String>) {
+    match scan_json(line, bounds, "line") {
+        Err(e) => (0, Err(e.to_string())),
+        Ok(n) => (
+            n,
+            serde_json::from_slice::<ReportResult>(strip_bom(line)).map_err(|e| describe(&e)),
+        ),
+    }
+}
+
+async fn handle_line(
+    batch: &mut ResultBatch<'_>,
+    line_no: u64,
+    line: Bytes,
+    bounds: &JsonBounds,
+    values_left: &mut u64,
+) -> ApiResult<()> {
+    let line = match line.strip_suffix(b"\r") {
+        Some(l) => line.slice(..l.len()),
+        None => line,
+    };
     if line.iter().all(|b| b.is_ascii_whitespace()) {
         return Ok(());
     }
-    match serde_json::from_slice::<serde_json::Value>(line) {
-        Ok(v) => batch.push_value(line_no, v).await,
-        Err(e) => {
-            batch.seen += 1;
-            batch.reject(line_no, format!("invalid JSON: {e}"));
-            Ok(())
-        }
+    let (n, r) = if line.len() <= INLINE_PARSE_BYTES {
+        parse_line(&line, bounds)
+    } else {
+        let bounds = *bounds;
+        tokio::task::spawn_blocking(move || parse_line(&line, &bounds))
+            .await
+            .map_err(|e| anyhow::anyhow!("the parse thread failed: {e}"))?
+    };
+    if n > *values_left {
+        return Err(too_large("max_json_values", batch.s.limits.max_json_values));
     }
+    *values_left -= n;
+    batch.push(line_no, r).await
 }
 
 pub fn launch_ref(project_key: &str, l: &Launch) -> LaunchRef {
@@ -388,7 +478,7 @@ pub struct ResultQuery {
 
 #[utoipa::path(get, path = "/api/v1/projects/{key}/launches/{id}/results", tag = "results", operation_id = "results_list",
     params(("key" = String, Path), ("id" = Uuid, Path), ResultQuery),
-    responses((status = 200, body = Page<ResultSummary>), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
+    responses((status = 200, body = Page<ResultSummary>), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
 pub async fn list(
     State(s): State<AppState>,
     auth: Auth,
@@ -416,6 +506,18 @@ pub async fn list(
         return Err(ApiError::bad_request(
             "status must be passed, failed, broken, skipped, unknown or running",
         ));
+    }
+    for (name, v) in [
+        ("q", &q.q),
+        ("suite", &q.suite),
+        ("label", &q.label),
+        ("fingerprint", &q.fingerprint),
+    ] {
+        if v.as_ref().is_some_and(|v| v.len() > MAX_Q_BYTES) {
+            return Err(ApiError::bad_request(format!(
+                "{name} has at most {MAX_Q_BYTES} bytes"
+            )));
+        }
     }
     let f = ResultFilter {
         statuses,

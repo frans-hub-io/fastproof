@@ -44,18 +44,19 @@ impl Writer {
         }
     }
 
-    /// The value of a record that the gateway signed, or any record when producers are trusted.
-    fn value<'a>(&self, topic: &str, r: &'a RecordAndOffset) -> Option<&'a [u8]> {
-        if !self.kafka.config().trusted_producers
-            && !self
-                .kafka
-                .signer()
-                .is_some_and(|s| s.verify(topic, &r.record))
-        {
+    /// The value of a record and whether FastProof signed it (the gateway or the upload
+    /// workers); unsigned records only when producers are trusted. Unsigned records are
+    /// validated and charged like gateway input.
+    fn value<'a>(&self, topic: &str, r: &'a RecordAndOffset) -> Option<(&'a [u8], bool)> {
+        let signed = self
+            .kafka
+            .signer()
+            .is_some_and(|s| s.verify(topic, &r.record));
+        if !signed && !self.kafka.config().trusted_producers {
             rejected(topic, "unsigned");
             return None;
         }
-        r.record.value.as_deref()
+        r.record.value.as_deref().map(|v| (v, signed))
     }
 
     async fn launch(&self, project: &str, id: Uuid) -> anyhow::Result<Option<WriterLaunch>> {
@@ -83,10 +84,13 @@ impl Writer {
     ) -> anyhow::Result<()> {
         let mut by_launch: BTreeMap<(String, Uuid), Vec<ResultRecord>> = BTreeMap::new();
         for r in &records {
-            let Some(v) = self.value(&ctx.topic, r) else {
+            let Some((v, signed)) = self.value(&ctx.topic, r) else {
                 continue;
             };
             match serde_json::from_slice::<ResultRecord>(v) {
+                Ok(rec) if rec.v == 1 && !signed && rec.result.is_none() => {
+                    rejected(&ctx.topic, "unsigned_parsed")
+                }
                 Ok(rec) if rec.v == 1 => by_launch
                     .entry((rec.project.clone(), rec.launch_id))
                     .or_default()
@@ -165,24 +169,62 @@ impl Writer {
         next: i64,
         hwm: i64,
     ) -> anyhow::Result<()> {
-        let mut by_launch: BTreeMap<(String, Uuid), Vec<LogLine>> = BTreeMap::new();
+        let mut by_launch: BTreeMap<(String, Uuid), (Vec<LogLine>, Vec<LogLine>)> = BTreeMap::new();
+        let max_line = self.s.cfg.log_limits.max_line_bytes;
         for r in &records {
-            let Some(v) = self.value(&ctx.topic, r) else {
+            let Some((v, signed)) = self.value(&ctx.topic, r) else {
                 continue;
             };
             match serde_json::from_slice::<LogRecord>(v) {
-                Ok(rec) if rec.v == 1 => by_launch
-                    .entry((rec.project.clone(), rec.launch_id))
-                    .or_default()
-                    .push(rec.into_line()),
+                Ok(rec) if rec.v == 1 => {
+                    let e = by_launch
+                        .entry((rec.project.clone(), rec.launch_id))
+                        .or_default();
+                    let line = rec.into_line();
+                    if signed {
+                        e.0.push(line);
+                    } else if crate::api::logs::validate(&line, max_line).is_ok() {
+                        e.1.push(line);
+                    } else {
+                        rejected(&ctx.topic, "invalid_line");
+                    }
+                }
                 _ => rejected(&ctx.topic, "invalid"),
             }
         }
         let mut resolved = Vec::new();
-        for ((project, launch_id), lines) in by_launch {
-            match self.launch(&project, launch_id).await? {
-                Some(wl) => resolved.push((wl, lines)),
-                None => rejected(&ctx.topic, "unknown_launch"),
+        for ((project, launch_id), (mut lines, unsigned)) in by_launch {
+            let Some(wl) = self.launch(&project, launch_id).await? else {
+                rejected(&ctx.topic, "unknown_launch");
+                continue;
+            };
+            if !unsigned.is_empty() {
+                let bytes: i64 = unsigned
+                    .iter()
+                    .map(|l| {
+                        (l.message.len()
+                            + l.step.as_ref().map_or(0, |s| s.len())
+                            + l.result_id.len()) as i64
+                    })
+                    .sum();
+                if self
+                    .s
+                    .store
+                    .charge_log_bytes(
+                        wl.launch.id,
+                        bytes,
+                        self.s.cfg.log_limits.max_bytes_per_launch,
+                    )
+                    .await?
+                {
+                    lines.extend(unsigned);
+                } else {
+                    metrics::counter!("fastproof_kafka_rejected_total", "topic" => ctx.topic.clone(), "reason" => "log_budget")
+                        .increment(unsigned.len() as u64);
+                }
+            }
+            if !lines.is_empty() {
+                resolved.push((wl, lines));
             }
         }
         let mut tx = self.s.store.pool().begin().await?;

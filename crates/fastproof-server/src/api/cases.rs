@@ -67,24 +67,7 @@ pub fn case_number(s: &str) -> ApiResult<i64> {
         .ok_or_else(|| ApiError::not_found("case"))
 }
 
-/// The revision of `If-Match: "r<revision>"`: missing is 428 `precondition_required`; a value
-/// that names no revision never matches (412).
-pub fn if_match(h: &HeaderMap) -> ApiResult<i64> {
-    let Some(v) = h.get(header::IF_MATCH) else {
-        return Err(ApiError::new(
-            StatusCode::PRECONDITION_REQUIRED,
-            "precondition_required",
-            "send If-Match with the ETag of the case",
-        ));
-    };
-    let v = v.to_str().unwrap_or("").trim();
-    let v = v.strip_prefix("W/").unwrap_or(v);
-    let v = v.trim_matches('"');
-    Ok(v.strip_prefix('r')
-        .and_then(|r| r.parse::<i64>().ok())
-        .filter(|r| *r > 0)
-        .unwrap_or(-1))
-}
+pub use super::if_match;
 
 /// `ETag: "r<revision>"`.
 pub fn etag(revision: i64) -> [(header::HeaderName, HeaderValue); 1] {

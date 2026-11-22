@@ -158,6 +158,36 @@ pub async fn folder_level(
     Ok(rows.iter().map(view_row).collect::<Result<_, _>>()?)
 }
 
+/// The whole tree in one query, parents before children (by depth, then position and name),
+/// at most `max` folders; `true` when more exist. Subtree counts come from one pass over the
+/// cases grouped by folder and spread to the ancestors through `path_ids`.
+pub async fn all_folders(
+    conn: &mut PgConnection,
+    project_id: Uuid,
+    max: usize,
+) -> TmResult<(Vec<CaseFolder>, bool)> {
+    let rows = sqlx::query(
+        "with direct as (select folder_id, count(*) as total, count(*) filter (where automated) as automated \
+           from cases where project_id = $1 and archived_at is null and folder_id is not null group by folder_id), \
+         sub as (select a.id, sum(direct.total)::bigint as total, sum(direct.automated)::bigint as automated \
+           from direct join case_folders d on d.id = direct.folder_id and d.project_id = $1 \
+           cross join unnest(d.path_ids) as a(id) group by a.id) \
+         select f.id, f.parent_id, f.name, f.position, f.depth, \
+           coalesce(sub.total, 0) as total, coalesce(sub.automated, 0) as automated, \
+           exists (select 1 from case_folders ch where ch.parent_id = f.id) as has_children \
+         from case_folders f left join sub on sub.id = f.id where f.project_id = $1 \
+         order by f.depth, f.position, lower(f.name), f.id limit $2",
+    )
+    .bind(project_id)
+    .bind(max as i64 + 1)
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut items: Vec<CaseFolder> = rows.iter().map(view_row).collect::<Result<_, _>>()?;
+    let more = items.len() > max;
+    items.truncate(max);
+    Ok((items, more))
+}
+
 async fn folder_count(conn: &mut PgConnection, project_id: Uuid) -> sqlx::Result<i64> {
     sqlx::query_scalar("select count(*) from case_folders where project_id = $1")
         .bind(project_id)
@@ -311,6 +341,16 @@ impl Store {
     ) -> TmResult<Vec<CaseFolder>> {
         let mut conn = self.pool.acquire().await.map_err(TmError::from)?;
         folder_level(&mut conn, project_id, parent).await
+    }
+
+    /// Every folder of the project (see [`all_folders`]).
+    pub async fn case_folder_tree(
+        &self,
+        project_id: Uuid,
+        max: usize,
+    ) -> TmResult<(Vec<CaseFolder>, bool)> {
+        let mut conn = self.pool.acquire().await.map_err(TmError::from)?;
+        all_folders(&mut conn, project_id, max).await
     }
 
     /// Creates a folder.

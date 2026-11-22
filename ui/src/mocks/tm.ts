@@ -165,7 +165,8 @@ function caseView(c: MockCase, key: string): Case {
     fields: structuredClone(c.fields),
     tags: [...c.tags],
     codeOwned: codeOwned(c),
-    identities: structuredClone(c.identities),
+    identities: structuredClone(c.identities.slice(0, 100)),
+    identitiesTotal: c.identities.length,
     keys: structuredClone(c.keys),
     revision: c.revision,
     version: c.version,
@@ -1247,9 +1248,15 @@ export function tmHandlers({ role, error, audit }: Helpers) {
     // Folders and fields
 
     http.get(`${P}/case-folders`, ({ params, request }) => {
-      const parent = new URL(request.url).searchParams.get('parent');
-      const level = tmProject(String(params.key)) ? folderList().filter((f) => f.parentId === parent) : [];
-      return HttpResponse.json({ items: level.sort((a, b) => a.position - b.position || a.name.localeCompare(b.name)) });
+      const q = new URL(request.url).searchParams;
+      const parent = q.get('parent');
+      const all = tmProject(String(params.key)) ? folderList() : [];
+      const order = (a: CaseFolder, b: CaseFolder) => a.position - b.position || a.name.localeCompare(b.name);
+      if (q.get('all') === 'true') {
+        if (parent) return error(400, 'bad_request', 'all=true lists the whole tree: leave out parent');
+        return HttpResponse.json({ items: all.sort((a, b) => a.depth - b.depth || order(a, b)), truncated: false });
+      }
+      return HttpResponse.json({ items: all.filter((f) => f.parentId === parent).sort(order) });
     }),
 
     http.post(`${P}/case-folders`, async ({ params, request }) => {

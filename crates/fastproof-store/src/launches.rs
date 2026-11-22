@@ -246,7 +246,7 @@ impl Store {
         if let Some(ext) = &start.external_id
             && let Some(l) = self.launch_by_external(project_id, ext).await?
         {
-            return Ok((l, false));
+            return Ok((self.joined(l, start, can_sync).await?, false));
         }
         let mut tx = self.pool.begin().await?;
         let Some(id) = insert_launch(&mut tx, project, start, created_by, can_sync).await? else {
@@ -256,7 +256,7 @@ impl Store {
                 .launch_by_external(project_id, ext)
                 .await?
                 .ok_or_else(|| anyhow::anyhow!("launch vanished after a conflict"))?;
-            return Ok((l, false));
+            return Ok((self.joined(l, start, can_sync).await?, false));
         };
         tx.commit().await?;
         let l = self
@@ -264,6 +264,65 @@ impl Store {
             .await?
             .ok_or_else(|| anyhow::anyhow!("launch vanished after insert"))?;
         Ok((l, true))
+    }
+
+    /// An existing launch a start request joined: a plan launch joined by a token with
+    /// `cases:sync` takes the request's VCS data (see [`Store::join_plan_launch`]).
+    async fn joined(
+        &self,
+        l: Launch,
+        start: &LaunchStart,
+        can_sync: bool,
+    ) -> anyhow::Result<Launch> {
+        if !can_sync || l.test_plan_id.is_none() {
+            return Ok(l);
+        }
+        if !self
+            .join_plan_launch(l.project_id, l.id, start.vcs.as_ref())
+            .await?
+        {
+            return Ok(l);
+        }
+        Ok(self.launch(l.project_id, l.id).await?.unwrap_or(l))
+    }
+
+    /// A token with `cases:sync` contributed to a launch started from a plan (joined it by
+    /// external id, uploaded or posted results): the launch counts as sync-capable
+    /// (`created_by_can_sync`, so code sync may trust it on finish or close), and when it has
+    /// no branch yet it takes `vcs` and its branch from the contributor's CI data. Launches not
+    /// started from a plan are left alone. Returns whether the launch changed.
+    pub async fn join_plan_launch(
+        &self,
+        project_id: Uuid,
+        launch_id: Uuid,
+        vcs: Option<&LaunchVcs>,
+    ) -> anyhow::Result<bool> {
+        let branch = vcs
+            .and_then(|v| v.branch.as_deref())
+            .filter(|b| !b.is_empty())
+            .map(no_nul);
+        let vcs = match vcs.map(serde_json::to_value).transpose()? {
+            Some(serde_json::Value::Object(mut m)) => {
+                m.retain(|_, v| !v.is_null());
+                (!m.is_empty()).then(|| json_no_nul(serde_json::Value::Object(m)))
+            }
+            _ => None,
+        };
+        let r = sqlx::query(
+            "update launches set created_by_can_sync = true, \
+               vcs = case when branch is null and $3::jsonb is not null then coalesce(vcs, '{}'::jsonb) || $3 \
+                 else vcs end, \
+               branch = coalesce(branch, $4), updated_at = now() \
+             where id = $1 and project_id = $2 and test_plan_id is not null \
+               and (not created_by_can_sync or (branch is null and $4 is not null))",
+        )
+        .bind(launch_id)
+        .bind(project_id)
+        .bind(vcs)
+        .bind(branch)
+        .execute(&self.pool)
+        .await?;
+        Ok(r.rows_affected() > 0)
     }
 
     pub async fn launch_by_external(

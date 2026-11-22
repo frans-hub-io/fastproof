@@ -168,6 +168,40 @@ pub struct Config {
     pub guards: crate::limits::GuardSettings,
     /// Limits of test management (`FASTPROOF_TM_*`).
     pub tm: fastproof_store::tm::TmLimits,
+    /// How long after the upgrade the case backfill waits before it decides per project
+    /// (`FASTPROOF_TM_BACKFILL_DELAY`, default 10 minutes): projects with `caseSync` off by
+    /// then are skipped.
+    pub tm_backfill_delay: std::time::Duration,
+}
+
+/// Default of `FASTPROOF_TM_BACKFILL_DELAY`.
+pub const DEFAULT_TM_BACKFILL_DELAY: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// A delay of `0`, `<n>`, `<n>s`, `<n>m`, `<n>h` or `<n>d` (seconds without a unit), at most 30 days.
+fn delay(
+    env: &Env<'_>,
+    k: &str,
+    default: std::time::Duration,
+) -> anyhow::Result<std::time::Duration> {
+    let Some(v) = env.var(k) else {
+        return Ok(default);
+    };
+    let t = v.trim().to_ascii_lowercase();
+    let (num, unit) = t.split_at(t.find(|c: char| !c.is_ascii_digit()).unwrap_or(t.len()));
+    let n: u64 = num
+        .parse()
+        .map_err(|_| anyhow!("{k}: invalid value {t:?}: use 600, 30s, 10m, 1h or 1d"))?;
+    let secs = match unit {
+        "" | "s" => Some(n),
+        "m" => n.checked_mul(60),
+        "h" => n.checked_mul(3600),
+        "d" => n.checked_mul(86_400),
+        _ => bail!("{k}: invalid value {t:?}: use 600, 30s, 10m, 1h or 1d"),
+    };
+    match secs {
+        Some(s) if s <= 30 * 86_400 => Ok(std::time::Duration::from_secs(s)),
+        _ => bail!("{k}: at most 30 days"),
+    }
 }
 
 /// `FASTPROOF_TM_<NAME>` limits, each within `1..=max`.
@@ -282,6 +316,7 @@ impl fmt::Debug for Config {
             .field("log_limits", &self.log_limits)
             .field("guards", &self.guards)
             .field("tm", &self.tm)
+            .field("tm_backfill_delay", &self.tm_backfill_delay)
             .finish_non_exhaustive()
     }
 }
@@ -611,6 +646,11 @@ impl Config {
             log_limits,
             guards: crate::limits::GuardSettings::from_env(&env)?,
             tm: tm_limits(&env)?,
+            tm_backfill_delay: delay(
+                &env,
+                "FASTPROOF_TM_BACKFILL_DELAY",
+                DEFAULT_TM_BACKFILL_DELAY,
+            )?,
         })
     }
 }
@@ -670,6 +710,34 @@ mod tests {
         ] {
             let e = cfg(&[base, (k, v)]).unwrap_err().to_string();
             assert!(e.contains(k), "{e}");
+        }
+    }
+
+    #[test]
+    fn tm_backfill_delay_from_env() {
+        let base = ("FASTPROOF_DATABASE_URL", "postgres://db.example.com/fp");
+        let k = "FASTPROOF_TM_BACKFILL_DELAY";
+        assert_eq!(
+            cfg(&[base]).unwrap().tm_backfill_delay,
+            std::time::Duration::from_secs(600)
+        );
+        for (v, secs) in [
+            ("0", 0),
+            ("90", 90),
+            ("45s", 45),
+            ("10m", 600),
+            ("2h", 7200),
+            ("1d", 86_400),
+        ] {
+            assert_eq!(
+                cfg(&[base, (k, v)]).unwrap().tm_backfill_delay,
+                std::time::Duration::from_secs(secs),
+                "{v}"
+            );
+        }
+        for v in ["-1", "10x", "m", "31d", "99999999999999999999"] {
+            let e = cfg(&[base, (k, v)]).unwrap_err().to_string();
+            assert!(e.contains(k), "{v}: {e}");
         }
     }
 

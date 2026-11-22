@@ -151,11 +151,42 @@ pub fn deliveries(
     out
 }
 
+/// The notification events of an evaluation. The first evaluation of a launch sends
+/// `launchFinished` (plus `gateFailed`, `newFailures` and, for a manual run closed with the
+/// launch, `manualRunClosed`); a re-evaluation after a manual run closed on an already finished
+/// launch sends `manualRunClosed` only, so subscribers do not hear about the same finish twice.
+pub fn evaluation_events(
+    reevaluated: bool,
+    gate_failed: bool,
+    new_failures: bool,
+    manual_closed: bool,
+) -> Vec<String> {
+    if reevaluated {
+        return if manual_closed {
+            vec!["manualRunClosed".to_string()]
+        } else {
+            Vec::new()
+        };
+    }
+    let mut events = vec!["launchFinished".to_string()];
+    if gate_failed {
+        events.push("gateFailed".into());
+    }
+    if new_failures {
+        events.push("newFailures".into());
+    }
+    if manual_closed {
+        events.push("manualRunClosed".into());
+    }
+    events
+}
+
 async fn process_launch(
     s: &AppState,
     project_id: Uuid,
     launch_id: Uuid,
     queued_at: chrono::DateTime<Utc>,
+    reevaluated: bool,
 ) -> anyhow::Result<()> {
     let Some(key) = s.store.project_key(project_id).await? else {
         return Ok(());
@@ -176,19 +207,14 @@ async fn process_launch(
         IntegrationSettings::default()
     });
     let ev = gates::evaluate_launch(s, &project, &launch, &settings.gates).await?;
-    let mut events = vec!["launchFinished".to_string()];
-    if ev.report.status == GateStatus::Failed {
-        events.push("gateFailed".into());
-    }
-    if ev.new_failures > 0 {
-        events.push("newFailures".into());
-    }
-    if launch
-        .manual
-        .is_some_and(|m| m.state == fastproof_store::tm::ManualState::Closed)
-    {
-        events.push("manualRunClosed".into());
-    }
+    let events = evaluation_events(
+        reevaluated,
+        ev.report.status == GateStatus::Failed,
+        ev.new_failures > 0,
+        launch
+            .manual
+            .is_some_and(|m| m.state == fastproof_store::tm::ManualState::Closed),
+    );
     let sm = summary(s, &project, &launch, &ev, events);
     let ds = deliveries(
         &settings,
@@ -206,7 +232,7 @@ async fn process_launch(
         )
         .await?
     {
-        if !launch.debug {
+        if !launch.debug && !reevaluated {
             quality::launch_finished(&key, launch.duration_ms);
         }
         tracing::info!(project = %key, launch = %launch_id, gate = ev.report.status.as_str(), deliveries = ds.len(), "launch evaluated");
@@ -297,8 +323,8 @@ pub async fn tick(s: &AppState) -> anyhow::Result<()> {
     s.store
         .consume_finished_launches(CONSUMER, cfg.settle, 500)
         .await?;
-    for (p, l, queued) in s.store.waiting_gates(50).await? {
-        if let Err(e) = process_launch(s, p, l, queued).await {
+    for (p, l, queued, reevaluated) in s.store.waiting_gates(50).await? {
+        if let Err(e) = process_launch(s, p, l, queued, reevaluated).await {
             tracing::warn!(launch = %l, error = %format!("{e:#}"), "evaluating a launch failed");
         }
     }
@@ -407,5 +433,23 @@ mod tests {
         assert_eq!(backoff(b, 2), Duration::from_secs(60));
         assert_eq!(backoff(b, 4), Duration::from_secs(240));
         assert_eq!(backoff(b, 20), Duration::from_secs(3600));
+    }
+
+    #[test]
+    fn a_closed_manual_run_on_a_finished_launch_sends_only_its_own_event() {
+        assert_eq!(
+            evaluation_events(false, true, true, false),
+            vec!["launchFinished", "gateFailed", "newFailures"]
+        );
+        assert_eq!(
+            evaluation_events(false, false, false, true),
+            vec!["launchFinished", "manualRunClosed"],
+            "a purely manual launch finishes when its run closes"
+        );
+        assert_eq!(
+            evaluation_events(true, true, true, true),
+            vec!["manualRunClosed"]
+        );
+        assert!(evaluation_events(true, true, false, false).is_empty());
     }
 }

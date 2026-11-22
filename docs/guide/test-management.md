@@ -37,7 +37,8 @@ version diffs and manual runs follow a step when steps are moved. Leave `id` emp
 server assigns one.
 
 A case also tells where it came from (`origin`: `ui`, `code`, `import` or `ai`), whether it is `automated`,
-which fields code owns (`codeOwned`), its code **identities** and its external **keys**.
+which fields code owns (`codeOwned`), its code **identities** (the first 100, with the count in
+`identitiesTotal`) and its external **keys**.
 
 ### Case number and Allure ID
 
@@ -69,6 +70,7 @@ and automated.
 | Call | Does |
 |---|---|
 | `GET $api/case-folders?parent=<id>` | One level of the tree (top level without `parent`), with counts |
+| `GET $api/case-folders?all=true` | The whole tree in one answer, parents before children, at most `maxFolders` folders (`truncated: true` when there are more) |
 | `POST $api/case-folders` `{name, parentId?, position?}` | Create a folder |
 | `PATCH $api/case-folders/{id}` `{name?, parentId?, position?}` | Rename, reorder or move with the subtree (`parentId: null` = top level) |
 | `DELETE $api/case-folders/{id}?mode=moveUp\|archiveCases` | Delete; a folder with subfolders or cases needs `mode`: `moveUp` moves them to the parent, `archiveCases` moves the cases to the trash |
@@ -299,7 +301,9 @@ For each of `name`, `description`, `links`, `tags` and the fields `epic`, `featu
 
 - `code`: the value comes from the latest trusted result (its labels, description and links). In the UI the
   value is locked with a "from code" badge; writing it through the API answers
-  `409 field_from_code` with the names in `details.fields`. Change it in the code.
+  `409 field_from_code` with the names in `details.fields`. Change it in the code. A value the result does
+  not have (no description, no `tag` labels, no `epic` label) never clears the case's value: the case keeps
+  what it had.
 - `case`: code fills the value only when it creates the case; after that the case owns it and people edit it.
 
 Steps, preconditions, the folder, the status and fields without a `sourceLabel` always belong to the case.
@@ -318,13 +322,19 @@ void paysWithSavedCard() { ... }
 ```
 
 The first trusted launch with this test links it to `TC-12`. The case becomes automated and keeps its manual
-steps and preconditions; the values that code owns (by default the name, description, links, tags and the
-label fields) are taken from the test from then on, and the previous ones stay in the versions. Set the
-policy of a value to `case` first if the manual text should stay.
+steps and preconditions. On this first link the manual text wins: code fills only the values the case does
+not have yet (an empty description, no tags, an empty label field), and the name, description and other
+values people wrote stay. From then on the values that code owns follow the test whenever they change in the
+code, and the previous ones stay in the versions. Set the policy of a value to `case` if it should never
+follow the code.
 
-The Allure ID is only read for tests that are not linked to a case yet. A test that code sync has already
-given a case of its own (for example by the backfill after an upgrade) keeps it; link it to the manual case
-instead, as for a rename below.
+This also works for a test that code sync already gave a case of its own (for example the backfill after an
+upgrade created `TC-305` for it): when its `ALLURE_ID` names another case, the next trusted launch moves the
+test to `TC-12`. The case created from code goes to the trash with a link to `TC-12` when nothing else holds
+it: it was created by code, has no other test, was never run manually and was never edited (all its versions
+come from code). Otherwise both cases stay and only the test moves; the old case is no longer automated
+unless another test is linked to it. Each move is written to the audit log as `case.linkIdentity` with
+`source: code`.
 
 ### Renames and duplicates
 
@@ -338,7 +348,8 @@ curl -fsS -X POST "$api/cases/12/identities" -H "$auth" -H 'Content-Type: applic
 
 When the identity was the last one of another case, that duplicate goes to the trash with a link to `TC-12`.
 `DELETE $api/cases/12/identities/{testCaseId}` unlinks one. Tests with an explicit id keep their identity
-across renames (see [Test identity](concepts.md#test-identity)).
+across renames (see [Test identity](concepts.md#test-identity)). A case lists its first 100 identities;
+`identitiesTotal` tells how many it has.
 
 ### Stale tests
 
@@ -349,7 +360,11 @@ lists automated cases without a trusted result for 30 days; mark them `outdated`
 
 When a server is upgraded to the release with test management, a background job (`cases.backfill`) gives a
 case to every existing test with results on a trusted branch, using the same rules and folders as code sync,
-once per project that has launches from before the upgrade. Case numbers follow the order in which the tests
+once per project that has launches from before the upgrade. It waits ten minutes after the upgrade
+(`FASTPROOF_TM_BACKFILL_DELAY`, for example `30m`, `2h` or `0`; see
+[Limits](../operations/limits.md#test-management)) and then decides per project: a project whose
+`caseSync.enabled` is `false` by then is skipped for good, so turn code sync off for projects that should get
+no cases from code within that time. Case numbers follow the order in which the tests
 were first seen, and an existing `ALLURE_ID` becomes a key. Launches from before the upgrade count as created
 with `cases:sync`, since the permission did not exist yet; they carry no CI default branch, so only
 `branches` decide. Tests seen only on other branches stay unlinked. The job works in batches of 1000 tests,
@@ -366,8 +381,9 @@ curl -fsS -X POST "$api/cases/backfill" -H "$auth"
 ```
 
 The answer is `202` with the job (`kind: backfill`, `status`, `progress`); its progress also arrives as the
-live event `tmJob.updated`. To keep a project without cases from code, set `"caseSync": {"enabled": false}`;
-cases the backfill already created can be moved to the trash with a bulk `archive`.
+live event `tmJob.updated`. A project skipped after the upgrade gets its backfill only from this call. To
+keep a project without cases from code, set `"caseSync": {"enabled": false}`; cases the backfill already
+created can be moved to the trash with a bulk `archive`.
 
 ## AI drafts and suggestions
 
@@ -377,6 +393,7 @@ person accepts or rejects:
 
 | Call | Does |
 |---|---|
+| `POST $api/cases/12/review` | Marks an AI draft as reviewed (clears `aiUnreviewed`, the **Reviewed** button); needs `cases:write` and the case's `If-Match`; no new version, audited as `case.review` |
 | `GET $api/cases/12/suggestions?status=pending` | Suggestions for the case |
 | `POST $api/case-suggestions/{id}/accept` | Applies it as a version with `source = ai`; needs the case's `If-Match`; a case that changed since answers `409 suggestion_stale` |
 | `POST $api/case-suggestions/{id}/reject` | Rejects it; it stays in the history |

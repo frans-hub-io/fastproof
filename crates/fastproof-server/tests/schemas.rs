@@ -36,6 +36,26 @@ fn openapi_is_committed() {
 }
 
 #[test]
+fn put_settings_names_every_settings_area() {
+    let doc: serde_json::Value =
+        serde_json::from_str(&fastproof_server::app::openapi_text()).unwrap();
+    let description =
+        doc["paths"]["/api/v1/projects/{key}/settings"]["put"]["requestBody"]["description"]
+            .as_str()
+            .unwrap();
+    let areas = doc["components"]["schemas"]["ProjectSettings"]["properties"]
+        .as_object()
+        .unwrap();
+    assert!(areas.contains_key("caseSync"));
+    for area in areas.keys() {
+        assert!(
+            description.contains(&format!("`{area}`")),
+            "PUT /settings does not name `{area}`: {description}"
+        );
+    }
+}
+
+#[test]
 fn report_schema_round_trip() {
     let schema = fastproof_model::report::report_json_schema();
     let defs = schema["$defs"].as_object().unwrap();

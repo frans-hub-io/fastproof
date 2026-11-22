@@ -442,35 +442,69 @@ pub fn analysis_jobs(sch: &mut Scheduler) -> anyhow::Result<()> {
 /// from existing tests.
 pub fn case_jobs(sch: &mut Scheduler) -> anyhow::Result<()> {
     sch.register("cases.sync", "10s", |s: AppState| async move {
-        let owner = format!("{}-cases-sync", s.instance);
-        let r = s
-            .store
-            .run_case_sync(&owner, &s.cfg.tm, Duration::from_secs(60))
-            .await?;
-        if r.created + r.linked + r.updated > 0 {
-            tracing::info!(
-                created = r.created,
-                linked = r.linked,
-                updated = r.updated,
-                "cases synced from code"
-            );
-        }
+        case_sync(&s, Duration::from_secs(60)).await?;
         Ok(())
     })?;
     sch.register("cases.backfill", "1m", |s: AppState| async move {
-        s.store.enqueue_upgrade_backfills().await?;
-        let owner = format!("{}-cases-backfill", s.instance);
-        let r = s
-            .store
-            .run_case_backfill(&owner, &s.cfg.tm, Duration::from_secs(50))
-            .await?;
-        if let Some(job) = r.job {
-            tracing::info!(job = %job, done = r.done, scanned = r.scanned, created = r.stats.created,
-                linked = r.stats.linked, "case backfill ran");
-        }
+        case_backfill(&s, Duration::from_secs(50)).await?;
         Ok(())
     })?;
     Ok(())
+}
+
+/// One round of the `cases.sync` job: code sync of queued launches, then one audit record
+/// `case.linkIdentity` (`source: code`) per identity its `ALLURE_ID` moved to another case.
+pub async fn case_sync(
+    s: &AppState,
+    budget: Duration,
+) -> anyhow::Result<fastproof_store::tm::sync::SyncStats> {
+    let owner = format!("{}-cases-sync", s.instance);
+    let r = s.store.run_case_sync(&owner, &s.cfg.tm, budget).await?;
+    if r.created + r.linked + r.updated + r.relinked > 0 {
+        tracing::info!(
+            created = r.created,
+            linked = r.linked,
+            updated = r.updated,
+            relinked = r.relinked,
+            "cases synced from code"
+        );
+    }
+    audit_relinks(s, &r.relinks).await;
+    Ok(r)
+}
+
+/// One round of the `cases.backfill` job: decides the upgrade backfills that are due, then
+/// works on one job.
+pub async fn case_backfill(
+    s: &AppState,
+    budget: Duration,
+) -> anyhow::Result<fastproof_store::tm::backfill::BackfillRun> {
+    s.store
+        .enqueue_upgrade_backfills(s.cfg.tm_backfill_delay)
+        .await?;
+    let owner = format!("{}-cases-backfill", s.instance);
+    let r = s.store.run_case_backfill(&owner, &s.cfg.tm, budget).await?;
+    if let Some(job) = r.job {
+        tracing::info!(job = %job, done = r.done, scanned = r.scanned, created = r.stats.created,
+            linked = r.stats.linked, "case backfill ran");
+    }
+    audit_relinks(s, &r.stats.relinks).await;
+    Ok(r)
+}
+
+async fn audit_relinks(s: &AppState, relinks: &[fastproof_store::tm::sync::IdentityRelink]) {
+    for r in relinks {
+        let mut e = franshub_access::AuditEvent::anonymous(
+            fastproof_store::tm::sync::SYNC_ACTOR,
+            Some("system"),
+            "case.linkIdentity",
+            serde_json::json!({"number": r.to_number, "testCaseId": r.test_case_id,
+                "previousNumber": r.from_number, "archivedDuplicate": r.archived_duplicate,
+                "launchId": r.launch_id, "source": "code"}),
+        );
+        e.scope = Some(r.project_key.clone());
+        s.platform.audit(e).await;
+    }
 }
 
 #[cfg(test)]

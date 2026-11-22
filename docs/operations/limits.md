@@ -102,6 +102,10 @@ over their size `400 invalid_markdown` with the field's `path`, and names `400`.
 | `FASTPROOF_TM_MAX_TAGS` | `50` | 1000 | Tags of one case (each at most 100 bytes) |
 | `FASTPROOF_TM_MAX_NAME_BYTES` | `500` | 4096 | Names of cases, folders, fields and plans |
 
+`FASTPROOF_TM_BACKFILL_DELAY` (default `10m`, at most `30d`; `0`, seconds, or a number with `s`, `m`, `h` or
+`d`) is how long after the upgrade the [backfill of cases](../guide/test-management.md#after-an-upgrade-cases-for-existing-tests)
+waits before it decides per project; projects with code sync off by then are skipped.
+
 <!-- TODO(T3): the answer codes of the import limits (rows, cells, columns) as implemented. -->
 
 Fixed limits that are not settings:
@@ -115,12 +119,13 @@ Fixed limits that are not settings:
 | Streamed export (`GET .../cases/export`) | 50 000 cases |
 | Markdown preview (`POST .../markdown/preview`) | 64 KiB |
 | Links of a case | 100, URLs up to 2048 bytes |
-| Identities listed with one case | 100, the most recently seen |
+| Identities listed with one case | 100, the most recently seen (`identitiesTotal` counts all) |
+| Folders in one `GET .../case-folders?all=true` | `FASTPROOF_TM_MAX_FOLDERS` (`truncated: true` beyond) |
 | Trusted branch patterns of code sync | 50, each up to 200 bytes |
 | Values in one case filter (plans, bulk changes) | 1000 |
 | Step path of a manual step result | 64 bytes (`1.2.3`) |
 
-Bulk changes, imports, exports, manual run reports and the Markdown preview count as heavy requests
+Bulk changes, imports, exports, manual run reports, the whole folder tree and the Markdown preview count as heavy requests
 (`FASTPROOF_HEAVY_QUERIES_PER_CALLER`, see [Request guards](configuration.md#request-guards)).
 
 ## Other protections

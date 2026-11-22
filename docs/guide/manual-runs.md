@@ -126,9 +126,14 @@ same file for a plan without starting a launch. The HTTP equivalents are
 without automated cases answers `409 plan_has_no_automated_cases` instead of an empty file, because an empty
 `testplan.json` means "run every test" to Allure adapters.
 
-!!! note "Launches from a plan carry no branch"
-    A launch started from a plan has no VCS data, and uploads that join it do not add any. So code sync does
-    not update cases from it, and only [quality gates](quality-gates.md) without `branches` apply to it.
+!!! note "Launches from a plan and code sync"
+    A launch started from a plan has no VCS data of its own, and the person who started it usually has no
+    `cases:sync` (a `tester` does not). When CI joins the launch with a token that has `cases:sync` (the
+    `uploader` role), by `FASTPROOF_LAUNCH`/`--launch` or by uploading results to it, the launch counts as
+    uploaded by a sync-capable token and takes the branch, repository and commit of that CI job if it has no
+    branch yet (the first branch stays). [Code sync](test-management.md#code-sync) then trusts it like any
+    other launch from that branch, and quality gates with `branches` apply to it. Code sync runs when the
+    launch is finished and again when its manual run is closed.
 
 ## Executing a manual run
 
@@ -196,10 +201,9 @@ new execution has a final one.
 
 ### Keyboard
 
-<!-- TODO(T2c): check this table against the runner (ui/src/pages/runner/keymap.ts) before release. -->
-
 The runner works without a mouse. `?` shows the keys; single-character keys can be switched off in that
-dialog.
+dialog (the arrows, `Enter`, `Ctrl+Enter` and `Esc` keep working). While the focus is in a text field only
+`Ctrl+Enter` and `Esc` act.
 
 | Key | Action |
 |---|---|
@@ -209,13 +213,15 @@ dialog.
 | `b` | Blocked |
 | `s` | Skipped |
 | `u` | Back to untested |
-| `c` | Comment |
-| `a` | Add an attachment |
+| `c` | Comment on the step |
+| `a` | Attach a file to the step |
 | `Shift+P` | Pass the remaining steps |
 | `Enter` | Next step |
 | `n` / `Shift+N` | Next / previous case |
 | `d` | Quick defect |
-| `Ctrl+Enter` | Finish the case with the suggested status (asks before untested steps become skipped) |
+| `Ctrl+Enter` (`⌘+Enter` on macOS) | Finish the case with the suggested status (asks before untested steps become skipped) |
+| `?` | Show the keys |
+| `Esc` | Leave a text field |
 
 ## Combined launches and closing a run
 
@@ -236,7 +242,10 @@ Closing marks the untested items `skipped` (or leaves them with `"untestedTo": "
 
 - a purely manual launch (no automated results or uploads) becomes `finished`;
 - the quality gate of a finished launch is evaluated again with the manual results, and notifications go out
-  with the event `manualRunClosed` (see [Notifications](notifications.md#events)).
+  with the event `manualRunClosed` only (see [Notifications](notifications.md#events)): channels that heard
+  `launchFinished` when CI finished do not hear it again, and a gate that fails only now is reported in the
+  `manualRunClosed` message;
+- a launch with automated results is queued for code sync again.
 
 A combined launch that CI has not finished yet stays running; CI's finish evaluates the gate. A closed run
 refuses changes to its items (`409 manual_run_closed`) until someone with `plans:write` reopens it

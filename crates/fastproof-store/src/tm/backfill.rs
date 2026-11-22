@@ -23,7 +23,7 @@ use crate::Store;
 pub const UPGRADE_VERSION: i64 = 501;
 
 /// What one call of [`Store::run_case_backfill`] did.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BackfillRun {
     pub job: Option<Uuid>,
     pub done: bool,
@@ -101,24 +101,46 @@ impl Store {
         Ok(r.as_ref().map(job_row).transpose()?)
     }
 
-    /// Queues the backfill once per project after the upgrade: projects with `caseSync`
-    /// enabled, launches from before the upgrade and no backfill job yet. Returns how many.
-    pub async fn enqueue_upgrade_backfills(&self) -> anyhow::Result<u64> {
+    /// Decides the backfill once per project after the upgrade, `delay` after it was installed
+    /// (time for an operator to turn `caseSync` off): projects with launches from before the
+    /// upgrade and no backfill job yet get a queued job when `caseSync` is enabled at that
+    /// moment, else a `cancelled` one (`params.skipped`) so they are never backfilled on their
+    /// own later (`POST /cases/backfill` still starts one). Returns how many were queued.
+    pub async fn enqueue_upgrade_backfills(&self, delay: Duration) -> anyhow::Result<u64> {
         let Some(at) = self.tm_upgrade_at().await? else {
             return Ok(0);
         };
-        Ok(sqlx::query(
-            "insert into tm_jobs (id, project_id, kind, params, status, progress, created_by) \
-             select gen_random_uuid(), p.id, 'backfill', '{\"upgrade\": true}', 'queued', '{\"done\": 0}', null \
-             from projects p where p.deleted_at is null \
-               and (p.settings -> 'caseSync' -> 'enabled') is distinct from 'false'::jsonb \
+        let delay = chrono::Duration::from_std(delay).unwrap_or(chrono::Duration::MAX);
+        if at
+            .checked_add_signed(delay)
+            .is_none_or(|due| due > Utc::now())
+        {
+            return Ok(0);
+        }
+        let rows: Vec<bool> = sqlx::query_scalar(
+            "insert into tm_jobs (id, project_id, kind, params, status, progress, created_by, finished_at) \
+             select gen_random_uuid(), p.id, 'backfill', \
+               case when s.enabled then '{\"upgrade\": true}'::jsonb else '{\"upgrade\": true, \"skipped\": true}'::jsonb end, \
+               case when s.enabled then 'queued' else 'cancelled' end, '{\"done\": 0}', null, \
+               case when s.enabled then null else now() end \
+             from projects p cross join lateral (select (p.settings -> 'caseSync' -> 'enabled') \
+               is distinct from 'false'::jsonb as enabled) s \
+             where p.deleted_at is null \
                and not exists (select 1 from tm_jobs j where j.project_id = p.id and j.kind = 'backfill') \
-               and exists (select 1 from launches l where l.project_id = p.id and l.created_at < $1)",
+               and exists (select 1 from launches l where l.project_id = p.id and l.created_at < $1) \
+             returning status = 'queued'",
         )
         .bind(at)
-        .execute(&self.pool)
-        .await?
-        .rows_affected())
+        .fetch_all(&self.pool)
+        .await?;
+        let skipped = rows.iter().filter(|q| !**q).count();
+        if skipped > 0 {
+            tracing::info!(
+                projects = skipped,
+                "upgrade backfill skipped: caseSync is off"
+            );
+        }
+        Ok(rows.into_iter().filter(|q| *q).count() as u64)
     }
 
     /// The `cases.backfill` job: takes one queued backfill (or one whose lease expired) and
@@ -347,11 +369,7 @@ impl Store {
             }
             let items: Vec<SyncItem> = batch.iter().filter_map(|id| found.remove(id)).collect();
             let stats = sync_items(&self.pool, &ctx, &settings, &items).await?;
-            run.stats.created += stats.created;
-            run.stats.linked += stats.linked;
-            run.stats.updated += stats.updated;
-            run.stats.unchanged += stats.unchanged;
-            run.stats.skipped += stats.skipped;
+            run.stats.add(stats);
             run.scanned += ids.len() as u64;
             done += ids.len() as i64;
             let last = ids.last().map(|(id, at)| (*at, *id));

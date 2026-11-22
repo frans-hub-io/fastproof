@@ -1329,6 +1329,15 @@ pub async fn case_view(conn: &mut PgConnection, project_id: Uuid, row: &CaseRow)
         None => None,
     };
     let identities = case_identities(conn, project_id, row.id).await?;
+    let identities_total = if (identities.len() as i64) < MAX_CASE_IDENTITIES {
+        identities.len() as i64
+    } else {
+        sqlx::query_scalar("select count(*) from test_cases where project_id = $1 and case_id = $2")
+            .bind(project_id)
+            .bind(row.id)
+            .fetch_one(&mut *conn)
+            .await?
+    };
     let keys = case_keys(conn, row.id).await?;
     let code_owned = if row.automated {
         code_owned_keys(conn, project_id).await?
@@ -1350,6 +1359,7 @@ pub async fn case_view(conn: &mut PgConnection, project_id: Uuid, row: &CaseRow)
         tags: row.tags.clone(),
         code_owned,
         identities,
+        identities_total,
         keys,
         revision: row.revision,
         version: row.version,

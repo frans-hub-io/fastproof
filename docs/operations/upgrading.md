@@ -54,16 +54,18 @@ The previous version runs unchanged against the new schema, which is what makes 
 
 ### Cases for existing tests
 
-After the upgrade, the scheduler queues a backfill once per project that has launches from before the
-upgrade: every existing test with results on a trusted branch gets a case under the folder `Automated`,
+Ten minutes after the upgrade (`FASTPROOF_TM_BACKFILL_DELAY`), the scheduler queues a backfill once per
+project that has launches from before the upgrade and code sync on: every existing test with results on a trusted branch gets a case under the folder `Automated`,
 numbered in the order the tests were first seen, and an existing `ALLURE_ID` becomes the case's key. Tests
 seen only on other branches stay unlinked. The job runs in the background on the replicas with the
 `scheduler` role and does not slow down ingest; 100 000 tests take less than ten minutes.
 
 - Projects whose main branch is not `main` or `master`: set `caseSync.branches` and run the backfill again,
   see [After an upgrade](../guide/test-management.md#after-an-upgrade-cases-for-existing-tests).
-- Projects that should not get cases from code: set `"caseSync": {"enabled": false}` right after the upgrade;
-  cases already created can be moved to the trash in bulk.
+- Projects that should not get cases from code: set `"caseSync": {"enabled": false}` within those ten
+  minutes (or start the server with a longer `FASTPROOF_TM_BACKFILL_DELAY`); such projects are skipped for
+  good and get a backfill only when someone starts it. Cases already created can be moved to the trash in
+  bulk.
 
 ### Other changes
 

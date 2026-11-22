@@ -161,6 +161,11 @@ export function DetailsTab({ project, c, fields, draft, onDraft }: { project: st
                 </Group>
               </Card>
             ))}
+            {c.identitiesTotal > c.identities.length && (
+              <Text size="xs" c="dimmed" data-testid="identities-more">
+                Showing {c.identities.length} of {c.identitiesTotal} tests.
+              </Text>
+            )}
           </Stack>
         ) : (
           <Text size="sm" c="dimmed">

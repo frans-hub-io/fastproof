@@ -512,7 +512,10 @@ pub struct Case {
     pub tags: Vec<String>,
     /// Field keys whose values come from code (policy `code` on an automated case).
     pub code_owned: Vec<String>,
+    /// The first 100 identities (manual first, then the newest seen).
     pub identities: Vec<CaseIdentity>,
+    /// How many identities the case has (`identities` may hold fewer).
+    pub identities_total: i64,
     pub keys: Vec<CaseKey>,
     pub revision: i64,
     pub version: i32,
@@ -582,10 +585,13 @@ pub struct CaseFolderPatch {
     pub position: Option<i32>,
 }
 
-/// `{items}` of folders of one level.
+/// `{items}` of folders of one level, or of the whole tree with `all=true`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct CaseFolderList {
     pub items: Vec<CaseFolder>,
+    /// With `all=true`: the project has more folders than `maxFolders` and the list stops there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub truncated: Option<bool>,
 }
 
 /// A node of `GET /cases/tree`; for `groupBy=behavior|suite` the id is the value path joined

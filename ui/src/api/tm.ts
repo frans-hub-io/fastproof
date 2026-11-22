@@ -415,23 +415,10 @@ export function markdownPreview(key: string, markdown: string, signal?: AbortSig
 
 // Folders and fields
 
-/** Most folders read for pickers and path labels (one request per folder that has subfolders). */
-export const MAX_FOLDERS_READ = 5000;
-
-/** Every folder of the project, level by level (`GET /case-folders?parent=` lists one level). */
+/** Every folder of the project in one request (`GET /case-folders?all=true`, parents first, capped by the server at `maxFolders`). */
 export async function fetchAllFolders(key: string): Promise<CaseFolder[]> {
-  const out: CaseFolder[] = [];
-  let level: (string | null)[] = [null];
-  while (level.length && out.length < MAX_FOLDERS_READ) {
-    const pages = await Promise.all(level.map((parent) => request<CaseFolderList>(withQuery(`${projectPath(key)}/case-folders`, { parent })).then((r) => r.items)));
-    const next: string[] = [];
-    for (const items of pages) {
-      out.push(...items);
-      for (const f of items) if (f.hasChildren) next.push(f.id);
-    }
-    level = next.slice(0, Math.max(0, MAX_FOLDERS_READ - out.length));
-  }
-  return out;
+  const r = await request<CaseFolderList>(withQuery(`${projectPath(key)}/case-folders`, { all: true }));
+  return r.items;
 }
 
 export function useCaseFolders(key: string) {

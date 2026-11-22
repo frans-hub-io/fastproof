@@ -15,8 +15,8 @@ use sqlx::{PgConnection, PgPool, Row};
 use uuid::Uuid;
 
 use super::cases::{
-    CaseCtx, Commit, MAX_LINKS, NewCaseMeta, case_sync_settings, commit, create_case_in,
-    reserve_numbers, valid_link_url,
+    CaseCtx, Commit, MAX_LINKS, NewCaseMeta, case_event, case_sync_settings, commit,
+    create_case_in, reserve_numbers, valid_link_url,
 };
 use super::fields::field_defs;
 use super::folders::ensure_folder_path;
@@ -256,13 +256,16 @@ fn policy_of(policy: &CaseSyncFields, def: &CaseFieldDef) -> FieldPolicy {
 }
 
 /// The content after sync: a new case takes every code value; an existing one takes only the
-/// values whose policy is `code`. Steps, preconditions, folder, status and fields without a
-/// source label always stay with the case.
+/// values whose policy is `code`, and an empty or missing code value never clears the case's
+/// value. With `fill_only` (a case written by people that code links for the first time) code
+/// fills only the values the case does not have, so the manual text wins. Steps,
+/// preconditions, folder, status and fields without a source label always stay with the case.
 pub fn synced_snapshot(
     cur: Option<&CaseSnapshot>,
     v: &CodeValues,
     policy: &CaseSyncFields,
     defs: &[CaseFieldDef],
+    fill_only: bool,
 ) -> CaseSnapshot {
     let Some(cur) = cur else {
         return CaseSnapshot {
@@ -281,16 +284,19 @@ pub fn synced_snapshot(
     };
     let code = |k: &str| policy.policy(k) == Some(FieldPolicy::Code);
     let mut s = cur.clone();
-    if code("name") {
+    if code("name") && !v.name.trim().is_empty() && !(fill_only && !s.name.trim().is_empty()) {
         s.name = v.name.clone();
     }
-    if code("description") {
+    if code("description")
+        && !v.description.trim().is_empty()
+        && !(fill_only && !s.body.description.trim().is_empty())
+    {
         s.body.description = v.description.clone();
     }
-    if code("links") {
+    if code("links") && !v.links.is_empty() && !(fill_only && !s.body.links.is_empty()) {
         s.body.links = v.links.clone();
     }
-    if code("tags") {
+    if code("tags") && !v.tags.is_empty() && !(fill_only && !s.tags.is_empty()) {
         s.tags = v.tags.clone();
     }
     for d in defs
@@ -300,16 +306,24 @@ pub fn synced_snapshot(
         if policy_of(policy, d) != FieldPolicy::Code {
             continue;
         }
-        match v.fields.get(&d.key) {
-            Some(val) => {
-                s.fields.insert(d.key.clone(), val.clone());
-            }
-            None => {
-                s.fields.remove(&d.key);
-            }
+        let Some(val) = v.fields.get(&d.key).filter(|v| !value_empty(v)) else {
+            continue;
+        };
+        if fill_only && s.fields.get(&d.key).is_some_and(|c| !value_empty(c)) {
+            continue;
         }
+        s.fields.insert(d.key.clone(), val.clone());
     }
     s
+}
+
+fn value_empty(v: &FieldValue) -> bool {
+    match v {
+        FieldValue::Null => true,
+        FieldValue::Text(t) => t.trim().is_empty(),
+        FieldValue::Many(m) => m.is_empty(),
+        FieldValue::Number(_) => false,
+    }
 }
 
 /// What sync does for one identity: nothing for an untrusted launch, else the content to
@@ -320,8 +334,9 @@ pub fn sync_plan(
     v: &CodeValues,
     policy: &CaseSyncFields,
     defs: &[CaseFieldDef],
+    fill_only: bool,
 ) -> Option<CaseSnapshot> {
-    trusted.then(|| synced_snapshot(cur, v, policy, defs))
+    trusted.then(|| synced_snapshot(cur, v, policy, defs, fill_only))
 }
 
 /// The package of a full name (`com.shop.CartTest.adds` → `com.shop`), when it has one.
@@ -364,30 +379,158 @@ pub struct SyncItem {
     pub launch_id: Option<Uuid>,
 }
 
+/// Most relinks one sync run reports for the audit log (the count is always exact).
+pub const MAX_REPORTED_RELINKS: usize = 10_000;
+
+/// A linked code identity moved by its `ALLURE_ID` to the case that id names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IdentityRelink {
+    pub project_key: String,
+    pub test_case_id: Uuid,
+    /// The case the identity was linked to.
+    pub from_number: i64,
+    /// The case its `ALLURE_ID` names.
+    pub to_number: i64,
+    /// `from_number` when that case was archived as a duplicate.
+    pub archived_duplicate: Option<i64>,
+    pub launch_id: Option<Uuid>,
+}
+
 /// What a sync batch did.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SyncStats {
     pub created: u64,
     pub linked: u64,
     pub updated: u64,
     pub unchanged: u64,
     pub skipped: u64,
+    /// Linked identities moved to the case their `ALLURE_ID` names.
+    pub relinked: u64,
+    /// The first [`MAX_REPORTED_RELINKS`] of them, for the audit log.
+    pub relinks: Vec<IdentityRelink>,
 }
 
 impl SyncStats {
-    fn add(&mut self, o: SyncStats) {
+    /// Adds the counts and relinks of another batch.
+    pub fn add(&mut self, o: SyncStats) {
         self.created += o.created;
         self.linked += o.linked;
         self.updated += o.updated;
         self.unchanged += o.unchanged;
         self.skipped += o.skipped;
+        self.relinked += o.relinked;
+        let room = MAX_REPORTED_RELINKS.saturating_sub(self.relinks.len());
+        self.relinks.extend(o.relinks.into_iter().take(room));
     }
 }
 
 enum Target {
     Case(Uuid),
+    /// A linked identity whose `ALLURE_ID` names another live case.
+    Relink {
+        from: Uuid,
+        to: Uuid,
+    },
     Create,
     Skip,
+}
+
+/// Live cases named by `ALLURE_ID` keys, by key value (one query for a batch).
+async fn allure_targets(
+    conn: &mut PgConnection,
+    project_id: Uuid,
+    values: &[String],
+) -> sqlx::Result<HashMap<String, Uuid>> {
+    if values.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let rows: Vec<(String, Uuid)> = sqlx::query_as(
+        "select k.value, k.case_id from case_keys k join cases c on c.id = k.case_id \
+         where k.project_id = $1 and k.kind = 'allure_id' and k.value = any($2) and c.archived_at is null",
+    )
+    .bind(project_id)
+    .bind(values)
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(rows.into_iter().collect())
+}
+
+/// After its identity moved to the case its `ALLURE_ID` names: the old case is archived with a
+/// link to the target when code made it and nothing else holds it (no other code identity, no
+/// manual runs, no versions from anything but code); otherwise it stays, automated only while
+/// it has another code identity. Returns the row and whether it was archived.
+async fn settle_relinked(
+    conn: &mut PgConnection,
+    ctx: &CaseCtx<'_>,
+    old: &CaseRow,
+    target_number: i64,
+    launch_id: Option<Uuid>,
+) -> TmResult<(CaseRow, bool)> {
+    let (others, runs, edited): (bool, bool, bool) = sqlx::query_as(
+        "select exists (select 1 from test_cases where case_id = $1 and kind = 'code'), \
+         exists (select 1 from run_items where case_id = $1), \
+         exists (select 1 from case_versions where case_id = $1 and source <> 'code')",
+    )
+    .bind(old.id)
+    .fetch_one(&mut *conn)
+    .await?;
+    if old.origin == CaseOrigin::Code && old.archived_at.is_none() && !others && !runs && !edited {
+        let mut snap = snapshot_of(old);
+        let link = CaseLink {
+            name: format!("Merged into TC-{target_number}"),
+            url: format!("/p/{}/cases/{target_number}", ctx.project_key),
+            link_type: CaseLinkType::Link,
+        };
+        if snap.body.links.len() < MAX_LINKS && !snap.body.links.contains(&link) {
+            snap.body.links.push(link);
+        }
+        let row = commit(
+            conn,
+            ctx,
+            old,
+            snap,
+            Commit {
+                source: VersionSource::Code,
+                launch_id,
+                force_revision: true,
+            },
+        )
+        .await?;
+        let r = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "update cases set automated = false, archived_at = coalesce(archived_at, now()), \
+             revision = revision + 1 where id = $1 returning {CASE_COLS}"
+        )))
+        .bind(row.id)
+        .fetch_one(&mut *conn)
+        .await?;
+        let row = case_row(&r)?;
+        case_event(
+            conn,
+            ctx.project_key,
+            "case.archived",
+            serde_json::json!({"number": row.number}),
+        )
+        .await?;
+        return Ok((row, true));
+    }
+    let r = sqlx::query(sqlx::AssertSqlSafe(format!(
+        "update cases set automated = $2, revision = revision + 1, updated_at = now(), updated_by = $3 \
+         where id = $1 returning {CASE_COLS}"
+    )))
+    .bind(old.id)
+    .bind(others)
+    .bind(crate::no_nul(ctx.by))
+    .fetch_one(&mut *conn)
+    .await?;
+    let row = case_row(&r)?;
+    case_event(
+        conn,
+        ctx.project_key,
+        "case.updated",
+        serde_json::json!({"number": row.number, "revision": row.revision, "source": "code"}),
+    )
+    .await?;
+    Ok((row, false))
 }
 
 async fn live(conn: &mut PgConnection, project_id: Uuid, id: Uuid) -> sqlx::Result<bool> {
@@ -460,11 +603,22 @@ pub async fn sync_items(
     .await?
     .into_iter()
     .collect();
+    let mut explicit: Vec<String> = items
+        .iter()
+        .filter(|it| matches!(linked.get(&it.test_case_id), Some(Some(_))))
+        .filter_map(|it| it.data.allure_id.clone())
+        .collect();
+    explicit.sort();
+    explicit.dedup();
+    let named = allure_targets(&mut tx, ctx.project_id, &explicit).await?;
     let mut targets = Vec::with_capacity(items.len());
     for it in items {
         let t = match linked.get(&it.test_case_id) {
             None => Target::Skip,
-            Some(Some(c)) => Target::Case(*c),
+            Some(Some(c)) => match it.data.allure_id.as_deref().and_then(|a| named.get(a)) {
+                Some(to) if to != c => Target::Relink { from: *c, to: *to },
+                _ => Target::Case(*c),
+            },
             Some(None) => match find_match(&mut tx, ctx.project_id, s, &it.data).await? {
                 Some(c) => Target::Case(c),
                 None if s.create_cases => Target::Create,
@@ -488,9 +642,10 @@ pub async fn sync_items(
     };
     let mut case_ids: Vec<Uuid> = targets
         .iter()
-        .filter_map(|t| match t {
-            Target::Case(c) => Some(*c),
-            _ => None,
+        .flat_map(|t| match t {
+            Target::Case(c) => vec![*c],
+            Target::Relink { from, to } => vec![*from, *to],
+            _ => Vec::new(),
         })
         .collect();
     case_ids.sort();
@@ -512,106 +667,141 @@ pub async fn sync_items(
     for (it, target) in items.iter().zip(targets) {
         let values = code_values(&it.data, &defs, ctx.limits);
         let hash = code_hash(&values, &s.fields);
-        match target {
-            Target::Skip => stats.skipped += 1,
-            Target::Create => {
-                let Some(n) = next_number else {
+        let case_id =
+            match target {
+                Target::Skip => {
                     stats.skipped += 1;
                     continue;
-                };
-                next_number = Some(n + 1);
-                let mut snap = synced_snapshot(None, &values, &s.fields, &defs);
-                let names = folder_names(s, &it.data, ctx.limits);
-                let refs: Vec<&str> = names.iter().map(String::as_str).collect();
-                snap.folder_id = match ensure_folder_path(
-                    &mut tx,
-                    ctx.project_id,
-                    None,
-                    &refs,
-                    ctx.limits,
-                )
-                .await
-                {
-                    Ok(f) => f,
-                    Err(TmError::Other(e)) => return Err(TmError::Other(e)),
-                    Err(_) => ensure_folder_path(
-                        &mut tx,
-                        ctx.project_id,
-                        None,
-                        &refs[..1.min(refs.len())],
-                        ctx.limits,
-                    )
-                    .await
-                    .unwrap_or(None),
-                };
-                let row = create_case_in(
-                    &mut tx,
-                    ctx,
-                    snap,
-                    &NewCaseMeta {
-                        origin: CaseOrigin::Code,
-                        source: VersionSource::Code,
-                        launch_id: it.launch_id,
-                        ai_unreviewed: false,
-                        automated: true,
-                        code_hash: Some(hash),
-                        number: Some((n, true)),
-                    },
-                )
-                .await?;
-                if let Some(a) = it.data.allure_id.as_deref()
-                    && super::keys::check_key_value(a).is_ok()
-                {
-                    set_case_key(&mut tx, ctx.project_id, row.id, CaseKeyKind::AllureId, a).await?;
                 }
-                link(&mut tx, it.test_case_id, row.id).await?;
-                stats.created += 1;
-            }
-            Target::Case(case_id) => {
-                let Some(cur) = cases.get(&case_id).cloned() else {
-                    stats.skipped += 1;
-                    continue;
-                };
-                let newly = linked.get(&it.test_case_id) == Some(&None);
-                if newly {
-                    link(&mut tx, it.test_case_id, case_id).await?;
-                    stats.linked += 1;
-                }
-                let mut row = cur.clone();
-                if cur.code_hash.as_deref() != Some(hash.as_str()) || !cur.automated {
-                    let snap = synced_snapshot(Some(&snapshot_of(&cur)), &values, &s.fields, &defs);
-                    row = commit(
+                Target::Create => {
+                    let Some(n) = next_number else {
+                        stats.skipped += 1;
+                        continue;
+                    };
+                    next_number = Some(n + 1);
+                    let mut snap = synced_snapshot(None, &values, &s.fields, &defs, false);
+                    let names = folder_names(s, &it.data, ctx.limits);
+                    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+                    snap.folder_id =
+                        match ensure_folder_path(&mut tx, ctx.project_id, None, &refs, ctx.limits)
+                            .await
+                        {
+                            Ok(f) => f,
+                            Err(TmError::Other(e)) => return Err(TmError::Other(e)),
+                            Err(_) => ensure_folder_path(
+                                &mut tx,
+                                ctx.project_id,
+                                None,
+                                &refs[..1.min(refs.len())],
+                                ctx.limits,
+                            )
+                            .await
+                            .unwrap_or(None),
+                        };
+                    let row = create_case_in(
                         &mut tx,
                         ctx,
-                        &cur,
                         snap,
-                        Commit {
+                        &NewCaseMeta {
+                            origin: CaseOrigin::Code,
                             source: VersionSource::Code,
                             launch_id: it.launch_id,
-                            force_revision: !cur.automated,
+                            ai_unreviewed: false,
+                            automated: true,
+                            code_hash: Some(hash),
+                            number: Some((n, true)),
                         },
                     )
                     .await?;
-                    if row.revision != cur.revision {
-                        stats.updated += 1;
-                    } else {
-                        stats.unchanged += 1;
+                    if let Some(a) = it.data.allure_id.as_deref()
+                        && super::keys::check_key_value(a).is_ok()
+                    {
+                        set_case_key(&mut tx, ctx.project_id, row.id, CaseKeyKind::AllureId, a)
+                            .await?;
                     }
-                } else {
-                    stats.unchanged += 1;
+                    link(&mut tx, it.test_case_id, row.id).await?;
+                    stats.created += 1;
+                    continue;
                 }
-                sqlx::query(
-                    "update cases set automated = true, code_hash = $2, last_trusted_at = now() where id = $1",
-                )
-                .bind(case_id)
-                .bind(&hash)
-                .execute(&mut *tx)
-                .await?;
-                row.automated = true;
-                row.code_hash = Some(hash);
-                cases.insert(case_id, row);
+                Target::Case(case_id) => {
+                    if !cases.contains_key(&case_id) {
+                        stats.skipped += 1;
+                        continue;
+                    }
+                    if linked.get(&it.test_case_id) == Some(&None) {
+                        link(&mut tx, it.test_case_id, case_id).await?;
+                        stats.linked += 1;
+                    }
+                    case_id
+                }
+                Target::Relink { from, to } => {
+                    let (Some(old), Some(new)) = (cases.get(&from).cloned(), cases.get(&to)) else {
+                        stats.skipped += 1;
+                        continue;
+                    };
+                    let to_number = new.number;
+                    link(&mut tx, it.test_case_id, to).await?;
+                    let (old_row, archived) =
+                        settle_relinked(&mut tx, ctx, &old, to_number, it.launch_id).await?;
+                    stats.relinked += 1;
+                    if stats.relinks.len() < MAX_REPORTED_RELINKS {
+                        stats.relinks.push(IdentityRelink {
+                            project_key: ctx.project_key.to_string(),
+                            test_case_id: it.test_case_id,
+                            from_number: old_row.number,
+                            to_number,
+                            archived_duplicate: archived.then_some(old_row.number),
+                            launch_id: it.launch_id,
+                        });
+                    }
+                    cases.insert(from, old_row);
+                    to
+                }
+            };
+        let Some(cur) = cases.get(&case_id).cloned() else {
+            stats.skipped += 1;
+            continue;
+        };
+        let mut row = cur.clone();
+        if cur.code_hash.as_deref() != Some(hash.as_str()) || !cur.automated {
+            let fill_only = cur.origin != CaseOrigin::Code && cur.code_hash.is_none();
+            let snap = synced_snapshot(
+                Some(&snapshot_of(&cur)),
+                &values,
+                &s.fields,
+                &defs,
+                fill_only,
+            );
+            row = commit(
+                &mut tx,
+                ctx,
+                &cur,
+                snap,
+                Commit {
+                    source: VersionSource::Code,
+                    launch_id: it.launch_id,
+                    force_revision: !cur.automated,
+                },
+            )
+            .await?;
+            if row.revision != cur.revision {
+                stats.updated += 1;
+            } else {
+                stats.unchanged += 1;
             }
+        } else {
+            stats.unchanged += 1;
         }
+        sqlx::query(
+            "update cases set automated = true, code_hash = $2, last_trusted_at = now() where id = $1",
+        )
+        .bind(case_id)
+        .bind(&hash)
+        .execute(&mut *tx)
+        .await?;
+        row.automated = true;
+        row.code_hash = Some(hash);
+        cases.insert(case_id, row);
     }
     tx.commit().await?;
     Ok(stats)
@@ -840,8 +1030,8 @@ impl Store {
             }
             match self.sync_launch(q.launch_id, limits).await {
                 Ok((trusted, stats)) => {
-                    total.add(stats);
                     tracing::debug!(launch = %q.launch_id, trusted, ?stats, "case sync done");
+                    total.add(stats);
                     sqlx::query(
                         "delete from case_sync_queue where launch_id = $1 and lease_owner = $2",
                     )
@@ -1026,7 +1216,14 @@ mod tests {
             for trusted in [true, false] {
                 for create in [true, false] {
                     let cur = manual();
-                    let plan = sync_plan(trusted, (!create).then_some(&cur), &v, &fields, &defs);
+                    let plan = sync_plan(
+                        trusted,
+                        (!create).then_some(&cur),
+                        &v,
+                        &fields,
+                        &defs,
+                        false,
+                    );
                     let case = format!("{policy:?} trusted={trusted} create={create}");
                     if !trusted {
                         assert!(plan.is_none(), "{case}");
@@ -1069,6 +1266,63 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Empty or missing code values never clear the case; the first link of a case people
+    /// wrote fills only what the case lacks.
+    #[test]
+    fn code_never_wipes_and_manual_text_wins_on_first_link() {
+        let defs = defs();
+        let fields = CaseSyncFields::default();
+        let empty = CodeValues {
+            name: "adds an item".into(),
+            ..Default::default()
+        };
+        let s = synced_snapshot(Some(&manual()), &empty, &fields, &defs, false);
+        assert_eq!(s.name, "adds an item", "name policy is code");
+        assert_eq!(
+            s.body.description, "Manual description",
+            "empty description"
+        );
+        assert_eq!(s.tags, vec!["manual"], "no tags from code");
+        assert_eq!(
+            s.fields["severity"],
+            FieldValue::Text("normal".into()),
+            "no severity label"
+        );
+        let mut blank = empty.clone();
+        blank.description = "  \n".into();
+        blank
+            .fields
+            .insert("epic".into(), FieldValue::Text(" ".into()));
+        let mut cur = manual();
+        cur.fields
+            .insert("epic".into(), FieldValue::Text("Shop".into()));
+        let s = synced_snapshot(Some(&cur), &blank, &fields, &defs, false);
+        assert_eq!(s.body.description, "Manual description");
+        assert_eq!(s.fields["epic"], FieldValue::Text("Shop".into()));
+
+        let v = code_values(&data(), &defs, &TmLimits::default());
+        let s = synced_snapshot(Some(&manual()), &v, &fields, &defs, true);
+        assert_eq!(s.name, "Manual name", "manual text wins on the first link");
+        assert_eq!(s.body.description, "Manual description");
+        assert_eq!(s.tags, vec!["manual"]);
+        assert_eq!(s.fields["severity"], FieldValue::Text("normal".into()));
+        assert_eq!(
+            s.fields["epic"],
+            FieldValue::Text("Cart".into()),
+            "empty values are filled"
+        );
+        assert_eq!(s.body.links.len(), 1, "no links yet: filled");
+        let mut bare = manual();
+        bare.body.description.clear();
+        bare.tags.clear();
+        let s = synced_snapshot(Some(&bare), &v, &fields, &defs, true);
+        assert_eq!(s.body.description, "From code");
+        assert_eq!(s.tags, vec!["smoke"]);
+        let s = synced_snapshot(Some(&manual()), &v, &fields, &defs, false);
+        assert_eq!(s.name, "adds an item", "later syncs apply code values");
+        assert_eq!(s.body.description, "From code");
     }
 
     #[test]

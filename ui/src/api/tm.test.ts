@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { ApiError, projectPath } from './client';
-import { getVersioned, PreconditionFailedError, revisionOf, writeVersioned, type Case, type CaseWrite } from './tm';
+import { fetchAllFolders, getVersioned, PreconditionFailedError, revisionOf, writeVersioned, type Case, type CaseWrite } from './tm';
 import { touchCase } from '../mocks/tm';
+import { server } from '../mocks/node';
 
 const path = `${projectPath('web-shop')}/cases/1`;
 
@@ -52,5 +53,25 @@ describe('ETag conflict flow', () => {
     const err = await writeVersioned<Case>(`${projectPath('web-shop')}/cases/${String(n)}`, 'PUT', v.etag, write(v.value, 'renamed')).catch((e: unknown) => e);
     expect((err as ApiError).status).toBe(409);
     expect((err as ApiError).code).toBe('field_from_code');
+  });
+});
+
+describe('folder tree', () => {
+  it('reads every folder in one request, parents first', async () => {
+    const urls: string[] = [];
+    const seen = ({ request }: { request: Request }) => {
+      if (request.url.includes('/case-folders')) urls.push(request.url);
+    };
+    server.events.on('request:start', seen);
+    try {
+      const folders = await fetchAllFolders('web-shop');
+      expect(urls).toHaveLength(1);
+      expect(new URL(urls[0] ?? '').searchParams.get('all')).toBe('true');
+      expect(folders.some((f) => f.parentId !== null)).toBe(true);
+      const at = new Map(folders.map((f, i) => [f.id, i]));
+      for (const [i, f] of folders.entries()) if (f.parentId) expect(at.get(f.parentId) ?? Infinity).toBeLessThan(i);
+    } finally {
+      server.events.removeListener('request:start', seen);
+    }
   });
 });

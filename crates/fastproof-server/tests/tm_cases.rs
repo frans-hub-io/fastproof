@@ -1369,7 +1369,14 @@ async fn code_sync_trust_allure_id_and_rename() {
 
     let (_, c1) = s.get(&format!("{base}/1"), ADMIN_TOKEN).await;
     assert_eq!(c1["automated"], true);
-    assert_eq!(c1["name"], "removes an item", "name policy is code");
+    assert_eq!(
+        c1["name"], "Removes an item (manual)",
+        "the manual name wins when code automates the case"
+    );
+    assert_eq!(
+        c1["body"]["description"], "Code says: removes an item",
+        "an empty description is filled from code"
+    );
     assert_eq!(c1["body"]["steps"], manual_steps, "manual steps stay");
     assert_eq!(c1["body"]["preconditions"], "Cart has items");
     assert_eq!(
@@ -1480,7 +1487,11 @@ async fn code_sync_trust_allure_id_and_rename() {
     let (_, c2) = s.get(&format!("{base}/2"), ADMIN_TOKEN).await;
     assert_eq!(c2["revision"].as_i64().unwrap(), rev_before + 1);
     assert_eq!(c2["fields"]["severity"], "normal");
-    assert_eq!(c2["tags"], json!([]));
+    assert_eq!(
+        c2["tags"],
+        json!(["smoke"]),
+        "no tag from code keeps the tags"
+    );
     assert_eq!(c2["body"]["steps"][0]["action"], "Check the badge");
 
     run_launch(

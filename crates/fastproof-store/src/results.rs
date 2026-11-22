@@ -163,12 +163,15 @@ pub const MAX_TREE_RESULTS: i64 = 200_000;
 
 pub(crate) const SUMMARY_SELECT: &str = "select r.id, r.launch_id, r.launch_created_at, r.test_case_id, r.series_id, \
     s.series_key, r.name, r.full_name, r.suite_path, r.status, r.flaky_in_run, r.attempt_count, r.duration_ms, \
-    r.started_at, r.labels, r.muted, r.mute_until, r.fingerprint, r.defect, r.message, r.transition, r.flaky \
+    r.started_at, r.labels, r.muted, r.mute_until, r.fingerprint, r.defect, r.message, r.transition, r.flaky, \
+    r.run_item_id, (select c.number from test_cases tc join cases c on c.id = tc.case_id \
+      where tc.id = r.test_case_id) as case_number \
     from results r join series s on s.id = r.series_id ";
 
 pub(crate) fn summary_row(r: &PgRow) -> Result<ResultSummary, sqlx::Error> {
     let labels: serde_json::Value = r.try_get("labels")?;
     let defect: Option<serde_json::Value> = r.try_get("defect")?;
+    let run_item_id: Option<Uuid> = r.try_get("run_item_id")?;
     Ok(ResultSummary {
         id: r.try_get("id")?,
         launch_id: r.try_get("launch_id")?,
@@ -195,6 +198,13 @@ pub(crate) fn summary_row(r: &PgRow) -> Result<ResultSummary, sqlx::Error> {
             .try_get::<Option<String>, _>("message")?
             .map(|m| truncate_chars(&m, MESSAGE_CHARS)),
         client_ids: Vec::new(),
+        source: if run_item_id.is_some() {
+            crate::tm::ResultSource::Manual
+        } else {
+            crate::tm::ResultSource::Automated
+        },
+        case_number: r.try_get("case_number")?,
+        run_item_id,
     })
 }
 

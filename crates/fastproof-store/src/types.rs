@@ -152,6 +152,12 @@ pub struct Launch {
     pub uploads: UploadCounts,
     /// Kept by retention.
     pub important: bool,
+    /// The managed plan the launch was started from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub test_plan_id: Option<Uuid>,
+    /// Progress of the manual run, when the launch has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manual: Option<crate::tm::LaunchManual>,
     #[serde(skip)]
     pub project_id: Uuid,
     #[serde(skip)]
@@ -269,6 +275,16 @@ pub struct ResultSummary {
     /// the `resultId` of their log lines), in result lists of a launch.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub client_ids: Vec<String>,
+    /// `manual` for results projected from a manual run (always sent; optional in the schema
+    /// so that older clients and fixtures stay valid).
+    #[serde(default)]
+    pub source: crate::tm::ResultSource,
+    /// Number of the case the result's identity is linked to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub case_number: Option<i64>,
+    /// The run item a manual result is projected from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_item_id: Option<Uuid>,
 }
 
 /// An attachment as referenced by a result or step.

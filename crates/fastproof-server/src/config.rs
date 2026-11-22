@@ -166,6 +166,57 @@ pub struct Config {
     pub log_limits: LogLimits,
     /// Per-caller and per-replica guards (`crate::limits::GuardSettings`).
     pub guards: crate::limits::GuardSettings,
+    /// Limits of test management (`FASTPROOF_TM_*`).
+    pub tm: fastproof_store::tm::TmLimits,
+}
+
+/// `FASTPROOF_TM_<NAME>` limits, each within `1..=max`.
+fn tm_limits(env: &Env<'_>) -> anyhow::Result<fastproof_store::tm::TmLimits> {
+    let d = fastproof_store::tm::TmLimits::default();
+    let n = |name: &str, default: usize, max: usize| -> anyhow::Result<usize> {
+        let k = format!("FASTPROOF_TM_{name}");
+        let v: usize = env.parse(&k, default)?;
+        if !(1..=max).contains(&v) {
+            bail!("{k}: 1..={max}");
+        }
+        Ok(v)
+    };
+    let b = |name: &str, default: u64, max: u64| -> anyhow::Result<u64> {
+        let k = format!("FASTPROOF_TM_{name}");
+        let v: u64 = env.parse(&k, default)?;
+        if !(1..=max).contains(&v) {
+            bail!("{k}: 1..={max}");
+        }
+        Ok(v)
+    };
+    const GIB: u64 = 1024 * 1024 * 1024;
+    Ok(fastproof_store::tm::TmLimits {
+        max_steps: n("MAX_STEPS", d.max_steps, 10_000)?,
+        max_step_depth: n("MAX_STEP_DEPTH", d.max_step_depth, 10)?,
+        max_markdown_bytes: n("MAX_MARKDOWN_BYTES", d.max_markdown_bytes, 1024 * 1024)?,
+        max_body_bytes: n("MAX_BODY_BYTES", d.max_body_bytes, 16 * 1024 * 1024)?,
+        max_attachment_bytes: b("MAX_ATTACHMENT_BYTES", d.max_attachment_bytes, 4 * GIB)?,
+        max_case_attachments: n("MAX_CASE_ATTACHMENTS", d.max_case_attachments, 10_000)?,
+        max_step_attachments: n("MAX_STEP_ATTACHMENTS", d.max_step_attachments, 1000)?,
+        max_fields: n("MAX_FIELDS", d.max_fields, 1000)?,
+        max_field_options: n("MAX_FIELD_OPTIONS", d.max_field_options, 10_000)?,
+        max_folders: n("MAX_FOLDERS", d.max_folders, 1_000_000)?,
+        max_folder_depth: n("MAX_FOLDER_DEPTH", d.max_folder_depth, 100)?,
+        max_cases: n("MAX_CASES", d.max_cases, 10_000_000)?,
+        max_plan_cases: n("MAX_PLAN_CASES", d.max_plan_cases, 1_000_000)?,
+        max_run_items: n("MAX_RUN_ITEMS", d.max_run_items, 1_000_000)?,
+        max_bulk: n("MAX_BULK", d.max_bulk, 100_000)?,
+        max_import_bytes: b("MAX_IMPORT_BYTES", d.max_import_bytes, 16 * GIB)?,
+        max_import_zip_bytes: b("MAX_IMPORT_ZIP_BYTES", d.max_import_zip_bytes, 64 * GIB)?,
+        max_import_rows: n("MAX_IMPORT_ROWS", d.max_import_rows, 10_000_000)?,
+        max_import_cell_bytes: n(
+            "MAX_IMPORT_CELL_BYTES",
+            d.max_import_cell_bytes,
+            16 * 1024 * 1024,
+        )?,
+        max_tags: n("MAX_TAGS", d.max_tags, 1000)?,
+        max_name_bytes: n("MAX_NAME_BYTES", d.max_name_bytes, 4096)?,
+    })
 }
 
 fn redact_url(u: &str) -> String {
@@ -230,6 +281,7 @@ impl fmt::Debug for Config {
             .field("opensearch", &self.opensearch)
             .field("log_limits", &self.log_limits)
             .field("guards", &self.guards)
+            .field("tm", &self.tm)
             .finish_non_exhaustive()
     }
 }
@@ -558,6 +610,7 @@ impl Config {
             sink_tuning: fastproof_stream::SinkTuning::from_vars(&vars)?,
             log_limits,
             guards: crate::limits::GuardSettings::from_env(&env)?,
+            tm: tm_limits(&env)?,
         })
     }
 }
@@ -592,6 +645,32 @@ mod tests {
         assert_eq!(c.migrate, MigrateMode::Auto);
         assert!(c.ui);
         assert!(matches!(c.blob, BlobConfig::Fs { .. }));
+    }
+
+    #[test]
+    fn tm_limits_from_env() {
+        let base = ("FASTPROOF_DATABASE_URL", "postgres://db.example.com/fp");
+        let c = cfg(&[base]).unwrap();
+        assert_eq!(c.tm, fastproof_store::tm::TmLimits::default());
+        assert_eq!(c.tm.max_markdown_bytes, 16_384);
+        assert_eq!(c.tm.max_import_zip_bytes, 2_147_483_648);
+        let c = cfg(&[
+            base,
+            ("FASTPROOF_TM_MAX_FOLDERS", "500"),
+            ("FASTPROOF_TM_MAX_IMPORT_BYTES", "1048576"),
+        ])
+        .unwrap();
+        assert_eq!(c.tm.max_folders, 500);
+        assert_eq!(c.tm.max_import_bytes, 1_048_576);
+        for (k, v) in [
+            ("FASTPROOF_TM_MAX_FOLDERS", "0"),
+            ("FASTPROOF_TM_MAX_STEP_DEPTH", "11"),
+            ("FASTPROOF_TM_MAX_TAGS", "many"),
+            ("FASTPROOF_TM_MAX_IMPORT_ZIP_BYTES", "-1"),
+        ] {
+            let e = cfg(&[base, (k, v)]).unwrap_err().to_string();
+            assert!(e.contains(k), "{e}");
+        }
     }
 
     #[test]

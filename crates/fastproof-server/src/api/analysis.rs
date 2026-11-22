@@ -599,6 +599,15 @@ pub async fn put_settings(
         )
         .await;
     }
+    if areas.iter().any(|a| a == "caseSync") {
+        s.audit(
+            &auth,
+            "caseSync.settings",
+            Some(&p.key),
+            serde_json::json!({"caseSync": body.case_sync}),
+        )
+        .await;
+    }
     s.audit(
         &auth,
         "project.settings",

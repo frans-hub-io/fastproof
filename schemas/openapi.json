@@ -419,6 +419,588 @@
         }
       }
     },
+    "/api/v1/projects/{key}/case-fields": {
+      "get": {
+        "tags": [
+          "cases"
+        ],
+        "description": "Field definitions by position: the built-in ones (priority, severity, layer, owner, epic, feature, story, suite, component) and the custom ones.",
+        "operationId": "list_case_fields",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "archived",
+            "in": "query",
+            "description": "Include archived fields.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaseFieldList"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "cases"
+        ],
+        "operationId": "create_case_field",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CaseFieldWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaseFieldDef"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "key or label taken, `limit_reached`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/case-fields/{id}": {
+      "delete": {
+        "tags": [
+          "cases"
+        ],
+        "description": "Archives a field: values on cases are kept and it can be restored with `PATCH {archived: false}`.",
+        "operationId": "delete_case_field",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "cases"
+        ],
+        "description": "Changes a field; every key is optional. `type` may only be sent unchanged; `archived` archives or restores.",
+        "operationId": "update_case_field",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CaseFieldPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaseFieldDef"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/case-folders": {
+      "get": {
+        "tags": [
+          "cases"
+        ],
+        "description": "One level of the folder tree (`parent` absent = top level), by position and name, with the counts of the cases (not archived) in each folder and its subfolders.",
+        "operationId": "list_case_folders",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "parent",
+            "in": "query",
+            "description": "The folder whose children are listed; absent lists the top level.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaseFolderList"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "cases"
+        ],
+        "operationId": "create_case_folder",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CaseFolderWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaseFolder"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`folder_name_taken` or `limit_reached`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/case-folders/{id}": {
+      "delete": {
+        "tags": [
+          "cases"
+        ],
+        "description": "Deletes a folder. One with subfolders or cases needs `mode`: `moveUp` moves them to the parent, `archiveCases` archives the cases of the whole subtree and deletes the subfolders.",
+        "operationId": "delete_case_folder",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "mode",
+            "in": "query",
+            "description": "Required when the folder has subfolders or cases.",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/FolderDeleteMode"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaseFolderDeleted"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`folder_not_empty` or `folder_name_taken`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "cases"
+        ],
+        "description": "Renames, reorders or moves a folder with its subtree (`parentId: null` moves it to the top level).",
+        "operationId": "update_case_folder",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CaseFolderPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaseFolder"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`folder_name_taken` or `limit_reached`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{key}/dashboard": {
       "get": {
         "tags": [
@@ -4570,6 +5152,36 @@
           }
         }
       },
+      "AttachmentRef": {
+        "type": "object",
+        "description": "A stored attachment as a case or step result references it.",
+        "required": [
+          "id",
+          "sha256",
+          "size",
+          "contentType",
+          "name"
+        ],
+        "properties": {
+          "contentType": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
       "AttachmentView": {
         "type": "object",
         "description": "An attachment as referenced by a result or step.",
@@ -4776,6 +5388,1532 @@
             ]
           }
         }
+      },
+      "Case": {
+        "type": "object",
+        "description": "A case.",
+        "required": [
+          "number",
+          "id",
+          "name",
+          "status",
+          "automated",
+          "origin",
+          "aiUnreviewed",
+          "body",
+          "html",
+          "fields",
+          "tags",
+          "codeOwned",
+          "identities",
+          "keys",
+          "revision",
+          "version",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "aiUnreviewed": {
+            "type": "boolean"
+          },
+          "archivedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "automated": {
+            "type": "boolean"
+          },
+          "body": {
+            "$ref": "#/components/schemas/CaseBody"
+          },
+          "codeOwned": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Field keys whose values come from code (policy `code` on an automated case)."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "createdBy": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fields": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/FieldValue"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "folder": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CaseFolderRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "html": {
+            "$ref": "#/components/schemas/CaseHtml"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "identities": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CaseIdentity"
+            }
+          },
+          "keys": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CaseKey"
+            }
+          },
+          "name": {
+            "type": "string"
+          },
+          "number": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "origin": {
+            "$ref": "#/components/schemas/CaseOrigin"
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "status": {
+            "$ref": "#/components/schemas/CaseStatus"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedBy": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "CaseBody": {
+        "type": "object",
+        "description": "Content of a case (`cases.body`, also the body of a version snapshot). Text is Markdown.",
+        "required": [
+          "description",
+          "preconditions",
+          "steps",
+          "links"
+        ],
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "links": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CaseLink"
+            }
+          },
+          "preconditions": {
+            "type": "string"
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CaseStep"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "CaseBulk": {
+        "type": "object",
+        "description": "Body of `POST /cases/bulk`: `move` takes `folderId|null`, `setStatus` a status, `setField`\n`{key, value}`, the tag actions a list of tags.",
+        "required": [
+          "action"
+        ],
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/CaseBulkAction"
+          },
+          "filter": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CaseFilter"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "numbers": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          "value": {}
+        },
+        "additionalProperties": false
+      },
+      "CaseBulkAction": {
+        "type": "string",
+        "description": "Action of `POST /cases/bulk`.",
+        "enum": [
+          "move",
+          "setStatus",
+          "setField",
+          "addTags",
+          "removeTags",
+          "archive",
+          "restore"
+        ]
+      },
+      "CaseBulkResult": {
+        "type": "object",
+        "description": "Outcome of a bulk action.",
+        "required": [
+          "updated",
+          "skipped"
+        ],
+        "properties": {
+          "skipped": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CaseBulkSkip"
+            }
+          },
+          "updated": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "CaseBulkSkip": {
+        "type": "object",
+        "description": "A case a bulk action skipped, with the reason (an error code).",
+        "required": [
+          "number",
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "number": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "CaseFieldDef": {
+        "type": "object",
+        "description": "A case field definition.",
+        "required": [
+          "id",
+          "key",
+          "name",
+          "type",
+          "options",
+          "required",
+          "defaultValue",
+          "builtIn",
+          "position",
+          "archived"
+        ],
+        "properties": {
+          "archived": {
+            "type": "boolean"
+          },
+          "builtIn": {
+            "type": "boolean"
+          },
+          "defaultValue": {
+            "$ref": "#/components/schemas/FieldValue"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "key": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "options": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FieldOption"
+            }
+          },
+          "position": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "sourceLabel": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Allure label whose value code sync writes into this field."
+          },
+          "type": {
+            "$ref": "#/components/schemas/FieldType"
+          }
+        }
+      },
+      "CaseFieldList": {
+        "type": "object",
+        "description": "`{items}` of field definitions.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CaseFieldDef"
+            }
+          }
+        }
+      },
+      "CaseFieldPatch": {
+        "type": "object",
+        "description": "Body of `PATCH /case-fields/{id}`: every key optional; `type` may be sent only unchanged;\n`archived` archives or restores the field.",
+        "properties": {
+          "archived": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "defaultValue": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/FieldValue"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "key": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "options": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/FieldOption"
+            }
+          },
+          "position": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "required": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "sourceLabel": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "type": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/FieldType"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "CaseFieldWrite": {
+        "type": "object",
+        "description": "Body of `POST /case-fields`.",
+        "required": [
+          "key",
+          "name",
+          "type"
+        ],
+        "properties": {
+          "defaultValue": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/FieldValue"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "key": {
+            "type": "string",
+            "description": "`^[a-z][a-z0-9_]{0,62}$`, unique in the project."
+          },
+          "name": {
+            "type": "string"
+          },
+          "options": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/FieldOption"
+            }
+          },
+          "position": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "required": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "sourceLabel": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "type": {
+            "$ref": "#/components/schemas/FieldType"
+          }
+        },
+        "additionalProperties": false
+      },
+      "CaseFilter": {
+        "type": "object",
+        "description": "Structured case filter (case list, bulk, plans).",
+        "properties": {
+          "automation": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ResultSource"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "fields": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "folderIds": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "q": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "recursive": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "statuses": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/CaseStatus"
+            }
+          },
+          "tags": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "CaseFolder": {
+        "type": "object",
+        "description": "A case folder.",
+        "required": [
+          "id",
+          "name",
+          "position",
+          "depth",
+          "counts",
+          "hasChildren"
+        ],
+        "properties": {
+          "counts": {
+            "$ref": "#/components/schemas/FolderCounts"
+          },
+          "depth": {
+            "type": "integer",
+            "format": "int32",
+            "description": "1 for a top-level folder."
+          },
+          "hasChildren": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "parentId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "position": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "CaseFolderDeleted": {
+        "type": "object",
+        "description": "What deleting a folder did.",
+        "required": [
+          "folders",
+          "casesMoved",
+          "casesArchived"
+        ],
+        "properties": {
+          "casesArchived": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "casesMoved": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "folders": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "CaseFolderList": {
+        "type": "object",
+        "description": "`{items}` of folders of one level.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CaseFolder"
+            }
+          }
+        }
+      },
+      "CaseFolderPatch": {
+        "type": "object",
+        "description": "Body of `PATCH /case-folders/{id}`: rename, reorder, or move (`parentId`, `null` = root).",
+        "properties": {
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "parentId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "position": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          }
+        },
+        "additionalProperties": false
+      },
+      "CaseFolderPathEntry": {
+        "type": "object",
+        "description": "One folder on the path of a case.",
+        "required": [
+          "id",
+          "name"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "CaseFolderRef": {
+        "type": "object",
+        "description": "The folder of a case with its path from the root (the folder itself last).",
+        "required": [
+          "id",
+          "path"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "path": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CaseFolderPathEntry"
+            }
+          }
+        }
+      },
+      "CaseFolderWrite": {
+        "type": "object",
+        "description": "Body of `POST /case-folders`.",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "parentId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "position": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          }
+        },
+        "additionalProperties": false
+      },
+      "CaseHistoryEntry": {
+        "type": "object",
+        "description": "A result of a case (any identity) in its history.",
+        "required": [
+          "launchId",
+          "launchNumber",
+          "launchName",
+          "resultId",
+          "status",
+          "source",
+          "at"
+        ],
+        "properties": {
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "branch": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "environment": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "executedBy": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "launchId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "launchName": {
+            "type": "string"
+          },
+          "launchNumber": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "resultId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "source": {
+            "$ref": "#/components/schemas/ResultSource"
+          },
+          "status": {
+            "type": "string"
+          }
+        }
+      },
+      "CaseHtml": {
+        "type": "object",
+        "description": "The Markdown fields of a case body rendered to sanitized HTML.",
+        "required": [
+          "description",
+          "preconditions",
+          "steps"
+        ],
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "preconditions": {
+            "type": "string"
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CaseStepHtml"
+            }
+          }
+        }
+      },
+      "CaseIdentity": {
+        "type": "object",
+        "description": "A test identity (row of `test_cases`) linked to a case.",
+        "required": [
+          "testCaseId",
+          "fullName",
+          "kind",
+          "lastSeenAt",
+          "branches"
+        ],
+        "properties": {
+          "branches": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "fullName": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/IdentityKind"
+          },
+          "lastSeenAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "testCaseId": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "CaseKey": {
+        "type": "object",
+        "description": "An external key of a case (`case_keys`).",
+        "required": [
+          "kind",
+          "value"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/CaseKeyKind"
+          },
+          "value": {
+            "type": "string"
+          }
+        }
+      },
+      "CaseKeyKind": {
+        "type": "string",
+        "description": "Kind of an external case key.",
+        "enum": [
+          "allure_id",
+          "testrail",
+          "qase",
+          "testops",
+          "external"
+        ]
+      },
+      "CaseLink": {
+        "type": "object",
+        "description": "A link of a case.",
+        "required": [
+          "name",
+          "url",
+          "type"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "type": {
+            "$ref": "#/components/schemas/CaseLinkType"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "CaseLinkType": {
+        "type": "string",
+        "description": "Kind of a case link.",
+        "enum": [
+          "link",
+          "issue",
+          "tms"
+        ]
+      },
+      "CaseList": {
+        "type": "object",
+        "description": "A page of cases.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CaseSummary"
+            }
+          },
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "CaseOrigin": {
+        "type": "string",
+        "description": "Where a case came from.",
+        "enum": [
+          "ui",
+          "code",
+          "import",
+          "ai"
+        ]
+      },
+      "CasePatch": {
+        "type": "object",
+        "description": "Body of `PATCH /cases/{n}` (merge): absent keys are kept, `folderId: null` moves to the root.",
+        "properties": {
+          "fields": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": {
+              "$ref": "#/components/schemas/FieldValue"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "folderId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "status": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CaseStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tags": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "CaseProposal": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/CasePatch"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "body": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/CaseBody"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "What an AI suggestion proposes: a patch plus optionally a new name and body."
+      },
+      "CaseSnapshot": {
+        "type": "object",
+        "description": "The content of a case at one version (stored zstd-compressed in `case_versions.snapshot_z`).",
+        "required": [
+          "name",
+          "status",
+          "body",
+          "fields",
+          "tags"
+        ],
+        "properties": {
+          "body": {
+            "$ref": "#/components/schemas/CaseBody"
+          },
+          "fields": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/FieldValue"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "folderId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/CaseStatus"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "CaseStatus": {
+        "type": "string",
+        "description": "Lifecycle of a case.",
+        "enum": [
+          "draft",
+          "active",
+          "outdated"
+        ]
+      },
+      "CaseStep": {
+        "type": "object",
+        "description": "One step of a case; steps nest up to `max_step_depth` levels. Text fields are Markdown.",
+        "required": [
+          "id",
+          "action",
+          "expected",
+          "data",
+          "attachments",
+          "steps"
+        ],
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "attachments": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "Ids of attachments of the case."
+          },
+          "data": {
+            "type": "string"
+          },
+          "expected": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "description": "Stable id across versions (`s_<ulid>`); an empty id on write is assigned by the server."
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CaseStep"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "CaseStepHtml": {
+        "type": "object",
+        "description": "A step rendered to sanitized HTML.",
+        "required": [
+          "id",
+          "action",
+          "expected",
+          "data",
+          "steps"
+        ],
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "data": {
+            "type": "string"
+          },
+          "expected": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CaseStepHtml"
+            }
+          }
+        }
+      },
+      "CaseSuggestion": {
+        "type": "object",
+        "description": "An AI suggestion for a case, never applied without a person accepting it.",
+        "required": [
+          "id",
+          "caseNumber",
+          "baseRevision",
+          "proposal",
+          "rationale",
+          "agent",
+          "status",
+          "createdAt"
+        ],
+        "properties": {
+          "agent": {
+            "type": "string"
+          },
+          "baseRevision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "caseNumber": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "decidedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "decidedBy": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "proposal": {
+            "$ref": "#/components/schemas/CaseProposal"
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/SuggestionStatus"
+          }
+        }
+      },
+      "CaseSummary": {
+        "type": "object",
+        "description": "A case in lists.",
+        "required": [
+          "number",
+          "name",
+          "status",
+          "automated",
+          "fields",
+          "tags",
+          "updatedAt",
+          "aiUnreviewed",
+          "archived"
+        ],
+        "properties": {
+          "aiUnreviewed": {
+            "type": "boolean"
+          },
+          "archived": {
+            "type": "boolean"
+          },
+          "automated": {
+            "type": "boolean"
+          },
+          "fields": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/FieldValue"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "folderId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "lastResult": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/LastResult"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "number": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "status": {
+            "$ref": "#/components/schemas/CaseStatus"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "CaseSyncFields": {
+        "type": "object",
+        "description": "Field policy of code sync, per field.",
+        "properties": {
+          "component": {
+            "$ref": "#/components/schemas/FieldPolicy",
+            "default": "code"
+          },
+          "description": {
+            "$ref": "#/components/schemas/FieldPolicy",
+            "default": "code"
+          },
+          "epic": {
+            "$ref": "#/components/schemas/FieldPolicy",
+            "default": "code"
+          },
+          "feature": {
+            "$ref": "#/components/schemas/FieldPolicy",
+            "default": "code"
+          },
+          "layer": {
+            "$ref": "#/components/schemas/FieldPolicy",
+            "default": "code"
+          },
+          "links": {
+            "$ref": "#/components/schemas/FieldPolicy",
+            "default": "code"
+          },
+          "name": {
+            "$ref": "#/components/schemas/FieldPolicy",
+            "default": "code"
+          },
+          "owner": {
+            "$ref": "#/components/schemas/FieldPolicy",
+            "default": "code"
+          },
+          "severity": {
+            "$ref": "#/components/schemas/FieldPolicy",
+            "default": "code"
+          },
+          "story": {
+            "$ref": "#/components/schemas/FieldPolicy",
+            "default": "code"
+          },
+          "suite": {
+            "$ref": "#/components/schemas/FieldPolicy",
+            "default": "code"
+          },
+          "tags": {
+            "$ref": "#/components/schemas/FieldPolicy",
+            "default": "code"
+          }
+        },
+        "additionalProperties": false
+      },
+      "CaseSyncSettings": {
+        "type": "object",
+        "description": "How cases follow the tests in code (`caseSync`).",
+        "properties": {
+          "branches": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Trusted branches: globs where `*` matches within a segment and `**` across `/`.",
+            "default": [
+              "main",
+              "master"
+            ]
+          },
+          "createCases": {
+            "type": "boolean",
+            "description": "Create cases for new identities of trusted launches.",
+            "default": true
+          },
+          "enabled": {
+            "type": "boolean",
+            "default": true
+          },
+          "fields": {
+            "$ref": "#/components/schemas/CaseSyncFields",
+            "default": {
+              "name": "code",
+              "description": "code",
+              "links": "code",
+              "tags": "code",
+              "epic": "code",
+              "feature": "code",
+              "story": "code",
+              "suite": "code",
+              "severity": "code",
+              "owner": "code",
+              "layer": "code",
+              "component": "code"
+            }
+          },
+          "folderFrom": {
+            "$ref": "#/components/schemas/FolderFrom",
+            "default": "suite"
+          },
+          "includeDebug": {
+            "type": "boolean",
+            "description": "Also trust debug launches.",
+            "default": false
+          },
+          "matchTmsLinks": {
+            "type": "boolean",
+            "description": "Match identities to cases by TMS links (`tms` labels) of TestRail or Qase keys.",
+            "default": false
+          },
+          "rootFolder": {
+            "type": "string",
+            "description": "Folder under which created cases are placed.",
+            "default": "Automated"
+          },
+          "staleAfterDays": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Days without a trusted result after which a case counts as stale.",
+            "default": 30,
+            "minimum": 0
+          },
+          "useCiDefaultBranch": {
+            "type": "boolean",
+            "description": "Also trust the CI default branch (`vcs.defaultBranch`).",
+            "default": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "CaseTree": {
+        "type": "object",
+        "description": "One level of the case tree.",
+        "required": [
+          "nodes"
+        ],
+        "properties": {
+          "nodes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CaseTreeNode"
+            }
+          }
+        }
+      },
+      "CaseTreeGroupBy": {
+        "type": "string",
+        "description": "Grouping of `GET /cases/tree`.",
+        "enum": [
+          "folder",
+          "behavior",
+          "suite"
+        ]
+      },
+      "CaseTreeNode": {
+        "type": "object",
+        "description": "A node of `GET /cases/tree`; for `groupBy=behavior|suite` the id is the value path joined\nby U+001F.",
+        "required": [
+          "id",
+          "name",
+          "counts",
+          "hasChildren"
+        ],
+        "properties": {
+          "counts": {
+            "$ref": "#/components/schemas/FolderCounts"
+          },
+          "hasChildren": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "CaseVersion": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/CaseVersionSummary"
+          },
+          {
+            "type": "object",
+            "required": [
+              "snapshot"
+            ],
+            "properties": {
+              "snapshot": {
+                "$ref": "#/components/schemas/CaseSnapshot"
+              }
+            }
+          }
+        ],
+        "description": "A version with its snapshot."
+      },
+      "CaseVersionSummary": {
+        "type": "object",
+        "description": "A version of a case in its history.",
+        "required": [
+          "version",
+          "source",
+          "changed",
+          "createdBy",
+          "createdAt"
+        ],
+        "properties": {
+          "changed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Top-level keys that changed."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "createdBy": {
+            "type": "string"
+          },
+          "launchId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "source": {
+            "$ref": "#/components/schemas/VersionSource"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "CaseWrite": {
+        "type": "object",
+        "description": "Body of `POST /cases` and `PUT /cases/{n}`.",
+        "required": [
+          "name",
+          "body"
+        ],
+        "properties": {
+          "body": {
+            "$ref": "#/components/schemas/CaseBody"
+          },
+          "fields": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": {
+              "$ref": "#/components/schemas/FieldValue"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "folderId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "The folder; absent or `null` is the root."
+          },
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CaseStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tags": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
       },
       "Cluster": {
         "type": "object",
@@ -5547,6 +7685,71 @@
         },
         "additionalProperties": false
       },
+      "FieldOption": {
+        "type": "object",
+        "description": "An option of a select or multiselect field.",
+        "required": [
+          "value",
+          "archived"
+        ],
+        "properties": {
+          "archived": {
+            "type": "boolean"
+          },
+          "color": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`#rrggbb`."
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "FieldPolicy": {
+        "type": "string",
+        "description": "Who owns a case field on automated cases: `code` (sync overwrites it, the UI shows it\nread-only) or `case` (code fills it only when it creates the case).",
+        "enum": [
+          "code",
+          "case"
+        ]
+      },
+      "FieldType": {
+        "type": "string",
+        "description": "Type of a case field.",
+        "enum": [
+          "select",
+          "multiselect",
+          "text",
+          "number",
+          "date"
+        ]
+      },
+      "FieldValue": {
+        "oneOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          {
+            "type": "number",
+            "format": "double"
+          },
+          {
+            "type": "null",
+            "default": null
+          }
+        ],
+        "description": "Value of a case field: select and text are strings, multiselect a list of strings, number\na number, date an ISO `yyyy-mm-dd` string; `null` when unset."
+      },
       "FinishLaunch": {
         "type": "object",
         "description": "Body of `POST .../launches/{id}/finish`.",
@@ -5641,6 +7844,46 @@
             "minimum": 0
           }
         }
+      },
+      "FolderCounts": {
+        "type": "object",
+        "description": "Cases in a folder and its subfolders (not archived).",
+        "required": [
+          "total",
+          "manual",
+          "automated"
+        ],
+        "properties": {
+          "automated": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "manual": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "FolderDeleteMode": {
+        "type": "string",
+        "description": "What deleting a non-empty folder does with its content.",
+        "enum": [
+          "moveUp",
+          "archiveCases"
+        ]
+      },
+      "FolderFrom": {
+        "type": "string",
+        "description": "Where code sync puts the cases it creates.",
+        "enum": [
+          "suite",
+          "package",
+          "none"
+        ]
       },
       "Gate": {
         "type": "object",
@@ -5902,6 +8145,204 @@
           }
         }
       },
+      "IdentityKind": {
+        "type": "string",
+        "description": "A code identity (from uploads) or the manual identity of a case.",
+        "enum": [
+          "code",
+          "manual"
+        ]
+      },
+      "ImportFormat": {
+        "type": "string",
+        "description": "Format of an import file.",
+        "enum": [
+          "generic-csv",
+          "testrail-csv",
+          "qase-csv",
+          "qase-json",
+          "testops-csv",
+          "fastproof-ndjson"
+        ]
+      },
+      "ImportMode": {
+        "type": "string",
+        "description": "Whether an import only creates cases or also updates matching ones.",
+        "enum": [
+          "createOnly",
+          "upsert"
+        ]
+      },
+      "ImportOptions": {
+        "type": "object",
+        "description": "Options of a file import.",
+        "required": [
+          "format",
+          "mode",
+          "unknownFieldValues"
+        ],
+        "properties": {
+          "format": {
+            "$ref": "#/components/schemas/ImportFormat"
+          },
+          "mapping": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "mode": {
+            "$ref": "#/components/schemas/ImportMode"
+          },
+          "stepsLayout": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/StepsLayout"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "targetFolderId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "unknownFieldValues": {
+            "$ref": "#/components/schemas/UnknownFieldValues"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ImportPreview": {
+        "type": "object",
+        "description": "First rows of an import file and the suggested column mapping.",
+        "required": [
+          "format",
+          "headers",
+          "rows",
+          "suggestedMapping",
+          "stepsLayout"
+        ],
+        "properties": {
+          "format": {
+            "$ref": "#/components/schemas/ImportFormat"
+          },
+          "headers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "stepsLayout": {
+            "$ref": "#/components/schemas/StepsLayout"
+          },
+          "suggestedMapping": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "ImportReport": {
+        "type": "object",
+        "description": "What an import does (dry run) or did.",
+        "required": [
+          "create",
+          "update",
+          "skip",
+          "folders",
+          "unknownFields",
+          "unknownValues",
+          "errors"
+        ],
+        "properties": {
+          "create": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ImportRowError"
+            },
+            "description": "The first 1000 errors."
+          },
+          "folders": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "skip": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "unknownFields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "unknownValues": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "update": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "ImportRowError": {
+        "type": "object",
+        "description": "One row error of an import.",
+        "required": [
+          "row",
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "row": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
       "IngestSummary": {
         "type": "object",
         "description": "Outcome of `POST .../results`.",
@@ -6054,6 +8495,37 @@
           }
         }
       },
+      "LastResult": {
+        "type": "object",
+        "description": "The newest result of a case over all its identities.",
+        "required": [
+          "status",
+          "at",
+          "source",
+          "launchId",
+          "resultId"
+        ],
+        "properties": {
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "launchId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "resultId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "source": {
+            "$ref": "#/components/schemas/ResultSource"
+          },
+          "status": {
+            "type": "string"
+          }
+        }
+      },
       "Launch": {
         "type": "object",
         "description": "A launch: one run of a test suite, made of any number of uploads.",
@@ -6130,6 +8602,17 @@
             "type": "boolean",
             "description": "Kept by retention."
           },
+          "manual": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/LaunchManual",
+                "description": "Progress of the manual run, when the launch has one."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "name": {
             "type": "string"
           },
@@ -6144,6 +8627,14 @@
           "status": {
             "type": "string",
             "description": "`running`, `finished` or `interrupted`."
+          },
+          "testPlanId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "The managed plan the launch was started from."
           },
           "uploads": {
             "$ref": "#/components/schemas/UploadCounts"
@@ -6247,6 +8738,53 @@
             "propertyNames": {
               "type": "string"
             }
+          }
+        }
+      },
+      "LaunchManual": {
+        "type": "object",
+        "description": "Manual progress of a launch (present when the launch has a manual run).",
+        "required": [
+          "state",
+          "total",
+          "untested",
+          "inProgress",
+          "passed",
+          "failed",
+          "blocked",
+          "skipped"
+        ],
+        "properties": {
+          "blocked": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "failed": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "inProgress": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "passed": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "skipped": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "state": {
+            "$ref": "#/components/schemas/ManualState"
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "untested": {
+            "type": "integer",
+            "format": "int64"
           }
         }
       },
@@ -6596,6 +9134,35 @@
             }
           }
         }
+      },
+      "ManualClose": {
+        "type": "object",
+        "description": "Body of `POST /launches/{id}/manual/close`.",
+        "required": [
+          "untestedTo"
+        ],
+        "properties": {
+          "untestedTo": {
+            "$ref": "#/components/schemas/ManualUntestedTo"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ManualState": {
+        "type": "string",
+        "description": "State of a manual run.",
+        "enum": [
+          "open",
+          "closed"
+        ]
+      },
+      "ManualUntestedTo": {
+        "type": "string",
+        "description": "What closing a manual run does with untested items.",
+        "enum": [
+          "skipped",
+          "leave"
+        ]
       },
       "Me": {
         "type": "object",
@@ -7312,6 +9879,17 @@
                   "type": "boolean",
                   "description": "Kept by retention."
                 },
+                "manual": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/LaunchManual",
+                      "description": "Progress of the manual run, when the launch has one."
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
                 "name": {
                   "type": "string"
                 },
@@ -7326,6 +9904,14 @@
                 "status": {
                   "type": "string",
                   "description": "`running`, `finished` or `interrupted`."
+                },
+                "testPlanId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "uuid",
+                  "description": "The managed plan the launch was started from."
                 },
                 "uploads": {
                   "$ref": "#/components/schemas/UploadCounts"
@@ -7456,6 +10042,14 @@
                   "type": "integer",
                   "format": "int32"
                 },
+                "caseNumber": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int64",
+                  "description": "Number of the case the result's identity is linked to."
+                },
                 "clientIds": {
                   "type": "array",
                   "items": {
@@ -7531,8 +10125,20 @@
                 "name": {
                   "type": "string"
                 },
+                "runItemId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "uuid",
+                  "description": "The run item a manual result is projected from."
+                },
                 "seriesKey": {
                   "type": "string"
+                },
+                "source": {
+                  "$ref": "#/components/schemas/ResultSource",
+                  "description": "`manual` for results projected from a manual run (always sent; optional in the schema\nso that older clients and fixtures stay valid)."
                 },
                 "startedAt": {
                   "type": [
@@ -7749,6 +10355,76 @@
         },
         "additionalProperties": false
       },
+      "PlanAssign": {
+        "type": "string",
+        "description": "Who the items of a launch started from a plan are assigned to.",
+        "enum": [
+          "plan",
+          "me",
+          "none"
+        ]
+      },
+      "PlanLaunch": {
+        "type": "object",
+        "description": "A launch started from a plan, with the CI hand-off.",
+        "required": [
+          "launch",
+          "testplanUrl",
+          "ciHint"
+        ],
+        "properties": {
+          "ciHint": {
+            "type": "string"
+          },
+          "launch": {
+            "$ref": "#/components/schemas/Launch"
+          },
+          "testplanUrl": {
+            "type": "string"
+          }
+        }
+      },
+      "PlanLaunchAttribute": {
+        "type": "object",
+        "description": "A launch attribute given when starting a launch from a plan.",
+        "required": [
+          "key",
+          "value"
+        ],
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "PlanSyncDiff": {
+        "type": "object",
+        "description": "What syncing a filter plan adds and removes.",
+        "required": [
+          "added",
+          "removed"
+        ],
+        "properties": {
+          "added": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          "removed": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        }
+      },
       "Project": {
         "type": "object",
         "description": "A project.",
@@ -7816,6 +10492,38 @@
         "type": "object",
         "description": "Settings of a project. The analysis parts (`flaky`, `retention`, `rollup`) are typed here;\nthe integration parts (`gates`, `notifications`, `issueTrackers`, `fastmock`, and any other\nkey such as `vcs`) are kept as given and validated by the integrations feature.",
         "properties": {
+          "caseSync": {
+            "$ref": "#/components/schemas/CaseSyncSettings",
+            "description": "Code sync of test cases.",
+            "default": {
+              "enabled": true,
+              "branches": [
+                "main",
+                "master"
+              ],
+              "useCiDefaultBranch": true,
+              "includeDebug": false,
+              "createCases": true,
+              "folderFrom": "suite",
+              "rootFolder": "Automated",
+              "staleAfterDays": 30,
+              "matchTmsLinks": false,
+              "fields": {
+                "name": "code",
+                "description": "code",
+                "links": "code",
+                "tags": "code",
+                "epic": "code",
+                "feature": "code",
+                "story": "code",
+                "suite": "code",
+                "severity": "code",
+                "owner": "code",
+                "layer": "code",
+                "component": "code"
+              }
+            }
+          },
           "fastmock": {
             "oneOf": [
               {
@@ -7862,7 +10570,8 @@
             "$ref": "#/components/schemas/RetentionSettings",
             "default": {
               "rawDays": 90,
-              "keepImportant": true
+              "keepImportant": true,
+              "manualDays": 0
             }
           },
           "rollup": {
@@ -8284,6 +10993,14 @@
         ],
         "description": "A result with its attempts, steps and history."
       },
+      "ResultSource": {
+        "type": "string",
+        "description": "Whether a result comes from a manual run or from an upload; also the automation filter.",
+        "enum": [
+          "manual",
+          "automated"
+        ]
+      },
       "ResultSummary": {
         "type": "object",
         "description": "One result per series per launch.",
@@ -8306,6 +11023,14 @@
           "attemptCount": {
             "type": "integer",
             "format": "int32"
+          },
+          "caseNumber": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Number of the case the result's identity is linked to."
           },
           "clientIds": {
             "type": "array",
@@ -8382,8 +11107,20 @@
           "name": {
             "type": "string"
           },
+          "runItemId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "The run item a manual result is projected from."
+          },
           "seriesKey": {
             "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/ResultSource",
+            "description": "`manual` for results projected from a manual run (always sent; optional in the schema\nso that older clients and fixtures stay valid)."
           },
           "startedAt": {
             "type": [
@@ -8471,6 +11208,13 @@
             "format": "int32",
             "description": "Keep at most this many launches (important ones are not counted).",
             "default": null,
+            "minimum": 0
+          },
+          "manualDays": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Launches with a manual run older than this many days are deleted; `0` keeps them\nforever (they are evidence for quality audits).",
+            "default": 0,
             "minimum": 0
           },
           "rawDays": {
@@ -8765,6 +11509,390 @@
         },
         "additionalProperties": false
       },
+      "RunDefect": {
+        "type": "object",
+        "description": "Body of `POST /run-items/{itemId}/defect`.",
+        "properties": {
+          "comment": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "defectTypeId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "issue": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RunDefectIssue"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "RunDefectIssue": {
+        "type": "object",
+        "description": "An issue linked to a run item.",
+        "required": [
+          "url"
+        ],
+        "properties": {
+          "key": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "RunItem": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/RunItemSummary"
+          },
+          {
+            "type": "object",
+            "required": [
+              "launchId",
+              "caseVersion",
+              "preconditions",
+              "preconditionsHtml",
+              "steps",
+              "stepsHtml",
+              "stepResults",
+              "comment",
+              "revision"
+            ],
+            "properties": {
+              "caseVersion": {
+                "type": "integer",
+                "format": "int32"
+              },
+              "comment": {
+                "type": "string"
+              },
+              "defect": {},
+              "executedBy": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "finishedAt": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "launchId": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "preconditions": {
+                "type": "string"
+              },
+              "preconditionsHtml": {
+                "type": "string"
+              },
+              "resultId": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "uuid"
+              },
+              "revision": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "startedAt": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "stepResults": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/RunStepResult"
+                }
+              },
+              "steps": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/CaseStep"
+                }
+              },
+              "stepsHtml": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/CaseStepHtml"
+                }
+              }
+            }
+          }
+        ],
+        "description": "A run item with the executed version of its case."
+      },
+      "RunItemPatch": {
+        "type": "object",
+        "description": "Body of `PATCH /run-items/{itemId}`.",
+        "properties": {
+          "assignee": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "comment": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RunStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "untestedStepsTo": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/UntestedStepsTo"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "RunItemSummary": {
+        "type": "object",
+        "description": "A run item in lists.",
+        "required": [
+          "id",
+          "caseNumber",
+          "name",
+          "folderPath",
+          "status",
+          "executionNo",
+          "updatedAt"
+        ],
+        "properties": {
+          "assignee": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "caseNumber": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "executionNo": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "folderPath": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RunStatus"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "RunItemsAdd": {
+        "type": "object",
+        "description": "Body of `POST /launches/{id}/run-items`.",
+        "properties": {
+          "assignee": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "caseNumbers": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          "planId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          }
+        },
+        "additionalProperties": false
+      },
+      "RunItemsAdded": {
+        "type": "object",
+        "description": "Outcome of adding run items.",
+        "required": [
+          "added",
+          "skipped"
+        ],
+        "properties": {
+          "added": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "skipped": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "RunStatus": {
+        "type": "string",
+        "description": "Status of a run item.",
+        "enum": [
+          "untested",
+          "in_progress",
+          "passed",
+          "failed",
+          "blocked",
+          "skipped"
+        ]
+      },
+      "RunStepAck": {
+        "type": "object",
+        "description": "Answer to a step write.",
+        "required": [
+          "itemStatus",
+          "suggestedStatus",
+          "revision"
+        ],
+        "properties": {
+          "itemStatus": {
+            "$ref": "#/components/schemas/RunStatus"
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "suggestedStatus": {
+            "$ref": "#/components/schemas/RunStatus"
+          }
+        }
+      },
+      "RunStepResult": {
+        "type": "object",
+        "description": "The result of one step of a run item; `path` is `1`, `1.2`, `1.2.3` over the executed\nversion.",
+        "required": [
+          "path",
+          "status",
+          "actual",
+          "comment",
+          "attachments",
+          "updatedBy",
+          "updatedAt"
+        ],
+        "properties": {
+          "actual": {
+            "type": "string"
+          },
+          "attachments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AttachmentRef"
+            }
+          },
+          "comment": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/StepStatus"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedBy": {
+            "type": "string"
+          }
+        }
+      },
+      "RunStepWrite": {
+        "type": "object",
+        "description": "Body of `PUT /run-items/{itemId}/steps/{path}`.",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "actual": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "attachmentIds": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "comment": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/StepStatus"
+          }
+        },
+        "additionalProperties": false
+      },
       "ScheduledJob": {
         "type": "object",
         "description": "A periodic job of the scheduler.",
@@ -9027,6 +12155,54 @@
           }
         }
       },
+      "StartPlanLaunch": {
+        "type": "object",
+        "description": "Body of `POST /test-plans/{id}/launches`.",
+        "required": [
+          "name",
+          "assign",
+          "includeAutomated"
+        ],
+        "properties": {
+          "assign": {
+            "$ref": "#/components/schemas/PlanAssign"
+          },
+          "attributes": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/PlanLaunchAttribute"
+            }
+          },
+          "environment": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "externalId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "includeAutomated": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
       "Status": {
         "type": "string",
         "description": "Final outcome of a test result, attempt or step.",
@@ -9036,6 +12212,17 @@
           "broken",
           "skipped",
           "unknown"
+        ]
+      },
+      "StepStatus": {
+        "type": "string",
+        "description": "Status of one step of a run item.",
+        "enum": [
+          "untested",
+          "passed",
+          "failed",
+          "blocked",
+          "skipped"
         ]
       },
       "StepView": {
@@ -9111,6 +12298,24 @@
           }
         }
       },
+      "StepsLayout": {
+        "type": "string",
+        "description": "How steps are laid out in a CSV import.",
+        "enum": [
+          "rows",
+          "cells"
+        ]
+      },
+      "SuggestionStatus": {
+        "type": "string",
+        "description": "State of an AI suggestion.",
+        "enum": [
+          "pending",
+          "accepted",
+          "rejected",
+          "stale"
+        ]
+      },
       "Task": {
         "type": "object",
         "description": "A background task.",
@@ -9176,6 +12381,186 @@
           }
         }
       },
+      "TestIdentity": {
+        "type": "object",
+        "description": "A test identity, linked or not.",
+        "required": [
+          "testCaseId",
+          "fullName",
+          "displayName",
+          "kind",
+          "firstSeenAt",
+          "lastSeenAt",
+          "branches"
+        ],
+        "properties": {
+          "branches": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "caseNumber": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "displayName": {
+            "type": "string"
+          },
+          "firstSeenAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "fullName": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/IdentityKind"
+          },
+          "lastSeenAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "testCaseId": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "TestOpsImport": {
+        "type": "object",
+        "description": "An import from the Allure TestOps API. The token is stored as a project secret at once and\nnever returned, logged or audited.",
+        "required": [
+          "source",
+          "baseUrl",
+          "token",
+          "remoteProjectId",
+          "mode"
+        ],
+        "properties": {
+          "baseUrl": {
+            "type": "string"
+          },
+          "mode": {
+            "$ref": "#/components/schemas/ImportMode"
+          },
+          "remoteProjectId": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "source": {
+            "$ref": "#/components/schemas/TestOpsSource"
+          },
+          "targetFolderId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "token": {
+            "type": "string",
+            "writeOnly": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "TestOpsSource": {
+        "type": "string",
+        "description": "Source of an API import.",
+        "enum": [
+          "allure-testops"
+        ]
+      },
+      "TestPlan": {
+        "type": "object",
+        "description": "A test plan (adhoc or managed).",
+        "required": [
+          "id",
+          "kind",
+          "name",
+          "description",
+          "counts",
+          "revision",
+          "createdAt",
+          "archived"
+        ],
+        "properties": {
+          "archived": {
+            "type": "boolean"
+          },
+          "counts": {
+            "$ref": "#/components/schemas/FolderCounts"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "createdBy": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "description": {
+            "type": "string"
+          },
+          "filter": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CaseFilter"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/TestPlanKind"
+          },
+          "name": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "updatedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        }
+      },
+      "TestPlanAssign": {
+        "type": "object",
+        "description": "A new assignee of a plan case.",
+        "required": [
+          "number"
+        ],
+        "properties": {
+          "assignee": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "number": {
+            "type": "integer",
+            "format": "int64"
+          }
+        },
+        "additionalProperties": false
+      },
       "TestPlanCreated": {
         "type": "object",
         "description": "A created plan.",
@@ -9193,6 +12578,85 @@
             "format": "int64"
           }
         }
+      },
+      "TestPlanItem": {
+        "type": "object",
+        "description": "A case of a plan.",
+        "required": [
+          "caseNumber",
+          "name",
+          "automated",
+          "viaFilter",
+          "position"
+        ],
+        "properties": {
+          "assignee": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "automated": {
+            "type": "boolean"
+          },
+          "caseNumber": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "folderId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "position": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "viaFilter": {
+            "type": "boolean"
+          }
+        }
+      },
+      "TestPlanItemsChange": {
+        "type": "object",
+        "description": "Body of `POST /test-plans/{id}/items`.",
+        "properties": {
+          "add": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          "assign": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/TestPlanAssign"
+            }
+          },
+          "remove": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        },
+        "additionalProperties": false
       },
       "TestPlanJson": {
         "type": "object",
@@ -9213,6 +12677,14 @@
           }
         }
       },
+      "TestPlanKind": {
+        "type": "string",
+        "description": "Kind of a test plan: `adhoc` (stage 1, expires) or `managed`.",
+        "enum": [
+          "adhoc",
+          "managed"
+        ]
+      },
       "TestPlanTest": {
         "type": "object",
         "description": "One test of an Allure test plan.",
@@ -9232,6 +12704,146 @@
             "description": "Full name as the Allure adapter reports it."
           }
         }
+      },
+      "TestPlanWrite": {
+        "type": "object",
+        "description": "Body of creating or replacing a managed plan.",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "caseNumbers": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CaseFilter"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "TmJob": {
+        "type": "object",
+        "description": "A background job (import, export, backfill).",
+        "required": [
+          "id",
+          "kind",
+          "status",
+          "progress",
+          "createdAt"
+        ],
+        "properties": {
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "createdBy": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "downloadUrl": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "finishedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/TmJobKind"
+          },
+          "progress": {
+            "$ref": "#/components/schemas/TmJobProgress"
+          },
+          "report": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ImportReport"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/TmJobStatus"
+          }
+        }
+      },
+      "TmJobKind": {
+        "type": "string",
+        "description": "Kind of a background test-management job.",
+        "enum": [
+          "import",
+          "export",
+          "backfill"
+        ]
+      },
+      "TmJobProgress": {
+        "type": "object",
+        "description": "Progress of a job.",
+        "required": [
+          "done"
+        ],
+        "properties": {
+          "done": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          }
+        }
+      },
+      "TmJobStatus": {
+        "type": "string",
+        "description": "Status of a background test-management job.",
+        "enum": [
+          "queued",
+          "dry_run",
+          "ready",
+          "running",
+          "done",
+          "failed",
+          "cancelled"
+        ]
       },
       "Token": {
         "type": "object",
@@ -9629,6 +13241,22 @@
         },
         "additionalProperties": false
       },
+      "UnknownFieldValues": {
+        "type": "string",
+        "description": "What an import does with select values that are not options yet.",
+        "enum": [
+          "create",
+          "skip",
+          "fail"
+        ]
+      },
+      "UntestedStepsTo": {
+        "type": "string",
+        "description": "What `untestedStepsTo` sets the untested steps of an item to.",
+        "enum": [
+          "skipped"
+        ]
+      },
       "Upload": {
         "type": "object",
         "description": "One upload (shard) of a launch.",
@@ -9820,6 +13448,18 @@
           }
         },
         "additionalProperties": false
+      },
+      "VersionSource": {
+        "type": "string",
+        "description": "What made a case version.",
+        "enum": [
+          "ui",
+          "code",
+          "import",
+          "ai",
+          "restore",
+          "bulk"
+        ]
       }
     },
     "securitySchemes": {
@@ -9864,6 +13504,22 @@
     },
     {
       "name": "logs"
+    },
+    {
+      "name": "cases",
+      "description": "Test cases, folders, fields, versions and AI suggestions"
+    },
+    {
+      "name": "plans",
+      "description": "Managed test plans"
+    },
+    {
+      "name": "runs",
+      "description": "Manual runs: run items and step results"
+    },
+    {
+      "name": "imports",
+      "description": "Imports and exports of test cases"
     }
   ]
 }

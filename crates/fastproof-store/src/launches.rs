@@ -46,10 +46,18 @@ pub(crate) const LAUNCH_SELECT: &str = "select l.id, l.project_id, l.number, l.n
     l.ci, l.vcs, l.environment, l.attributes, l.count_total, l.count_passed, l.count_failed, \
     l.count_broken, l.count_skipped, l.count_unknown, l.count_flaky, l.count_muted, l.important, \
     coalesce(u.queued, 0) as uploads_queued, coalesce(u.processing, 0) as uploads_processing, \
-    coalesce(u.failed, 0) as uploads_failed \
+    coalesce(u.failed, 0) as uploads_failed, l.test_plan_id, l.manual_state, \
+    m.total as manual_total, m.untested as manual_untested, m.in_progress as manual_in_progress, \
+    m.passed as manual_passed, m.failed as manual_failed, m.blocked as manual_blocked, \
+    m.skipped as manual_skipped \
     from launches l left join lateral (select count(*) filter (where status = 'queued') as queued, \
     count(*) filter (where status = 'processing') as processing, \
-    count(*) filter (where status = 'failed') as failed from uploads where launch_id = l.id) u on true ";
+    count(*) filter (where status = 'failed') as failed from uploads where launch_id = l.id) u on true \
+    left join lateral (select count(*) as total, count(*) filter (where status = 'untested') as untested, \
+    count(*) filter (where status = 'in_progress') as in_progress, \
+    count(*) filter (where status = 'passed') as passed, count(*) filter (where status = 'failed') as failed, \
+    count(*) filter (where status = 'blocked') as blocked, count(*) filter (where status = 'skipped') as skipped \
+    from run_items where launch_id = l.id and l.manual_state is not null) m on true ";
 
 fn json_opt<T: serde::de::DeserializeOwned>(
     r: &PgRow,
@@ -106,7 +114,28 @@ pub(crate) fn launch_row(r: &PgRow) -> Result<Launch, sqlx::Error> {
             failed: r.try_get("uploads_failed")?,
         },
         important: r.try_get("important")?,
+        test_plan_id: r.try_get("test_plan_id")?,
+        manual: manual_row(r)?,
     })
+}
+
+fn manual_row(r: &PgRow) -> Result<Option<crate::tm::LaunchManual>, sqlx::Error> {
+    let state: Option<String> = r.try_get("manual_state")?;
+    let Some(state) = state.as_deref().and_then(crate::tm::ManualState::parse) else {
+        return Ok(None);
+    };
+    let n =
+        |c: &str| -> Result<i64, sqlx::Error> { Ok(r.try_get::<Option<i64>, _>(c)?.unwrap_or(0)) };
+    Ok(Some(crate::tm::LaunchManual {
+        state,
+        total: n("manual_total")?,
+        untested: n("manual_untested")?,
+        in_progress: n("manual_in_progress")?,
+        passed: n("manual_passed")?,
+        failed: n("manual_failed")?,
+        blocked: n("manual_blocked")?,
+        skipped: n("manual_skipped")?,
+    }))
 }
 
 /// Escapes `%`, `_` and `\` for `like`.
@@ -131,6 +160,19 @@ impl Store {
         start: &LaunchStart,
         created_by: &str,
     ) -> anyhow::Result<(Launch, bool)> {
+        self.start_launch_as(project, start, created_by, false)
+            .await
+    }
+
+    /// [`Store::start_launch`], recording whether the creating caller may update cases from
+    /// code (`cases:sync`, stored in `launches.created_by_can_sync`).
+    pub async fn start_launch_as(
+        &self,
+        project: &crate::Project,
+        start: &LaunchStart,
+        created_by: &str,
+        can_sync: bool,
+    ) -> anyhow::Result<(Launch, bool)> {
         let project_id = project.id;
         if let Some(ext) = &start.external_id
             && let Some(l) = self.launch_by_external(project_id, ext).await?
@@ -149,8 +191,8 @@ impl Store {
         let id = Uuid::now_v7();
         let inserted: Option<Uuid> = sqlx::query_scalar(
             "insert into launches (id, project_id, number, external_id, name, debug, ci, vcs, environment, \
-             attributes, branch, env_key, created_by) \
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) \
+             attributes, branch, env_key, created_by, created_by_can_sync) \
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) \
              on conflict (project_id, external_id) do nothing returning id",
         )
         .bind(id)
@@ -180,6 +222,7 @@ impl Store {
                 .map(no_nul),
         )
         .bind(no_nul(created_by))
+        .bind(can_sync)
         .fetch_optional(&mut *tx)
         .await?;
         if inserted.is_none() {

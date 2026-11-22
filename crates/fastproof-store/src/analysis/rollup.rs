@@ -300,6 +300,7 @@ impl Store {
             loop {
                 let due: Vec<Uuid> = sqlx::query_scalar(
                     "select id from launches where project_id = $1 and rolled_up_at is null \
+                     and manual_state is distinct from 'open' \
                      and created_at < now() - make_interval(days => $2) order by created_at limit 200",
                 )
                 .bind(id)
@@ -326,8 +327,10 @@ impl Store {
     }
 
     /// Drops monthly partitions (results and attempts) that end before the longest raw window
-    /// of all projects, when every launch in them is rolled up and none is kept as important.
-    /// Remaining launch rows of such a month are deleted with them.
+    /// of all projects, when every launch in them is rolled up, none is kept as important and
+    /// no manual run in them is open. Remaining launch rows of such a month are deleted with
+    /// them, except launches with a manual run: those stay (with their run items, marked
+    /// rolled up) and their run items lose the `result_id` of the dropped results.
     pub async fn drop_rolled_partitions(
         &self,
         projects: &[(Uuid, String, ProjectSettings)],
@@ -350,7 +353,7 @@ impl Store {
             let blockers: i64 = sqlx::query_scalar(
                 "select count(*) from launches l join projects p on p.id = l.project_id \
                  where l.created_at >= $1 and l.created_at < $2 and p.deleted_at is null and \
-                   ((l.rolled_up_at is null and not l.debug) or \
+                   ((l.rolled_up_at is null and not l.debug) or l.manual_state = 'open' or \
                     (l.important and coalesce((p.settings->'retention'->>'keepImportant')::boolean, true)))",
             )
             .bind(at_midnight(start))
@@ -372,11 +375,31 @@ impl Store {
                         .execute(&mut *tx)
                         .await?;
                 }
-                sqlx::query("delete from launches where created_at >= $1 and created_at < $2")
-                    .bind(at_midnight(start))
-                    .bind(at_midnight(end))
-                    .execute(&mut *tx)
-                    .await?;
+                sqlx::query(
+                    "delete from launches where created_at >= $1 and created_at < $2 \
+                     and manual_state is null",
+                )
+                .bind(at_midnight(start))
+                .bind(at_midnight(end))
+                .execute(&mut *tx)
+                .await?;
+                sqlx::query(
+                    "update run_items set result_id = null where result_id is not null and launch_id in \
+                     (select id from launches where created_at >= $1 and created_at < $2 \
+                      and manual_state is not null)",
+                )
+                .bind(at_midnight(start))
+                .bind(at_midnight(end))
+                .execute(&mut *tx)
+                .await?;
+                sqlx::query(
+                    "update launches set rolled_up_at = coalesce(rolled_up_at, now()) \
+                     where created_at >= $1 and created_at < $2 and manual_state is not null",
+                )
+                .bind(at_midnight(start))
+                .bind(at_midnight(end))
+                .execute(&mut *tx)
+                .await?;
                 Ok::<_, sqlx::Error>(())
             }
             .await;
@@ -395,11 +418,15 @@ impl Store {
         Ok(dropped)
     }
 
+    /// Launches beyond retention: without a manual run, older than `rawDays` or beyond
+    /// `launchesKeep`; with a closed manual run, older than `manualDays` when it is set.
     fn retention_candidates_sql() -> &'static str {
         "select id, created_at, count_total from launches where project_id = $1 \
-           and not (important and $2) and (created_at < now() - make_interval(days => $3) \
+           and not (important and $2) and ((manual_state is null and \
+             (created_at < now() - make_interval(days => $3) \
              or ($4::bigint is not null and id in (select id from launches where project_id = $1 \
-               and not (important and $2) order by number desc offset $4))) \
+               and not (important and $2) and manual_state is null order by number desc offset $4)))) \
+             or (manual_state = 'closed' and $6 > 0 and created_at < now() - make_interval(days => $6))) \
          order by created_at, number limit $5"
     }
 
@@ -417,6 +444,7 @@ impl Store {
                 .bind(r.raw_days as i32)
                 .bind(r.launches_keep.map(|k| k as i64))
                 .bind(100_000i64)
+                .bind(r.manual_days as i32)
                 .fetch_all(&self.pool)
                 .await?;
         let important_kept: i64 = if r.keep_important {
@@ -461,6 +489,7 @@ impl Store {
                         .bind(r.raw_days as i32)
                         .bind(r.launches_keep.map(|k| k as i64))
                         .bind(100i64)
+                        .bind(r.manual_days as i32)
                         .fetch_all(&self.pool)
                         .await?;
                 for (id, _, _) in &rows {
@@ -486,8 +515,9 @@ impl Store {
         Ok(report)
     }
 
-    /// Deletes attachment rows of a project that no launch links and that were not seen for
-    /// `grace`, and queues their blobs in `blob_deletions` (same transaction).
+    /// Deletes attachment rows of a project that no launch links, no case holds and no manual
+    /// step result references, and that were not seen for `grace`, and queues their blobs in
+    /// `blob_deletions` (same transaction).
     pub async fn queue_unreferenced_attachments(
         &self,
         project_id: Uuid,
@@ -498,6 +528,10 @@ impl Store {
             "with gone as (delete from attachments where id in (select a.id from attachments a \
                where a.project_id = $1 and a.last_seen_at < now() - make_interval(secs => $2) \
                  and not exists (select 1 from attachment_links l where l.attachment_id = a.id) \
+                 and not exists (select 1 from case_attachments c where c.attachment_id = a.id) \
+                 and not exists (select 1 from run_step_results s where s.attachment_ids @> array[a.id]) \
+                 and not exists (select 1 from attachment_refs r join run_step_results s \
+                   on s.attachment_ids @> array[r.id] where r.attachment_id = a.id) \
                order by a.last_seen_at limit $3 for update skip locked) returning blob_key) \
              insert into blob_deletions (prefix, project_id) select blob_key, null from gone",
         )

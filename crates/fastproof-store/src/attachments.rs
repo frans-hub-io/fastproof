@@ -250,8 +250,9 @@ impl Store {
         }))
     }
 
-    /// Deletes up to `batch` attachments that no launch links and that were not seen for
-    /// `grace`, and queues their blobs in `blob_deletions` (same transaction); returns how
+    /// Deletes up to `batch` attachments that no launch links, no case holds (`case_attachments`)
+    /// and no manual step result references (`run_step_results.attachment_ids`), and that were
+    /// not seen for `grace`, and queues their blobs in `blob_deletions` (same transaction); returns how
     /// many. The blobs are deleted by the purge job, which an upload of the same content
     /// cancels ([`Store::cancel_blob_deletions`]).
     pub async fn collect_attachments(&self, grace: Duration, batch: i64) -> anyhow::Result<u64> {
@@ -259,6 +260,10 @@ impl Store {
             "with gone as (delete from attachments where id in (select a.id from attachments a \
                where a.last_seen_at < now() - make_interval(secs => $1) \
                  and not exists (select 1 from attachment_links l where l.attachment_id = a.id) \
+                 and not exists (select 1 from case_attachments c where c.attachment_id = a.id) \
+                 and not exists (select 1 from run_step_results s where s.attachment_ids @> array[a.id]) \
+                 and not exists (select 1 from attachment_refs r join run_step_results s \
+                   on s.attachment_ids @> array[r.id] where r.attachment_id = a.id) \
                order by a.last_seen_at limit $2 for update skip locked) returning blob_key) \
              insert into blob_deletions (prefix, project_id) select blob_key, null from gone",
         )

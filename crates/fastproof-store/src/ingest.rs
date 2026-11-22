@@ -477,6 +477,60 @@ async fn refresh_vacated(
 /// As [`Store::persist_attempts`], inside the caller's transaction (the Kafka writer commits its
 /// consumer offset in the same transaction). Nothing is written when no attempt is new; the
 /// caller decides whether to commit.
+/// Recomputes the counters of a launch: the automated ones (and the first and last result
+/// times) from its results, the manual ones from its run items; sets `attempt_seq` when given.
+pub(crate) async fn recount(
+    conn: &mut sqlx::PgConnection,
+    launch_id: Uuid,
+    launch_created_at: chrono::DateTime<chrono::Utc>,
+    attempt_seq: Option<i64>,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "update launches l set attempt_seq = coalesce($2, l.attempt_seq), updated_at = now(), count_total = c.total, \
+           count_passed = c.passed, count_failed = c.failed, count_broken = c.broken, \
+           count_skipped = c.skipped, count_unknown = c.unknown, count_flaky = c.flaky, \
+           count_muted = c.muted, first_result_at = c.mn, last_result_at = c.mx, \
+           count_untested = m.untested, count_in_progress = m.in_progress \
+         from (select count(*)::int as total, count(*) filter (where status = 'passed')::int as passed, \
+           count(*) filter (where status = 'failed')::int as failed, \
+           count(*) filter (where status = 'broken')::int as broken, \
+           count(*) filter (where status = 'skipped')::int as skipped, \
+           count(*) filter (where status = 'unknown')::int as unknown, \
+           count(*) filter (where flaky_in_run)::int as flaky, count(*) filter (where muted)::int as muted, \
+           min(started_at) as mn, max(coalesce(stopped_at, started_at)) as mx \
+           from results where launch_id = $1 and launch_created_at = $3) c, \
+         (select count(*) filter (where status = 'untested')::int as untested, \
+           count(*) filter (where status = 'in_progress')::int as in_progress \
+           from run_items where launch_id = $1) m \
+         where l.id = $1",
+    )
+    .bind(launch_id)
+    .bind(attempt_seq)
+    .bind(launch_created_at)
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
+impl Store {
+    /// Recomputes the counters of a launch (automated from `results`, manual `count_untested`
+    /// and `count_in_progress` from `run_items`). Run it in the transaction that changed them.
+    pub async fn recount_launch(
+        conn: &mut sqlx::PgConnection,
+        launch_id: Uuid,
+    ) -> anyhow::Result<()> {
+        let created_at: Option<chrono::DateTime<chrono::Utc>> =
+            sqlx::query_scalar("select created_at from launches where id = $1")
+                .bind(launch_id)
+                .fetch_optional(&mut *conn)
+                .await?;
+        match created_at {
+            Some(at) => recount(conn, launch_id, at, None).await,
+            None => Ok(()),
+        }
+    }
+}
+
 pub async fn persist_attempts_in(
     conn: &mut sqlx::PgConnection,
     launch: &LaunchRef,
@@ -1022,26 +1076,13 @@ pub async fn persist_attempts_in(
     drop(analyzed);
     out.accepted_keys = accepted;
 
-    sqlx::query(
-            "update launches l set attempt_seq = $2, updated_at = now(), count_total = c.total, \
-               count_passed = c.passed, count_failed = c.failed, count_broken = c.broken, \
-               count_skipped = c.skipped, count_unknown = c.unknown, count_flaky = c.flaky, \
-               count_muted = c.muted, first_result_at = c.mn, last_result_at = c.mx \
-             from (select count(*)::int as total, count(*) filter (where status = 'passed')::int as passed, \
-               count(*) filter (where status = 'failed')::int as failed, \
-               count(*) filter (where status = 'broken')::int as broken, \
-               count(*) filter (where status = 'skipped')::int as skipped, \
-               count(*) filter (where status = 'unknown')::int as unknown, \
-               count(*) filter (where flaky_in_run)::int as flaky, count(*) filter (where muted)::int as muted, \
-               min(started_at) as mn, max(coalesce(stopped_at, started_at)) as mx \
-               from results where launch_id = $1 and launch_created_at = $3) c \
-             where l.id = $1",
-        )
-        .bind(launch.id)
-        .bind(seq0 + prepared.len() as i64)
-        .bind(launch.created_at)
-        .execute(&mut *conn)
-        .await?;
+    recount(
+        &mut *conn,
+        launch.id,
+        launch.created_at,
+        Some(seq0 + prepared.len() as i64),
+    )
+    .await?;
     crate::events::emit_many(
         &mut *conn,
         "result.updated",

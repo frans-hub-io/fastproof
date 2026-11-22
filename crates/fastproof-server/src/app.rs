@@ -106,6 +106,13 @@ pub fn api_router() -> (Router<AppState>, utoipa::openapi::OpenApi) {
         .routes(routes!(api::analysis::create_test_plan))
         .routes(routes!(api::analysis::testplan_json))
         .merge(uploads)
+        .merge(api::cases::router())
+        .merge(api::case_folders::router())
+        .merge(api::case_fields::router())
+        .merge(api::plans::router())
+        .merge(api::runs::router())
+        .merge(api::imports::router())
+        .merge(api::exports::router())
         .split_for_parts();
     api::type_project_settings(&mut doc);
     api::admin::document_platform(&mut doc);

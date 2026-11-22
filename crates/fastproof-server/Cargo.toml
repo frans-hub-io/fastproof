@@ -16,6 +16,7 @@ name = "fastproof"
 path = "src/main.rs"
 
 [dependencies]
+ammonia.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 axum.workspace = true
@@ -42,6 +43,7 @@ metrics.workspace = true
 metrics-exporter-prometheus.workspace = true
 rand.workspace = true
 regex.workspace = true
+pulldown-cmark.workspace = true
 ring.workspace = true
 rmcp.workspace = true
 schemars.workspace = true
@@ -64,5 +66,6 @@ utoipa-swagger-ui.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+fastproof-store = { workspace = true, features = ["test-util"] }
 tempfile.workspace = true
 zip.workspace = true

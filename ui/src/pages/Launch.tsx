@@ -1,8 +1,8 @@
-import { Accordion, ActionIcon, Anchor, Badge, Button, Card, Chip, Group, SimpleGrid, Stack, Switch, Tabs, Text, TextInput, Tooltip, UnstyledButton } from '@mantine/core';
+import { Accordion, ActionIcon, Anchor, Badge, Button, Card, Chip, Group, SegmentedControl, SimpleGrid, Stack, Switch, Tabs, Text, TextInput, Tooltip, UnstyledButton } from '@mantine/core';
 import { DonutChart } from '@mantine/charts';
 import { EmptyState, useCan } from '@franshub/ui-shell';
 import { useDebouncedValue } from '@mantine/hooks';
-import { IconAlertTriangle, IconBrandGithub, IconBrandGitlab, IconExternalLink, IconGitBranch, IconGitCommit, IconGitCompare, IconListCheck, IconSearch, IconStar, IconStarFilled, IconUpload, IconList, IconListTree } from '@tabler/icons-react';
+import { IconAlertTriangle, IconBrandGithub, IconBrandGitlab, IconExternalLink, IconGitBranch, IconGitCommit, IconGitCompare, IconHandFinger, IconListCheck, IconSearch, IconStar, IconStarFilled, IconUpload, IconList, IconListTree } from '@tabler/icons-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
 import { useProjectEvents } from '../api/events';
@@ -30,6 +30,9 @@ import { Explorer } from './launch/Explorer';
 import { TestPlanModal } from './launch/TestPlanModal';
 import { TransitionBadge } from './launch/TransitionBadge';
 import { LaunchProgress, LiveBadge } from './Launches';
+import { Manual } from './launch/Manual';
+import { ManualIcon } from './cases/common';
+import type { ResultSourceInfo, TmLaunch } from '../api/tm';
 
 function Meta({ launch }: { launch: Launch }) {
   const cUrl = commitUrl(launch.vcs, launch.ci);
@@ -242,10 +245,12 @@ function Uploads({ project, launch }: { project: string; launch: Launch }) {
 }
 
 function ResultRow({ project, r, index, selected, onHover, types }: { project: string; r: ResultSummary; index: number; selected: boolean; onHover: (i: number) => void; types: Map<string, DefectType> }) {
+  const src = r as ResultSummary & ResultSourceInfo;
+  const manualTo = src.source === 'manual' && src.runItemId ? `/p/${project}/launches/${r.launchId}/run/${src.runItemId}` : null;
   return (
     <UnstyledButton
       component={Link}
-      to={`/p/${project}/results/${r.id}`}
+      to={manualTo ?? `/p/${project}/results/${r.id}`}
       className="fp-row"
       data-selected={selected}
       data-list-index={index}
@@ -259,6 +264,7 @@ function ResultRow({ project, r, index, selected, onHover, types }: { project: s
         </div>
         <Stack gap={2} style={{ minWidth: 0, flex: 1 }}>
           <Group gap={6} wrap="nowrap" style={{ minWidth: 0 }}>
+            {src.source === 'manual' && <ManualIcon />}
             <Text size="sm" fw={600} className="fh-truncate">
               {r.name}
             </Text>
@@ -308,9 +314,10 @@ function Results({ project, launch }: { project: string; launch: Launch }) {
   const [debounced] = useDebouncedValue(text, 300);
   const flaky = sp.get('flaky') === 'true';
   const label = sp.get('label') ?? '';
+  const source = sp.get('source') ?? '';
   const filters: ResultFilters = useMemo(
-    () => ({ status: statusParam || undefined, q: debounced || undefined, flaky: flaky || undefined, label: label || undefined }),
-    [statusParam, debounced, flaky, label],
+    () => ({ status: statusParam || undefined, q: debounced || undefined, flaky: flaky || undefined, label: label || undefined, source: source || undefined }),
+    [statusParam, debounced, flaky, label, source],
   );
   const q = useResults(project, launch.id, filters);
   const types = useDefectTypeMap(project);
@@ -361,6 +368,20 @@ function Results({ project, launch }: { project: string; launch: Launch }) {
           </Group>
         </Chip.Group>
         <Switch size="xs" label={`Flaky only (${String(c.flaky)})`} checked={flaky} onChange={(e) => set('flaky', e.currentTarget.checked ? 'true' : null)} />
+        {(launch as TmLaunch).manual && (
+          <SegmentedControl
+            size="xs"
+            value={source || 'all'}
+            onChange={(v) => set('source', v === 'manual' || v === 'automated' ? v : null)}
+            data={[
+              { value: 'all', label: 'All' },
+              { value: 'automated', label: 'Automated' },
+              { value: 'manual', label: 'Manual' },
+            ]}
+            aria-label="Result source"
+            data-testid="source-filter"
+          />
+        )}
       </Group>
       <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="xs">
         <TextInput aria-label="Search results" placeholder="Search by name or error" leftSection={<IconSearch size={16} />} value={text} onChange={(e) => setText(e.currentTarget.value)} />
@@ -502,6 +523,11 @@ export default function LaunchPage() {
                   <Tabs.Tab value="logs" leftSection={l.status === 'running' ? <span className="fp-live-dot" aria-hidden /> : undefined} data-testid="tab-logs">
                     {l.status === 'running' ? 'Live' : 'Logs'}
                   </Tabs.Tab>
+                  {(l as TmLaunch).manual && (
+                    <Tabs.Tab value="manual" leftSection={<IconHandFinger size={14} />} data-testid="tab-manual">
+                      Manual
+                    </Tabs.Tab>
+                  )}
                 </Tabs.List>
                 <Tabs.Panel value="explorer" pt="md">
                   <Explorer project={key} launch={l} />
@@ -514,6 +540,9 @@ export default function LaunchPage() {
                 </Tabs.Panel>
                 <Tabs.Panel value="logs" pt="md">
                   <LaunchLogs project={key} launch={l} />
+                </Tabs.Panel>
+                <Tabs.Panel value="manual" pt="md">
+                  <Manual project={key} launch={l} />
                 </Tabs.Panel>
               </Tabs>
             </Stack>

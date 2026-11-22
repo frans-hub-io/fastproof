@@ -168,6 +168,8 @@ export function useSettings(key: string) {
 
 export function withSettingsDefaults(s: Partial<ProjectSettings>): ProjectSettings {
   return {
+    // Areas this UI does not edit (stage 2a `caseSync`, newer server keys) travel back unchanged on save.
+    ...s,
     flaky: { historyDepth: 10, stabilizationPeriod: 5, includePassedTests: false, ...s.flaky },
     retention: { rawDays: 90, keepImportant: true, ...s.retention },
     rollup: { afterDays: 30, ...s.rollup },

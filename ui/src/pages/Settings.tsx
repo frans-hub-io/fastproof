@@ -86,7 +86,7 @@ function GeneralForm({ project, settings, canWrite }: { project: string; setting
       {
         ...settings,
         flaky: { historyDepth: d ?? 10, stabilizationPeriod: toInt(stab) ?? 0, includePassedTests: includePassed },
-        retention: { rawDays: toInt(rawDays) ?? 90, keepImportant, ...(launchesKeep === null ? {} : { launchesKeep }) },
+        retention: { ...settings.retention, rawDays: toInt(rawDays) ?? 90, keepImportant, launchesKeep: launchesKeep ?? undefined },
         rollup: { afterDays: toInt(rollup) ?? 30 },
       },
       'General settings',

@@ -114,6 +114,7 @@ export function resultQuery(filters: ResultFilters) {
     label: filters.label,
     flaky: filters.flaky === undefined ? undefined : String(filters.flaky),
     fingerprint: filters.fingerprint,
+    source: filters.source,
   };
 }
 

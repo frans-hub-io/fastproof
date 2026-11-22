@@ -147,6 +147,13 @@ pub(crate) async fn recount_muted(
     let mut ids = launches.to_vec();
     ids.sort();
     ids.dedup();
+    // Locked first, so the count below sees every committed change: manual writes add their
+    // change of `count_muted` to the launch row and hold it until their commit, and a count
+    // taken before waiting for them would overwrite it.
+    sqlx::query("select 1 from launches where id = any($1) order by id for no key update")
+        .bind(&ids)
+        .execute(&mut *conn)
+        .await?;
     sqlx::query(
         "update launches l set count_muted = (select count(*) from results r \
            where r.launch_id = l.id and r.launch_created_at = l.created_at and r.muted), updated_at = now() \

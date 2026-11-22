@@ -2,9 +2,13 @@
 //! results, status changes with their projection into `results` (`projection.rs`), reruns,
 //! closing and reopening the manual part of a launch, and the manual report.
 //!
-//! Locks: a change of a run item locks the launch row first (`for update` when counters or
-//! results change, `for share` for a plain step write of an item in progress), then the item
-//! row, so writers of one launch never wait on each other in opposite orders.
+//! Locks: a change of a run item locks the item row, then (through the projection) its result
+//! row, and touches the launch row only at the end, in one short update that applies the
+//! change of the launch counters ([`super::projection::apply_launch_changes`]). A step write
+//! of an item in progress does not touch the launch row at all, so testers of one launch wait
+//! only for writers of the same item. Adding items locks the launch row first and only
+//! inserts items; closing with `skipped` locks every item before the launch row; ingest locks
+//! the launch row first and never touches manual rows. So no two of them wait in a cycle.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -19,6 +23,7 @@ use uuid::Uuid;
 
 use super::identity::manual_hash;
 use super::lookup::case_version_snapshot;
+use super::projection::{CountDelta, Projected};
 use super::{
     AttachmentRef, CaseSnapshot, CaseStep, LaunchManual, ManualState, ManualUntestedTo, RunItem,
     RunItemExecution, RunItemPatch, RunItemSkip, RunItemSkipCode, RunItemSummary, RunItemsAdd,
@@ -677,6 +682,9 @@ fn step_result_of(
 /// Skipped cases listed in the answer of `add_run_items`, at most.
 pub const MAX_SKIPS_LISTED: usize = 1000;
 
+/// Tries of closing a manual run while items are being added to it.
+const CLOSE_ATTEMPTS: usize = 5;
+
 /// Earlier executions of a run item kept at most per read.
 pub const MAX_EXECUTIONS_PAGE: i64 = 100;
 
@@ -720,18 +728,20 @@ pub async fn item_brief(
     }))
 }
 
-/// Locks the launch of a run (`exclusive`: `for update`, else `for share`) and answers 409
-/// `manual_run_closed` when the manual run is closed. Returns the launch reference.
-async fn lock_open_launch(
+/// Reads the launch of a run (`lock`: `for update`) and answers 409 `manual_run_closed` when
+/// the manual run is closed. Returns the launch reference. Without `lock`, read it after
+/// locking the item: a close that changed the item has committed by then; a change of the
+/// counters re-checks the state race-free in `apply_launch_changes`.
+async fn open_launch(
     conn: &mut PgConnection,
     project: &Project,
     launch_id: Uuid,
-    exclusive: bool,
+    lock: bool,
 ) -> TmResult<LaunchRef> {
-    let sql = if exclusive {
+    let sql = if lock {
         "select created_at, manual_state from launches where id = $1 and project_id = $2 for update"
     } else {
-        "select created_at, manual_state from launches where id = $1 and project_id = $2 for share"
+        "select created_at, manual_state from launches where id = $1 and project_id = $2"
     };
     let row: Option<(DateTime<Utc>, Option<String>)> = sqlx::query_as(sql)
         .bind(launch_id)
@@ -748,6 +758,26 @@ async fn lock_open_launch(
         project_key: project.key.clone(),
         created_at,
     })
+}
+
+/// Applies the launch side of an item change last in its transaction (see
+/// [`super::projection::apply_launch_changes`]); 409 `manual_run_closed` when the manual run
+/// was closed meanwhile.
+async fn finish_launch(conn: &mut PgConnection, launch: &LaunchRef, p: &Projected) -> TmResult<()> {
+    if super::projection::apply_launch_changes(
+        conn,
+        launch,
+        &p.delta,
+        &p.new_attempts,
+        &p.rule_hits,
+        true,
+    )
+    .await?
+    {
+        Ok(())
+    } else {
+        Err(closed())
+    }
 }
 
 fn closed() -> TmError {
@@ -853,7 +883,7 @@ impl Store {
             _ => None,
         };
         let mut tx = self.pool.begin().await?;
-        let launch = lock_open_launch(&mut tx, project, launch_id, true).await?;
+        let launch = open_launch(&mut tx, project, launch_id, true).await?;
         let mut wanted: BTreeMap<Uuid, Option<String>> = BTreeMap::new();
         let mut skips: Vec<RunItemSkip> = Vec::new();
         let mut skipped_automated = 0i64;
@@ -1146,10 +1176,9 @@ impl Store {
 
     /// Writes the result of one step (last writer wins; writing the same value again changes
     /// nothing but `updatedAt`). An untested item becomes `in_progress`; an item with a final
-    /// status is projected again so its steps stay current (under the exclusive launch lock).
-    /// Other writes hold the launch row only `for share`, so testers of one launch do not wait
-    /// for each other; the `launches.count_untested`/`count_in_progress` columns (not read by
-    /// the API, which counts `run_items`) are refreshed by the next recount.
+    /// status is projected again so its steps stay current. Only the item row is locked; the
+    /// launch row is updated (at the end) only when the launch counters change: the first step
+    /// of an execution, or a projection that changes the counted columns of the result.
     #[allow(clippy::too_many_arguments)]
     pub async fn put_run_step(
         &self,
@@ -1185,88 +1214,82 @@ impl Store {
             .await?
             .ok_or(TmError::NotFound("run item"))?;
         drop(conn);
-        let mut exclusive = brief.status.is_final();
-        for _ in 0..3 {
-            let mut tx = self.pool.begin().await?;
-            let launch = lock_open_launch(&mut tx, project, brief.launch_id, exclusive).await?;
-            let item = lock_item(&mut tx, item_id).await?;
-            let needs = item.status.is_final();
-            if needs && !exclusive {
-                tx.rollback().await?;
-                exclusive = true;
-                continue;
-            }
-            let snapshot =
-                executed_snapshot(&mut tx, project.id, item.case_id, item.case_version).await?;
-            if step_at(&snapshot.body.steps, path).is_none() {
-                return Err(TmError::NotFound("step"));
-            }
-            if let Some(ids) = &attachments
-                && !ids.is_empty()
-            {
-                let n: i64 = sqlx::query_scalar(
-                    "select count(*) from attachments where project_id = $1 and id = any($2)",
-                )
-                .bind(project.id)
-                .bind(ids)
-                .fetch_one(&mut *tx)
-                .await?;
-                if n as usize != ids.len() {
-                    return Err(TmError::NotFound("attachment"));
-                }
-            }
-            sqlx::query(
-                "insert into run_step_results (run_item_id, execution_no, step_path, status, actual, comment, \
-                   attachment_ids, updated_by, updated_at) \
-                 values ($1, $8, $2, $3, coalesce($4, ''), coalesce($5, ''), coalesce($6, '{}'::uuid[]), $7, now()) \
-                 on conflict (run_item_id, execution_no, step_path) do update set status = excluded.status, \
-                   actual = coalesce($4, run_step_results.actual), comment = coalesce($5, run_step_results.comment), \
-                   attachment_ids = coalesce($6, run_step_results.attachment_ids), \
-                   updated_by = excluded.updated_by, updated_at = now()",
+        if brief.manual_state == Some(ManualState::Closed) {
+            return Err(closed());
+        }
+        let mut tx = self.pool.begin().await?;
+        let item = lock_item(&mut tx, item_id).await?;
+        let launch = open_launch(&mut tx, project, brief.launch_id, false).await?;
+        let snapshot =
+            executed_snapshot(&mut tx, project.id, item.case_id, item.case_version).await?;
+        if step_at(&snapshot.body.steps, path).is_none() {
+            return Err(TmError::NotFound("step"));
+        }
+        if let Some(ids) = &attachments
+            && !ids.is_empty()
+        {
+            let n: i64 = sqlx::query_scalar(
+                "select count(*) from attachments where project_id = $1 and id = any($2)",
             )
-            .bind(item_id)
-            .bind(path)
-            .bind(w.status.as_str())
-            .bind(w.actual.as_deref().map(no_nul))
-            .bind(w.comment.as_deref().map(no_nul))
-            .bind(attachments.as_deref())
-            .bind(no_nul(by))
-            .bind(item.execution_no)
-            .execute(&mut *tx)
-            .await?;
-            let starts = item.status == RunStatus::Untested;
-            let (status, revision): (String, i64) = sqlx::query_as(
-                "update run_items set status = case when $2 then 'in_progress' else status end, \
-                   started_at = case when $2 then coalesce(started_at, now()) else started_at end, \
-                   executed_by = case when $2 then $3 else executed_by end, \
-                   revision = revision + 1, updated_at = now() \
-                 where id = $1 returning status, revision",
-            )
-            .bind(item_id)
-            .bind(starts)
-            .bind(no_nul(by))
+            .bind(project.id)
+            .bind(ids)
             .fetch_one(&mut *tx)
             .await?;
-            let status = RunStatus::parse(&status).unwrap_or(RunStatus::InProgress);
-            if item.status.is_final() {
-                super::projection::project_run_items(&mut tx, &launch, &[item_id]).await?;
-            } else if starts {
-                manual_changed(&mut tx, &project.key, launch.id).await?;
+            if n as usize != ids.len() {
+                return Err(TmError::NotFound("attachment"));
             }
-            let paths = step_paths(&snapshot.body.steps);
-            let results = step_statuses(&mut tx, item_id).await?;
-            let suggested = suggested_status(&paths, &results);
-            item_changed(&mut tx, &project.key, launch.id, item_id, status, revision).await?;
-            tx.commit().await?;
-            return Ok(RunStepAck {
-                item_status: status,
-                suggested_status: suggested,
-                revision,
-            });
         }
-        Err(TmError::Other(anyhow::anyhow!(
-            "the run item kept changing while its step was written"
-        )))
+        sqlx::query(
+            "insert into run_step_results (run_item_id, execution_no, step_path, status, actual, comment, \
+               attachment_ids, updated_by, updated_at) \
+             values ($1, $8, $2, $3, coalesce($4, ''), coalesce($5, ''), coalesce($6, '{}'::uuid[]), $7, now()) \
+             on conflict (run_item_id, execution_no, step_path) do update set status = excluded.status, \
+               actual = coalesce($4, run_step_results.actual), comment = coalesce($5, run_step_results.comment), \
+               attachment_ids = coalesce($6, run_step_results.attachment_ids), \
+               updated_by = excluded.updated_by, updated_at = now()",
+        )
+        .bind(item_id)
+        .bind(path)
+        .bind(w.status.as_str())
+        .bind(w.actual.as_deref().map(no_nul))
+        .bind(w.comment.as_deref().map(no_nul))
+        .bind(attachments.as_deref())
+        .bind(no_nul(by))
+        .bind(item.execution_no)
+        .execute(&mut *tx)
+        .await?;
+        let starts = item.status == RunStatus::Untested;
+        let (status, revision): (String, i64) = sqlx::query_as(
+            "update run_items set status = case when $2 then 'in_progress' else status end, \
+               started_at = case when $2 then coalesce(started_at, now()) else started_at end, \
+               executed_by = case when $2 then $3 else executed_by end, \
+               revision = revision + 1, updated_at = now() \
+             where id = $1 returning status, revision",
+        )
+        .bind(item_id)
+        .bind(starts)
+        .bind(no_nul(by))
+        .fetch_one(&mut *tx)
+        .await?;
+        let status = RunStatus::parse(&status).unwrap_or(RunStatus::InProgress);
+        let mut projected = Projected::default();
+        if item.status.is_final() {
+            projected = super::projection::project_run_items(&mut tx, &launch, &[item_id]).await?;
+        } else if starts {
+            projected.delta = CountDelta::item_change(item.status, status);
+            manual_changed(&mut tx, &project.key, launch.id).await?;
+        }
+        let paths = step_paths(&snapshot.body.steps);
+        let results = step_statuses(&mut tx, item_id).await?;
+        let suggested = suggested_status(&paths, &results);
+        item_changed(&mut tx, &project.key, launch.id, item_id, status, revision).await?;
+        finish_launch(&mut tx, &launch, &projected).await?;
+        tx.commit().await?;
+        Ok(RunStepAck {
+            item_status: status,
+            suggested_status: suggested,
+            revision,
+        })
     }
 
     /// Changes the status, comment or assignee of an item at `revision`; a final status is
@@ -1301,9 +1324,12 @@ impl Store {
             .await?
             .ok_or(TmError::NotFound("run item"))?;
         drop(conn);
+        if brief.manual_state == Some(ManualState::Closed) {
+            return Err(closed());
+        }
         let mut tx = self.pool.begin().await?;
-        let launch = lock_open_launch(&mut tx, project, brief.launch_id, true).await?;
         let item = lock_item(&mut tx, item_id).await?;
+        let launch = open_launch(&mut tx, project, brief.launch_id, false).await?;
         if item.revision != revision {
             return Err(TmError::Stale {
                 current_revision: item.revision,
@@ -1359,11 +1385,13 @@ impl Store {
         .bind(no_nul(by))
         .fetch_one(&mut *tx)
         .await?;
+        let mut projected = Projected::default();
         if item.status.is_final() || new_status.is_final() {
-            super::projection::project_run_items(&mut tx, &launch, &[item_id]).await?;
-        } else if status_changed {
-            Store::recount_launch(&mut tx, launch.id).await?;
+            projected = super::projection::project_run_items(&mut tx, &launch, &[item_id]).await?;
         }
+        projected
+            .delta
+            .add(&CountDelta::item_change(item.status, new_status));
         if status_changed {
             manual_changed(&mut tx, &project.key, launch.id).await?;
         }
@@ -1376,6 +1404,7 @@ impl Store {
             revision,
         )
         .await?;
+        finish_launch(&mut tx, &launch, &projected).await?;
         tx.commit().await?;
         Ok(RunItemChange {
             launch_id: launch.id,
@@ -1405,9 +1434,12 @@ impl Store {
             .await?
             .ok_or(TmError::NotFound("run item"))?;
         drop(conn);
+        if brief.manual_state == Some(ManualState::Closed) {
+            return Err(closed());
+        }
         let mut tx = self.pool.begin().await?;
-        let launch = lock_open_launch(&mut tx, project, brief.launch_id, true).await?;
         let item = lock_item(&mut tx, item_id).await?;
+        let launch = open_launch(&mut tx, project, brief.launch_id, false).await?;
         if item.revision != revision {
             return Err(TmError::Stale {
                 current_revision: item.revision,
@@ -1440,7 +1472,6 @@ impl Store {
         .bind(item_id)
         .fetch_one(&mut *tx)
         .await?;
-        Store::recount_launch(&mut tx, launch.id).await?;
         manual_changed(&mut tx, &project.key, launch.id).await?;
         item_changed(
             &mut tx,
@@ -1451,6 +1482,11 @@ impl Store {
             revision,
         )
         .await?;
+        let projected = Projected {
+            delta: CountDelta::item_change(item.status, RunStatus::Untested),
+            ..Default::default()
+        };
+        finish_launch(&mut tx, &launch, &projected).await?;
         tx.commit().await?;
         Ok(RunItemChange {
             launch_id: launch.id,
@@ -1602,25 +1638,45 @@ impl Store {
         launch_id: Uuid,
         untested_to: ManualUntestedTo,
     ) -> TmResult<ManualCloseOutcome> {
+        for _ in 0..CLOSE_ATTEMPTS {
+            if let Some(out) = self.close_once(project, launch_id, untested_to).await? {
+                return Ok(out);
+            }
+        }
+        Err(TmError::Other(anyhow::anyhow!(
+            "items kept being added to the run while it was closed"
+        )))
+    }
+
+    /// One try of [`Store::close_manual_run`]; `None` when items were added meanwhile (rolled
+    /// back). With `skipped`, every item is locked first (item writers lock the item first
+    /// and the launch row last), so the items to skip are the ones open after every running
+    /// item change; then the launch row is locked, the state checked again, and items added
+    /// in between (adding locks the launch row) make it start over.
+    async fn close_once(
+        &self,
+        project: &Project,
+        launch_id: Uuid,
+        untested_to: ManualUntestedTo,
+    ) -> TmResult<Option<ManualCloseOutcome>> {
         let mut tx = self.pool.begin().await?;
-        let row: Option<(DateTime<Utc>, Option<String>, String)> = sqlx::query_as(
-            "select created_at, manual_state, status from launches where id = $1 and project_id = $2 for update",
+        let state_of = |state: Option<&str>| match state {
+            Some("open") => Ok(()),
+            Some(_) => Err(closed()),
+            None => Err(TmError::conflict(
+                "no_manual_run",
+                "the launch has no manual run",
+            )),
+        };
+        let row: Option<(DateTime<Utc>, Option<String>)> = sqlx::query_as(
+            "select created_at, manual_state from launches where id = $1 and project_id = $2",
         )
         .bind(launch_id)
         .bind(project.id)
         .fetch_optional(&mut *tx)
         .await?;
-        let (created_at, state, status) = row.ok_or(TmError::NotFound("launch"))?;
-        match state.as_deref() {
-            Some("open") => {}
-            Some(_) => return Err(closed()),
-            None => {
-                return Err(TmError::conflict(
-                    "no_manual_run",
-                    "the launch has no manual run",
-                ));
-            }
-        }
+        let (created_at, state) = row.ok_or(TmError::NotFound("launch"))?;
+        state_of(state.as_deref())?;
         let launch = LaunchRef {
             id: launch_id,
             project_id: project.id,
@@ -1628,7 +1684,16 @@ impl Store {
             created_at,
         };
         let mut out = ManualCloseOutcome::default();
+        let mut projected = Projected::default();
+        let mut locked = None;
         if untested_to == ManualUntestedTo::Skipped {
+            let all: Vec<Uuid> = sqlx::query_scalar(
+                "select id from run_items where launch_id = $1 order by id for update",
+            )
+            .bind(launch_id)
+            .fetch_all(&mut *tx)
+            .await?;
+            locked = Some(all.len() as i64);
             let ids: Vec<Uuid> = sqlx::query_scalar(
                 "update run_items set status = 'skipped', started_at = coalesce(started_at, now()), \
                    finished_at = now(), revision = revision + 1, updated_at = now() \
@@ -1639,9 +1704,36 @@ impl Store {
             .await?;
             out.skipped = ids.len() as i64;
             for chunk in ids.chunks(1000) {
-                super::projection::project_run_items(&mut tx, &launch, chunk).await?;
+                projected
+                    .merge(super::projection::project_run_items(&mut tx, &launch, chunk).await?);
             }
         }
+        let (state, status): (Option<String>, String) =
+            sqlx::query_as("select manual_state, status from launches where id = $1 for update")
+                .bind(launch_id)
+                .fetch_one(&mut *tx)
+                .await?;
+        state_of(state.as_deref())?;
+        if let Some(n) = locked {
+            let now: i64 =
+                sqlx::query_scalar("select count(*) from run_items where launch_id = $1")
+                    .bind(launch_id)
+                    .fetch_one(&mut *tx)
+                    .await?;
+            if now != n {
+                tx.rollback().await?;
+                return Ok(None);
+            }
+        }
+        super::projection::apply_launch_changes(
+            &mut tx,
+            &launch,
+            &CountDelta::default(),
+            &projected.new_attempts,
+            &projected.rule_hits,
+            false,
+        )
+        .await?;
         sqlx::query(
             "update launches set manual_state = 'closed', updated_at = now() where id = $1",
         )
@@ -1691,7 +1783,7 @@ impl Store {
         Store::recount_launch(&mut tx, launch_id).await?;
         manual_changed(&mut tx, &project.key, launch_id).await?;
         tx.commit().await?;
-        Ok(out)
+        Ok(Some(out))
     }
 
     /// Reopens a closed manual run.

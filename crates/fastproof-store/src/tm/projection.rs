@@ -1,5 +1,5 @@
 //! Projection of run items into `results` and `attempts`, in the transaction that changed the
-//! items (the caller holds the launch row lock).
+//! items (the caller holds the item rows).
 //!
 //! A final status (`passed`, `failed`, `blocked`, `skipped`) upserts one result on the series
 //! of the case's manual identity (`run_item_id`; labels `manual=true`, `case=TC-<n>`,
@@ -7,8 +7,16 @@
 //! per execution (`client_key = 'manual:<item>:<execution_no>'`, `steps_z` in the shape the
 //! UI's step tree reads). Going back to `untested`/`in_progress` removes the attempt of the
 //! current execution; the result goes with its last attempt, or shows the previous execution.
-//! Then the analysis hook runs on the affected series (manual series are never flaky) and the
-//! launch counters are recounted.
+//! Then the analysis hook runs on the affected series (manual series are never flaky).
+//!
+//! The projection does not touch the launch row: it returns what the launch row needs (the
+//! change of its counters, the attempts waiting for a `seq`, the rule hits), and the caller
+//! applies it with [`apply_launch_changes`] as the last step of its transaction, so the
+//! launch row is locked only from that update to the commit.
+//!
+//! Lock order of manual writes: the run item, then its result row, then the launch row, then
+//! rule rows. Ingest locks the launch row first and never touches manual rows, and
+//! `recount_muted` locks results before launches, so neither waits in a cycle with them.
 
 use std::collections::{HashMap, HashSet};
 
@@ -22,7 +30,7 @@ use uuid::Uuid;
 
 use super::runs::{FOLDER_PATH_SQL, attachment_refs, executed_snapshot};
 use super::{AttachmentRef, CaseSnapshot, CaseStep, RunStatus, StepStatus};
-use crate::ingest::{LaunchRef, recount};
+use crate::ingest::LaunchRef;
 use crate::{codec, json_no_nul, no_nul};
 
 /// Characters of a projected message, at most.
@@ -172,6 +180,207 @@ fn message_of(comment: &str, steps: &HashMap<String, StepRes>) -> Option<String>
     ))
 }
 
+/// A change of the launch counters (`launches.count_*`), applied by [`apply_launch_changes`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CountDelta {
+    pub total: i32,
+    pub passed: i32,
+    pub failed: i32,
+    pub broken: i32,
+    pub skipped: i32,
+    pub unknown: i32,
+    pub flaky: i32,
+    pub muted: i32,
+    pub untested: i32,
+    pub in_progress: i32,
+}
+
+/// The columns of a result row the launch counters count.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CountedResult {
+    pub status: String,
+    pub flaky_in_run: bool,
+    pub muted: bool,
+}
+
+impl CountDelta {
+    pub fn is_zero(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Adds (`sign` 1) or removes (`sign` -1) one result row, as the recount counts it.
+    pub fn add_result(&mut self, r: &CountedResult, sign: i32) {
+        self.total += sign;
+        match r.status.as_str() {
+            "passed" => self.passed += sign,
+            "failed" => self.failed += sign,
+            "broken" => self.broken += sign,
+            "skipped" => self.skipped += sign,
+            "unknown" => self.unknown += sign,
+            _ => {}
+        }
+        if r.flaky_in_run {
+            self.flaky += sign;
+        }
+        if r.muted {
+            self.muted += sign;
+        }
+    }
+
+    /// Adds (`sign` 1) or removes (`sign` -1) one run item, as the recount counts it.
+    pub fn add_item(&mut self, s: RunStatus, sign: i32) {
+        match s {
+            RunStatus::Untested => self.untested += sign,
+            RunStatus::InProgress => self.in_progress += sign,
+            _ => {}
+        }
+    }
+
+    /// The change of a result row from `before` to `after` (`None` = no row).
+    pub fn result_change(before: Option<&CountedResult>, after: Option<&CountedResult>) -> Self {
+        let mut d = Self::default();
+        if let Some(b) = before {
+            d.add_result(b, -1);
+        }
+        if let Some(a) = after {
+            d.add_result(a, 1);
+        }
+        d
+    }
+
+    /// The change of a run item's status.
+    pub fn item_change(old: RunStatus, new: RunStatus) -> Self {
+        let mut d = Self::default();
+        d.add_item(old, -1);
+        d.add_item(new, 1);
+        d
+    }
+
+    pub fn add(&mut self, o: &Self) {
+        self.total += o.total;
+        self.passed += o.passed;
+        self.failed += o.failed;
+        self.broken += o.broken;
+        self.skipped += o.skipped;
+        self.unknown += o.unknown;
+        self.flaky += o.flaky;
+        self.muted += o.muted;
+        self.untested += o.untested;
+        self.in_progress += o.in_progress;
+    }
+}
+
+/// What a projection leaves for the launch row (see [`apply_launch_changes`]).
+#[derive(Clone, Debug, Default)]
+pub struct Projected {
+    /// The change of the counters from the projected result rows.
+    pub delta: CountDelta,
+    /// Attempts inserted with the provisional `seq` 0, in projection order.
+    pub new_attempts: Vec<Uuid>,
+    /// Rule hits of the analysis hook, not added yet.
+    pub rule_hits: HashMap<Uuid, i64>,
+}
+
+impl Projected {
+    pub fn merge(&mut self, o: Projected) {
+        self.delta.add(&o.delta);
+        self.new_attempts.extend(o.new_attempts);
+        for (k, v) in o.rule_hits {
+            *self.rule_hits.entry(k).or_default() += v;
+        }
+    }
+}
+
+/// Applies the launch side of manual writes with one update of the launch row: adds `delta`
+/// to the counters and gives the new attempts their `seq` (in order, after every `seq` handed
+/// out so far); then adds the rule hits. With `open_only`, nothing changes and `false` comes
+/// back when the manual run is not open: the update waits for a concurrent close and then
+/// sees its result, so the check has no race. Run it last before the commit: the launch row
+/// stays locked until then, which also keeps `seq` in commit order.
+pub async fn apply_launch_changes(
+    conn: &mut PgConnection,
+    launch: &LaunchRef,
+    delta: &CountDelta,
+    new_attempts: &[Uuid],
+    rule_hits: &HashMap<Uuid, i64>,
+    open_only: bool,
+) -> anyhow::Result<bool> {
+    if !delta.is_zero() || !new_attempts.is_empty() {
+        let n = new_attempts.len() as i64;
+        let seq_end: Option<i64> = sqlx::query_scalar(
+            "update launches set attempt_seq = attempt_seq + $2, count_total = count_total + $3, \
+               count_passed = count_passed + $4, count_failed = count_failed + $5, \
+               count_broken = count_broken + $6, count_skipped = count_skipped + $7, \
+               count_unknown = count_unknown + $8, count_flaky = count_flaky + $9, \
+               count_muted = count_muted + $10, count_untested = count_untested + $11, \
+               count_in_progress = count_in_progress + $12, updated_at = now() \
+             where id = $1 and (not $13 or manual_state = 'open') returning attempt_seq",
+        )
+        .bind(launch.id)
+        .bind(n)
+        .bind(delta.total)
+        .bind(delta.passed)
+        .bind(delta.failed)
+        .bind(delta.broken)
+        .bind(delta.skipped)
+        .bind(delta.unknown)
+        .bind(delta.flaky)
+        .bind(delta.muted)
+        .bind(delta.untested)
+        .bind(delta.in_progress)
+        .bind(open_only)
+        .fetch_optional(&mut *conn)
+        .await?;
+        let Some(seq_end) = seq_end else {
+            return Ok(false);
+        };
+        if n > 0 {
+            sqlx::query(
+                "update attempts a set seq = $3 + t.o from unnest($1::uuid[]) with ordinality as t(i, o) \
+                 where a.id = t.i and a.launch_created_at = $2",
+            )
+            .bind(new_attempts)
+            .bind(launch.created_at)
+            .bind(seq_end - n)
+            .execute(&mut *conn)
+            .await?;
+        }
+    }
+    crate::analysis::rules::add_hits(conn, rule_hits).await?;
+    Ok(true)
+}
+
+/// The counted columns of result rows by id.
+async fn counted_results(
+    conn: &mut PgConnection,
+    launch: &LaunchRef,
+    ids: &[Uuid],
+) -> sqlx::Result<HashMap<Uuid, CountedResult>> {
+    if ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let rows: Vec<(Uuid, String, bool, bool)> = sqlx::query_as(
+        "select id, status, flaky_in_run, muted from results where id = any($1) and launch_created_at = $2",
+    )
+    .bind(ids)
+    .bind(launch.created_at)
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, status, flaky_in_run, muted)| {
+            (
+                id,
+                CountedResult {
+                    status,
+                    flaky_in_run,
+                    muted,
+                },
+            )
+        })
+        .collect())
+}
+
 struct ItemRow {
     id: Uuid,
     case_id: Uuid,
@@ -189,36 +398,16 @@ struct ItemRow {
     folder_path: Vec<String>,
 }
 
-/// Projects one run item (the caller holds the lock of its launch row).
-pub async fn project_run_item(conn: &mut PgConnection, item_id: Uuid) -> anyhow::Result<()> {
-    let row: Option<(Uuid, Uuid, DateTime<Utc>, String)> = sqlx::query_as(
-        "select l.id, l.project_id, l.created_at, p.key from run_items ri join launches l on l.id = ri.launch_id \
-         join projects p on p.id = l.project_id where ri.id = $1",
-    )
-    .bind(item_id)
-    .fetch_optional(&mut *conn)
-    .await?;
-    let Some((id, project_id, created_at, project_key)) = row else {
-        return Ok(());
-    };
-    let launch = LaunchRef {
-        id,
-        project_id,
-        project_key,
-        created_at,
-    };
-    project_run_items(conn, &launch, &[item_id]).await
-}
-
-/// Projects run items of one launch (the caller holds the lock of the launch row), then
-/// recounts the launch.
+/// Projects run items of one launch (the caller holds the item rows) and returns what the
+/// launch row needs; the caller passes it to [`apply_launch_changes`].
 pub async fn project_run_items(
     conn: &mut PgConnection,
     launch: &LaunchRef,
     item_ids: &[Uuid],
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Projected> {
+    let mut out = Projected::default();
     if item_ids.is_empty() {
-        return Ok(());
+        return Ok(out);
     }
     let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
         "select ri.id, ri.case_id, ri.case_version, ri.series_id, s.test_case_id, ri.status, ri.execution_no, \
@@ -257,16 +446,31 @@ pub async fn project_run_items(
     let mut series_all: Vec<Uuid> = items.iter().map(|i| i.series_id).collect();
     series_all.sort();
     series_all.dedup();
-    let existing: HashMap<Uuid, Uuid> = sqlx::query_as::<_, (Uuid, Uuid)>(
-        "select series_id, id from results where launch_id = $1 and launch_created_at = $2 and series_id = any($3)",
+    // Locked, so the counted columns read here are what this transaction changes them from
+    // (a concurrent mute waits, and recounts after the commit).
+    let existing_rows: Vec<(Uuid, Uuid, String, bool, bool)> = sqlx::query_as(
+        "select series_id, id, status, flaky_in_run, muted from results \
+         where launch_id = $1 and launch_created_at = $2 and series_id = any($3) order by id for update",
     )
     .bind(launch.id)
     .bind(launch.created_at)
     .bind(&series_all)
     .fetch_all(&mut *conn)
-    .await?
-    .into_iter()
-    .collect();
+    .await?;
+    let mut existing: HashMap<Uuid, Uuid> = HashMap::new();
+    let mut before: HashMap<Uuid, CountedResult> = HashMap::new();
+    for (series_id, id, status, flaky_in_run, muted) in existing_rows {
+        existing.insert(series_id, id);
+        before.insert(
+            id,
+            CountedResult {
+                status,
+                flaky_in_run,
+                muted,
+            },
+        );
+    }
+    let mut touched: Vec<Uuid> = before.keys().copied().collect();
 
     let mut updated_events = Vec::new();
     let mut stored_events = Vec::new();
@@ -311,22 +515,11 @@ pub async fn project_run_items(
                 );
             }
         }
-        let n = finals.len() as i64;
-        let seq_end: i64 = sqlx::query_scalar(
-            "update launches set attempt_seq = attempt_seq + $2 where id = $1 returning attempt_seq",
-        )
-        .bind(launch.id)
-        .bind(n)
-        .fetch_one(&mut *conn)
-        .await?;
-        let seq0 = seq_end - n;
-
         let mut a = (
             Vec::<Uuid>::new(),
             Vec::<Uuid>::new(),
             Vec::<Uuid>::new(),
             Vec::<String>::new(),
-            Vec::<i64>::new(),
             Vec::<String>::new(),
             Vec::<String>::new(),
         );
@@ -350,7 +543,7 @@ pub async fn project_run_items(
             Vec::<Uuid>::new(),
             Vec::<Option<serde_json::Value>>::new(),
         );
-        for (k, i) in finals.iter().enumerate() {
+        for i in &finals {
             let snap = &snapshots[&(i.case_id, i.case_version)];
             let empty = HashMap::new();
             let st = steps.get(&i.id).unwrap_or(&empty);
@@ -386,9 +579,8 @@ pub async fn project_run_items(
             a.1.push(result_id);
             a.2.push(i.series_id);
             a.3.push(client_key(i.id, i.execution_no));
-            a.4.push(seq0 + k as i64 + 1);
-            a.5.push(status.as_str().to_string());
-            a.6.push(i.status.as_str().to_string());
+            a.4.push(status.as_str().to_string());
+            a.5.push(i.status.as_str().to_string());
             t.0.push(i.started_at);
             t.1.push(i.finished_at);
             t.2.push(duration);
@@ -419,19 +611,21 @@ pub async fn project_run_items(
                 "seriesId": i.series_id, "testCaseId": i.test_case_id, "status": status.as_str(),
                 "source": "manual", "runItemId": i.id}));
         }
-        let stored: Vec<(Uuid, String, Uuid)> = sqlx::query_as(
+        // A new attempt gets `seq` 0 here and its real one from `apply_launch_changes`; an
+        // attempt stored again keeps its `seq`.
+        let stored: Vec<(Uuid, String, Uuid, i64)> = sqlx::query_as(
             "insert into attempts (id, launch_created_at, project_id, launch_id, result_id, series_id, upload_id, \
                client_key, seq, status, raw_status, started_at, stopped_at, duration_ms, message, detail, steps_z) \
-             select i, $1, $2, $3, r, s, null, k, q, st, rs, sa, so, d, m, de, sz \
-             from unnest($4::uuid[], $5::uuid[], $6::uuid[], $7::text[], $8::bigint[], $9::text[], $10::text[], \
-               $11::timestamptz[], $12::timestamptz[], $13::bigint[], $14::text[], $15::jsonb[], $16::bytea[]) \
-               as t(i, r, s, k, q, st, rs, sa, so, d, m, de, sz) \
+             select i, $1, $2, $3, r, s, null, k, 0, st, rs, sa, so, d, m, de, sz \
+             from unnest($4::uuid[], $5::uuid[], $6::uuid[], $7::text[], $8::text[], $9::text[], \
+               $10::timestamptz[], $11::timestamptz[], $12::bigint[], $13::text[], $14::jsonb[], $15::bytea[]) \
+               as t(i, r, s, k, st, rs, sa, so, d, m, de, sz) \
              on conflict (launch_id, client_key, launch_created_at) do update set result_id = excluded.result_id, \
                series_id = excluded.series_id, status = excluded.status, raw_status = excluded.raw_status, \
                started_at = excluded.started_at, stopped_at = excluded.stopped_at, \
                duration_ms = excluded.duration_ms, message = excluded.message, detail = excluded.detail, \
                steps_z = excluded.steps_z \
-             returning id, status, result_id",
+             returning id, status, result_id, seq",
         )
         .bind(launch.created_at)
         .bind(launch.project_id)
@@ -442,7 +636,6 @@ pub async fn project_run_items(
         .bind(&a.3)
         .bind(&a.4)
         .bind(&a.5)
-        .bind(&a.6)
         .bind(&t.0)
         .bind(&t.1)
         .bind(&t.2)
@@ -451,10 +644,18 @@ pub async fn project_run_items(
         .bind(&t.5)
         .fetch_all(&mut *conn)
         .await?;
-        for (id, status, result_id) in stored {
+        let order: HashMap<Uuid, usize> = a.0.iter().enumerate().map(|(k, id)| (*id, k)).collect();
+        let mut fresh: Vec<(usize, Uuid)> = Vec::new();
+        for (id, status, result_id, seq) in stored {
+            if seq == 0 {
+                fresh.push((order.get(&id).copied().unwrap_or(usize::MAX), id));
+            }
             stored_events.push(serde_json::json!({"id": id, "resultId": result_id,
                 "launchId": launch.id, "status": status}));
         }
+        fresh.sort();
+        out.new_attempts = fresh.into_iter().map(|(_, id)| id).collect();
+        touched.extend(r.0.iter().copied());
         let counts: HashMap<Uuid, i32> = sqlx::query_as::<_, (Uuid, i32)>(
             "select result_id, count(*)::int from attempts where launch_id = $1 and launch_created_at = $2 \
              and result_id = any($3) group by result_id",
@@ -594,9 +795,16 @@ pub async fn project_run_items(
     let mut seen = HashSet::new();
     analyzed.retain(|s| seen.insert(*s));
     if !analyzed.is_empty() {
-        crate::analysis::after_persist(&mut *conn, launch, &[], &analyzed).await?;
+        out.rule_hits =
+            crate::analysis::after_persist_deferred(&mut *conn, launch, &[], &analyzed).await?;
     }
-    recount(&mut *conn, launch.id, launch.created_at, None).await?;
+    touched.sort();
+    touched.dedup();
+    let after = counted_results(conn, launch, &touched).await?;
+    for id in &touched {
+        out.delta
+            .add(&CountDelta::result_change(before.get(id), after.get(id)));
+    }
     crate::events::emit_many(
         &mut *conn,
         "result.updated",
@@ -619,12 +827,102 @@ pub async fn project_run_items(
     )
     .await?;
     crate::events::notify_launch(&mut *conn, &launch.project_key, launch.id).await?;
-    Ok(())
+    Ok(out)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn res(status: &str, flaky_in_run: bool, muted: bool) -> CountedResult {
+        CountedResult {
+            status: status.into(),
+            flaky_in_run,
+            muted,
+        }
+    }
+
+    #[test]
+    fn count_deltas() {
+        let d = CountDelta::result_change(None, Some(&res("passed", false, true)));
+        assert_eq!(
+            d,
+            CountDelta {
+                total: 1,
+                passed: 1,
+                muted: 1,
+                ..Default::default()
+            }
+        );
+        let d = CountDelta::result_change(
+            Some(&res("failed", true, false)),
+            Some(&res("broken", false, true)),
+        );
+        assert_eq!(
+            d,
+            CountDelta {
+                failed: -1,
+                broken: 1,
+                flaky: -1,
+                muted: 1,
+                ..Default::default()
+            }
+        );
+        let d = CountDelta::result_change(Some(&res("unknown", false, false)), None);
+        assert_eq!(
+            d,
+            CountDelta {
+                total: -1,
+                unknown: -1,
+                ..Default::default()
+            }
+        );
+        let d = CountDelta::result_change(Some(&res("weird", false, false)), None);
+        assert_eq!(
+            d,
+            CountDelta {
+                total: -1,
+                ..Default::default()
+            }
+        );
+        assert!(CountDelta::result_change(None, None).is_zero());
+        assert!(
+            CountDelta::result_change(
+                Some(&res("skipped", false, true)),
+                Some(&res("skipped", false, true))
+            )
+            .is_zero()
+        );
+        for a in RunStatus::ALL {
+            for b in RunStatus::ALL {
+                let d = CountDelta::item_change(*a, *b);
+                let open = |s: RunStatus| (s == RunStatus::Untested, s == RunStatus::InProgress);
+                assert_eq!(
+                    (d.untested, d.in_progress),
+                    (
+                        open(*b).0 as i32 - open(*a).0 as i32,
+                        open(*b).1 as i32 - open(*a).1 as i32
+                    ),
+                    "{a} -> {b}"
+                );
+                assert_eq!(d.total, 0);
+            }
+        }
+        let mut p = Projected::default();
+        p.merge(Projected {
+            delta: CountDelta::item_change(RunStatus::Untested, RunStatus::Passed),
+            new_attempts: vec![Uuid::nil()],
+            rule_hits: HashMap::from([(Uuid::nil(), 2)]),
+        });
+        p.merge(Projected {
+            delta: CountDelta::item_change(RunStatus::InProgress, RunStatus::Passed),
+            new_attempts: vec![Uuid::max()],
+            rule_hits: HashMap::from([(Uuid::nil(), 1)]),
+        });
+        assert_eq!((p.delta.untested, p.delta.in_progress), (-1, -1));
+        assert_eq!(p.new_attempts, vec![Uuid::nil(), Uuid::max()]);
+        assert_eq!(p.rule_hits[&Uuid::nil()], 3);
+    }
 
     #[test]
     fn statuses_and_message() {

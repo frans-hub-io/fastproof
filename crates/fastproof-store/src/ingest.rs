@@ -479,7 +479,9 @@ async fn refresh_vacated(
 /// caller decides whether to commit.
 /// Recomputes the counters of a launch: the automated ones from its results (the first and
 /// last result times from automated results only, so manual work does not stretch the launch
-/// duration), the manual ones from its run items; sets `attempt_seq` when given.
+/// duration), the manual ones from its run items; sets `attempt_seq` when given. The caller
+/// holds the launch row lock (taken before this statement), so no manual write adds a
+/// counter change that this count misses (`tm::projection::apply_launch_changes`).
 pub(crate) async fn recount(
     conn: &mut sqlx::PgConnection,
     launch_id: Uuid,
@@ -516,7 +518,9 @@ pub(crate) async fn recount(
 
 impl Store {
     /// Recomputes the counters of a launch (automated from `results`, manual `count_untested`
-    /// and `count_in_progress` from `run_items`). Run it in the transaction that changed them.
+    /// and `count_in_progress` from `run_items`). Run it in the transaction that changed them,
+    /// after locking the launch row: manual writes change the counters incrementally, and a
+    /// count taken before waiting for their lock would overwrite their change.
     pub async fn recount_launch(
         conn: &mut sqlx::PgConnection,
         launch_id: Uuid,

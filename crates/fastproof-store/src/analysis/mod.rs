@@ -17,5 +17,5 @@ pub mod stats;
 pub mod tasks;
 pub mod triage;
 
-pub use hook::{PersistedAttempt, after_persist};
+pub use hook::{PersistedAttempt, after_persist, after_persist_deferred};
 pub use settings::ProjectSettings;

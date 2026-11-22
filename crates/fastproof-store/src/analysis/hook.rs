@@ -243,8 +243,21 @@ pub async fn after_persist(
     attempts: &[PersistedAttempt<'_>],
     series: &[Uuid],
 ) -> anyhow::Result<()> {
+    let hits = after_persist_deferred(conn, launch, attempts, series).await?;
+    rules::add_hits(conn, &hits).await
+}
+
+/// As [`after_persist`], but returns the rule hits instead of adding them, so a caller that
+/// locks the launch row late (manual runs) can add them after it: rule rows are shared by
+/// every launch of the project, and ingest locks the launch row before them.
+pub async fn after_persist_deferred(
+    conn: &mut PgConnection,
+    launch: &LaunchRef,
+    attempts: &[PersistedAttempt<'_>],
+    series: &[Uuid],
+) -> anyhow::Result<HashMap<Uuid, i64>> {
     if series.is_empty() {
-        return Ok(());
+        return Ok(HashMap::new());
     }
     let now = Utc::now();
 
@@ -305,7 +318,7 @@ pub async fn after_persist(
     .fetch_all(&mut *conn)
     .await?;
     if rows.is_empty() {
-        return Ok(());
+        return Ok(HashMap::new());
     }
     let mut series_sorted: Vec<Uuid> = rows.iter().map(|r| r.1).collect();
     series_sorted.sort();
@@ -476,8 +489,7 @@ pub async fn after_persist(
     if !stat_updates.is_empty() {
         stats::record(conn, launch, &stat_updates, &stats_rows, &settings, now).await?;
     }
-    rules::add_hits(conn, &hits).await?;
-    Ok(())
+    Ok(hits)
 }
 
 /// Adds or extends series mutes (`None` until = no end). Rows are written in series order.

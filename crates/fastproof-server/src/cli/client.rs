@@ -68,7 +68,7 @@ impl Client {
             bail!("FASTPROOF_TOKEN (or --token-file) is required");
         }
         let http = reqwest::Client::builder()
-            .user_agent(concat!("fastproof-cli/", env!("CARGO_PKG_VERSION")))
+            .user_agent(format!("fastproof-cli/{}", crate::VERSION))
             .connect_timeout(Duration::from_secs(15))
             .build()?;
         Ok(Self {

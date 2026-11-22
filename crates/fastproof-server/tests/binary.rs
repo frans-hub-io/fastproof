@@ -51,7 +51,15 @@ async fn migrate_needs_only_the_database_and_serve_starts() {
     assert!(!log.contains(&db.url), "the URL is not logged");
 
     let out = Command::new(bin).arg("version").output().unwrap();
-    assert!(String::from_utf8_lossy(&out.stdout).starts_with("fastproof "));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        format!("fastproof {}", fastproof_server::VERSION)
+    );
+    let out = Command::new(bin).arg("--version").output().unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        format!("fastproof {}", fastproof_server::VERSION)
+    );
 
     let dir = tempfile::tempdir().unwrap();
     let tokens = dir.path().join("tokens");
@@ -89,10 +97,56 @@ async fn migrate_needs_only_the_database_and_serve_starts() {
         .send()
         .await
         .map(|r| r.status().as_u16());
+    let version = async {
+        let r = reqwest::Client::new()
+            .get(format!("http://127.0.0.1:{port}/api/v1/version"))
+            .bearer_auth(common::ADMIN_TOKEN)
+            .send()
+            .await?;
+        r.json::<serde_json::Value>().await
+    }
+    .await;
+    let anonymous = reqwest::get(format!("http://127.0.0.1:{port}/api/v1/version"))
+        .await
+        .map(|r| r.status().as_u16());
+    let metrics = async {
+        reqwest::get(format!("http://127.0.0.1:{ops}/metrics"))
+            .await?
+            .text()
+            .await
+    }
+    .await;
     child.kill().unwrap();
     let _ = child.wait();
     assert!(ready, "serve did not become ready");
     assert_eq!(me.unwrap(), 200);
+    assert_eq!(
+        version.unwrap()["version"],
+        fastproof_server::VERSION,
+        "/api/v1/version"
+    );
+    assert_eq!(anonymous.unwrap(), 401);
+    let metrics = metrics.unwrap();
+    assert!(
+        metrics.contains(&format!(
+            "fastproof_build_info{{version=\"{}\"}} 1",
+            fastproof_server::VERSION
+        )),
+        "{metrics}"
+    );
+    for name in [
+        "process_resident_memory_bytes",
+        "process_virtual_memory_bytes",
+        "process_cpu_seconds_total",
+        "process_open_fds",
+        "process_start_time_seconds",
+    ] {
+        assert_eq!(
+            metrics.contains(&format!("\n{name} ")),
+            cfg!(target_os = "linux"),
+            "{name}: {metrics}"
+        );
+    }
 }
 
 /// Forwards connections on `listener` to `target`.
@@ -158,7 +212,7 @@ async fn serve_waits_for_postgresql_and_kafka_at_start() {
     cmd.arg("serve")
         .env_clear()
         .env("FASTPROOF_DATABASE_URL", real.as_str())
-        .env("FASTPROOF_DATABASE_CONNECT_TIMEOUT_SECONDS", "120")
+        .env("FASTPROOF_DATABASE_WAIT", "2m")
         .env("FASTPROOF_LISTEN", format!("127.0.0.1:{}", free_port()))
         .env("FASTPROOF_OPS_LISTEN", format!("127.0.0.1:{ops}"))
         .env("FASTPROOF_BLOB_DIR", dir.path().join("blobs"))
@@ -194,6 +248,7 @@ async fn serve_waits_for_postgresql_and_kafka_at_start() {
     let (st, body) = status(&ready).await.unwrap();
     assert_eq!(st, 503, "{body}");
     assert!(body.contains("starting"), "{body}");
+    assert!(log().contains("connection_refused"), "{}", log());
     assert!(
         child.try_wait().unwrap().is_none(),
         "the server keeps waiting"
@@ -236,8 +291,8 @@ async fn serve_waits_for_postgresql_and_kafka_at_start() {
     assert!(log().contains("PostgreSQL is reachable"), "{}", log());
 }
 
-/// Without PostgreSQL, `serve` gives up after `FASTPROOF_DATABASE_CONNECT_TIMEOUT_SECONDS` with
-/// a clear error.
+/// Without PostgreSQL, `serve` gives up after the wait (here set by the older
+/// `FASTPROOF_DATABASE_CONNECT_TIMEOUT_SECONDS`) with a clear error.
 #[tokio::test]
 async fn serve_gives_up_after_the_connect_timeout() {
     let dir = tempfile::tempdir().unwrap();
@@ -272,10 +327,69 @@ async fn serve_gives_up_after_the_connect_timeout() {
     assert!(!out.status.success(), "{text}");
     assert!(
         text.contains("PostgreSQL was not reachable within")
-            && text.contains("FASTPROOF_DATABASE_CONNECT_TIMEOUT_SECONDS"),
+            && text.contains("FASTPROOF_DATABASE_WAIT"),
         "{text}"
     );
     assert!(text.contains("PostgreSQL is not reachable yet"), "{text}");
     assert!(!text.contains("secret-pw"), "the password is not logged");
     assert!(started.elapsed() < Duration::from_secs(30));
+}
+
+/// `migrate` started before PostgreSQL is reachable waits for it (one warning per attempt with
+/// the error class) and then applies the migrations.
+#[tokio::test]
+async fn migrate_waits_for_postgresql() {
+    fastproof_blob::install_crypto_provider();
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let mut url = url::Url::parse(&db.url).unwrap();
+    let target = format!("{}:{}", url.host_str().unwrap(), url.port().unwrap_or(5432));
+    let port = free_port();
+    url.set_port(Some(port)).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let log_path = dir.path().join("migrate.log");
+    let log_file = std::fs::File::create(&log_path).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_fastproof"))
+        .arg("migrate")
+        .env_clear()
+        .env("FASTPROOF_DATABASE_URL", url.as_str())
+        .env("FASTPROOF_DATABASE_WAIT", "2m")
+        .env("FASTPROOF_LOG_FORMAT", "text")
+        .stdout(log_file.try_clone().unwrap())
+        .stderr(log_file)
+        .spawn()
+        .unwrap();
+    let log = || std::fs::read_to_string(&log_path).unwrap_or_default();
+    wait_until("two logged attempts", 20, || async {
+        log().matches("PostgreSQL is not reachable yet").count() >= 2
+    })
+    .await;
+    assert!(log().contains("connection_refused"), "{}", log());
+    assert!(child.try_wait().unwrap().is_none(), "migrate keeps waiting");
+    tokio::spawn(proxy(
+        tokio::net::TcpListener::bind(("127.0.0.1", port))
+            .await
+            .unwrap(),
+        target,
+    ));
+    let deadline = Instant::now() + Duration::from_secs(90);
+    let status = loop {
+        if let Some(st) = child.try_wait().unwrap() {
+            break Some(st);
+        }
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            break None;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+    let _ = child.wait();
+    assert!(status.is_some_and(|s| s.success()), "{}", log());
+    assert!(log().contains("PostgreSQL is reachable"), "{}", log());
+    let n: i64 = sqlx::query_scalar("select count(*) from fastproof_schema_migrations")
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(n as usize, fastproof_store::migrator().iter().count());
 }

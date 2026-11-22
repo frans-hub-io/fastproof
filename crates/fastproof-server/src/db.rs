@@ -24,7 +24,8 @@ pub struct DbSettings {
     /// Connections heavy reads leave free for ingest and workers
     /// (`FASTPROOF_DATABASE_INGEST_RESERVE`).
     pub ingest_reserve: u32,
-    /// How long start-up waits for PostgreSQL (`FASTPROOF_DATABASE_CONNECT_TIMEOUT_SECONDS`).
+    /// How long start-up waits for PostgreSQL (`FASTPROOF_DATABASE_WAIT`, formerly
+    /// `FASTPROOF_DATABASE_CONNECT_TIMEOUT_SECONDS`).
     pub connect_timeout: Duration,
 }
 
@@ -81,12 +82,18 @@ impl DbSettings {
                     )
                 })?,
         };
-        let connect_timeout = match env.var("FASTPROOF_DATABASE_CONNECT_TIMEOUT_SECONDS") {
-            None => DEFAULT_CONNECT_TIMEOUT,
-            Some(v) => match v.trim().parse::<u64>() {
+        let connect_timeout = match (
+            env.var("FASTPROOF_DATABASE_WAIT"),
+            env.var("FASTPROOF_DATABASE_CONNECT_TIMEOUT_SECONDS"),
+        ) {
+            (Some(v), _) => parse_wait(&v).filter(|d| *d <= MAX_WAIT).ok_or_else(|| {
+                anyhow!("FASTPROOF_DATABASE_WAIT: a duration up to 24h such as 300, 90s, 5m or 1h")
+            })?,
+            (None, Some(v)) => match v.trim().parse::<u64>() {
                 Ok(n) if n <= 86_400 => Duration::from_secs(n),
                 _ => bail!("FASTPROOF_DATABASE_CONNECT_TIMEOUT_SECONDS: 0..=86400"),
             },
+            (None, None) => DEFAULT_CONNECT_TIMEOUT,
         };
         Ok(Self {
             connect_timeout,
@@ -146,7 +153,9 @@ impl DbSettings {
     }
 
     /// Connects a pool, retrying for up to [`Self::connect_timeout`] while PostgreSQL is not
-    /// reachable yet (it may still be starting next to FastProof).
+    /// reachable yet (it may still be starting next to FastProof). Wrong credentials, a missing
+    /// database or TLS errors are retried too: they are often fixed by whatever is still
+    /// starting (a secret, an operator creating the database).
     pub async fn connect_waiting(
         &self,
         get: &(dyn Fn(&str) -> Option<String> + Sync),
@@ -154,7 +163,7 @@ impl DbSettings {
         let opts = self.connect_options(get)?;
         wait_for(
             "PostgreSQL",
-            "FASTPROOF_DATABASE_CONNECT_TIMEOUT_SECONDS",
+            "FASTPROOF_DATABASE_WAIT",
             self.connect_timeout,
             || async {
                 // One plain connection first: it fails at once while the server is down,
@@ -205,12 +214,78 @@ pub fn ssl_mode_name(m: PgSslMode) -> &'static str {
     }
 }
 
-/// Default of `FASTPROOF_DATABASE_CONNECT_TIMEOUT_SECONDS`.
+/// Default of `FASTPROOF_DATABASE_WAIT`.
 pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// Largest `FASTPROOF_DATABASE_WAIT`.
+pub const MAX_WAIT: Duration = Duration::from_secs(86_400);
+
+/// Longest pause between two attempts of [`wait_for`].
+pub const MAX_BACKOFF: Duration = Duration::from_secs(30);
+
+/// The pause after `previous`: doubled, at most [`MAX_BACKOFF`].
+pub fn next_backoff(previous: Duration) -> Duration {
+    (previous * 2).min(MAX_BACKOFF)
+}
+
+/// A duration in seconds (`300`), or with a unit: `90s`, `5m`, `1h`.
+pub fn parse_wait(v: &str) -> Option<Duration> {
+    let v = v.trim();
+    let (n, unit) = match v.find(|c: char| !c.is_ascii_digit()) {
+        Some(i) => v.split_at(i),
+        None => (v, "s"),
+    };
+    let n: u64 = n.parse().ok()?;
+    let secs = match unit.trim() {
+        "s" => n,
+        "m" => n.checked_mul(60)?,
+        "h" => n.checked_mul(3600)?,
+        _ => return None,
+    };
+    Some(Duration::from_secs(secs))
+}
+
+/// A short, stable name of why a connection attempt failed, for logs and alerts:
+/// `connection_refused`, `dns`, `timeout`, `tls`, `authentication`, `database_missing`,
+/// `too_many_connections`, `starting_up`, `database` (another server error), `io` or `other`.
+pub fn error_class(e: &anyhow::Error) -> &'static str {
+    use std::io::ErrorKind;
+    let io_class = |io: &std::io::Error| match io.kind() {
+        ErrorKind::ConnectionRefused => "connection_refused",
+        ErrorKind::TimedOut => "timeout",
+        _ if io.to_string().contains("lookup") => "dns",
+        _ => "io",
+    };
+    for cause in e.chain() {
+        if let Some(se) = cause.downcast_ref::<sqlx::Error>() {
+            return match se {
+                sqlx::Error::Io(io) => io_class(io),
+                sqlx::Error::Tls(_) => "tls",
+                sqlx::Error::PoolTimedOut => "timeout",
+                sqlx::Error::Database(d) => match d.code().as_deref() {
+                    Some("28P01" | "28000") => "authentication",
+                    Some("3D000") => "database_missing",
+                    Some("53300") => "too_many_connections",
+                    Some("57P03") => "starting_up",
+                    _ => "database",
+                },
+                _ => "other",
+            };
+        }
+        if let Some(io) = cause.downcast_ref::<std::io::Error>() {
+            return io_class(io);
+        }
+    }
+    if e.to_string() == "timed out" {
+        return "timeout";
+    }
+    "other"
+}
+
 /// Runs `attempt` until it succeeds, for up to `timeout` (at least once), with a backoff from
-/// one to fifteen seconds; every failure is logged. Start-up uses it for the services FastProof
-/// needs (`what`), so a pod that starts before them waits instead of crashing; `var` names the
+/// one to thirty seconds; every failure is logged as one line with its [`error_class`].
+/// Start-up uses it for the services FastProof needs (`what`), so a pod that starts before them
+/// waits instead of crashing (`/healthz` answers, `/readyz` says `starting`); `var` names the
 /// setting of the timeout in the final error.
 pub async fn wait_for<T, F, Fut>(
     what: &str,
@@ -258,13 +333,14 @@ where
         tracing::warn!(
             service = what,
             attempt = n,
+            error_class = error_class(&e),
             retry_in_seconds = backoff.min(left).as_secs_f64(),
             gives_up_in_seconds = left.as_secs(),
             error = %format!("{e:#}"),
             "{what} is not reachable yet; waiting"
         );
         tokio::time::sleep(backoff.min(left)).await;
-        backoff = (backoff * 2).min(Duration::from_secs(15));
+        backoff = next_backoff(backoff);
     }
 }
 
@@ -419,5 +495,79 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(e.contains("(1 attempt(s);"), "{e}");
+    }
+
+    #[test]
+    fn backoff_from_one_to_thirty_seconds() {
+        let mut b = Duration::from_secs(1);
+        let mut seq = vec![b.as_secs()];
+        for _ in 0..7 {
+            b = next_backoff(b);
+            seq.push(b.as_secs());
+        }
+        assert_eq!(seq, [1, 2, 4, 8, 16, 30, 30, 30]);
+    }
+
+    #[test]
+    fn wait_settings() {
+        assert_eq!(parse_wait("300"), Some(Duration::from_secs(300)));
+        assert_eq!(parse_wait(" 90s "), Some(Duration::from_secs(90)));
+        assert_eq!(parse_wait("5m"), Some(Duration::from_secs(300)));
+        assert_eq!(parse_wait("2h"), Some(Duration::from_secs(7200)));
+        assert_eq!(parse_wait("0"), Some(Duration::ZERO));
+        for bad in ["", "m", "5d", "-1", "1.5m", "99999999999999999999h"] {
+            assert_eq!(parse_wait(bad), None, "{bad}");
+        }
+        let vars = |wait: Option<&str>, old: Option<&str>| {
+            let (wait, old) = (wait.map(str::to_string), old.map(str::to_string));
+            move |k: &str| match k {
+                "FASTPROOF_DATABASE_URL" => Some("postgres://u@db.example.com/fp".to_string()),
+                "FASTPROOF_DATABASE_WAIT" => wait.clone(),
+                "FASTPROOF_DATABASE_CONNECT_TIMEOUT_SECONDS" => old.clone(),
+                _ => None,
+            }
+        };
+        let wait = |w, o| DbSettings::from_lookup(&vars(w, o)).map(|d| d.connect_timeout);
+        assert_eq!(wait(None, None).unwrap(), Duration::from_secs(300));
+        assert_eq!(wait(Some("2m"), None).unwrap(), Duration::from_secs(120));
+        assert_eq!(wait(None, Some("45")).unwrap(), Duration::from_secs(45));
+        assert_eq!(
+            wait(Some("10s"), Some("45")).unwrap(),
+            Duration::from_secs(10),
+            "FASTPROOF_DATABASE_WAIT wins"
+        );
+        let e = wait(Some("25h"), None).unwrap_err().to_string();
+        assert!(e.contains("FASTPROOF_DATABASE_WAIT"), "{e}");
+    }
+
+    #[tokio::test]
+    async fn error_classes() {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let opts: PgConnectOptions = format!("postgres://u:pw@127.0.0.1:{port}/fp")
+            .parse()
+            .unwrap();
+        use sqlx::Connection;
+        let e = anyhow::Error::from(sqlx::PgConnection::connect_with(&opts).await.unwrap_err())
+            .context("connecting");
+        assert_eq!(error_class(&e), "connection_refused", "{e:#}");
+        let opts: PgConnectOptions = "postgres://u:pw@db.invalid/fp".parse().unwrap();
+        let e = anyhow::Error::from(sqlx::PgConnection::connect_with(&opts).await.unwrap_err());
+        assert_eq!(error_class(&e), "dns", "{e:#}");
+        assert_eq!(error_class(&anyhow!("timed out")), "timeout");
+        assert_eq!(error_class(&anyhow!("something else")), "other");
+        if let Ok(url) = std::env::var("FASTPROOF_TEST_DATABASE_URL") {
+            let opts: PgConnectOptions = url.parse().unwrap();
+            let missing = opts.database("fastproof_no_such_database");
+            let e = anyhow::Error::from(
+                sqlx::PgConnection::connect_with(&missing)
+                    .await
+                    .unwrap_err(),
+            );
+            assert_eq!(error_class(&e), "database_missing", "{e:#}");
+        }
     }
 }

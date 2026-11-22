@@ -32,7 +32,8 @@ that starts before its database is not restarted by its liveness probe and gets 
 | `PGSSLMODE`, `PGSSLROOTCERT` | none | Standard libpq variables, used when the URL sets no `sslmode` |
 | `FASTPROOF_DATABASE_STATEMENT_TIMEOUT_SECONDS` | `120` | Longest SQL statement on pooled connections; `0` turns it off. Migrations and index builds run without it; the purge of deleted projects runs under it in short statements of at most 5 000 rows each, and a purge that stops continues on the next run |
 | `FASTPROOF_DATABASE_INGEST_RESERVE` | a quarter of the pool, at least 1 | Connections that heavy reads (dashboard, log search, similar failures, rule dry runs, stored log reads) leave free for ingest and workers; must be below `FASTPROOF_DATABASE_MAX_CONNECTIONS` |
-| `FASTPROOF_DATABASE_CONNECT_TIMEOUT_SECONDS` | `300` | How long `serve` and `migrate` wait at start for PostgreSQL (and, with `FASTPROOF_MIGRATE=off`, for the migrations) before they exit with an error; every attempt is logged. `0` tries once. 0 to 86400 |
+| `FASTPROOF_DATABASE_WAIT` | `5m` | How long `serve` (every role) and `migrate` wait at start for PostgreSQL (and, with `FASTPROOF_MIGRATE=off`, for the migrations) before they exit with an error: seconds (`300`) or `90s`, `5m`, `1h`, up to `24h`; `0` tries once. Attempts back off from 1 s to 30 s; each failed one is logged as one warning with `error_class` (`connection_refused`, `dns`, `timeout`, `tls`, `authentication`, `database_missing`, `too_many_connections`, `starting_up`, `database`, `io`, `other`). Meanwhile `/healthz` answers `200` and `/readyz` `503` `starting` |
+| `FASTPROOF_DATABASE_CONNECT_TIMEOUT_SECONDS` | none | Older name of `FASTPROOF_DATABASE_WAIT` in seconds (0 to 86400), used when `FASTPROOF_DATABASE_WAIT` is not set |
 | `FASTPROOF_MIGRATE` | `auto` | `auto` applies migrations at start under an advisory lock; `off` expects them applied by `fastproof migrate` (the Helm chart runs it as a Job) |
 
 PostgreSQL 14 to 18 is supported; 18 is recommended. PostgreSQL 14 reached end of life in November 2026.
@@ -297,6 +298,11 @@ read, and the server logs a warning about them.
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | none | Send traces over OTLP; the standard `OTEL_EXPORTER_OTLP_*` and `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES` variables apply |
 
 Secrets never appear in logs; tokens and passwords in URLs and headers are redacted.
+
+`/metrics` on the operations listener carries `fastproof_build_info{version="..."}` (the release version, the
+same as `fastproof version` and `GET /api/v1/version`) and, on Linux, the standard process metrics
+`process_resident_memory_bytes`, `process_virtual_memory_bytes`, `process_cpu_seconds_total`,
+`process_open_fds` and `process_start_time_seconds`, in every role.
 
 ## CLI
 

@@ -409,7 +409,7 @@ impl fmt::Debug for Egress {
 
 fn client(policy: &Arc<EgressPolicy>, explicit: bool) -> anyhow::Result<reqwest::Client> {
     Ok(reqwest::Client::builder()
-        .user_agent(concat!("FastProof/", env!("CARGO_PKG_VERSION")))
+        .user_agent(format!("FastProof/{}", crate::VERSION))
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
         .dns_resolver(Arc::new(PolicyResolver {

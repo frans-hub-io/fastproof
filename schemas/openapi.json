@@ -6,7 +6,7 @@
     "license": {
       "name": "Apache-2.0"
     },
-    "version": "0.1.0"
+    "version": "0.2.0-dev1"
   },
   "paths": {
     "/api/v1/admin/jobs": {
@@ -10095,6 +10095,35 @@
           }
         }
       }
+    },
+    "/api/v1/version": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "description": "The version of the server. Any signed-in principal may read it.",
+        "operationId": "server_version",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VersionInfo"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -19444,6 +19473,19 @@
           }
         },
         "additionalProperties": false
+      },
+      "VersionInfo": {
+        "type": "object",
+        "description": "The running build.",
+        "required": [
+          "version"
+        ],
+        "properties": {
+          "version": {
+            "type": "string",
+            "description": "The release tag without the `v` (such as `0.2.0`), or the Cargo version of a local build."
+          }
+        }
       },
       "VersionSource": {
         "type": "string",

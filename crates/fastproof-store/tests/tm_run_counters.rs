@@ -19,9 +19,12 @@ use fastproof_store::tm::{
     TmError, TmLimits,
 };
 use fastproof_store::{Project, Store};
+use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
-use sqlx::{ConnectOptions, PgPool};
 use uuid::Uuid;
+
+#[path = "support/testdb.rs"]
+mod testdb;
 
 struct TestDb {
     admin: PgConnectOptions,
@@ -31,17 +34,8 @@ struct TestDb {
 
 impl TestDb {
     async fn new(connections: u32) -> Option<(Self, Store)> {
-        let Ok(url) = std::env::var("FASTPROOF_TEST_DATABASE_URL") else {
-            eprintln!("FASTPROOF_TEST_DATABASE_URL is not set: skipped");
-            return None;
-        };
-        let admin: PgConnectOptions = url.parse().expect("FASTPROOF_TEST_DATABASE_URL");
-        let name = format!("fastproof_test_{:016x}", rand::random::<u64>());
-        let mut conn = admin.connect().await.expect("connecting");
-        sqlx::query(sqlx::AssertSqlSafe(format!("create database {name}")))
-            .execute(&mut conn)
-            .await
-            .unwrap();
+        let admin = testdb::admin()?;
+        let name = testdb::create(&admin).await;
         let pool = PgPoolOptions::new()
             .max_connections(connections)
             .connect_with(admin.clone().database(&name))
@@ -55,25 +49,8 @@ impl TestDb {
 
 impl Drop for TestDb {
     fn drop(&mut self) {
-        let admin = self.admin.clone();
-        let name = self.name.clone();
-        std::thread::spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap();
-            rt.block_on(async move {
-                if let Ok(mut c) = admin.connect().await {
-                    let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
-                        "drop database if exists {name} with (force)"
-                    )))
-                    .execute(&mut c)
-                    .await;
-                }
-            });
-        })
-        .join()
-        .unwrap();
+        drop(self.pool.close());
+        testdb::drop_database(&self.admin, &self.name);
     }
 }
 
@@ -858,4 +835,128 @@ async fn concurrent_testers_ingest_mutes_and_close_keep_counters_exact() {
         0,
         "PostgreSQL detected deadlocks"
     );
+}
+
+/// Triage that mutes and unmutes automated results while an ingest writes new attempts of the
+/// same tests into the launch: triage takes the launch row before the results, in the order
+/// ingest takes them, so neither waits for the other in a cycle (no deadlock at all, not only
+/// none that reaches the caller), and `count_muted` equals a recount afterwards.
+#[tokio::test]
+async fn triage_of_automated_results_does_not_deadlock_with_ingest() {
+    let Some((db, store)) = TestDb::new(12).await else {
+        return;
+    };
+    let p = Arc::new(project(&store, "auto").await);
+    let (l, _) = store
+        .start_launch(
+            &p,
+            &LaunchStart {
+                name: "ci".into(),
+                ..Default::default()
+            },
+            "ci",
+        )
+        .await
+        .unwrap();
+    let launch = LaunchRef {
+        id: l.id,
+        project_id: p.id,
+        project_key: p.key.clone(),
+        created_at: l.created_at,
+    };
+    let batch = |attempt: usize, part: &[usize]| -> Vec<NewAttempt> {
+        part.iter()
+            .map(|&i| NewAttempt {
+                client_key: format!("a:t{i}:{attempt}"),
+                result: automated(i, attempt),
+            })
+            .collect()
+    };
+    let all: Vec<usize> = (0..AUTOMATED).collect();
+    store
+        .persist_attempts(&launch, None, batch(0, &all))
+        .await
+        .unwrap();
+    let dl0 = deadlocks(&db.pool).await;
+    const ATTEMPTS: usize = 6;
+    let ingesting = Arc::new(AtomicUsize::new(1));
+    let mut tasks = Vec::new();
+    {
+        let store = store.clone();
+        let launch = launch.clone();
+        let ingesting = ingesting.clone();
+        tasks.push(tokio::spawn(async move {
+            let mut errors = Vec::new();
+            for attempt in 1..=ATTEMPTS {
+                let mut ids: Vec<usize> = (0..AUTOMATED).collect();
+                if attempt.is_multiple_of(2) {
+                    ids.reverse();
+                }
+                for part in ids.chunks(40) {
+                    if let Err(e) = store
+                        .persist_attempts(&launch, None, batch(attempt, part))
+                        .await
+                    {
+                        errors.push(format!("ingest: {e:#}"));
+                    }
+                }
+            }
+            ingesting.fetch_sub(1, Ordering::SeqCst);
+            errors
+        }));
+    }
+    for m in 0..2u64 {
+        let store = store.clone();
+        let p = p.clone();
+        let pool = db.pool.clone();
+        let ingesting = ingesting.clone();
+        let launch_id = launch.id;
+        tasks.push(tokio::spawn(async move {
+            let mut errors = Vec::new();
+            let mut round = 0u64;
+            while ingesting.load(Ordering::SeqCst) > 0 || round < 4 {
+                round += 1;
+                let ids: Vec<Uuid> =
+                    sqlx::query_scalar("select id from results where launch_id = $1 order by id")
+                        .bind(launch_id)
+                        .fetch_all(&pool)
+                        .await
+                        .unwrap();
+                let mute = (round + m).is_multiple_of(2);
+                let req = TriageRequest {
+                    result_ids: Some(ids),
+                    mute: mute.then(|| MuteRequest {
+                        until: None,
+                        reason: "noisy".into(),
+                    }),
+                    unmute: (!mute).then_some(true),
+                    comment: Some(format!("round {round}")),
+                    ..Default::default()
+                };
+                match store.triage(p.id, &p.key, &req, "ann").await {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(e)) => errors.push(format!("triage refused: {e:?}")),
+                    Err(e) => errors.push(format!("triage: {e:#}")),
+                }
+            }
+            errors
+        }));
+    }
+    let mut errors = Vec::new();
+    for t in tasks {
+        errors.extend(t.await.unwrap());
+    }
+    assert!(errors.is_empty(), "{:?}", &errors[..errors.len().min(5)]);
+    assert_eq!(
+        deadlocks(&db.pool).await,
+        dl0,
+        "PostgreSQL broke a deadlock between triage and ingest"
+    );
+    assert_exact(&db.pool, launch.id, "after triage and ingest").await;
+    let attempts: i64 = sqlx::query_scalar("select count(*) from attempts where launch_id = $1")
+        .bind(launch.id)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(attempts as usize, AUTOMATED * (ATTEMPTS + 1));
 }

@@ -10,10 +10,24 @@ const LEVEL: i32 = 3;
 /// Largest decompressed document accepted when reading back.
 pub const MAX_DECODED: u64 = 512 * 1024 * 1024;
 
+thread_local! {
+    /// A compression context per thread: creating one for every document costs more than
+    /// compressing a small one.
+    static COMPRESSOR: std::cell::RefCell<Option<zstd::bulk::Compressor<'static>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 /// JSON then zstd.
 pub fn encode<T: Serialize>(v: &T) -> anyhow::Result<Vec<u8>> {
     let json = serde_json::to_vec(v)?;
-    Ok(zstd::bulk::compress(&json, LEVEL)?)
+    COMPRESSOR.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.is_none() {
+            *c = Some(zstd::bulk::Compressor::new(LEVEL)?);
+        }
+        let z = c.as_mut().expect("set above").compress(&json)?;
+        Ok(z)
+    })
 }
 
 /// zstd then JSON, bounded by [`MAX_DECODED`].

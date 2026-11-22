@@ -304,6 +304,9 @@ impl<'c> Purge<'c> {
     /// Deletes these launches (at most `n`) and everything under them.
     pub(crate) async fn launches(&mut self, launches: &[Uuid]) -> anyhow::Result<()> {
         self.launch_contents(launches, true).await?;
+        // Not one of the launch leaves: the log budget stays while only the contents go.
+        self.leaves(leaf("launch_log_bytes"), "launch_id", launches)
+            .await?;
         self.exec("delete from launches where id = any($1)".into(), launches)
             .await?;
         Ok(())

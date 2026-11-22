@@ -7,6 +7,31 @@ version has migrated the schema.
 
 This page lists what needs attention per release.
 
+## Next release: faster Kafka writers
+
+The writers of Kafka mode (and ingest in `direct` mode) store results and logs with far fewer statements and
+locks; see [Kafka writer](scaling.md#kafka-writer). Things to know before upgrading:
+
+### Migrations
+
+| Migration | Does |
+|---|---|
+| `0101_streaming_log_bytes` | Table `launch_log_bytes`: the log byte budget of a launch (`FASTPROOF_LOG_MAX_BYTES_PER_LAUNCH`) moves off the launch row, so log requests no longer wait for results being stored for the same launch. The table's foreign key briefly locks `launches` against writes; the migration gives up after 5 seconds of waiting for that lock and runs again at the next start |
+| `0102_streaming_log_bytes_copy` | Copies the budget used so far from `launches.log_bytes` into the new table |
+
+During the rolling update, replicas of the previous version keep charging `launches.log_bytes` while new
+ones charge `launch_log_bytes`, so a launch that receives logs from both may take up to twice its log budget
+until the old replicas are gone. Rolling back leaves the previous version counting from what it charged
+before the upgrade. `launches.log_bytes` is no longer written and will be dropped in a later release.
+
+### Kafka compression
+
+FastProof now produces its records with Snappy instead of LZ4: the writers read Snappy batches noticeably
+faster, at a few percent more space on the brokers (6 % for log lines, 18 % for results in our tests).
+FastProof reads every codec, so records produced before the upgrade are read as before. If anything outside
+FastProof consumes the `events` topic (or the ingest topics), make sure its Kafka client has the Snappy
+codec; most do, but some need a plugin (for example KafkaJS).
+
 ## Test management release
 
 The release after 0.1.x adds [test cases](../guide/test-management.md),

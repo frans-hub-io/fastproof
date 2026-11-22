@@ -472,7 +472,7 @@ async fn trusted_producer_records_are_checked() {
         .await
         .unwrap();
     tokio::time::sleep(Duration::from_secs(5)).await;
-    let used: i64 = sqlx::query_scalar("select log_bytes from launches where id = $1")
+    let used: i64 = sqlx::query_scalar("select bytes from launch_log_bytes where launch_id = $1")
         .bind(lid)
         .fetch_one(&db.pool)
         .await

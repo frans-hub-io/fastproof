@@ -115,6 +115,7 @@ begin
             select gen_random_uuid(), a.id, l, 'text/plain' from attachments a where a.project_id = p;
         insert into attempt_log_chunks (project_id, launch_id, result_key, attempt, first_seq, last_seq, line_count, bytes, lines_z)
             values (p, l, 'r', 1, 1, 2, 2, 2, '\x00'), (p, l, 'r', 1, 3, 4, 2, 2, '\x00');
+        insert into launch_log_bytes (launch_id, bytes) values (l, 4);
         insert into launch_gates (launch_id, project_id) values (l, p);
         insert into case_sync_queue (launch_id) values (l);
     end loop;

@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use fastproof_store::ingest::{NewAttempt, TX_ATTEMPTS, retry_pause, retryable};
+use fastproof_store::ingest::{NewAttempt, TX_ATTEMPTS, launch_maybe_gone, retry_pause, retryable};
 use fastproof_store::logs::LogLine;
 use fastproof_store::stream::WriterLaunch;
 use fastproof_stream::Kafka;
@@ -75,6 +75,22 @@ impl Writer {
             cache.insert(key, l.clone());
         }
         Ok(l)
+    }
+
+    /// After an error that may mean a launch was deleted: forgets the cached launches and
+    /// returns those of `ids` that no longer exist. Their records are dropped (`unknown_launch`)
+    /// instead of failing the batch again and again, which would stop the partition.
+    async fn gone(&self, topic: &str, ids: &[(String, Uuid)]) -> anyhow::Result<Vec<Uuid>> {
+        let mut out = Vec::new();
+        for (project, id) in ids {
+            self.launches.lock().await.remove(&(project.clone(), *id));
+            if self.s.store.writer_launch(project, *id).await?.is_none() {
+                tracing::info!(launch = %id, "launch deleted while its records were written; dropping them");
+                rejected(topic, "unknown_launch");
+                out.push(*id);
+            }
+        }
+        Ok(out)
     }
 
     async fn results(
@@ -144,22 +160,43 @@ impl Writer {
                 work.push((wl.clone(), upload, attempts, std::mem::take(&mut used)));
             }
         }
+        let mut dropped: Vec<Uuid> = Vec::new();
         for (wl, _, _, used) in &work {
-            if !used.is_empty() {
-                self.s.store.link_attachments(used, wl.launch.id).await?;
+            if !used.is_empty()
+                && let Err(e) = self.s.store.link_attachments(used, wl.launch.id).await
+            {
+                let key = (wl.launch.project_key.clone(), wl.launch.id);
+                if !launch_maybe_gone(&e) || self.gone(&ctx.topic, &[key]).await?.is_empty() {
+                    return Err(e);
+                }
+                dropped.push(wl.launch.id);
             }
         }
+        work.retain(|w| !dropped.contains(&w.0.launch.id));
         // One transaction per launch (and upload), the last one with the offset: a transaction
         // that touched several launches would take the shared test case and series locks of
         // one launch after the per-series locks of another and could deadlock with other
         // partitions. A batch replayed after a crash between them is absorbed by client keys.
         let mut accepted = 0;
         let last = work.len();
+        let mut committed = false;
         for (i, (wl, upload, attempts, _)) in work.into_iter().enumerate() {
             let offset = (i + 1 == last).then_some((next, hwm));
-            accepted += self.persist(ctx, &wl, upload, attempts, offset).await?;
+            match self.persist(ctx, &wl, upload, attempts, offset).await {
+                Ok(n) => {
+                    accepted += n;
+                    committed |= offset.is_some();
+                }
+                Err(e) if launch_maybe_gone(&e) => {
+                    let key = (wl.launch.project_key.clone(), wl.launch.id);
+                    if self.gone(&ctx.topic, &[key]).await?.is_empty() {
+                        return Err(e);
+                    }
+                }
+                Err(e) => return Err(e),
+            }
         }
-        if last == 0 {
+        if !committed {
             ctx.commit(next, Some(hwm)).await?;
         }
         metrics::counter!("fastproof_results_ingested_total", "source" => "kafka")
@@ -295,6 +332,17 @@ impl Writer {
             match r {
                 Err(e) if attempt < TX_ATTEMPTS && retryable(&e).is_some() => {
                     retry_pause("writer_logs", &e, attempt).await
+                }
+                Err(e) if launch_maybe_gone(&e) => {
+                    let keys: Vec<(String, Uuid)> = resolved
+                        .iter()
+                        .map(|(wl, _)| (wl.launch.project_key.clone(), wl.launch.id))
+                        .collect();
+                    let gone = self.gone(&ctx.topic, &keys).await?;
+                    if gone.is_empty() {
+                        return Err(e);
+                    }
+                    resolved.retain(|(wl, _)| !gone.contains(&wl.launch.id));
                 }
                 r => break r?,
             }

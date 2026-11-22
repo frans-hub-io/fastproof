@@ -2,7 +2,7 @@
 //! attempts, transitions and flakiness against earlier runs, rules, default defects, mutes,
 //! the fingerprint catalog and the per-series statistics.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
@@ -136,9 +136,9 @@ fn is_default(d: &Defect) -> bool {
 /// History rows: series, status, launch creation time.
 type HistoryRow = (Uuid, String, DateTime<Utc>);
 
-/// Past statuses of series on a branch (newest first), from raw results; falls back to the
-/// series statistics when raw history is gone.
-#[allow(clippy::too_many_arguments)]
+/// Past statuses of series on a branch (newest first), from raw results. Series whose raw
+/// history is gone are returned apart: they fall back to the series statistics
+/// ([`with_stats_fallback`]).
 pub(crate) async fn past_statuses(
     conn: &mut PgConnection,
     project_id: Uuid,
@@ -147,29 +147,83 @@ pub(crate) async fn past_statuses(
     exclude_launch: Uuid,
     branch: Option<&str>,
     depth: i64,
-    stats: &HashMap<Uuid, SeriesStatsRow>,
-) -> anyhow::Result<HashMap<Uuid, Vec<Status>>> {
-    let rows: Vec<HistoryRow> = sqlx::query_as(
-        "select s.sid, h.status, h.launch_created_at from unnest($1::uuid[]) as s(sid) \
-         cross join lateral (select r.status, r.launch_created_at from results r \
-           join launches l on l.id = r.launch_id \
+) -> anyhow::Result<(HashMap<Uuid, Vec<Status>>, Vec<Uuid>)> {
+    // The latest results of each series first (an ordered index scan per series), then which
+    // of their few launches count (branch, not debug). Joining every result to its launch
+    // inside the scan let PostgreSQL probe every launch of the branch for every series when
+    // the statistics were not fresh (a busy writer took 200 ms per batch). A series whose
+    // fetched rows were cut by the limit and partly dropped by the launch filter may have
+    // more history further back: those few series are read again exactly.
+    let rows: Vec<(Uuid, String, DateTime<Utc>, Uuid)> = sqlx::query_as(
+        "select s.sid, r.status, r.launch_created_at, r.launch_id from unnest($1::uuid[]) as s(sid) \
+         cross join lateral (select r.status, r.launch_created_at, r.launch_id from results r \
            where r.series_id = s.sid and r.project_id = $2 and r.launch_created_at < $3 \
-             and r.launch_id <> $4 and not l.debug and l.branch is not distinct from $5 \
-           order by r.launch_created_at desc limit $6) h",
+             and r.launch_id <> $4 \
+           order by r.launch_created_at desc limit $5) r",
     )
     .bind(series)
     .bind(project_id)
     .bind(before)
     .bind(exclude_launch)
-    .bind(branch)
     .bind(depth)
     .fetch_all(&mut *conn)
     .await?;
+    let mut launches: Vec<Uuid> = rows.iter().map(|r| r.3).collect();
+    launches.sort_unstable();
+    launches.dedup();
+    let counted: HashSet<Uuid> = if launches.is_empty() {
+        HashSet::new()
+    } else {
+        sqlx::query_scalar::<_, Uuid>(
+            "select id from launches where id = any($1) and not debug and branch is not distinct from $2",
+        )
+        .bind(&launches)
+        .bind(branch)
+        .fetch_all(&mut *conn)
+        .await?
+        .into_iter()
+        .collect()
+    };
+    let mut fetched: HashMap<Uuid, i64> = HashMap::new();
     let mut by: HashMap<Uuid, Vec<(DateTime<Utc>, Status)>> = HashMap::new();
-    for (s, st, at) in rows {
-        by.entry(s)
-            .or_default()
-            .push((at, Status::parse_lenient(&st)));
+    for (s, st, at, launch) in rows {
+        *fetched.entry(s).or_default() += 1;
+        if counted.contains(&launch) {
+            by.entry(s)
+                .or_default()
+                .push((at, Status::parse_lenient(&st)));
+        }
+    }
+    let cut: Vec<Uuid> = fetched
+        .iter()
+        .filter(|(s, n)| **n >= depth && by.get(*s).map_or(0, |v| v.len() as i64) < depth)
+        .map(|(s, _)| *s)
+        .collect();
+    if !cut.is_empty() {
+        let rows: Vec<HistoryRow> = sqlx::query_as(
+            "select s.sid, h.status, h.launch_created_at from unnest($1::uuid[]) as s(sid) \
+             cross join lateral (select r.status, r.launch_created_at from results r \
+               join launches l on l.id = r.launch_id \
+               where r.series_id = s.sid and r.project_id = $2 and r.launch_created_at < $3 \
+                 and r.launch_id <> $4 and not l.debug and l.branch is not distinct from $5 \
+               order by r.launch_created_at desc limit $6) h",
+        )
+        .bind(&cut)
+        .bind(project_id)
+        .bind(before)
+        .bind(exclude_launch)
+        .bind(branch)
+        .bind(depth)
+        .fetch_all(&mut *conn)
+        .await?;
+        for s in &cut {
+            by.remove(s);
+        }
+        for (s, st, at) in rows {
+            by.entry(s)
+                .or_default()
+                .push((at, Status::parse_lenient(&st)));
+        }
     }
     let missing: Vec<Uuid> = series
         .iter()
@@ -194,6 +248,7 @@ pub(crate) async fn past_statuses(
         .collect()
     };
     let mut out = HashMap::new();
+    let mut gone = Vec::new();
     for s in series {
         let h = match by.remove(s) {
             Some(mut v) => {
@@ -201,22 +256,39 @@ pub(crate) async fn past_statuses(
                 v.into_iter().map(|x| x.1).collect()
             }
             None if elsewhere.contains(s) => Vec::new(),
-            None => stats
-                .get(s)
-                .map(|st| {
-                    let mut v = stats::decode(&st.last_statuses);
-                    if st.last_launch_id == Some(exclude_launch) && !v.is_empty() {
-                        v.pop();
-                    }
-                    v.reverse();
-                    v.truncate(depth as usize);
-                    v
-                })
-                .unwrap_or_default(),
+            None => {
+                gone.push(*s);
+                continue;
+            }
         };
         out.insert(*s, h);
     }
-    Ok(out)
+    Ok((out, gone))
+}
+
+/// Completes [`past_statuses`] with the statistics of the series whose raw history is gone.
+pub(crate) fn with_stats_fallback(
+    (mut out, gone): (HashMap<Uuid, Vec<Status>>, Vec<Uuid>),
+    stats: &HashMap<Uuid, SeriesStatsRow>,
+    exclude_launch: Uuid,
+    depth: i64,
+) -> HashMap<Uuid, Vec<Status>> {
+    for s in gone {
+        let h = stats
+            .get(&s)
+            .map(|st| {
+                let mut v = stats::decode(&st.last_statuses);
+                if st.last_launch_id == Some(exclude_launch) && !v.is_empty() {
+                    v.pop();
+                }
+                v.reverse();
+                v.truncate(depth as usize);
+                v
+            })
+            .unwrap_or_default();
+        out.insert(s, h);
+    }
+    out
 }
 
 /// A result row the hook works on.
@@ -324,8 +396,14 @@ pub async fn after_persist_deferred(
     series_sorted.sort();
     series_sorted.dedup();
 
-    let stats_rows = stats::lock_rows(conn, &series_sorted).await?;
+    // The statistics rows of the series are shared by every launch running the same tests,
+    // and their locks are held until commit: they are taken last, right before the rows are
+    // written, so such launches wait for each other only that long. The history is read
+    // before, next to a snapshot of those rows; series whose row another launch changed in
+    // between get their history read again under the lock (`recheck` below), so the verdicts
+    // match the order in which the launches commit.
     let depth = settings.flaky.depth();
+    let seen = stats::read_rows(conn, &series_sorted).await?;
     let history = past_statuses(
         conn,
         launch.project_id,
@@ -334,9 +412,9 @@ pub async fn after_persist_deferred(
         launch.id,
         branch.as_deref(),
         depth,
-        &stats_rows,
     )
     .await?;
+    let history = with_stats_fallback(history, &seen, launch.id, depth);
     let (by_id, by_group) = type_refs(conn, launch.project_id).await?;
     let mut mutes: HashMap<Uuid, Option<DateTime<Utc>>> = sqlx::query_as::<_, (Uuid, Option<DateTime<Utc>>)>(
         "select series_id, until from series_mutes where series_id = any($1) and (until is null or until > now())",
@@ -365,15 +443,7 @@ pub async fn after_persist_deferred(
     for (id, series_id, test_case_id, status_s, message, defect, latest, fp, trace, manual) in &rows
     {
         let status = Status::parse_lenient(status_s);
-        let past = history.get(series_id).cloned().unwrap_or_default();
-        let transition = status_transition(status, &past).map(|t| {
-            serde_json::to_value(t)
-                .ok()
-                .and_then(|v| v.as_str().map(str::to_string))
-                .unwrap_or_default()
-        });
-        let hist_opt: Vec<Option<Status>> = past.iter().copied().map(Some).collect();
-        let flaky = !manual && is_flaky(status, &hist_opt, &opts);
+        let (transition, flaky) = verdict(status, *manual, history.get(series_id), &opts);
         let existing: Option<Defect> = defect.clone().and_then(|d| serde_json::from_value(d).ok());
         let mut new_defect = existing.clone();
         if !is_protected(existing.as_ref()) {
@@ -471,6 +541,30 @@ pub async fn after_persist_deferred(
     if !new_mutes.is_empty() {
         upsert_mutes(conn, launch.project_id, &new_mutes, SYSTEM, false).await?;
     }
+    let create = (!debug).then_some(launch.project_id);
+    let stats_rows = stats::lock_rows(conn, &series_sorted, create).await?;
+    let changed: Vec<Uuid> = series_sorted
+        .iter()
+        .filter(|id| {
+            stats_rows.get(*id).cloned().unwrap_or_default()
+                != seen.get(*id).cloned().unwrap_or_default()
+        })
+        .copied()
+        .collect();
+    if !changed.is_empty() {
+        recheck(
+            conn,
+            launch,
+            branch.as_deref(),
+            depth,
+            &opts,
+            &rows,
+            &changed,
+            &stats_rows,
+            &mut stat_updates,
+        )
+        .await?;
+    }
     if !catalog.is_empty() {
         let fps: Vec<String> = catalog.keys().cloned().collect();
         let msgs: Vec<String> = catalog.values().map(|v| v.0.clone()).collect();
@@ -490,6 +584,87 @@ pub async fn after_persist_deferred(
         stats::record(conn, launch, &stat_updates, &stats_rows, &settings, now).await?;
     }
     Ok(hits)
+}
+
+/// Transition and cross-run flakiness of a result from the history of its series.
+fn verdict(
+    status: Status,
+    manual: bool,
+    past: Option<&Vec<Status>>,
+    opts: &fastproof_model::FlakyOptions,
+) -> (Option<String>, bool) {
+    let past: &[Status] = past.map_or(&[], |v| v.as_slice());
+    let transition = status_transition(status, past).map(|t| {
+        serde_json::to_value(t)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_default()
+    });
+    let hist_opt: Vec<Option<Status>> = past.iter().copied().map(Some).collect();
+    let flaky = !manual && is_flaky(status, &hist_opt, opts);
+    (transition, flaky)
+}
+
+/// Series whose statistics another launch changed while this one was analysed: their
+/// history is read again, now that their rows are locked (that launch has committed), and
+/// the transition and flakiness of this launch's results and statistics follow it.
+#[allow(clippy::too_many_arguments)]
+async fn recheck(
+    conn: &mut PgConnection,
+    launch: &LaunchRef,
+    branch: Option<&str>,
+    depth: i64,
+    opts: &fastproof_model::FlakyOptions,
+    rows: &[ResultRow],
+    changed: &[Uuid],
+    stats_rows: &HashMap<Uuid, SeriesStatsRow>,
+    stat_updates: &mut [(Uuid, Status, bool)],
+) -> anyhow::Result<()> {
+    metrics::counter!("fastproof_analysis_rechecked_series_total").increment(changed.len() as u64);
+    let history = past_statuses(
+        conn,
+        launch.project_id,
+        changed,
+        launch.created_at,
+        launch.id,
+        branch,
+        depth,
+    )
+    .await?;
+    let history = with_stats_fallback(history, stats_rows, launch.id, depth);
+    let changed: std::collections::HashSet<Uuid> = changed.iter().copied().collect();
+    let mut ids = Vec::new();
+    let mut transitions = Vec::new();
+    let mut flakies = Vec::new();
+    let mut flaky_of: HashMap<Uuid, bool> = HashMap::new();
+    for (id, series_id, _, status_s, _, _, _, _, _, manual) in rows {
+        if !changed.contains(series_id) {
+            continue;
+        }
+        let status = Status::parse_lenient(status_s);
+        let (transition, flaky) = verdict(status, *manual, history.get(series_id), opts);
+        ids.push(*id);
+        transitions.push(transition);
+        flakies.push(flaky);
+        flaky_of.insert(*series_id, flaky);
+    }
+    sqlx::query(
+        "update results r set transition = t.tr, flaky = t.fl \
+         from unnest($1::uuid[], $2::text[], $3::bool[]) as t(i, tr, fl) \
+         where r.id = t.i and r.launch_created_at = $4",
+    )
+    .bind(&ids)
+    .bind(&transitions)
+    .bind(&flakies)
+    .bind(launch.created_at)
+    .execute(&mut *conn)
+    .await?;
+    for (series, _, flaky) in stat_updates.iter_mut() {
+        if let Some(f) = flaky_of.get(series) {
+            *flaky = *f;
+        }
+    }
+    Ok(())
 }
 
 /// Adds or extends series mutes (`None` until = no end). Rows are written in series order.

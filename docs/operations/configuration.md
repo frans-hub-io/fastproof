@@ -30,7 +30,7 @@ that starts before its database is not restarted by its liveness probe and gets 
 | `FASTPROOF_DATABASE_CA_FILE` | none | CA bundle to verify the PostgreSQL server certificate |
 | `FASTPROOF_DATABASE_MAX_CONNECTIONS` | `20` | Connection pool size per replica |
 | `PGSSLMODE`, `PGSSLROOTCERT` | none | Standard libpq variables, used when the URL sets no `sslmode` |
-| `FASTPROOF_DATABASE_STATEMENT_TIMEOUT_SECONDS` | `120` | Longest SQL statement on pooled connections; `0` turns it off. Migrations, index builds and the purge of deleted projects run without it |
+| `FASTPROOF_DATABASE_STATEMENT_TIMEOUT_SECONDS` | `120` | Longest SQL statement on pooled connections; `0` turns it off. Migrations and index builds run without it; the purge of deleted projects runs under it in short statements of at most 5 000 rows each, and a purge that stops continues on the next run |
 | `FASTPROOF_DATABASE_INGEST_RESERVE` | a quarter of the pool, at least 1 | Connections that heavy reads (dashboard, log search, similar failures, rule dry runs, stored log reads) leave free for ingest and workers; must be below `FASTPROOF_DATABASE_MAX_CONNECTIONS` |
 | `FASTPROOF_DATABASE_CONNECT_TIMEOUT_SECONDS` | `300` | How long `serve` and `migrate` wait at start for PostgreSQL (and, with `FASTPROOF_MIGRATE=off`, for the migrations) before they exit with an error; every attempt is logged. `0` tries once. 0 to 86400 |
 | `FASTPROOF_MIGRATE` | `auto` | `auto` applies migrations at start under an advisory lock; `off` expects them applied by `fastproof migrate` (the Helm chart runs it as a Job) |

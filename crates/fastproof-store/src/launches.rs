@@ -468,7 +468,9 @@ impl Store {
     }
 
     /// Deletes a launch and everything in it (attachments are collected later when nothing
-    /// links them). Returns false when it does not exist.
+    /// links them), in one transaction: run items (a manual run may have many, each with step
+    /// results) go in bounded chunks after their children, so no cascade grows with the run.
+    /// Returns false when it does not exist.
     pub async fn delete_launch(
         &self,
         project_id: Uuid,
@@ -483,22 +485,11 @@ impl Store {
         .bind(id)
         .fetch_optional(&mut *tx)
         .await?;
-        let Some(created) = created else {
+        if created.is_none() {
             return Ok(false);
-        };
-        sqlx::query("delete from attempts where launch_id = $1 and launch_created_at = $2")
-            .bind(id)
-            .bind(created)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query("delete from results where launch_id = $1 and launch_created_at = $2")
-            .bind(id)
-            .bind(created)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query("delete from launches where id = $1")
-            .bind(id)
-            .execute(&mut *tx)
+        }
+        crate::purge::Purge::new(&mut tx, self.purge_batch, crate::purge::Mode::Atomic)
+            .launches(&[id])
             .await?;
         sqlx::query(
             "update projects set launch_count = greatest(launch_count - 1, 0), updated_at = now() where id = $1",

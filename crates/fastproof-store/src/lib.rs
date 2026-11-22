@@ -19,6 +19,7 @@ pub mod launches;
 pub mod logs;
 pub mod maintenance;
 pub mod projects;
+pub mod purge;
 pub mod results;
 pub mod scheduler;
 pub mod search;
@@ -154,11 +155,27 @@ pub async fn check_schema(pool: &PgPool) -> anyhow::Result<()> {
 #[derive(Clone, Debug)]
 pub struct Store {
     pool: PgPool,
+    purge_batch: i64,
 }
 
 impl Store {
     pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            purge_batch: purge::PURGE_BATCH,
+        }
+    }
+
+    /// Sets how many rows one statement of a large delete may touch (default
+    /// [`purge::PURGE_BATCH`]; at least 1).
+    pub fn with_purge_batch(mut self, n: i64) -> Self {
+        self.purge_batch = n.max(1);
+        self
+    }
+
+    /// Rows one statement of a large delete may touch.
+    pub fn purge_batch(&self) -> i64 {
+        self.purge_batch
     }
 
     pub fn pool(&self) -> &PgPool {

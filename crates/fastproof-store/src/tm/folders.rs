@@ -470,7 +470,8 @@ impl Store {
     /// Deletes a folder. A folder with subfolders or (not archived) cases needs `mode`:
     /// `moveUp` moves its subfolders and cases to its parent, `archiveCases` archives every
     /// case of the subtree and deletes the subfolders. Moved and archived cases get a new
-    /// revision and `updated_by = by`.
+    /// revision and `updated_by = by`. Cases left in deleted folders (archived ones) lose the
+    /// folder, and the folders go deepest first, in bounded chunks (no cascade over the tree).
     pub async fn delete_case_folder(
         &self,
         project_id: Uuid,
@@ -553,10 +554,8 @@ impl Store {
                     - 1;
             }
         }
-        sqlx::query("delete from case_folders where project_id = $1 and id = $2")
-            .bind(project_id)
-            .bind(f.id)
-            .execute(&mut *tx)
+        crate::purge::Purge::new(&mut tx, self.purge_batch(), crate::purge::Mode::Atomic)
+            .folder_tree(project_id, f.id)
             .await?;
         out.folders += 1;
         tx.commit().await?;

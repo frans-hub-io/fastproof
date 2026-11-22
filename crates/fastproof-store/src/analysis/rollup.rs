@@ -20,6 +20,7 @@ use uuid::Uuid;
 
 use super::settings::ProjectSettings;
 use crate::Store;
+use crate::purge::{Mode, Purge};
 
 /// Buckets of the duration histograms in `series_daily.duration_buckets`: bucket 0 holds
 /// durations under 10 ms, bucket `i` holds `[10·2^(i-1), 10·2^i)` ms, the last one the rest.
@@ -330,7 +331,9 @@ impl Store {
     /// of all projects, when every launch in them is rolled up, none is kept as important and
     /// no manual run in them is open. Remaining launch rows of such a month are deleted with
     /// them, except launches with a manual run: those stay (with their run items, marked
-    /// rolled up) and their run items lose the `result_id` of the dropped results.
+    /// rolled up) and their run items lose the `result_id` of the dropped results. The rows
+    /// under the deleted launches (uploads, containers, links, log chunks, ...) go first in
+    /// bounded steps, and the launch rows in chunks, so no statement cascades through a month.
     pub async fn drop_rolled_partitions(
         &self,
         projects: &[(Uuid, String, ProjectSettings)],
@@ -363,6 +366,28 @@ impl Store {
             if blockers > 0 {
                 continue;
             }
+            let gone: Vec<Uuid> = sqlx::query_scalar(
+                "select id from launches where created_at >= $1 and created_at < $2 \
+                 and manual_state is null order by id",
+            )
+            .bind(at_midnight(start))
+            .bind(at_midnight(end))
+            .fetch_all(&self.pool)
+            .await?;
+            let n = self.purge_batch;
+            let emptied = async {
+                let mut conn = self.pool.acquire().await?;
+                let mut p = Purge::new(&mut conn, n, Mode::Steps);
+                for chunk in gone.chunks(n as usize) {
+                    p.launch_contents(chunk, false).await?;
+                }
+                Ok::<_, anyhow::Error>(())
+            }
+            .await;
+            if let Err(e) = emptied {
+                tracing::warn!(partition = %name, error = %e, "emptying the launches of a rolled-up partition failed; retried on the next run");
+                continue;
+            }
             let suffix = &name["results".len()..];
             let attempts = format!("attempts{suffix}");
             let mut tx = self.pool.begin().await?;
@@ -374,6 +399,17 @@ impl Store {
                     sqlx::query(sqlx::AssertSqlSafe(format!("drop table if exists {t}")))
                         .execute(&mut *tx)
                         .await?;
+                }
+                for chunk in gone.chunks(n as usize) {
+                    sqlx::query(
+                        "delete from launches where id = any($1) and created_at >= $2 and created_at < $3 \
+                         and manual_state is null",
+                    )
+                    .bind(chunk)
+                    .bind(at_midnight(start))
+                    .bind(at_midnight(end))
+                    .execute(&mut *tx)
+                    .await?;
                 }
                 sqlx::query(
                     "delete from launches where created_at >= $1 and created_at < $2 \

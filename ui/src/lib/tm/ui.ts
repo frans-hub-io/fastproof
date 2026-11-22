@@ -1,4 +1,4 @@
-import type { CaseFolder, RunStatus, StepStatus } from '../../api/tm';
+import type { CaseFolder, Person, RunStatus, StepStatus } from '../../api/tm';
 
 const UUID = /^[0-9a-zA-Z-]{1,64}$/;
 
@@ -48,4 +48,53 @@ export function attachmentIdOf(src: string | null, project: string): string | nu
     return UUID.test(id) ? id : null;
   }
   return null;
+}
+
+export interface DefectInfo {
+  label: string;
+  comment: string;
+  issue: string;
+  url: string | null;
+  by: string;
+}
+
+function str(v: unknown): string {
+  return typeof v === 'string' ? v : '';
+}
+
+/** Reads the defect of a run item: a triage defect (`name`, `issueKey`, `issueUrl`) or a quick defect (`issue: {url, key}`). */
+export function defectInfo(d: unknown): DefectInfo | null {
+  if (!d || typeof d !== 'object') return null;
+  const o = d as Record<string, unknown>;
+  const issue = o.issue && typeof o.issue === 'object' ? (o.issue as Record<string, unknown>) : {};
+  const url = str(o.issueUrl) || str(issue.url);
+  return {
+    label: str(o.name) || str(o.group) || 'Defect',
+    comment: str(o.comment),
+    issue: str(o.issueKey) || str(issue.key) || url,
+    url: /^https?:\/\//i.test(url) ? url : null,
+    by: str(o.by),
+  };
+}
+
+/** Who saved a revision: the principal, or "you (another tab)" when it was the signed-in user. */
+export function actorLabel(by: string | null | undefined, me: string | undefined): string {
+  if (!by) return 'someone';
+  return me && by === me ? 'you (another tab)' : by;
+}
+
+/** Whether `name` is one of the people the server knows for the project (exact principal match). */
+export function isKnownPerson(people: readonly Person[] | undefined, name: string): boolean {
+  const n = name.trim();
+  return !n || !!people?.some((p) => p.principal === n);
+}
+
+/** Markdown source as plain text for print: emphasis and code marks go, links keep their text and URL, images their alt text. */
+export function markdownText(md: string): string {
+  return md
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '$1 ($2)')
+    .replace(/(\*\*|__)(.+?)\1/g, '$2')
+    .replace(/(^|[^*\w])\*(?!\s)([^*]+?)\*(?!\w)/g, '$1$2')
+    .replace(/`([^`]+)`/g, '$1');
 }

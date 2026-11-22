@@ -1,7 +1,7 @@
 import { Anchor, Autocomplete, Badge, Button, Card, Group, Select, SimpleGrid, Stack, Switch, Text, TextInput, Tooltip } from '@mantine/core';
 import { EmptyState } from '@franshub/ui-shell';
 import { useDebouncedValue } from '@mantine/hooks';
-import { IconGitBranch, IconGitCommit, IconSearch, IconServer2, IconX } from '@tabler/icons-react';
+import { IconGitBranch, IconGitCommit, IconHandFinger, IconSearch, IconServer2, IconX } from '@tabler/icons-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
 import { useProjectEvents, type LiveState } from '../api/events';
@@ -41,6 +41,20 @@ export function LaunchProgress({ launch }: { launch: Launch }) {
   );
 }
 
+/** Marks a launch that carries a manual run: open runs show how many cases are left. */
+export function ManualBadge({ manual }: { manual: NonNullable<Launch['manual']> }) {
+  const left = manual.untested + manual.inProgress;
+  const open = manual.state === 'open';
+  const text = open ? (left > 0 ? `manual: ${String(left)} left` : 'manual: open') : 'manual: closed';
+  return (
+    <Tooltip label={open ? `Manual run open: ${String(manual.total - left)} of ${String(manual.total)} cases finished` : `Manual run closed: ${String(manual.total)} cases`}>
+      <Badge size="xs" variant={open ? 'light' : 'outline'} color={open ? 'blue' : 'gray'} leftSection={<IconHandFinger size={10} aria-hidden />} style={{ flex: 'none' }} data-testid="launch-manual" data-state={manual.state} tabIndex={0}>
+        {text}
+      </Badge>
+    </Tooltip>
+  );
+}
+
 function LaunchRow({ project, launch, index, selected, onSelect }: { project: string; launch: Launch; index: number; selected: boolean; onSelect: (i: number) => void }) {
   const to = `/p/${project}/launches/${launch.id}`;
   return (
@@ -66,6 +80,7 @@ function LaunchRow({ project, launch, index, selected, onSelect }: { project: st
                 debug
               </Badge>
             )}
+            {launch.manual && <ManualBadge manual={launch.manual} />}
             {launch.uploads.failed > 0 && (
               <Badge size="xs" variant="light" color="red" style={{ flex: 'none' }}>
                 {launch.uploads.failed} upload failed

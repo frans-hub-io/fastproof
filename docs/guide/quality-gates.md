@@ -39,7 +39,7 @@ A rule holds when `actual op value`, with `op` one of `gt`, `gte`, `lt`, `lte`:
 | `newFailures` | Failed or broken results whose test was not failing in the comparison launch |
 | `passRate` | Percent of passed results among executed ones (total minus skipped), 0 to 100 |
 | `flaky` | Results that were flaky within the run (passed after a retry) |
-| `duration` | Launch duration in seconds |
+| `duration` | Launch duration in seconds; for a launch with a [manual run](manual-runs.md#combined-launches-and-closing-a-run), the duration of its automated part |
 
 Without `baseline`, `newFailures` compares with the previous launch of the same branch. With
 `baseline` (a branch name), `newFailures` compares with the newest finished launch of that branch, and the

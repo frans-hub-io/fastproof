@@ -70,7 +70,8 @@ export type NotificationTarget = Omit<S['Notification'], 'kind' | 'on'> & {
 
 export type IssueTrackerType = 'jira' | 'gitlab' | 'github';
 
-export type IssueTracker = Omit<S['IssueTracker'], 'type'> & { type: IssueTrackerType };
+/** `projectId` and `issueTypeId` (Jira only) let the quick issue link open Jira's prefilled create screen. */
+export type IssueTracker = Omit<S['IssueTracker'], 'type'> & { type: IssueTrackerType; projectId?: string | null; issueTypeId?: string | null };
 
 export type VcsSettings = Omit<S['VcsSettings'], 'provider'> & { provider: 'gitlab' | 'github' };
 

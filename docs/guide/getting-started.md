@@ -1,7 +1,8 @@
 # Getting started
 
 This page runs FastProof on your machine, creates a project and uploads a first report. It takes about ten
-minutes. You need Docker (or Podman) and `openssl`.
+minutes. You need Docker (or Podman) and `openssl`; the `curl` examples here and in the guides read JSON
+answers with [`jq`](https://jqlang.org/).
 
 FastProof always needs PostgreSQL (14 to 18; 18 is recommended). Attachments go to an S3-compatible bucket or,
 for a single replica, to a directory.

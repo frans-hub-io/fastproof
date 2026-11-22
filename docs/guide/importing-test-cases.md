@@ -4,6 +4,12 @@ Bring an existing test case repository into FastProof from TestRail, Qase or All
 spreadsheet, and take it out again whenever you want. Imports and exports are in the UI (**Test cases →
 Import**, **Export**), in the API and in the CLI.
 
+!!! note "How the formats were checked"
+    The TestRail, Qase and Allure TestOps formats were built and tested against the columns and structures the
+    vendors document (and, for TestOps, its official migration script), not against real exports from those
+    tools. Each source below lists what could not be confirmed. Run a dry run first and check its report before
+    you apply an import.
+
 The examples on this page use:
 
 ```sh
@@ -39,7 +45,8 @@ Other options:
 | `mapping` | Generic CSV: which column fills which case field (see [Generic CSV](#generic-csv)) |
 | `stepsLayout` | `rows` (one row per step, a new case when the key changes) or `cells` (all steps of a case in one cell) |
 | `targetFolderId` | Folder under which the source's sections or suites are created; the top level when absent |
-| `unknownFieldValues` | A value that is not an option of a select field: `create` adds the option, `skip` drops the value, `fail` reports the row as an error |
+| `unknownFieldValues` | Required in the API (the CLI defaults to `skip`). A value that is not an option of a select field: `create` adds the option, `skip` drops the value, `fail` reports the row as an error. With `create`, source columns that match no case field are also created as fields (see [Unknown columns](#unknown-columns-and-custom-fields)) |
+| `status` | Optional, `draft` or `active`: every case the import creates gets it. Absent: each created case gets the status its source maps (TestOps, Qase and NDJSON statuses), else `active`. Updated cases keep the source's status, or their own. In the UI: **Status of new cases** |
 
 Formatting from the sources is converted to Markdown: bold, italic, code, code blocks, lists, links, images,
 tables, line breaks and paragraphs; any other HTML becomes plain text. Shared steps of a source are copied into
@@ -47,6 +54,31 @@ each case as ordinary steps with the tag `imported-shared-step`. Parameters of a
 description as text.
 
 One project runs one import at a time (`409 import_busy` otherwise), and an installation at most four.
+
+### Unknown columns and custom fields
+
+Columns of a source that match no case field (by key or name) are listed in the dry run report under
+`unknownFields`. With `unknownFieldValues: skip` or `fail` their values are left out. With
+`unknownFieldValues: create` (in the UI: **Create fields and options**), the import creates a custom field for
+each such column, at most 50 per import and up to the project's field limit. The field is named after the
+column (a parser key such as `automation_type` becomes "Automation type"), its key is derived from the name
+(`_2` on a collision, an `f_` prefix when it would not start with a letter), and its type follows the values:
+`select` with the seen values as options when the column has 1 to 50 distinct values of at most 200 bytes,
+`multiselect` when cells hold lists, `number` when every value is a number, otherwise `text`. So a default
+TestRail import keeps `Type`, `References`, `Estimate`, `Milestone`, `Automation Type` and the custom columns
+(`Component` maps to the built-in `component`). The report lists these fields under `createdFields` (a dry
+run lists the ones its apply will create), not under `unknownFields`; the apply creates them before the first
+batch. To control the type or name of a field, create it on the [Case fields](test-management.md#custom-fields)
+page before the import, or redirect the column to another field in the mapping.
+
+### Required fields and the status of imported cases
+
+A [required](test-management.md#custom-fields) custom field does not fail imported rows. An imported case
+that has no value for a required field (a default counts for new cases) is imported as `draft`, whatever
+status the source or the `status` option gives it, and the report lists it under `warnings` with the code
+`required_fields_missing` ("imported as draft: no value for …"). This also applies when an upsert updates a
+case, so a field made required later can turn an active case back into a draft. Fill in the value and
+activate the case later, for example with a bulk change.
 
 A file import is a `multipart/form-data` request with the fields `options` (the options above as JSON),
 `file` (the CSV, JSON or NDJSON file) and, optionally, `attachments` (a zip). Other fields are refused.
@@ -74,10 +106,11 @@ the columns that become custom fields (`field:<column>`), which you may redirect
 | `GET $api/imports/{id}` | Status (`queued`, `dry_run`, `ready`, `running`, `done`, `failed`, `cancelled`), progress `{done, total}` and the report |
 | `POST $api/imports/{id}/apply` | Applies a `ready` dry run; `409 job_not_ready` otherwise |
 | `DELETE $api/imports/{id}` | Cancels an import that is not finished (`409 job_finished` otherwise); batches applied already stay |
-| `GET $api/tm-jobs/{id}` | Any import, export or backfill job of the project (`cases:read`; an export only for its creator) |
+| `GET $api/tm-jobs/{id}` | Any import, export or backfill job of the project (`cases:read`; an import job needs `cases:import`, an export only for its creator) |
 
 The report has `create`, `update`, `skip` (matches skipped by `createOnly` and unchanged cases), `folders`,
-`unknownFields` (source fields without a case field; their values are left out), `unknownValues` (per field, the
+`createdFields` (fields the import creates), `warnings` (rows imported with a change, `{row, code, message}`), `unknownFields` (source fields without a case field whose values are
+left out, see [above](#unknown-columns-and-custom-fields)), `unknownValues` (per field, the
 values that are not options) and `errors` (`{row, code, message}`, the first 1000; `row` is the CSV row with the
 header as row 1, or the line of an NDJSON file). Row codes: `invalid_row` (unreadable row, cell over the limit),
 `invalid_case` (no name, invalid content), `invalid_markdown`, `limit_reached` (steps, depth, tags, folders,
@@ -159,8 +192,9 @@ WYSIWYG editor is converted to Markdown.
 | `Steps` and `Expected Result` (template "Test Case (Text)") | one step |
 | `Mission`, `Goals` (template "Exploratory Session") | the description |
 | `Steps (Shared step ID)` | the tag `imported-shared-step` |
-| `Priority`, `Type`, `References`, `Estimate`, `Milestone`, `Automation Type` | fields `priority`, `type`, `references`, `estimate`, `milestone`, `automation_type` |
-| any other column | a field of that name (matched to a case field by key or name) |
+| `Priority` | the built-in field `priority` |
+| `Type`, `References`, `Estimate`, `Milestone`, `Automation Type` | fields `type`, `references`, `estimate`, `milestone`, `automation_type`; they are not built in, so they are kept when the fields exist or when `unknownFieldValues: create` creates them (see [Unknown columns](#unknown-columns-and-custom-fields)) |
+| any other column | a field of that name (matched to a case field by key or name), created the same way |
 
 Not imported: `Section Depth`, `Section Description`, `Suite`, `Suite ID`, `Template`, `Created/Updated By/On`,
 `is_converted`. With separated steps, a row whose `ID` is empty or repeats the case above adds a step to it; with
@@ -314,7 +348,8 @@ The first line is a header: `{"format": "fastproof-cases", "version": 1, "projec
 "links", "tags", "fields", "automated", "fullNames", "attachments": [{name, source, oldId}]}`.
 
 - Into a project **without cases**, cases keep their numbers.
-- With `unknownFieldValues: create`, field definitions of the header that the project lacks are created.
+- With `unknownFieldValues: create`, field definitions of the header that the project lacks are created; the
+  report lists them as created.
 - Step ids are kept. Attachments come from a zip given with the import (the `attachments/` entries of a zip
   export); `attachment:<id>` images are rewritten to the new ids.
 - Code identities (`fullNames`) are not recreated: the first upload of the tests links them again through code
@@ -329,7 +364,10 @@ The first line is a header: `{"format": "fastproof-cases", "version": 1, "projec
 | `POST $api/cases/exports` `{format: "zip", filter, attachments: true}` | A background job that builds a zip with the cases and their attachments |
 
 Exports take the same filters as the case list (`folder`, `recursive`, `status`, `field`, `tag`, `q`, ...)
-and hold at most 50 000 cases; they need only `cases:read`.
+and hold at most 50 000 cases; they need only `cases:read`. Zip export jobs are limited: at most 2 queued or
+running per caller and project and 4 per project; a new one over that answers `409 export_busy` (see
+[Limits](../operations/limits.md#test-management)). Exports run in their own worker slots, so they never hold
+up imports.
 
 ```sh
 curl -fsS "$api/cases/export?format=ndjson&folder=$folder&recursive=true" -H "$auth" -o cases.ndjson

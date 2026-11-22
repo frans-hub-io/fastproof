@@ -18,6 +18,14 @@ GitHub Actions and Jenkins, so launches link back to the pipeline and history is
 `--no-ci` (or `FASTPROOF_NO_CI=true`) ignores those variables, for example when a job reports into a launch of
 its own rather than the pipeline's.
 
+From another CI system or a local run, name the branch yourself with `--branch` (on `fastproof upload`,
+`watch` and `launch start`); it also overrides the branch detected from CI. Branch-based features, such as
+[trusted branches](test-management.md#trusted-launches) of code sync and gate `branches`, use this value:
+
+```sh
+fastproof upload allure-results --branch main
+```
+
 Two ways to report:
 
 - **`fastproof upload <path>`** after the tests: uploads a directory or file (allure-results, JUnit XML,

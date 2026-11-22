@@ -102,6 +102,21 @@ over their size `400 invalid_markdown` with the field's `path`, and names `400`.
 | `FASTPROOF_TM_MAX_TAGS` | `50` | 1000 | Tags of one case (each at most 100 bytes) |
 | `FASTPROOF_TM_MAX_NAME_BYTES` | `500` | 4096 | Names of cases, folders, fields and plans |
 
+Fixed caps that are not settings:
+
+| Cap | Value | Answer |
+|---|---|---|
+| Zip export jobs queued or running | 2 per caller and project, 4 per project | `409 export_busy` (`details.limit`: `exportsPerCaller` or `exportsPerProject`) |
+| Pending AI suggestions per case | 20 | `409 limit_reached` (`maxPendingSuggestions`) |
+| One line of a Playwright trace read by `trace_actions` | 1 MiB | longer lines are skipped |
+
+Zip exports run in worker slots of their own, so a queue of exports never delays imports. Zip export
+creation, `trace_actions`, starting a plan launch, adding run items, changing plan items, plan sync, creating
+a plan with a filter and deleting a folder with a `mode` use the per-caller heavy slots
+(`FASTPROOF_HEAVY_QUERIES_PER_CALLER`; over it they answer `429`). Each change of a case stores a compressed
+snapshot; versions are kept for the life of the case (a bulk change writes a version only for the cases it
+actually changes), so plan storage for them like for the cases themselves.
+
 `FASTPROOF_TM_BACKFILL_DELAY` (default `10m`, at most `30d`; `0`, seconds, or a number with `s`, `m`, `h` or
 `d`) is how long after the upgrade the [backfill of cases](../guide/test-management.md#after-an-upgrade-cases-for-existing-tests)
 waits before it decides per project; projects with code sync off by then are skipped.

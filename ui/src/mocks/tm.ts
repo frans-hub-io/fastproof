@@ -38,13 +38,14 @@ import type {
 } from '../api/tm';
 import type { Launch, ResultSummary } from '../api/types';
 import { launchDef, launchResults, launchView, projectLaunches, testCaseHistory, type MockRole } from './fixtures';
-import { analyze, isImportant } from './stageC';
+import { analyze, isImportant, settingsOf } from './stageC';
 import {
   buildTmState,
   CODE_FIELDS,
   FALLBACK_PREVIEW,
   folderPathNames,
   ME,
+  PEOPLE,
   runItemFor,
   snapshotOf,
   subtreeIds,
@@ -160,6 +161,7 @@ function caseView(c: MockCase, key: string): Case {
     origin: c.origin,
     aiUnreviewed: c.aiUnreviewed,
     folder: folderView(c.folderId),
+    folderId: c.folderId,
     body: structuredClone(c.body),
     html: bodyHtml(c.body, key),
     fields: structuredClone(c.fields),
@@ -558,6 +560,29 @@ function manualLaunchView(id: string): Launch | null {
   return { ...base, counts, ...(m.planId ? { testPlanId: m.planId } : {}), ...(manual ? { manual } : {}) };
 }
 
+/** Launches of the project as the list route shows them: created plan launches first, every one with `manual` when it has a run. */
+export function tmLaunchList(key: string, base: Launch[]): Launch[] {
+  if (key !== TM_PROJECT) return base;
+  const created = [...st.createdLaunches.keys()].map((id) => manualLaunchView(id)).filter((l): l is Launch => !!l).sort((a, b) => b.number - a.number);
+  return [...created, ...base.map((l) => (st.manual.has(l.id) ? (manualLaunchView(l.id) ?? l) : l))];
+}
+
+/** `GET /people`: people bound to the project plus assignees and executors seen in its runs and plans. */
+function peopleOf(q: string): { principal: string; display?: string }[] {
+  const names = new Set<string>(PEOPLE);
+  for (const r of st.runItems) {
+    if (r.assignee) names.add(r.assignee);
+    if (r.executedBy) names.add(r.executedBy);
+  }
+  for (const p of st.plans) for (const it of p.items) if (it.assignee) names.add(it.assignee);
+  const t = q.trim().toLowerCase();
+  return [...names]
+    .filter((n) => !t || n.toLowerCase().includes(t))
+    .sort()
+    .slice(0, 100)
+    .map((principal) => (principal === ME ? { principal, display: 'Alex Doe' } : { principal }));
+}
+
 function emitRun(r: MockRunItem): void {
   emit('runItem.updated', { launchId: r.launchId, id: r.id, status: r.status, revision: r.revision });
   const manual = manualCounts(r.launchId);
@@ -759,7 +784,7 @@ function keyKind(format: ImportFormat): 'testrail' | 'qase' | 'testops' | 'exter
 }
 
 function importReport(rows: ImportRow[], o: ImportOptions): ImportReport {
-  const report: ImportReport = { create: 0, update: 0, skip: 0, folders: 0, unknownFields: [], unknownValues: {}, errors: [] };
+  const report: ImportReport = { create: 0, update: 0, skip: 0, folders: 0, unknownFields: [], unknownValues: {}, errors: [], createdFields: [], warnings: [] };
   const folders = new Set<string>();
   const kind = keyKind(o.format);
   for (const r of rows) {
@@ -786,6 +811,12 @@ function importReport(rows: ImportRow[], o: ImportOptions): ImportReport {
     }
   }
   report.folders = folders.size;
+  if (o.unknownFieldValues === 'create') {
+    report.createdFields = report.unknownFields;
+    report.unknownFields = [];
+  } else report.createdFields = [];
+  const required = st.fields.filter((f) => f.required && !f.archived);
+  report.warnings = required.length && o.status !== 'draft' ? rows.filter((r) => r.name && required.some((f) => r.fields[f.key] === undefined)).slice(0, 1000).map((r) => ({ row: r.row, code: 'required_fields_missing', message: `imported as draft: no value for ${required.filter((f) => r.fields[f.key] === undefined).map((f) => f.key).join(', ')}` })) : [];
   return report;
 }
 
@@ -834,7 +865,7 @@ function applyRows(rows: ImportRow[], o: ImportOptions): void {
       id: tmId(`case:${String(st.seq)}`),
       number: st.seq,
       name: r.name,
-      status: 'active',
+      status: o.status ?? 'active',
       origin: 'import',
       aiUnreviewed: false,
       folderId,
@@ -1329,7 +1360,11 @@ export function tmHandlers({ role, error, audit }: Helpers) {
       return new HttpResponse(null, { status: 204 });
     }),
 
-    http.get(`${P}/case-fields`, ({ params }) => HttpResponse.json({ items: tmProject(String(params.key)) ? st.fields : [] })),
+    http.get(`${P}/case-fields`, ({ params, request }) => {
+      const archived = new URL(request.url).searchParams.get('archived') === 'true';
+      const list = tmProject(String(params.key)) ? st.fields.filter((f) => archived || !f.archived) : [];
+      return HttpResponse.json({ items: [...list].sort((a, b) => a.position - b.position || a.key.localeCompare(b.key)) });
+    }),
 
     http.post(`${P}/case-fields`, async ({ params, request }) => {
       if (!writer()) return forbid('settings:write');
@@ -1535,6 +1570,22 @@ export function tmHandlers({ role, error, audit }: Helpers) {
       return HttpResponse.json(body, { status: 201 });
     }),
 
+    http.get(`${P}/test-plans/:id/launches`, ({ params }) => {
+      const p = tmProject(String(params.key)) ? st.plans.find((x) => x.id === params.id) : undefined;
+      if (!p) return notFound('test plan');
+      const items = [...st.manual.values()]
+        .filter((m) => m.planId === p.id)
+        .map((m) => manualLaunchView(m.launchId))
+        .filter((l): l is Launch => !!l)
+        .sort((a, b) => b.number - a.number);
+      return HttpResponse.json({ items, next: null });
+    }),
+
+    http.get(`${P}/people`, ({ params, request }) => {
+      if (!tmProject(String(params.key))) return HttpResponse.json({ items: [] });
+      return HttpResponse.json({ items: peopleOf(new URL(request.url).searchParams.get('q') ?? '') });
+    }),
+
     http.get(`${P}/test-plans/:id`, ({ params }) => {
       const p = st.plans.find((x) => x.id === params.id);
       if (!p) return undefined;
@@ -1655,7 +1706,28 @@ export function tmHandlers({ role, error, audit }: Helpers) {
       const id = String(params.id);
       if (!st.manual.has(id)) return notFound('manual run');
       const items = st.runItems.filter((r) => r.launchId === id);
-      if (new URL(request.url).searchParams.get('format') === 'json') return HttpResponse.json({ items: items.map((r) => runItemView(r, String(params.key))) });
+      if (new URL(request.url).searchParams.get('format') === 'json') {
+        const launch = manualLaunchView(id);
+        const steps = (r: MockRunItem) => {
+          const res = new Map(r.stepResults.map((x) => [x.path, x] as const));
+          const flat: { path: string; step: CaseStep }[] = [];
+          const walk = (list: CaseStep[], prefix: string) =>
+            list.forEach((s2, i) => {
+              const path = prefix ? `${prefix}.${String(i + 1)}` : String(i + 1);
+              flat.push({ path, step: s2 });
+              walk(s2.steps, path);
+            });
+          walk(r.steps, '');
+          const status = new Map(r.stepResults.map((x) => [x.path, x.status] as const));
+          return flat.map(({ path, step }) => ({ path, action: step.action, expected: step.expected, status: effective(step, path, status), actual: res.get(path)?.actual ?? '', comment: res.get(path)?.comment ?? '' }));
+        };
+        return HttpResponse.json({
+          launchId: id,
+          launchNumber: launch?.number ?? 0,
+          launchName: launch?.name ?? '',
+          items: items.map((r) => ({ caseNumber: r.caseNumber, name: r.name, caseVersion: r.caseVersion, status: r.status, assignee: r.assignee, executedBy: r.executedBy, executionNo: r.executionNo, startedAt: r.startedAt, finishedAt: r.finishedAt, comment: r.comment, defect: r.defect, steps: steps(r) })),
+        });
+      }
       const lines = ['Case,Name,Version,Status,Assignee,Executed by,Finished,Failed steps', ...items.map((r) => [`TC-${String(r.caseNumber)}`, r.name, String(r.caseVersion), r.status, r.assignee ?? '', r.executedBy ?? '', r.finishedAt ?? '', r.stepResults.filter((s) => s.status === 'failed').map((s) => s.path).join(' ')].map(csvCell).join(','))];
       return new HttpResponse(`${lines.join('\r\n')}\r\n`, { headers: { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': 'attachment; filename="manual-report.csv"' } });
     }),
@@ -1696,7 +1768,17 @@ export function tmHandlers({ role, error, audit }: Helpers) {
       const status = url.searchParams.get('status');
       const assignee = url.searchParams.get('assignee');
       const list = st.runItems.filter((r) => (!status || status.split(',').includes(r.status)) && (!assignee || r.assignee === (assignee === 'me' ? ME : assignee)) && st.manual.get(r.launchId)?.state !== 'closed');
-      return HttpResponse.json(pageOf(list.map((r) => ({ ...runSummary(r), launchId: r.launchId })), url, (r) => r.id, 50));
+      return HttpResponse.json(
+        pageOf(
+          list.map((r) => {
+            const l = manualLaunchView(r.launchId);
+            return { ...runSummary(r), launchId: r.launchId, launchNumber: l?.number ?? 0, launchName: l?.name ?? '' };
+          }),
+          url,
+          (r) => r.id,
+          50,
+        ),
+      );
     }),
 
     http.get(`${P}/run-items/:id`, ({ params }) => {
@@ -1796,21 +1878,32 @@ export function tmHandlers({ role, error, audit }: Helpers) {
       return HttpResponse.json({ updated: r.resultId ? 1 : 0 });
     }),
 
-    http.get(`${P}/run-items/:id/new-issue-url`, ({ params }) => {
+    http.get(`${P}/run-items/:id/new-issue-url`, ({ params, request }) => {
       const r = st.runItems.find((x) => x.id === params.id);
       if (!r) return notFound('run item');
+      const tracker = new URL(request.url).searchParams.get('tracker');
       const failed = r.stepResults.find((s) => s.status === 'failed' || s.status === 'blocked');
       const step = failed ? stepExists(r.steps, failed.path) : null;
       const title = `TC-${String(r.caseNumber)} ${r.name}: ${failed ? `step ${failed.path} ${failed.status}` : 'failed'}`;
       const description = [`Step: ${step?.action ?? '-'}`, `Expected: ${step?.expected ?? '-'}`, `Actual: ${failed?.actual ?? '-'}`, `Run item: ${location.origin}/p/${String(params.key)}/launches/${r.launchId}/run/${r.id}`].join('\n\n');
+      if (tracker === 'jira') {
+        const jira = settingsOf(String(params.key)).issueTrackers.find((t) => t.type === 'jira') as { urlTemplate: string; projectId?: string | null; issueTypeId?: string | null } | undefined;
+        const base = new URL(jira?.urlTemplate ?? 'https://jira.example.com/browse/{key}').origin;
+        const prefill = { title, description };
+        if (jira?.projectId && jira.issueTypeId) return HttpResponse.json({ url: `${base}/secure/CreateIssueDetails!init.jspa?${new URLSearchParams({ pid: jira.projectId, issuetype: jira.issueTypeId, summary: title, description }).toString()}`, prefilled: true, prefill });
+        return HttpResponse.json({ url: `${base}/secure/CreateIssue!default.jspa`, prefilled: false, prefill });
+      }
       const url = `https://gitlab.example.com/shop/web-shop/-/issues/new?${new URLSearchParams({ 'issue[title]': title, 'issue[description]': description }).toString()}`;
-      return HttpResponse.json({ url });
+      return HttpResponse.json({ url, prefilled: true });
     }),
 
-    http.post(`${P}/run-items/:id/rerun`, ({ params }) => {
+    http.post(`${P}/run-items/:id/rerun`, ({ params, request }) => {
       const r = st.runItems.find((x) => x.id === params.id);
       if (!r) return notFound('run item');
       if (!writer()) return forbid('runs:execute');
+      const pre = precondition(request, r.revision, r.executedBy, 'ui');
+      if (pre) return pre;
+      st.executions.push({ itemId: r.id, executionNo: r.executionNo, status: r.status, caseVersion: r.caseVersion, comment: r.comment, executedBy: r.executedBy, startedAt: r.startedAt, finishedAt: r.finishedAt, defect: r.defect, stepResults: structuredClone(r.stepResults), rerunBy: ME, rerunAt: now() });
       r.executionNo++;
       r.status = 'untested';
       r.stepResults = [];
@@ -1819,7 +1912,14 @@ export function tmHandlers({ role, error, audit }: Helpers) {
       r.finishedAt = null;
       r.revision++;
       emitRun(r);
-      return HttpResponse.json(runItemView(r, String(params.key)));
+      return withEtag(runItemView(r, String(params.key)), r.revision);
+    }),
+
+    http.get(`${P}/run-items/:id/executions`, ({ params }) => {
+      const r = st.runItems.find((x) => x.id === params.id);
+      if (!r || !tmProject(String(params.key))) return notFound('run item');
+      const items = st.executions.filter((x) => x.itemId === r.id).sort((a, b) => b.executionNo - a.executionNo).map((x) => ({ executionNo: x.executionNo, status: x.status, caseVersion: x.caseVersion, comment: x.comment, executedBy: x.executedBy, startedAt: x.startedAt, finishedAt: x.finishedAt, defect: x.defect, stepResults: x.stepResults, rerunBy: x.rerunBy, rerunAt: x.rerunAt }));
+      return HttpResponse.json({ items, next: null });
     }),
 
     // Import

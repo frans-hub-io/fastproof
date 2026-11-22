@@ -1,5 +1,5 @@
 import { Alert, Badge, Button, Group, Menu, Select, Stack, Tabs, Text, TextInput } from '@mantine/core';
-import { EmptyState, useCan } from '@franshub/ui-shell';
+import { EmptyState, useCan, useMe } from '@franshub/ui-shell';
 import { notifications } from '@mantine/notifications';
 import { IconArchive, IconArrowBackUp, IconCheck, IconDeviceFloppy, IconDots, IconHistory, IconInfoCircle, IconListDetails, IconPencil, IconPrinter, IconRefresh, IconVersions, IconX } from '@tabler/icons-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -12,8 +12,10 @@ import { QueryState } from '../components/QueryState';
 import { formatDateTime, formatRelative } from '../lib/format';
 import { CASE_STATUSES, CASE_STATUS_LABEL, caseLabel } from '../lib/tm/filters';
 import { clearDraft, loadDraft, saveDraft, type CaseDraft } from '../lib/tm/prefs';
-import { folderPathLabel } from '../lib/tm/ui';
+import { actorLabel, folderPathLabel } from '../lib/tm/ui';
+import { mergeCaseWrite, bothChanged } from '../lib/tm/merge';
 import { toWrite } from '../lib/tm/versionDiff';
+
 import { editorAction } from './runner/keymap';
 import { AiDraftBadge, AutomationIcon, CaseStatusBadge, FromCodeBadge, LiveRegion } from './cases/common';
 import { ConflictDialog } from './cases/ConflictDialog';
@@ -25,7 +27,7 @@ import { StepsEditor } from './cases/StepsEditor';
 import { Suggestions } from './cases/Suggestions';
 import { VersionsTab } from './cases/VersionsTab';
 
-const SOURCE_TEXT: Record<string, string> = { code: 'the code sync', ui: 'another user', ai: 'an accepted AI suggestion', import: 'an import', restore: 'a restore', bulk: 'a bulk change' };
+const SOURCE_TEXT: Record<string, string> = { code: 'the code sync', ui: 'an edit', ai: 'an accepted AI suggestion', import: 'an import', restore: 'a restore', bulk: 'a bulk change' };
 
 interface Editing {
   draft: CaseWrite;
@@ -34,7 +36,7 @@ interface Editing {
   revision: number;
 }
 
-function CaseBody({ project, projectName, c, etag, reload }: { project: string; projectName: string; c: CaseDto; etag: string; reload: () => Promise<unknown> }) {
+function CaseBody({ project, projectName, c, etag, reload }: { project: string; projectName: string; c: CaseDto; etag: string; reload: () => Promise<{ data?: Versioned<CaseDto> }> }) {
   const [sp, setSp] = useSearchParams();
   const navigate = useNavigate();
   const canWrite = useCan('cases:write', project);
@@ -46,7 +48,8 @@ function CaseBody({ project, projectName, c, etag, reload }: { project: string; 
   const archive = useArchiveCase(project, c.number);
   const [editing, setEditing] = useState<Editing | null>(null);
   const [conflict, setConflict] = useState<{ details: ConflictDetails; current: Versioned<CaseDto> | null } | null>(null);
-  const [changed, setChanged] = useState<{ revision: number; source: string } | null>(null);
+  const [changed, setChanged] = useState<{ revision: number; source: string; by?: string | null } | null>(null);
+  const { me } = useMe();
   const [announce, setAnnounce] = useState('');
   const [stored, setStored] = useState<CaseDraft | null>(() => loadDraft(project, c.number));
   const [errors, setErrors] = useState<{ path: string; message: string }[]>([]);
@@ -91,7 +94,11 @@ function CaseBody({ project, projectName, c, etag, reload }: { project: string; 
     caseUpdated: (e) => {
       if (e.number !== c.number || e.revision <= c.revision) return;
       setChanged({ revision: e.revision, source: e.source });
-      if (!editing) void reload();
+      const who = (v: Versioned<CaseDto> | undefined) => {
+        if (v && v.value.revision >= e.revision) setChanged((x) => (x && x.revision === e.revision ? { ...x, by: v.value.updatedBy ?? null } : x));
+      };
+      if (!editing) void reload().then((r) => who(r.data));
+      else void getVersioned<CaseDto>(`${projectPath(project)}/cases/${String(c.number)}`).then(who, () => undefined);
     },
   });
 
@@ -277,7 +284,7 @@ function CaseBody({ project, projectName, c, etag, reload }: { project: string; 
           <Alert color="blue" variant="light" icon={<IconInfoCircle size={18} />} title="This case was changed" data-testid="case-changed-banner" className="fp-no-print" withCloseButton onClose={() => setChanged(null)}>
             <Group justify="space-between" gap="xs" wrap="wrap">
               <Text size="sm">
-                Revision {changed.revision} came from {SOURCE_TEXT[changed.source] ?? changed.source}.{editing ? ' Saving your edits will ask what to keep.' : ' The page shows it now.'}
+                Revision {changed.revision} was saved {changed.by !== undefined ? `by ${actorLabel(changed.by, me?.name)} ` : ''}through {SOURCE_TEXT[changed.source] ?? changed.source}.{editing ? ' Saving your edits keeps the fields you changed and takes the rest from it.' : ' The page shows it now.'}
               </Text>
               {editing && (
                 <Button size="compact-sm" variant="light" leftSection={<IconRefresh size={14} />} onClick={() => { cancel(); void reload(); setChanged(null); }}>
@@ -367,7 +374,9 @@ function CaseBody({ project, projectName, c, etag, reload }: { project: string; 
         <ConflictDialog
           conflict={conflict.details}
           current={conflict.current?.value}
-          mine={editing.draft}
+          mine={conflict.current ? mergeCaseWrite(editing.base, editing.draft, toWrite(conflict.current.value)) : editing.draft}
+          overlap={conflict.current ? bothChanged(editing.base, editing.draft, toWrite(conflict.current.value)) : []}
+          me={me?.name}
           labels={labels}
           busy={update.isPending}
           onClose={() => setConflict(null)}
@@ -379,8 +388,10 @@ function CaseBody({ project, projectName, c, etag, reload }: { project: string; 
           onKeepMine={() => {
             const cur = conflict.current;
             if (!cur) return;
-            setEditing({ ...editing, etag: cur.etag, revision: cur.value.revision });
-            save(editing.draft, cur.etag);
+            const theirs = toWrite(cur.value);
+            const merged = mergeCaseWrite(editing.base, editing.draft, theirs);
+            setEditing({ draft: merged, base: theirs, etag: cur.etag, revision: cur.value.revision });
+            save(merged, cur.etag);
           }}
         />
       )}

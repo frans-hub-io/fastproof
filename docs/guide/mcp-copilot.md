@@ -98,23 +98,32 @@ Every write tool takes an optional `agent` (the agent's name, up to 100 bytes, r
 Errors come back as tool errors whose text starts with the API error code (`forbidden`, `not_found`,
 `invalid_case`, `suggestion_stale`, …).
 
-The server enforces the rules, whatever the agent asks for:
+The server enforces the rules, whatever the agent asks for, on the MCP tools and on the REST API alike:
 
 - cases an agent creates are always `draft`, with `origin = ai`, and marked **AI draft** in the UI until a
   person reviews them;
-- an agent cannot activate a case, change an active case directly, accept a suggestion or execute manual
-  steps; changes to existing cases arrive as suggestions on the case page, to accept or reject (a rejected
-  one stays in the history);
+- an AI draft (`origin: ai`, still unreviewed) can be marked reviewed or set to `active` only by a principal
+  other than the one that created it, and a suggestion is never accepted by the principal that made it; the
+  creator gets `403 ai_self_review`. An agent that reaches the REST API with its token (for example from a
+  terminal) therefore cannot approve its own work either. Activating a draft by someone else counts as the
+  review;
+- through MCP an agent cannot activate a case, change an active case directly, accept a suggestion or execute
+  manual steps; changes to existing cases arrive as suggestions on the case page, to accept or reject (a
+  rejected one stays in the history);
 - `trace_actions` never returns the values typed with `fill`, `type` or `press`, which can be passwords, nor
-  masked test parameters: it reads only the action name, selector, URL (not for typing actions), status,
-  error and duration;
+  masked test parameters: action names come only from a fixed list of Playwright classes and methods (others
+  become `Other`), action titles are never read, the test runner's own trace entry is skipped, and for typing
+  actions the URL is left out and parameter values in the error are replaced by `***`. It returns the action
+  name, selector, URL, status, error and duration;
 - the tool for drafts has no status argument, and there is no tool that edits or accepts;
 - every write is in the audit log with `source: ai` and the agent's name (`case.create`,
   `caseSuggestion.create`, `testPlan.items`).
 
 ## Good practice
 
-- Use a personal token with the smallest role that fits, and set an expiry.
+- Give the agent a dedicated token with the smallest role that fits, and set an expiry. Do not reuse the token
+  you work with yourself: the rules above tell the agent and the reviewer apart by principal, so with a shared
+  token you could not review the agent's drafts and suggestions with it. Review them signed in as yourself.
 - Keep the token out of the repository: the `inputs` entry above makes VS Code prompt for it.
 - Review what the agent proposes before it calls `triage`; the example agent is written to ask first.
 - Rule drafts stay disabled until someone enables them on the **Rules** page, after a dry run.

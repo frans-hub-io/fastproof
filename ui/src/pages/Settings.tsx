@@ -1,9 +1,9 @@
 import { ActionIcon, Alert, Badge, Button, Card, ColorInput, Fieldset, Group, Modal, NumberInput, PasswordInput, Select, SimpleGrid, Stack, Switch, Table, Tabs, TagsInput, Text, TextInput, Title, Tooltip } from '@mantine/core';
 import { EmptyState, useCan } from '@franshub/ui-shell';
 import { notifications } from '@mantine/notifications';
-import { IconEdit, IconLock, IconPlus, IconTrash } from '@tabler/icons-react';
+import { IconEdit, IconForms, IconLock, IconPlus, IconTrash } from '@tabler/icons-react';
 import { useMemo, useState, type ReactNode } from 'react';
-import { useParams, useSearchParams } from 'react-router';
+import { Link, useParams, useSearchParams } from 'react-router';
 import { errorMessage } from '../api/client';
 import { useProject } from '../api/hooks';
 import { useDefectTypes, useDeleteDefectType, useSaveDefectType, useSaveSettings, useSecrets, useSettings, useWriteSecret } from '../api/stageC';
@@ -307,6 +307,15 @@ const TRACKER_DEFAULT: Record<IssueTrackerType, IssueTracker> = {
   github: { type: 'github', urlTemplate: 'https://github.com/owner/repo/issues/{key}', keyRegex: '^#?\\d+$' },
 };
 
+/** Sends the Jira ids only when set on a Jira tracker. */
+function cleanTracker(t: IssueTracker): IssueTracker {
+  const { projectId, issueTypeId, ...rest } = t;
+  if (t.type !== 'jira') return rest;
+  return { ...rest, ...(projectId ? { projectId } : {}), ...(issueTypeId ? { issueTypeId } : {}) };
+}
+
+const JIRA_ID = /^\d{1,18}$/;
+
 function trackerErrors(t: IssueTracker): { url: string | null; regex: string | null } {
   let url: string | null = null;
   if (!t.urlTemplate.includes('{key}')) url = 'Must contain {key}';
@@ -352,7 +361,7 @@ function IntegrationsForm({ project, settings, canWrite }: { project: string; se
   const vcsTokenError = vcs && !vcs.tokenSecretRef ? 'Choose the secret with the API token' : null;
   const vcsRepoError = vcs && !REPO_PATH.test(vcs.repository) ? (vcs.provider === 'github' ? 'owner/repo' : 'group/project, subgroups allowed') : null;
   const fmUrlError = fm && !HTTP_URL.test(fm.url) ? 'Must be an http(s) URL' : null;
-  const valid = tErrors.every((e) => !e.url && !e.regex) && !vcsUrlError && !vcsTokenError && !vcsRepoError && !fmUrlError && trackers.length <= 10;
+  const valid = tErrors.every((e) => !e.url && !e.regex) && trackers.every((t) => t.type !== 'jira' || ((!t.projectId || JIRA_ID.test(t.projectId)) && (!t.issueTypeId || JIRA_ID.test(t.issueTypeId)))) && !vcsUrlError && !vcsTokenError && !vcsRepoError && !fmUrlError && trackers.length <= 10;
 
   const setTracker = (i: number, t: Partial<IssueTracker>) => setTrackers(trackers.map((x, j) => (j === i ? { ...x, ...t } : x)));
 
@@ -386,6 +395,28 @@ function IntegrationsForm({ project, settings, canWrite }: { project: string; se
                     <TextInput label="URL template" value={t.urlTemplate} onChange={(e) => setTracker(i, { urlTemplate: e.currentTarget.value })} error={tErrors[i]?.url} classNames={{ input: 'fp-mono' }} />
                     <TextInput label="Key pattern" value={t.keyRegex} onChange={(e) => setTracker(i, { keyRegex: e.currentTarget.value })} error={tErrors[i]?.regex} classNames={{ input: 'fp-mono' }} />
                   </SimpleGrid>
+                  {t.type === 'jira' && (
+                    <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="xs">
+                      <TextInput
+                        label="Jira project id (optional)"
+                        description="Numeric id; with the issue type id the quick issue link opens a prefilled create screen"
+                        value={t.projectId ?? ''}
+                        onChange={(e) => setTracker(i, { projectId: e.currentTarget.value.trim() || null })}
+                        error={t.projectId && !JIRA_ID.test(t.projectId) ? 'Digits only' : null}
+                        classNames={{ input: 'fp-mono' }}
+                        data-testid="tracker-jira-project"
+                      />
+                      <TextInput
+                        label="Jira issue type id (optional)"
+                        description="Numeric id, for example the id of Bug"
+                        value={t.issueTypeId ?? ''}
+                        onChange={(e) => setTracker(i, { issueTypeId: e.currentTarget.value.trim() || null })}
+                        error={t.issueTypeId && !JIRA_ID.test(t.issueTypeId) ? 'Digits only' : null}
+                        classNames={{ input: 'fp-mono' }}
+                        data-testid="tracker-jira-issuetype"
+                      />
+                    </SimpleGrid>
+                  )}
                   <Group justify="space-between" wrap="nowrap" gap="xs">
                     <Text size="xs" c="dimmed" className="fh-truncate" style={{ minWidth: 0 }} data-testid="tracker-preview">
                       <span className="fp-mono">{SAMPLE_KEY[t.type]}</span> → {preview ?? 'the sample key does not match the pattern'}
@@ -456,7 +487,7 @@ function IntegrationsForm({ project, settings, canWrite }: { project: string; se
         </Section>
         {canWrite && (
           <Group>
-            <Button onClick={() => run({ ...settings, issueTrackers: trackers, vcs, fastmock: fm }, 'Integrations')} loading={pending} disabled={!valid} data-testid="integrations-save">
+            <Button onClick={() => run({ ...settings, issueTrackers: trackers.map(cleanTracker), vcs, fastmock: fm }, 'Integrations')} loading={pending} disabled={!valid} data-testid="integrations-save">
               Save
             </Button>
           </Group>
@@ -570,6 +601,7 @@ export default function SettingsPage() {
   const { key = '' } = useParams();
   const project = useProject(key);
   const canWrite = useCan('settings:write', key);
+  const canReadCases = useCan('cases:read', key);
   const settings = useSettings(key);
   const [sp, setSp] = useSearchParams();
   const tab = sp.get('tab') ?? 'general';
@@ -596,6 +628,13 @@ export default function SettingsPage() {
           ) : undefined
         }
         subtitle="Flaky detection, retention, defect types, integrations and secrets of this project."
+        actions={
+          canReadCases ? (
+            <Button size="xs" variant="default" component={Link} to={`/p/${key}/settings/case-fields`} leftSection={<IconForms size={14} />} data-testid="settings-case-fields">
+              Case fields
+            </Button>
+          ) : undefined
+        }
       />
       <Tabs value={tab} onChange={setTab} keepMounted={false}>
         <Tabs.List>

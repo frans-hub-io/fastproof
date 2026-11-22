@@ -1,4 +1,4 @@
-import { ActionIcon, Anchor, Autocomplete, Badge, Button, Card, Group, Stack, Text, TextInput, Tooltip } from '@mantine/core';
+import { ActionIcon, Anchor, Badge, Button, Card, Group, Stack, Text, TextInput, Tooltip } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { IconFolder, IconSearch, IconUserCheck, IconX } from '@tabler/icons-react';
 import { useMemo, useState } from 'react';
@@ -8,21 +8,22 @@ import { useChangeTestPlanItems, type CaseFolder, type TestPlanItem } from '../.
 import { caseLabel } from '../../lib/tm/filters';
 import { caseLink, folderPathLabel } from '../../lib/tm/ui';
 import { AutomationIcon } from './common';
+import { PersonInput } from './PersonInput';
 
 const SHOWN = 100;
 
-function AssigneeInput({ value, people, onCommit, label, testId }: { value: string | null; people: string[]; onCommit: (v: string | null) => void; label: string; testId?: string }) {
+function AssigneeInput({ project, value, onCommit, label, testId }: { project: string; value: string | null; onCommit: (v: string | null) => void; label: string; testId?: string }) {
   const [text, setText] = useState(value ?? '');
   const commit = (v: string) => {
     const next = v.trim() || null;
     if (next !== value) onCommit(next);
   };
   return (
-    <Autocomplete
+    <PersonInput
+      project={project}
       size="xs"
       aria-label={label}
       placeholder="Unassigned"
-      data={people}
       value={text}
       onChange={setText}
       onOptionSubmit={(v) => {
@@ -34,17 +35,16 @@ function AssigneeInput({ value, people, onCommit, label, testId }: { value: stri
         if (e.key === 'Enter') commit(text);
       }}
       w={210}
-      comboboxProps={{ withinPortal: true }}
       data-testid={testId}
     />
   );
 }
 
-function FolderAssign({ people, onApply, folder }: { people: string[]; onApply: (v: string | null) => void; folder: string }) {
+function FolderAssign({ project, onApply, folder }: { project: string; onApply: (v: string | null) => void; folder: string }) {
   const [text, setText] = useState('');
   return (
-    <Group gap={4} wrap="nowrap">
-      <Autocomplete size="xs" aria-label={`Assign every case in ${folder} to`} placeholder="Assign all to…" data={people} value={text} onChange={setText} w={180} comboboxProps={{ withinPortal: true }} data-testid="folder-assign-input" />
+    <Group gap={4} wrap="nowrap" align="flex-start">
+      <PersonInput project={project} size="xs" aria-label={`Assign every case in ${folder} to`} placeholder="Assign all to…" value={text} onChange={setText} w={180} data-testid="folder-assign-input" />
       <Tooltip label="Assign the whole folder">
         <ActionIcon variant="light" size="md" aria-label={`Assign every case in ${folder}`} onClick={() => onApply(text.trim() || null)} data-testid="folder-assign-apply">
           <IconUserCheck size={14} />
@@ -54,7 +54,7 @@ function FolderAssign({ people, onApply, folder }: { people: string[]; onApply: 
   );
 }
 
-export function PlanItems({ project, planId, items, folders, people, readOnly }: { project: string; planId: string; items: TestPlanItem[]; folders: CaseFolder[]; people: string[]; readOnly: boolean }) {
+export function PlanItems({ project, planId, items, folders, readOnly }: { project: string; planId: string; items: TestPlanItem[]; folders: CaseFolder[]; readOnly: boolean }) {
   const change = useChangeTestPlanItems(project, planId);
   const [q, setQ] = useState('');
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
@@ -105,7 +105,7 @@ export function PlanItems({ project, planId, items, folders, people, readOnly }:
                   {g.list.length}
                 </Badge>
               </Group>
-              {!readOnly && <FolderAssign people={people} folder={g.label} onApply={(v) => run({ assign: g.list.map((i) => ({ number: i.caseNumber, assignee: v })) }, v ? `Assigned to ${v}` : 'Unassigned')} />}
+              {!readOnly && <FolderAssign project={project} folder={g.label} onApply={(v) => run({ assign: g.list.map((i) => ({ number: i.caseNumber, assignee: v })) }, v ? `Assigned to ${v}` : 'Unassigned')} />}
             </Group>
             {shown.map((it) => (
               <Group key={it.caseNumber} gap="xs" wrap="wrap" px="xs" py={6} style={{ borderBottom: '1px solid var(--fh-ui-hairline)' }} data-testid="plan-item" data-case={it.caseNumber}>
@@ -130,7 +130,7 @@ export function PlanItems({ project, planId, items, folders, people, readOnly }:
                     {it.assignee ?? 'Unassigned'}
                   </Text>
                 ) : (
-                  <AssigneeInput key={`${String(it.caseNumber)}:${it.assignee ?? ''}`} value={it.assignee ?? null} people={people} label={`Assignee of ${caseLabel(it.caseNumber)}`} onCommit={(v) => run({ assign: [{ number: it.caseNumber, assignee: v }] }, v ? `Assigned to ${v}` : 'Unassigned')} testId="plan-item-assignee" />
+                  <AssigneeInput key={`${String(it.caseNumber)}:${it.assignee ?? ''}`} project={project} value={it.assignee ?? null} label={`Assignee of ${caseLabel(it.caseNumber)}`} onCommit={(v) => run({ assign: [{ number: it.caseNumber, assignee: v }] }, v ? `Assigned to ${v}` : 'Unassigned')} testId="plan-item-assignee" />
                 )}
                 {!readOnly && (
                   <Tooltip label="Remove from the plan">

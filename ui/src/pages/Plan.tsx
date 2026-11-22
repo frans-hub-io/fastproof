@@ -1,28 +1,77 @@
-import { Badge, Button, Menu, Stack, Text, TextInput } from '@mantine/core';
-import { useCan, useMe } from '@franshub/ui-shell';
+import { Anchor, Badge, Button, Card, Group, Menu, Stack, Text, TextInput } from '@mantine/core';
+import { useCan } from '@franshub/ui-shell';
 import { notifications } from '@mantine/notifications';
 import { IconArchive, IconCheck, IconDots, IconDownload, IconFilter, IconPencil, IconPlayerPlay, IconRefresh, IconX } from '@tabler/icons-react';
-import { useMemo, useState } from 'react';
-import { useNavigate, useParams } from 'react-router';
+import { useState } from 'react';
+import { Link, useNavigate, useParams } from 'react-router';
 import { errorMessage } from '../api/client';
 import { useProject } from '../api/hooks';
-import { isConflict, planTestplanUrl, useArchiveTestPlan, useCaseFolders, useSyncTestPlan, useTestPlan, useTestPlanItems, useUpdateTestPlan, type PlanSyncDiff } from '../api/tm';
+import { isConflict, planTestplanUrl, useArchiveTestPlan, useCaseFolders, usePlanLaunches, useSyncTestPlan, useTestPlan, useTestPlanItems, useUpdateTestPlan, type PlanSyncDiff } from '../api/tm';
+import { LaunchStatusBadge } from '../components/Status';
 import { PageHeader } from '../components/PageHeader';
 import { QueryState } from '../components/QueryState';
-import { formatRelative } from '../lib/format';
+import { formatDateTime, formatRelative } from '../lib/format';
 import { describeFilter } from '../lib/tm/filters';
 import { folderPathLabel } from '../lib/tm/ui';
 import { FilterDialog, StartLaunchDialog, SyncDialog } from './cases/PlanDialogs';
 import { PlanItems } from './cases/PlanItems';
 import { PlanTree } from './cases/PlanTree';
 
-const PEOPLE_HINT = ['maria@example.com', 'oleh@example.com', 'sam@example.com'];
+/** The launches started from this plan, with the state of their manual run. */
+function PlanLaunches({ project, planId }: { project: string; planId: string }) {
+  const q = usePlanLaunches(project, planId);
+  const list = q.data?.items ?? [];
+  return (
+    <Stack gap={6} mt="lg" data-testid="plan-launches" component="section" aria-labelledby="plan-launches-title">
+      <Text size="sm" fw={600} component="h3" m={0} id="plan-launches-title">
+        Launches from this plan
+      </Text>
+      <QueryState query={q}>
+        {() =>
+          list.length === 0 ? (
+            <Text size="sm" c="dimmed">
+              No launch was started from this plan yet.
+            </Text>
+          ) : (
+            <Stack gap={4}>
+              {list.map((l) => {
+                const m = l.manual;
+                const left = m ? m.untested + m.inProgress : 0;
+                return (
+                  <Card key={l.id} withBorder radius="md" padding="xs" data-testid="plan-launch">
+                    <Group justify="space-between" gap="xs" wrap="wrap">
+                      <Group gap="xs" wrap="nowrap" style={{ minWidth: 0, flex: '1 1 240px' }}>
+                        <Anchor component={Link} to={`/p/${project}/launches/${l.id}${m ? '?tab=manual' : ''}`} fw={600} size="sm" className="fh-truncate">
+                          #{l.number} {l.name}
+                        </Anchor>
+                        <LaunchStatusBadge status={l.status} />
+                      </Group>
+                      <Group gap="xs" wrap="wrap">
+                        {m && (
+                          <Badge size="sm" variant="light" color={m.state === 'closed' ? 'gray' : 'blue'} radius="sm" data-testid="plan-launch-manual">
+                            manual {m.state} · {m.total - left} / {m.total} done
+                          </Badge>
+                        )}
+                        <Text size="xs" c="dimmed" title={formatDateTime(l.startedAt)}>
+                          {formatRelative(l.startedAt)}
+                        </Text>
+                      </Group>
+                    </Group>
+                  </Card>
+                );
+              })}
+            </Stack>
+          )
+        }
+      </QueryState>
+    </Stack>
+  );
+}
 
 export default function PlanPage() {
   const { key = '', id = '' } = useParams();
   const project = useProject(key);
   const navigate = useNavigate();
-  const { me } = useMe();
   const canWrite = useCan('plans:write', key);
   const canRun = useCan('runs:execute', key);
   const q = useTestPlan(key, id);
@@ -34,12 +83,6 @@ export default function PlanPage() {
   const [dialog, setDialog] = useState<null | 'filter' | 'start'>(null);
   const [diff, setDiff] = useState<PlanSyncDiff | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
-
-  const people = useMemo(() => {
-    const set = new Set<string>([...(me?.name ? [me.name] : []), ...PEOPLE_HINT]);
-    for (const it of items.data ?? []) if (it.assignee) set.add(it.assignee);
-    return [...set];
-  }, [items.data, me]);
 
   const preview = () =>
     sync.mutate(true, {
@@ -175,7 +218,8 @@ export default function PlanPage() {
                     </aside>
                   )}
                   <section style={{ minWidth: 0 }} aria-label="Plan composition">
-                    <PlanItems project={key} planId={plan.id} items={items.data ?? []} folders={folders.data ?? []} people={people} readOnly={readOnly} />
+                    <PlanItems project={key} planId={plan.id} items={items.data ?? []} folders={folders.data ?? []} readOnly={readOnly} />
+                    <PlanLaunches project={key} planId={plan.id} />
                   </section>
                 </div>
               )}

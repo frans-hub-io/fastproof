@@ -1,5 +1,5 @@
 import { AppShellLayout, useCan, type CommandItem, type NavItem } from '@franshub/ui-shell';
-import { IconAdjustments, IconBell, IconChartLine, IconChecklist, IconClipboardList, IconClockCog, IconFlask2, IconGitCompare, IconKey, IconListDetails, IconShieldCheck, IconShieldSearch, IconWand, IconWaveSine } from '@tabler/icons-react';
+import { IconAdjustments, IconBell, IconChartLine, IconChecklist, IconClipboardList, IconClockCog, IconFlask2, IconGitCompare, IconKey, IconListCheck, IconListDetails, IconShieldCheck, IconShieldSearch, IconWand, IconWaveSine } from '@tabler/icons-react';
 import { useQueryClient, type InfiniteData } from '@tanstack/react-query';
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { matchPath, useLocation, useNavigate } from 'react-router';
@@ -49,10 +49,11 @@ export function Shell({ children }: { children: ReactNode }) {
       const base = `/p/${projectKey}`;
       const section = (s: string) => path === `${base}/${s}` || path.startsWith(`${base}/${s}/`);
       const sections = ['dashboard', 'flaky', 'compare', 'rules', 'gates', 'notifications', 'settings'];
-      sections.push('cases', 'plans');
+      sections.push('cases', 'plans', 'my-runs');
       items.push({ label: `${name}: launches`, href: base, icon: <IconListDetails size={18} />, active: path.startsWith(base) && !sections.some(section) });
       items.push({ label: 'Test cases', href: `${base}/cases`, icon: <IconClipboardList size={18} />, active: section('cases'), permission: 'cases:read', scope: projectKey });
       items.push({ label: 'Test plans', href: `${base}/plans`, icon: <IconChecklist size={18} />, active: section('plans'), permission: 'cases:read', scope: projectKey });
+      items.push({ label: 'My runs', href: `${base}/my-runs`, icon: <IconListCheck size={18} />, active: section('my-runs'), permission: 'runs:execute', scope: projectKey });
       items.push({ label: 'Dashboard', href: `${base}/dashboard`, icon: <IconChartLine size={18} />, active: section('dashboard') });
       items.push({ label: 'Flaky tests', href: `${base}/flaky`, icon: <IconWaveSine size={18} />, active: section('flaky') });
       items.push({ label: 'Compare launches', href: `${base}/compare`, icon: <IconGitCompare size={18} />, active: section('compare') });

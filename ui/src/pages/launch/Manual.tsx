@@ -1,7 +1,7 @@
-import { Anchor, Badge, Button, Card, Chip, Group, Menu, Modal, Radio, SimpleGrid, Stack, Table, Text, Tooltip } from '@mantine/core';
+import { ActionIcon, Anchor, Badge, Button, Card, Checkbox, Chip, Group, Menu, Modal, Radio, SimpleGrid, Stack, Table, Text, Tooltip } from '@mantine/core';
 import { useCan } from '@franshub/ui-shell';
 import { notifications } from '@mantine/notifications';
-import { IconChevronDown, IconDownload, IconHandFinger, IconLock, IconLockOpen, IconPlayerPlay, IconPrinter, IconRobot } from '@tabler/icons-react';
+import { IconChecks, IconChevronDown, IconDownload, IconHandFinger, IconLock, IconLockOpen, IconPlayerPlay, IconPlaylistAdd, IconPrinter, IconRobot, IconUserShare, IconX } from '@tabler/icons-react';
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router';
 import { errorMessage } from '../../api/client';
@@ -13,8 +13,10 @@ import { caseLabel } from '../../lib/tm/filters';
 import { RUN_STATUS_LABEL } from '../../lib/tm/steps';
 import { runStatusVar } from '../../lib/tm/ui';
 import { RunStatusBadge, RunStatusIcon } from '../cases/common';
+import { AddCasesDialog, AssignDialog, SetResultDialog } from './RunItemDialogs';
 
 const ORDER: RunStatus[] = ['passed', 'failed', 'blocked', 'skipped', 'in_progress', 'untested'];
+const FINAL_STATUSES: RunStatus[] = ['passed', 'failed', 'blocked', 'skipped'];
 
 function ProgressBar({ counts, total }: { counts: Record<RunStatus, number>; total: number }) {
   const label = ORDER.filter((s) => counts[s] > 0)
@@ -90,6 +92,8 @@ export function Manual({ project, launch }: { project: string; launch: TmLaunch 
   const state = useManualRunState(project, launch.id);
   const [closing, setClosing] = useState(false);
   const [statuses, setStatuses] = useState<string[]>([]);
+  const [selected, setSelected] = useState<Set<string>>(() => new Set());
+  const [dialog, setDialog] = useState<null | { kind: 'assign'; ids: string[]; current?: string | null } | { kind: 'result'; ids: string[] } | { kind: 'add' }>(null);
   const list = useMemo(() => items.data ?? [], [items.data]);
   const counts = countBy(list);
   const closed = launch.manual?.state === 'closed';
@@ -116,6 +120,29 @@ export function Manual({ project, launch }: { project: string; launch: TmLaunch 
   const automatedTotal = Math.max(0, launch.counts.total - manualDone);
   const shown = statuses.length ? list.filter((i) => statuses.includes(i.status)) : list;
   const firstOpen = list.find((i) => i.status === 'untested' || i.status === 'in_progress');
+  const canManage = canRun && !closed;
+  const chosen = list.filter((i) => selected.has(i.id));
+  const shownSelected = shown.filter((i) => selected.has(i.id)).length;
+  const toggle = (id: string, on: boolean) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  const toggleShown = (on: boolean) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      for (const i of shown) {
+        if (on) next.add(i.id);
+        else next.delete(i.id);
+      }
+      return next;
+    });
+  const closeDialog = (done?: boolean) => {
+    if (done) setSelected(new Set());
+    setDialog(null);
+  };
 
   return (
     <QueryState query={items}>
@@ -173,6 +200,11 @@ export function Manual({ project, launch }: { project: string; launch: TmLaunch 
                 Continue testing
               </Button>
             )}
+            {canManage && (
+              <Button size="xs" variant="default" leftSection={<IconPlaylistAdd size={14} />} onClick={() => setDialog({ kind: 'add' })} data-testid="manual-add-cases">
+                Add cases…
+              </Button>
+            )}
             {!closed && canRun && (
               <Button size="xs" variant="default" leftSection={<IconLock size={14} />} onClick={() => setClosing(true)} data-testid="manual-close">
                 Close manual run
@@ -198,7 +230,7 @@ export function Manual({ project, launch }: { project: string; launch: TmLaunch 
                 </Menu.Item>
               </Menu.Dropdown>
             </Menu>
-            <Button size="xs" variant="default" leftSection={<IconPrinter size={14} />} onClick={() => window.print()} data-testid="manual-print">
+            <Button size="xs" variant="default" component={Link} to={`/p/${project}/launches/${launch.id}/manual/print`} leftSection={<IconPrinter size={14} />} data-testid="manual-print">
               Print report
             </Button>
           </Group>
@@ -255,10 +287,37 @@ export function Manual({ project, launch }: { project: string; launch: TmLaunch 
                 </Group>
               </Chip.Group>
             </Group>
+            {canManage && chosen.length > 0 && (
+              <Group gap="xs" wrap="wrap" className="fp-tm-bulkbar" data-testid="manual-bulk" role="toolbar" aria-label="Selected cases">
+                <Text size="sm" fw={600} aria-live="polite">
+                  {chosen.length} selected
+                </Text>
+                <Button size="xs" variant="light" leftSection={<IconUserShare size={14} />} onClick={() => setDialog({ kind: 'assign', ids: chosen.map((i) => i.id) })} data-testid="manual-bulk-assign">
+                  Assign to…
+                </Button>
+                <Button size="xs" variant="light" leftSection={<IconChecks size={14} />} onClick={() => setDialog({ kind: 'result', ids: chosen.map((i) => i.id) })} data-testid="manual-bulk-result">
+                  Set result…
+                </Button>
+                <Button size="xs" variant="subtle" leftSection={<IconX size={14} />} onClick={() => setSelected(new Set())}>
+                  Clear
+                </Button>
+              </Group>
+            )}
             <div className="fp-table-wrap">
               <Table withTableBorder verticalSpacing={4} miw={560} data-testid="manual-items" className="fp-print-report">
                 <Table.Thead>
                   <Table.Tr>
+                    {canManage && (
+                      <Table.Th w={36}>
+                        <Checkbox
+                          aria-label="Select every case shown"
+                          checked={shown.length > 0 && shownSelected === shown.length}
+                          indeterminate={shownSelected > 0 && shownSelected < shown.length}
+                          onChange={(e) => toggleShown(e.currentTarget.checked)}
+                          data-testid="manual-select-all"
+                        />
+                      </Table.Th>
+                    )}
                     <Table.Th>Case</Table.Th>
                     <Table.Th>Status</Table.Th>
                     <Table.Th>Assignee</Table.Th>
@@ -268,7 +327,12 @@ export function Manual({ project, launch }: { project: string; launch: TmLaunch 
                 </Table.Thead>
                 <Table.Tbody>
                   {shown.map((i) => (
-                    <Table.Tr key={i.id} data-testid="manual-item">
+                    <Table.Tr key={i.id} data-testid="manual-item" data-selected={selected.has(i.id) || undefined}>
+                      {canManage && (
+                        <Table.Td>
+                          <Checkbox aria-label={`Select ${caseLabel(i.caseNumber)}`} checked={selected.has(i.id)} onChange={(e) => toggle(i.id, e.currentTarget.checked)} data-testid="manual-item-select" />
+                        </Table.Td>
+                      )}
                       <Table.Td>
                         <Anchor component={Link} to={`/p/${project}/launches/${launch.id}/run/${i.id}`} size="sm">
                           <Text span size="xs" c="dimmed" className="fp-mono" mr={6}>
@@ -284,7 +348,18 @@ export function Manual({ project, launch }: { project: string; launch: TmLaunch 
                         <RunStatusBadge status={i.status} size="xs" />
                       </Table.Td>
                       <Table.Td>
-                        <Text size="sm">{i.assignee ?? '—'}</Text>
+                        <Group gap={4} wrap="nowrap">
+                          <Text size="sm" data-testid="manual-item-assignee">
+                            {i.assignee ?? '—'}
+                          </Text>
+                          {canManage && (
+                            <Tooltip label="Reassign">
+                              <ActionIcon variant="subtle" size="sm" aria-label={`Reassign ${caseLabel(i.caseNumber)}`} onClick={() => setDialog({ kind: 'assign', ids: [i.id], current: i.assignee ?? null })} data-testid="manual-item-reassign">
+                                <IconUserShare size={14} />
+                              </ActionIcon>
+                            </Tooltip>
+                          )}
+                        </Group>
                       </Table.Td>
                       <Table.Td>{i.executionNo}</Table.Td>
                       <Table.Td>
@@ -299,6 +374,9 @@ export function Manual({ project, launch }: { project: string; launch: TmLaunch 
             </div>
           </Stack>
           {closing && <CloseDialog project={project} launch={launch} onClose={() => setClosing(false)} />}
+          {dialog?.kind === 'assign' && <AssignDialog project={project} launchId={launch.id} ids={dialog.ids} current={dialog.current} onClose={closeDialog} />}
+          {dialog?.kind === 'result' && <SetResultDialog project={project} launchId={launch.id} ids={dialog.ids} finished={list.filter((i) => dialog.ids.includes(i.id) && FINAL_STATUSES.includes(i.status)).length} onClose={closeDialog} />}
+          {dialog?.kind === 'add' && <AddCasesDialog project={project} launchId={launch.id} inRun={new Set(list.map((i) => i.caseNumber))} onClose={() => closeDialog()} />}
         </Stack>
       )}
     </QueryState>

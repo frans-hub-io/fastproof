@@ -1,0 +1,3 @@
+﻿ID,Title,Section Hierarchy,Steps (Step),Steps (Expected Result),Steps (Shared step ID)
+﻿C20,Шаг с юникодом,Розділ > Підрозділ,Відкрити сторінку,Сторінка відкрита,
+﻿C20,,,Use shared login,Logged in,5

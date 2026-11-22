@@ -155,7 +155,7 @@ pub struct CaseListQuery {
     pub limit: Option<i64>,
 }
 
-fn case_query(raw: Option<&str>) -> ApiResult<CaseQuery> {
+pub fn case_query(raw: Option<&str>) -> ApiResult<CaseQuery> {
     let mut q = CaseQuery::default();
     let mut limit = None;
     let mut fields: std::collections::BTreeMap<String, Vec<String>> = Default::default();

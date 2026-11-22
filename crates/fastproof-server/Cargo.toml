@@ -29,6 +29,7 @@ fastproof-ingest.workspace = true
 fastproof-model = { workspace = true, features = ["openapi"] }
 fastproof-store.workspace = true
 fastproof-stream.workspace = true
+fastproof-tm-import.workspace = true
 flate2.workspace = true
 franshub-access.workspace = true
 franshub-auth.workspace = true
@@ -64,8 +65,8 @@ utoipa.workspace = true
 utoipa-axum.workspace = true
 utoipa-swagger-ui.workspace = true
 uuid.workspace = true
+zip.workspace = true
 
 [dev-dependencies]
 fastproof-store = { workspace = true, features = ["test-util"] }
 tempfile.workspace = true
-zip.workspace = true

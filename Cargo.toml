@@ -7,6 +7,7 @@ members = [
     "crates/fastproof-store",
     "crates/fastproof-server",
     "crates/fastproof-stream",
+    "crates/fastproof-tm-import",
 ]
 
 [workspace.package]
@@ -21,6 +22,7 @@ fastproof-ingest = { path = "crates/fastproof-ingest" }
 fastproof-blob = { path = "crates/fastproof-blob" }
 fastproof-store = { path = "crates/fastproof-store" }
 fastproof-stream = { path = "crates/fastproof-stream" }
+fastproof-tm-import = { path = "crates/fastproof-tm-import" }
 franshub-access = { path = "../franshub-platform/crates/franshub-access" }
 franshub-auth = { path = "../franshub-platform/crates/franshub-auth" }
 franshub-oidc = { path = "../franshub-platform/crates/franshub-oidc" }

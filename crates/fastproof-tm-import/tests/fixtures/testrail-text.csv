@@ -1,0 +1,3 @@
+ID,Title,Section,Template,Steps,Expected Result,Mission,Goals,Automation Type
+C1,Text template case,Basics,Test Case (Text),"Open the app and log in","You see the home page",,,None
+C2,Explore checkout,Basics,Exploratory Session,,,Find payment bugs,<p>Try <code>3DS</code> cards</p>,None

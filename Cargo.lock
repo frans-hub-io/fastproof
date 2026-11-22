@@ -781,6 +781,7 @@ dependencies = [
  "fastproof-model",
  "fastproof-store",
  "fastproof-stream",
+ "fastproof-tm-import",
  "flate2",
  "franshub-access",
  "franshub-auth",
@@ -830,6 +831,7 @@ dependencies = [
  "chrono",
  "fastproof-model",
  "fastproof-store",
+ "fastproof-tm-import",
  "futures",
  "hex",
  "metrics",
@@ -875,6 +877,16 @@ dependencies = [
  "url",
  "uuid",
  "webpki-roots",
+]
+
+[[package]]
+name = "fastproof-tm-import"
+version = "0.1.0"
+dependencies = [
+ "fastproof-ingest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

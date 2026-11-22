@@ -1,0 +1,12 @@
+{"code": "SHOP", "suites": [
+  {"id": 1, "title": "Cart", "cases": [
+    {"id": 7, "title": "Add to cart", "description": "<p>Adds an item</p>", "preconditions": "", "postconditions": "Cart is emptied",
+     "severity": "critical", "priority": "high", "type": "functional", "layer": "e2e", "status": 0,
+     "tags": [{"title": "cart"}, {"title": "smoke"}],
+     "custom_fields": [{"id": 3, "title": "Browser", "value": "Chrome"}],
+     "steps": [{"action": "Open item", "expected_result": "Item page", "data": "", "attachments": [{"filename": "item.png"}],
+                "steps": [{"action": "Scroll", "expected_result": "Price visible"}]},
+               {"action": "Click <b>Add</b>", "expected_result": "Badge shows 1", "shared_step_hash": null}]}],
+   "suites": [{"id": 2, "title": "Checkout", "cases": [
+      {"id": 8, "title": "Checkout", "status": 1, "steps": [{"action": "Pay", "expected_result": "Paid", "shared_step_hash": "abc"}]}]}]}
+]}

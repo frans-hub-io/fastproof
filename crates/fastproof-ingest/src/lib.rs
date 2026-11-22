@@ -838,3 +838,24 @@ fn head_of(text: &str, max: usize) -> &str {
     }
     &text[..end]
 }
+
+/// The visitor of [`for_each_entry`]: normalized path, declared size, bounded reader.
+pub type EntryVisit<'v> = dyn FnMut(&str, u64, &mut dyn Read) -> Result<(), IngestError> + 'v;
+
+/// Streams every regular file of an archive (zip, tar, tar.gz), a directory or a single file
+/// with the upload rules: entry paths are normalized and rejected when absolute, with `..`,
+/// a drive letter or a NUL byte; symbolic links are refused; entry counts and sizes and the
+/// uncompressed byte budget (`max_total_uncompressed_bytes`, charged for every byte read) are
+/// enforced. `visit` gets the normalized path, the declared size and a bounded reader.
+pub fn for_each_entry(
+    path: &Path,
+    file_name: Option<&str>,
+    limits: &Limits,
+    visit: &mut EntryVisit<'_>,
+) -> Result<UploadKind, IngestError> {
+    let upload = Upload::open(path, file_name, limits)?;
+    let budget = Budget::new(limits.max_total_uncompressed_bytes);
+    let mut skipped = |_: &str, _: &'static str| {};
+    upload.for_each(limits, &budget, &|_| true, &mut skipped, visit)?;
+    Ok(upload.kind)
+}

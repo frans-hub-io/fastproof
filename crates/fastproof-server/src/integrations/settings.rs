@@ -133,7 +133,7 @@ pub struct Notification {
     pub id: String,
     /// `webhook`, `slack`, `teams`, `email` or `telegram`.
     pub kind: String,
-    /// `launchFinished`, `gateFailed`, `newFailures`.
+    /// `launchFinished`, `gateFailed`, `newFailures`, `manualRunClosed`.
     pub on: Vec<String>,
     /// Webhook or Slack URL, Telegram chat id, or comma-separated email addresses. A URL that
     /// is itself a credential (a Slack webhook URL) belongs in a secret (`targetSecretRef`).
@@ -208,7 +208,12 @@ pub struct IntegrationSettings {
     pub fastmock: Option<FastMockSettings>,
 }
 
-pub const EVENTS: [&str; 3] = ["launchFinished", "gateFailed", "newFailures"];
+pub const EVENTS: [&str; 4] = [
+    "launchFinished",
+    "gateFailed",
+    "newFailures",
+    "manualRunClosed",
+];
 
 fn field<T: serde::de::DeserializeOwned>(
     doc: &serde_json::Value,
@@ -322,7 +327,7 @@ impl IntegrationSettings {
             }
             if n.on.is_empty() || n.on.iter().any(|e| !EVENTS.contains(&e.as_str())) {
                 return Err(
-                    "notifications.on: one or more of launchFinished, gateFailed, newFailures"
+                    "notifications.on: one or more of launchFinished, gateFailed, newFailures, manualRunClosed"
                         .into(),
                 );
             }

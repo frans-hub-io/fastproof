@@ -1,0 +1,6 @@
+ID,Title,Section,Section Depth,Section Description,Section Hierarchy,Suite,Suite ID,Priority,Type,References,Estimate,Created By,Created On,Template,Preconditions,Steps (Step),Steps (Expected Result),Steps (Additional Info),is_converted,Browser
+C3863,Login with a valid password,Login,1,,Accounts > Login,Master,S39,High,Functional,"DH-44, DH-28",600s,Ann,2026-01-05,Test Case (Steps),User **exists**,Open the login page,The form is shown,https://example.com/login,1,Chrome
+,,,,,,,,,,,,,,,,Type the password,,secret-free value,1,
+,,,,,,,,,,,,,,,,Press Enter,The dashboard opens,,1,
+C3864,Logout,Login,1,,Accounts > Login,Master,S39,Medium,Functional,,,Ann,2026-01-05,Test Case (Steps),,Click Logout,The login page is shown,,1,Firefox
+C3870,Reset a password,Passwords,2,,Accounts > Passwords > Reset,Master,S39,Low,Regression,,,Bob,2026-01-06,Test Case (Steps),"<p>A user with an <b>email</b></p>",<p>Open <i>Forgot password</i></p>,<ul><li>A mail is sent</li></ul>,,0,

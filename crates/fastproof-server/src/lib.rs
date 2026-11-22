@@ -12,11 +12,14 @@ pub mod limits;
 pub mod live;
 pub mod markdown;
 pub mod mcp;
+pub mod mcp_tm;
 pub mod ops;
 pub mod scheduler;
 pub mod schema;
 pub mod state;
 pub mod stream;
+pub mod testops;
+pub mod tm_jobs;
 pub mod trace;
 pub mod ui;
 

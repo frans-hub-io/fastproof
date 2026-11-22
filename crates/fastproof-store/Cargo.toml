@@ -16,6 +16,7 @@ url.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
 fastproof-model.workspace = true
+fastproof-tm-import.workspace = true
 futures.workspace = true
 metrics.workspace = true
 regex.workspace = true

@@ -1,8 +1,9 @@
 //! Command line: `serve`, `migrate`, `upload`, `watch`, `launch start|finish`, `testplan`,
-//! `version`.
+//! `cases export|import`, `version`.
 
 pub mod archive;
 pub mod bench;
+pub mod cases;
 pub mod ci;
 pub mod client;
 pub mod gate;
@@ -48,9 +49,16 @@ pub enum Command {
     /// Check the quality gate of a launch: exit 0 when it passed, 1 when it failed, 2 on
     /// errors or when it is still pending.
     Gate(gate::GateArgs),
-    /// Print an Allure `testplan.json` of chosen tests (e.g. the failed ones of a launch), so
-    /// Allure adapters run only those (`ALLURE_TESTPLAN_PATH=testplan.json`).
+    /// Print an Allure `testplan.json` of chosen tests (e.g. the failed ones of a launch), of a
+    /// managed plan (`--plan`) or of a launch started from one (`--launch`), so Allure adapters
+    /// run only those (`ALLURE_TESTPLAN_PATH=testplan.json`).
     Testplan(TestplanArgs),
+    /// Export test cases (`export --format ndjson|csv [--out file]`) or import them
+    /// (`import <file> --format <f> [--apply]`, a dry run by default).
+    Cases {
+        #[command(subcommand)]
+        command: cases::CasesCommand,
+    },
     /// Generate launches, results and log lines and measure throughput and end-to-end lag.
     Bench(bench::BenchArgs),
     /// Print the version.
@@ -73,6 +81,13 @@ pub struct TestplanArgs {
     /// Name of the stored plan.
     #[arg(long)]
     pub name: Option<String>,
+    /// A managed plan: print its testplan.json (its automated cases, computed now).
+    #[arg(long, conflicts_with_all = ["from_launch", "test_cases", "launch", "name"])]
+    pub plan: Option<uuid::Uuid>,
+    /// External id of a launch started from a managed plan (as in `FASTPROOF_LAUNCH`): print
+    /// the testplan.json of that plan.
+    #[arg(long, conflicts_with_all = ["from_launch", "test_cases", "name"])]
+    pub launch: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -356,6 +371,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<i32> {
         Command::Upload(u) => upload(u).await,
         Command::Gate(g) => Ok(gate::run(g).await),
         Command::Testplan(t) => testplan(t).await,
+        Command::Cases { command } => cases::run(command).await,
         Command::Watch(w) => watch::run(w).await,
         Command::Bench(b) => {
             let r = bench::run(b).await?;
@@ -478,8 +494,35 @@ async fn upload(u: UploadArgs) -> anyhow::Result<i32> {
 }
 
 async fn testplan(t: TestplanArgs) -> anyhow::Result<i32> {
+    if let Some(plan) = t.plan {
+        let client = t.conn.client()?;
+        let json = client.testplan_json(&t.conn.project, plan).await?;
+        println!("{}", serde_json::to_string_pretty(&json)?);
+        eprintln!(
+            "test plan {plan}: {} tests",
+            json["tests"].as_array().map(|a| a.len()).unwrap_or(0)
+        );
+        return Ok(0);
+    }
+    if let Some(ext) = &t.launch {
+        let client = t.conn.client()?;
+        let launch = client
+            .launch_by_external(&t.conn.project, ext)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("no launch with external id {ext:?}"))?;
+        let json = client
+            .launch_testplan_json(&t.conn.project, launch.id)
+            .await?;
+        println!("{}", serde_json::to_string_pretty(&json)?);
+        eprintln!(
+            "launch #{}: {} tests",
+            launch.number,
+            json["tests"].as_array().map(|a| a.len()).unwrap_or(0)
+        );
+        return Ok(0);
+    }
     if t.from_launch.is_none() && t.test_cases.is_empty() {
-        bail!("give --from-launch or --test-case");
+        bail!("give --plan, --launch, --from-launch or --test-case");
     }
     let client = t.conn.client()?;
     let statuses: Vec<String> = t

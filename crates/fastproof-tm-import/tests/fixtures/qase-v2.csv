@@ -1,0 +1,9 @@
+v2.id,title,description,preconditions,suite,suite_id,suite_parent_id,suite_without_cases,priority,severity,status,tags,steps_actions,steps_result,steps_data
+,Payments,,,Payments,7,,1,,,,,,,
+101,Pay by card,<p>Card <b>payment</b></p>,,,7,,0,medium,normal,draft,payments,"1. ""Open checkout""
+	1. ""Choose card, then """"Pay""""""
+2. ""Confirm
+on two lines""","1. ""Checkout shown""
+	1. ""Card form""
+2. ""Paid""",
+102,No suite,,,,,,0,low,minor,actual,,,,

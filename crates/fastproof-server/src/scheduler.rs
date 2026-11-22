@@ -457,6 +457,9 @@ pub fn case_jobs(sch: &mut Scheduler) -> anyhow::Result<()> {
         }
         Ok(())
     })?;
+    sch.register("cases.jobs", "10s", |s: AppState| async move {
+        crate::tm_jobs::tick(&s).await
+    })?;
     sch.register("cases.backfill", "1m", |s: AppState| async move {
         s.store.enqueue_upgrade_backfills().await?;
         let owner = format!("{}-cases-backfill", s.instance);

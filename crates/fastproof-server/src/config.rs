@@ -168,6 +168,8 @@ pub struct Config {
     pub guards: crate::limits::GuardSettings,
     /// Limits of test management (`FASTPROOF_TM_*`).
     pub tm: fastproof_store::tm::TmLimits,
+    /// Allow `http` base URLs for imports from Allure TestOps (`FASTPROOF_TESTOPS_ALLOW_HTTP`).
+    pub testops_allow_http: bool,
 }
 
 /// `FASTPROOF_TM_<NAME>` limits, each within `1..=max`.
@@ -270,6 +272,7 @@ impl fmt::Debug for Config {
                 &self.valkey_url.as_ref().map(|v| redact_url(v.expose())),
             )
             .field("retain_uploads", &self.retain_uploads)
+            .field("testops_allow_http", &self.testops_allow_http)
             .field("outbox_retention_days", &self.outbox_retention_days)
             .field("integrations", &self.integrations)
             .field("ingest_mode", &self.ingest_mode)
@@ -611,6 +614,7 @@ impl Config {
             log_limits,
             guards: crate::limits::GuardSettings::from_env(&env)?,
             tm: tm_limits(&env)?,
+            testops_allow_http: env.bool("FASTPROOF_TESTOPS_ALLOW_HTTP", false)?,
         })
     }
 }

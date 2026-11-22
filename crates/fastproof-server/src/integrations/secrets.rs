@@ -44,6 +44,8 @@ pub enum SecretPurpose {
     /// Microsoft Teams Workflows webhook URL (`targetSecretRef` of a Teams notification); always
     /// bound to the origin of the URL.
     Teams,
+    /// Allure TestOps API token of a case import (stored by `POST /imports`); needs an origin.
+    Testops,
 }
 
 impl SecretPurpose {
@@ -56,6 +58,7 @@ impl SecretPurpose {
             SecretPurpose::Webhook => "webhook",
             SecretPurpose::Smtp => "smtp",
             SecretPurpose::Teams => "teams",
+            SecretPurpose::Testops => "testops",
         }
     }
 
@@ -63,7 +66,10 @@ impl SecretPurpose {
     pub fn needs_origin(self) -> bool {
         matches!(
             self,
-            SecretPurpose::Vcs | SecretPurpose::Fastmock | SecretPurpose::Teams
+            SecretPurpose::Vcs
+                | SecretPurpose::Fastmock
+                | SecretPurpose::Teams
+                | SecretPurpose::Testops
         )
     }
 

@@ -1,0 +1,5 @@
+Key,Summary,Folder,Steps,Expected,Priority,Tags,Notes
+EXT-1,Create order,Orders / New,"1. Open
+2. Save","1. Form
+2. Saved",high,"orders,smoke",free text
+EXT-2,Cancel order,Orders,Cancel,Cancelled,low,,=HYPERLINK("https://evil.example.com")

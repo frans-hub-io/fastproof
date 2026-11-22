@@ -183,6 +183,12 @@ async fn process_launch(
     if ev.new_failures > 0 {
         events.push("newFailures".into());
     }
+    if launch
+        .manual
+        .is_some_and(|m| m.state == fastproof_store::tm::ManualState::Closed)
+    {
+        events.push("manualRunClosed".into());
+    }
     let sm = summary(s, &project, &launch, &ev, events);
     let ds = deliveries(
         &settings,

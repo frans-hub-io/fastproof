@@ -1,0 +1,4 @@
+{"format":"fastproof-cases","version":1,"project":"DEMO","exportedAt":"2026-11-22T10:00:00Z","fields":[{"key":"browser","name":"Browser","type":"select","options":["chrome","firefox"]}]}
+{"keys":[{"kind":"allure_id","value":"5"}],"number":5,"name":"Exported case","folder":["A","B"],"status":"draft","description":"Desc **md**","preconditions":"","steps":[{"id":"s_abc","action":"Do","expected":"Done","steps":[{"id":"s_def","action":"Sub"}]}],"links":[{"name":"Doc","url":"https://example.com/doc","type":"link"}],"tags":["t1"],"fields":{"priority":"high","browser":"chrome"},"automated":false,"fullNames":[],"attachments":[]}
+not json
+{"name":"Second","folder":[],"steps":[]}

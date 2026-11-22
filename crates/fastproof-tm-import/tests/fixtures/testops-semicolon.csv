@@ -1,0 +1,3 @@
+Allure ID;Name;Precondition;Scenario;Expected result;Tags;Status
+2001;Semicolon export;;"Step one
+Step two";Done;a,b;Active

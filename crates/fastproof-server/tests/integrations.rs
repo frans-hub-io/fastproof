@@ -1489,18 +1489,29 @@ async fn mcp_tools_over_http() {
     assert_eq!(
         names,
         vec![
+            "add_cases_to_plan",
+            "case_history",
             "compare_launches",
+            "create_case_draft",
             "create_rule_draft",
+            "draft_case_from_result",
             "fastmock_interactions",
             "flaky_tests",
+            "get_case",
             "get_launch",
             "get_result",
+            "get_test_plan",
             "launch_failures",
             "list_launches",
             "list_projects",
+            "list_test_plans",
+            "manual_run_progress",
+            "propose_case_update",
             "result_logs",
+            "search_cases",
             "similar_failures",
             "test_history",
+            "trace_actions",
             "triage"
         ]
     );

@@ -5,6 +5,7 @@
 //! answers with a specific status and code are [`TmError`]s; everything else is a plain
 //! database error.
 
+pub mod ai;
 pub mod backfill;
 pub mod cases;
 pub mod export;

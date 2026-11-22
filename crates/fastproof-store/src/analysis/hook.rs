@@ -230,7 +230,11 @@ type ResultRow = (
     Option<Uuid>,
     Option<String>,
     Option<String>,
+    bool,
 );
+
+/// Labels of a manual result: manual series are left out of flaky detection.
+pub const MANUAL_LABEL: &str = r#"[{"name": "manual", "value": "true"}]"#;
 
 /// Runs the analysis of newly persisted attempts and the results of their series.
 pub async fn after_persist(
@@ -285,7 +289,8 @@ pub async fn after_persist(
     let need_trace = rules.iter().any(|r| r.needs_trace());
 
     let rows: Vec<ResultRow> = sqlx::query_as(
-        "select r.id, r.series_id, r.test_case_id, r.status, r.message, r.defect, la.id, la.fingerprint, la.trace \
+        "select r.id, r.series_id, r.test_case_id, r.status, r.message, r.defect, la.id, la.fingerprint, la.trace, \
+           r.labels @> $5::jsonb as manual \
          from results r left join lateral (select a.id, a.fingerprint, \
              case when $4 then left(a.trace, 16384) end as trace from attempts a \
            where a.result_id = r.id and a.launch_created_at = r.launch_created_at \
@@ -296,6 +301,7 @@ pub async fn after_persist(
     .bind(launch.created_at)
     .bind(series)
     .bind(need_trace)
+    .bind(MANUAL_LABEL)
     .fetch_all(&mut *conn)
     .await?;
     if rows.is_empty() {
@@ -343,7 +349,8 @@ pub async fn after_persist(
     );
     let mut catalog: BTreeMap<String, (String, i64)> = BTreeMap::new();
     let mut stat_updates: Vec<(Uuid, Status, bool)> = Vec::new();
-    for (id, series_id, test_case_id, status_s, message, defect, latest, fp, trace) in &rows {
+    for (id, series_id, test_case_id, status_s, message, defect, latest, fp, trace, manual) in &rows
+    {
         let status = Status::parse_lenient(status_s);
         let past = history.get(series_id).cloned().unwrap_or_default();
         let transition = status_transition(status, &past).map(|t| {
@@ -353,7 +360,7 @@ pub async fn after_persist(
                 .unwrap_or_default()
         });
         let hist_opt: Vec<Option<Status>> = past.iter().copied().map(Some).collect();
-        let flaky = is_flaky(status, &hist_opt, &opts);
+        let flaky = !manual && is_flaky(status, &hist_opt, &opts);
         let existing: Option<Defect> = defect.clone().and_then(|d| serde_json::from_value(d).ok());
         let mut new_defect = existing.clone();
         if !is_protected(existing.as_ref()) {

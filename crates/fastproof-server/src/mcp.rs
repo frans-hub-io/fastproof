@@ -150,14 +150,14 @@ struct RuleDraftArgs {
     action: Value,
 }
 
-struct ToolSpec {
-    name: &'static str,
-    description: &'static str,
-    schema: fn() -> Value,
-    write: bool,
+pub(crate) struct ToolSpec {
+    pub(crate) name: &'static str,
+    pub(crate) description: &'static str,
+    pub(crate) schema: fn() -> Value,
+    pub(crate) write: bool,
 }
 
-fn schema<T: JsonSchema>() -> Value {
+pub(crate) fn schema<T: JsonSchema>() -> Value {
     serde_json::to_value(schemars::schema_for!(T)).unwrap_or_else(|_| json!({"type": "object"}))
 }
 
@@ -248,7 +248,7 @@ pub struct McpServer {
     s: AppState,
 }
 
-struct ToolError(String);
+pub(crate) struct ToolError(pub(crate) String);
 
 impl From<ApiError> for ToolError {
     fn from(e: ApiError) -> Self {
@@ -263,13 +263,13 @@ impl From<anyhow::Error> for ToolError {
     }
 }
 
-type ToolResult = Result<Value, ToolError>;
+pub(crate) type ToolResult = Result<Value, ToolError>;
 
-fn args<T: DeserializeOwned>(v: &Value) -> Result<T, ToolError> {
+pub(crate) fn args<T: DeserializeOwned>(v: &Value) -> Result<T, ToolError> {
     serde_json::from_value(v.clone()).map_err(|e| ToolError(format!("invalid arguments: {e}")))
 }
 
-fn limit(v: Option<i64>, default: i64, max: i64) -> Result<i64, ToolError> {
+pub(crate) fn limit(v: Option<i64>, default: i64, max: i64) -> Result<i64, ToolError> {
     match v {
         None => Ok(default),
         Some(n) if (1..=max).contains(&n) => Ok(n),
@@ -277,7 +277,7 @@ fn limit(v: Option<i64>, default: i64, max: i64) -> Result<i64, ToolError> {
     }
 }
 
-fn clip(s: &str, max: usize) -> String {
+pub(crate) fn clip(s: &str, max: usize) -> String {
     if s.len() <= max {
         return s.to_string();
     }
@@ -527,15 +527,21 @@ impl McpServer {
                 .await;
                 Ok(out)
             }
-            other => Err(ToolError(format!("unknown tool {other:?}"))),
+            other => match crate::mcp_tm::run(s, other, a, auth).await {
+                Some(r) => r,
+                None => Err(ToolError(format!("unknown tool {other:?}"))),
+            },
         }
     }
 }
 
+fn all_tools() -> impl Iterator<Item = &'static ToolSpec> {
+    TOOLS.iter().chain(crate::mcp_tm::TOOLS.iter())
+}
+
 /// Tool definitions as listed.
 pub fn tools() -> Vec<Tool> {
-    TOOLS
-        .iter()
+    all_tools()
         .map(|t| {
             let schema = match (t.schema)() {
                 Value::Object(m) => m,
@@ -559,7 +565,7 @@ impl ServerHandler for McpServer {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("fastproof", crate::VERSION))
             .with_instructions(
-                "FastProof test reports: list launches, read failures, clusters, logs, history and FastMock interactions; triage results (recorded as AI triage).",
+                "FastProof test reports: list launches, read failures, clusters, logs, history and FastMock interactions; triage results (recorded as AI triage). Test management: search and read test cases, plans and manual runs, read Playwright trace actions, draft cases and propose changes (drafts and proposals are reviewed by people).",
             )
     }
 
@@ -576,7 +582,7 @@ impl ServerHandler for McpServer {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
-        if !TOOLS.iter().any(|t| t.name == request.name) {
+        if !all_tools().any(|t| t.name == request.name) {
             return Err(McpError::invalid_params(
                 format!("unknown tool {:?}", request.name),
                 None,

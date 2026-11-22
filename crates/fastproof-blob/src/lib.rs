@@ -138,11 +138,29 @@ impl BlobKey {
         Self("uploads".into())
     }
 
+    /// `tm-jobs/<id>/<name>`: a file of a test-management import or export job (`name` of
+    /// lowercase letters, digits, dots and dashes).
+    pub fn tm_job(id: &str, name: &str) -> anyhow::Result<Self> {
+        if !valid_id(id) {
+            bail!("invalid job id in a blob key");
+        }
+        let ok = (1..=64).contains(&name.len())
+            && !name.starts_with('.')
+            && name
+                .bytes()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-' || c == b'.');
+        if !ok {
+            bail!("invalid job file name in a blob key");
+        }
+        Ok(Self(format!("tm-jobs/{id}/{name}")))
+    }
+
     /// Parses a stored key back, accepting only the shapes the constructors produce.
     pub fn parse(s: &str) -> anyhow::Result<Self> {
         let parts: Vec<&str> = s.split('/').collect();
         match parts.as_slice() {
             ["uploads", id] => Self::upload(id),
+            ["tm-jobs", id, name] => Self::tm_job(id, name),
             ["projects", p, "attachments", aa, sha] if sha.len() == 64 && &sha[..2] == *aa => {
                 Self::attachment(p, sha)
             }

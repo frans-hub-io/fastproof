@@ -1,0 +1,8 @@
+id,title,description,preconditions,postconditions,suite,suite_id,suite_parent_id,suite_without_cases,priority,severity,type,behavior,automation,status,layer,is_flaky,tags,steps_actions,steps_result,steps_data,12
+,Authentication,,,,Authentication,1,,1,,,,,,,,,,,,,
+,Login,,,,Login,2,1,1,,,,,,,,,,,,,
+45,Login works,Checks login,User exists,Log out,,2,,0,high,critical,functional,positive,is-not-automated,actual,e2e,no,"smoke, login","1. Open the page
+2. Enter credentials","1. Page shown
+2. Logged in","1. 
+2. user@example.com",Chrome
+46,Old flow,,,,,1,,0,undefined,major,other,undefined,automated,deprecated,unknown,yes,,1. Do it,1. Done,,

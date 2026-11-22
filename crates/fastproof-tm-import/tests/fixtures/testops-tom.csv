@@ -1,0 +1,7 @@
+allure_id,name,description,precondition,scenario,expected_result,tested_feature,tested_story,tags,status,layer,useful_links,issue_tracker,full_name,automated
+1123,Open the profile,Shows the profile,Logged in,"Open menu
+	Click Profile
+		Wait for load
+Check the name",The name is shown,Profile,View,"profile, ui",Active,UI,https://docs.example.com/profile,https://issues.example.com/P-1,,false
+1124,API returns 200,,,Send GET /health,200 OK,Health,,api,Draft,API,,,com.example.HealthTest.ok,true
+1125,No steps,Just text,,,Everything works,,,,Outdated,,,,,

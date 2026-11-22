@@ -1,0 +1,6 @@
+ID,Title,Section Hierarchy,Priority,Type,Preconditions,Steps (Step),Steps (Expected Result),is_converted
+C10,Search by name,Catalog > Search,Critical,Smoke,,"1. Open the catalog
+2. Type ""shoe""
+3. Press Search","1. The catalog opens
+3. Results show shoes",1
+C11,Empty search,Catalog > Search,Medium,Functional,,"1. Press Search","1. A hint is shown",1

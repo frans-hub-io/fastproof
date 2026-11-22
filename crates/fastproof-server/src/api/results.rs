@@ -8,6 +8,7 @@ use fastproof_ingest::{IngestError, JsonBounds, ReportOptions, report_to_parsed,
 use fastproof_model::{AttachmentKind, ReportResult};
 use fastproof_store::ingest::{LaunchRef, NewAttempt};
 use fastproof_store::results::{GroupBy, ResultFilter, TreeFilter, TreeOptions};
+use fastproof_store::tm::ResultSource;
 use fastproof_store::{
     DailyEntry, HistoryEntry, HistoryFilter, Launch, Page, ResultDetail, ResultSummary, TreeNode,
     TreeTest,
@@ -473,6 +474,8 @@ pub struct ResultQuery {
     pub label: Option<String>,
     pub flaky: Option<bool>,
     pub fingerprint: Option<String>,
+    /// `manual` (projected from run items) or `automated`.
+    pub source: Option<ResultSource>,
     pub before: Option<String>,
     pub limit: Option<i64>,
 }
@@ -527,6 +530,7 @@ pub async fn list(
         label: key_value(q.label.as_deref(), "label")?,
         flaky: q.flaky,
         fingerprint: q.fingerprint,
+        source: q.source,
         before: q.before,
         limit: page_limit(q.limit)?,
     };
@@ -549,6 +553,8 @@ pub struct TreeQuery {
     pub q: Option<String>,
     /// Only results flaky in this run.
     pub flaky: Option<bool>,
+    /// `manual` or `automated`.
+    pub source: Option<ResultSource>,
     /// A result whose group is inlined first (to reveal a deep-linked result).
     pub reveal: Option<Uuid>,
 }
@@ -565,6 +571,8 @@ pub struct TreeTestsQuery {
     pub status: Option<String>,
     pub q: Option<String>,
     pub flaky: Option<bool>,
+    /// `manual` or `automated`.
+    pub source: Option<ResultSource>,
     pub before: Option<String>,
     pub limit: Option<i64>,
 }
@@ -611,6 +619,7 @@ fn tree_filter(
     status: Option<&str>,
     q: Option<String>,
     flaky: Option<bool>,
+    source: Option<ResultSource>,
 ) -> ApiResult<TreeFilter> {
     if q.as_ref().is_some_and(|v| v.len() > MAX_Q_BYTES) {
         return Err(ApiError::bad_request(format!(
@@ -621,6 +630,7 @@ fn tree_filter(
         statuses: statuses(status)?,
         q: q.filter(|v| !v.trim().is_empty()),
         flaky: flaky.filter(|f| *f),
+        source,
     })
 }
 
@@ -638,7 +648,7 @@ pub async fn tree(
     let o = TreeOptions {
         by: group_by(q.group_by.as_deref())?,
         include_tests: q.include_tests.unwrap_or(false),
-        filter: tree_filter(q.status.as_deref(), q.q, q.flaky)?,
+        filter: tree_filter(q.status.as_deref(), q.q, q.flaky, q.source)?,
         reveal: q.reveal,
     };
     Ok(Json(s.store.tree_with(&launch, &o).await?))
@@ -674,7 +684,7 @@ pub async fn tree_tests(
     {
         return Err(ApiError::bad_request("before is not a cursor"));
     }
-    let f = tree_filter(q.status.as_deref(), q.q, q.flaky)?;
+    let f = tree_filter(q.status.as_deref(), q.q, q.flaky, q.source)?;
     let limit = page_limit(q.limit)?;
     Ok(Json(
         s.store

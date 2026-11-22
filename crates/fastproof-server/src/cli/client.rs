@@ -152,6 +152,22 @@ impl Client {
         self.send(rb).await
     }
 
+    /// Allure `testplan.json` of a launch started from a managed plan.
+    pub async fn launch_testplan_json(
+        &self,
+        project: &str,
+        launch: Uuid,
+    ) -> anyhow::Result<serde_json::Value> {
+        let rb = self.request(
+            Method::GET,
+            &format!(
+                "api/v1/projects/{}/launches/{launch}/testplan.json",
+                Self::enc(project)
+            ),
+        )?;
+        self.send(rb).await
+    }
+
     /// Starts or joins a launch.
     pub async fn start_launch(&self, project: &str, start: &LaunchStart) -> anyhow::Result<Launch> {
         let rb = self

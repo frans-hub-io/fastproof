@@ -128,9 +128,9 @@ export function DetailsTab({ project, c, fields, draft, onDraft }: { project: st
         )}
       </Section>
       <Section title="Tests in code">
-        {c.identities.length ? (
+        {c.identities.some((i) => i.kind === 'code') ? (
           <Stack gap="xs">
-            {c.identities.map((i) => (
+            {c.identities.filter((i) => i.kind === 'code').map((i) => (
               <Card key={i.testCaseId} withBorder radius="md" padding="xs" data-testid="identity-row">
                 <Group justify="space-between" wrap="wrap" gap="xs">
                   <Stack gap={2} style={{ minWidth: 0, flex: '1 1 260px' }}>

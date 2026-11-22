@@ -100,6 +100,361 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{key}/case-fields": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Field definitions by position: the built-in ones (priority, severity, layer, owner, epic, feature, story, suite, component) and the custom ones. */
+        get: operations["list_case_fields"];
+        put?: never;
+        post: operations["create_case_field"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/case-fields/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** @description Archives a field: values on cases are kept and it can be restored with `PATCH {archived: false}`. */
+        delete: operations["delete_case_field"];
+        options?: never;
+        head?: never;
+        /** @description Changes a field; every key is optional. `type` may only be sent unchanged; `archived` archives or restores. */
+        patch: operations["update_case_field"];
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/case-folders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description One level of the folder tree (`parent` absent = top level), by position and name, with the counts of the cases (not archived) in each folder and its subfolders. */
+        get: operations["list_case_folders"];
+        put?: never;
+        post: operations["create_case_folder"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/case-folders/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** @description Deletes a folder. One with subfolders or cases needs `mode`: `moveUp` moves them to the parent, `archiveCases` archives the cases of the whole subtree and deletes the subfolders. */
+        delete: operations["delete_case_folder"];
+        options?: never;
+        head?: never;
+        /** @description Renames, reorders or moves a folder with its subtree (`parentId: null` moves it to the top level). */
+        patch: operations["update_case_folder"];
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/case-suggestions/{id}/accept": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Applies an AI suggestion as a version with `source = ai`. `If-Match` is the ETag of the case; a case that moved since the suggestion was made answers 409 `suggestion_stale`. */
+        post: operations["accept_case_suggestion"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/case-suggestions/{id}/reject": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["reject_case_suggestion"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/cases": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description A page of cases (not archived unless `archived=true`) with the newest result over all identities. */
+        get: operations["list_cases"];
+        put?: never;
+        post: operations["create_case"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/cases/backfill": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Starts creating cases for the existing tests seen on trusted branches (`caseSync`), or returns the backfill already queued or running. Runs once by itself after the upgrade. */
+        post: operations["start_case_backfill"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/cases/bulk": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description One action on cases named by number or matched by a filter (at most `maxBulk`). `move` takes a folder id or null, `setStatus` a status, `setField` `{key, value}`, `addTags`/`removeTags` a list. Each changed case gets one version with `source = bulk`; the others are listed in `skipped` with a code. */
+        post: operations["bulk_cases"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/cases/tree": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["case_tree"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/cases/{n}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_case"];
+        /** @description Replaces the content of a case. Fields and tags absent from the body keep their values; an absent `folderId` is the root. Values that code owns on an automated case cannot change (409 `field_from_code`). */
+        put: operations["update_case"];
+        post?: never;
+        /** @description Moves a case to the trash (archive); `purge=true` deletes it with its versions (needs `settings:write`; cases executed in manual runs answer 409 `case_has_runs`). */
+        delete: operations["archive_case"];
+        options?: never;
+        head?: never;
+        /** @description Merges folder, status, field values (`null` removes one) and tags into a case. */
+        patch: operations["patch_case"];
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/cases/{n}/attachments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Stores an attachment of the case (raw body, content-addressed per project); reference it from a step's `attachments` or as `![alt](attachment:<id>)` in Markdown. */
+        post: operations["upload_case_attachment"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/cases/{n}/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Results of the case over all its identities (manual and automated), newest first. */
+        get: operations["case_history"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/cases/{n}/identities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Links a code identity (a test as uploads name it) to the case, e.g. after a rename. When it was the last identity of another case, that case is archived with a link to this one. */
+        post: operations["link_case_identity"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/cases/{n}/identities/{testCaseId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["unlink_case_identity"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/cases/{n}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Takes a case out of the trash. */
+        post: operations["restore_case"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/cases/{n}/review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Marks a case an AI agent created as reviewed: clears `aiUnreviewed` (no new version). Audited as `case.review`; a case that is already reviewed is returned unchanged. */
+        post: operations["review_case"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/cases/{n}/suggestions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_case_suggestions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/cases/{n}/versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_case_versions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/cases/{n}/versions/{v}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_case_version"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/cases/{n}/versions/{v}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Makes the content of a version current as a new version (`source = restore`); values code owns on an automated case stay. */
+        post: operations["restore_case_version"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{key}/dashboard": {
         parameters: {
             query?: never;
@@ -325,6 +680,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{key}/launches/{id}/manual-report": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Report of the manual run: case, version, status, steps, executor, times and defects, as CSV (cells that could start a formula are prefixed with `'`) or JSON. */
+        get: operations["manual_report"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/launches/{id}/manual/close": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Closes the manual run: untested items become `skipped` unless `untestedTo: leave`; a purely manual launch becomes `finished`, and the gate of a finished launch is evaluated again. Writes to the items then answer 409 `manual_run_closed` until the run is reopened. */
+        post: operations["close_manual_run"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/launches/{id}/manual/reopen": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Reopens a closed manual run. */
+        post: operations["reopen_manual_run"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{key}/launches/{id}/results": {
         parameters: {
             query?: never;
@@ -335,6 +741,41 @@ export interface paths {
         get: operations["results_list"];
         put?: never;
         post: operations["results_ingest"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/launches/{id}/run-items": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Run items of a launch by case number. */
+        get: operations["list_run_items"];
+        put?: never;
+        /** @description Adds run items for cases (`caseNumbers`, at most `maxBulk`) or for the manual cases of a managed plan, and opens the manual run of the launch. Cases already in the launch are skipped. */
+        post: operations["add_run_items"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/launches/{id}/testplan.json": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Allure `testplan.json` of a launch started from a managed plan, computed live from the plan's automated cases (`id` = ALLURE_ID when the code has one, `selector` = full name; muted ones also in `mutedTests`). */
+        get: operations["launch_testplan_json"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -383,6 +824,23 @@ export interface paths {
         get: operations["uploads_list"];
         put?: never;
         post: operations["uploads_create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/markdown/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Renders Markdown as cases show it (at most 64 KiB; raw HTML becomes text). */
+        post: operations["markdown_preview"];
         delete?: never;
         options?: never;
         head?: never;
@@ -552,6 +1010,126 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{key}/run-items": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description My queue: run items assigned to the caller in open manual runs of the project. */
+        get: operations["my_run_items"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/run-items/{itemId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description A run item with the executed version of its case (Markdown and sanitized HTML), its step results and `ETag: "r<revision>"`. */
+        get: operations["get_run_item"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** @description Changes the status, comment or assignee of a run item (needs `If-Match`). A final status (`passed`, `failed`, `blocked`, `skipped`) is projected into the launch results (`blocked` as `broken`); back to `untested` or `in_progress` removes the projected attempt. `untestedStepsTo: skipped` marks the untested steps skipped. */
+        patch: operations["patch_run_item"];
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/run-items/{itemId}/attachments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Stores a file for a step result (raw body, at most `maxAttachmentBytes`; name in `X-FastProof-Attachment-Name`), content-addressed like launch attachments. Reference it in `attachmentIds` of a step write. */
+        post: operations["upload_run_attachment"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/run-items/{itemId}/defect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Triages the projected result of a run item (the same triage as `/triage`, `source: user`) and keeps the defect on the item. Holders of `results:triage` may set it on any item; holders of `runs:execute` only on items assigned to them or executed by them. */
+        post: operations["run_item_defect"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/run-items/{itemId}/new-issue-url": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description A link that opens a prefilled new issue in a configured tracker (`issueTrackers` settings) with the case, the failed step, expected and actual results and a link back to the run item. Nothing is sent to the tracker. */
+        get: operations["run_item_new_issue_url"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/run-items/{itemId}/rerun": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Starts a new execution of the item (`executionNo + 1`, `untested`, step results cleared); the previous attempt stays in the result's attempts. */
+        post: operations["rerun_run_item"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/run-items/{itemId}/steps/{path}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** @description Writes the result of one step (`path` = `1`, `1.2`, `1.2.3` over the executed version). No `If-Match`: the last writer wins, and writing the same value again is harmless. Absent `actual`, `comment` and `attachmentIds` keep their values. An untested item becomes `in_progress`. `suggestedStatus` is the item status the step results suggest. */
+        put: operations["put_run_step"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{key}/search/logs": {
         parameters: {
             query?: never;
@@ -651,7 +1229,79 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{key}/test-identities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Code identities of the project, most recently seen first, with the branches they were seen on. */
+        get: operations["list_test_identities"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{key}/test-plans": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Managed plans, newest first, with their case counts. */
+        get: operations["list_managed_plans"];
+        put?: never;
+        /** @description Creates an adhoc plan (`launches:write`; expires after 90 days) or, with `kind: managed`, a managed plan (`plans:write`; answers the `TestPlan`). */
+        post: operations["analysis_create_test_plan"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/test-plans/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description A plan (adhoc or managed) with `ETag: "r<revision>"`. */
+        get: operations["get_test_plan"];
+        put?: never;
+        post?: never;
+        /** @description Archives a managed plan (it stays readable; launches keep their link). */
+        delete: operations["archive_test_plan"];
+        options?: never;
+        head?: never;
+        /** @description Changes the name, description or filter of a managed plan. Needs `If-Match`. */
+        patch: operations["update_test_plan"];
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/test-plans/{id}/items": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description The cases of a plan by position. */
+        get: operations["list_test_plan_items"];
+        put?: never;
+        /** @description Adds, removes and assigns cases of a managed plan (at most `maxBulk` numbers in all). */
+        post: operations["change_test_plan_items"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/test-plans/{id}/launches": {
         parameters: {
             query?: never;
             header?: never;
@@ -660,7 +1310,25 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        post: operations["analysis_create_test_plan"];
+        /** @description Starts a launch from a managed plan: run items for its manual cases (assigned per `assign`), `manual.state = open`; automated cases get no run items, CI runs them from `testplanUrl` (see `ciHint`) and uploads into the same launch (`externalId`; generated when absent). An `externalId` of a launch already started from this plan returns that launch (200). */
+        post: operations["start_plan_launch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/test-plans/{id}/sync": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Brings the filter-added cases of a plan in line with its filter: `added` are cases the filter matches that the plan lacks, `removed` cases the filter added earlier and no longer matches. `dryRun=true` only shows the diff. */
+        post: operations["sync_test_plan"];
         delete?: never;
         options?: never;
         head?: never;
@@ -674,6 +1342,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /** @description Allure `testplan.json`: the stored tests of an adhoc plan, or the live automated cases of a managed plan (409 `plan_has_no_automated_cases` when it has none: an empty file would run every test). */
         get: operations["analysis_testplan_json"];
         put?: never;
         post?: never;
@@ -780,6 +1449,16 @@ export interface components {
             /** Format: int64 */
             size: number;
         };
+        /** @description A stored attachment as a case or step result references it. */
+        AttachmentRef: {
+            contentType: string;
+            /** Format: uuid */
+            id: string;
+            name: string;
+            sha256: string;
+            /** Format: int64 */
+            size: number;
+        };
         /** @description An attachment as referenced by a result or step. */
         AttachmentView: {
             contentType?: string | null;
@@ -836,6 +1515,512 @@ export interface components {
         AuditList: {
             items: components["schemas"]["AuditItem"][];
             next?: string | null;
+        };
+        /** @description A case. */
+        Case: {
+            aiUnreviewed: boolean;
+            /** Format: date-time */
+            archivedAt?: string | null;
+            automated: boolean;
+            body: components["schemas"]["CaseBody"];
+            /** @description Field keys whose values come from code (policy `code` on an automated case). */
+            codeOwned: string[];
+            /** Format: date-time */
+            createdAt: string;
+            createdBy?: string | null;
+            fields: {
+                [key: string]: components["schemas"]["FieldValue"];
+            };
+            folder?: components["schemas"]["CaseFolderRef"] | null;
+            html: components["schemas"]["CaseHtml"];
+            /** Format: uuid */
+            id: string;
+            identities: components["schemas"]["CaseIdentity"][];
+            keys: components["schemas"]["CaseKey"][];
+            name: string;
+            /** Format: int64 */
+            number: number;
+            origin: components["schemas"]["CaseOrigin"];
+            /** Format: int64 */
+            revision: number;
+            status: components["schemas"]["CaseStatus"];
+            tags: string[];
+            /** Format: date-time */
+            updatedAt: string;
+            updatedBy?: string | null;
+            /** Format: int32 */
+            version: number;
+        };
+        /** @description Content of a case (`cases.body`, also the body of a version snapshot). Text is Markdown. */
+        CaseBody: {
+            description: string;
+            links: components["schemas"]["CaseLink"][];
+            preconditions: string;
+            steps: components["schemas"]["CaseStep"][];
+        };
+        /**
+         * @description Body of `POST /cases/bulk`: `move` takes `folderId|null`, `setStatus` a status, `setField`
+         *     `{key, value}`, the tag actions a list of tags.
+         */
+        CaseBulk: {
+            action: components["schemas"]["CaseBulkAction"];
+            filter?: components["schemas"]["CaseFilter"] | null;
+            numbers?: number[] | null;
+            value?: unknown;
+        };
+        /**
+         * @description Action of `POST /cases/bulk`.
+         * @enum {string}
+         */
+        CaseBulkAction: "move" | "setStatus" | "setField" | "addTags" | "removeTags" | "archive" | "restore";
+        /** @description Outcome of a bulk action. */
+        CaseBulkResult: {
+            skipped: components["schemas"]["CaseBulkSkip"][];
+            /** Format: int64 */
+            updated: number;
+        };
+        /** @description A case a bulk action skipped, with the reason (an error code). */
+        CaseBulkSkip: {
+            code: string;
+            /** Format: int64 */
+            number: number;
+        };
+        /** @description A case field definition. */
+        CaseFieldDef: {
+            archived: boolean;
+            builtIn: boolean;
+            defaultValue: components["schemas"]["FieldValue"];
+            /** Format: uuid */
+            id: string;
+            key: string;
+            name: string;
+            options: components["schemas"]["FieldOption"][];
+            /** Format: int32 */
+            position: number;
+            required: boolean;
+            /** @description Allure label whose value code sync writes into this field. */
+            sourceLabel?: string | null;
+            type: components["schemas"]["FieldType"];
+        };
+        /** @description `{items}` of field definitions. */
+        CaseFieldList: {
+            items: components["schemas"]["CaseFieldDef"][];
+        };
+        /**
+         * @description Body of `PATCH /case-fields/{id}`: every key optional; `type` may be sent only unchanged;
+         *     `archived` archives or restores the field.
+         */
+        CaseFieldPatch: {
+            archived?: boolean | null;
+            defaultValue?: components["schemas"]["FieldValue"] | null;
+            key?: string | null;
+            name?: string | null;
+            options?: components["schemas"]["FieldOption"][] | null;
+            /** Format: int32 */
+            position?: number | null;
+            required?: boolean | null;
+            sourceLabel?: string | null;
+            type?: components["schemas"]["FieldType"] | null;
+        };
+        /** @description Body of `POST /case-fields`. */
+        CaseFieldWrite: {
+            defaultValue?: components["schemas"]["FieldValue"] | null;
+            /** @description `^[a-z][a-z0-9_]{0,62}$`, unique in the project. */
+            key: string;
+            name: string;
+            options?: components["schemas"]["FieldOption"][] | null;
+            /** Format: int32 */
+            position?: number | null;
+            required?: boolean | null;
+            sourceLabel?: string | null;
+            type: components["schemas"]["FieldType"];
+        };
+        /** @description Structured case filter (case list, bulk, plans). */
+        CaseFilter: {
+            automation?: components["schemas"]["ResultSource"] | null;
+            fields?: {
+                [key: string]: string[];
+            } | null;
+            folderIds?: string[] | null;
+            q?: string | null;
+            recursive?: boolean | null;
+            statuses?: components["schemas"]["CaseStatus"][] | null;
+            tags?: string[] | null;
+        };
+        /** @description A case folder. */
+        CaseFolder: {
+            counts: components["schemas"]["FolderCounts"];
+            /**
+             * Format: int32
+             * @description 1 for a top-level folder.
+             */
+            depth: number;
+            hasChildren: boolean;
+            /** Format: uuid */
+            id: string;
+            name: string;
+            /** Format: uuid */
+            parentId?: string | null;
+            /** Format: int32 */
+            position: number;
+        };
+        /** @description What deleting a folder did. */
+        CaseFolderDeleted: {
+            /** Format: int64 */
+            casesArchived: number;
+            /** Format: int64 */
+            casesMoved: number;
+            /** Format: int64 */
+            folders: number;
+        };
+        /** @description `{items}` of folders of one level. */
+        CaseFolderList: {
+            items: components["schemas"]["CaseFolder"][];
+        };
+        /** @description Body of `PATCH /case-folders/{id}`: rename, reorder, or move (`parentId`, `null` = root). */
+        CaseFolderPatch: {
+            name?: string | null;
+            /** Format: uuid */
+            parentId?: string | null;
+            /** Format: int32 */
+            position?: number | null;
+        };
+        /** @description One folder on the path of a case. */
+        CaseFolderPathEntry: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+        };
+        /** @description The folder of a case with its path from the root (the folder itself last). */
+        CaseFolderRef: {
+            /** Format: uuid */
+            id: string;
+            path: components["schemas"]["CaseFolderPathEntry"][];
+        };
+        /** @description Body of `POST /case-folders`. */
+        CaseFolderWrite: {
+            name: string;
+            /** Format: uuid */
+            parentId?: string | null;
+            /** Format: int32 */
+            position?: number | null;
+        };
+        /** @description A result of a case (any identity) in its history. */
+        CaseHistoryEntry: {
+            /** Format: date-time */
+            at: string;
+            branch?: string | null;
+            environment?: string | null;
+            executedBy?: string | null;
+            /** Format: uuid */
+            launchId: string;
+            launchName: string;
+            /** Format: int64 */
+            launchNumber: number;
+            /** Format: uuid */
+            resultId: string;
+            source: components["schemas"]["ResultSource"];
+            status: string;
+        };
+        /** @description A page of the history of a case. */
+        CaseHistoryList: {
+            items: components["schemas"]["CaseHistoryEntry"][];
+            next?: string | null;
+        };
+        /** @description The Markdown fields of a case body rendered to sanitized HTML. */
+        CaseHtml: {
+            description: string;
+            preconditions: string;
+            steps: components["schemas"]["CaseStepHtml"][];
+        };
+        /** @description A test identity (row of `test_cases`) linked to a case. */
+        CaseIdentity: {
+            branches: string[];
+            fullName: string;
+            kind: components["schemas"]["IdentityKind"];
+            /** Format: date-time */
+            lastSeenAt: string;
+            /** Format: uuid */
+            testCaseId: string;
+        };
+        /** @description Body of `POST /cases/{n}/identities`. */
+        CaseIdentityLink: {
+            /** Format: uuid */
+            testCaseId: string;
+        };
+        /** @description An external key of a case (`case_keys`). */
+        CaseKey: {
+            kind: components["schemas"]["CaseKeyKind"];
+            value: string;
+        };
+        /**
+         * @description Kind of an external case key.
+         * @enum {string}
+         */
+        CaseKeyKind: "allure_id" | "testrail" | "qase" | "testops" | "external";
+        /** @description A link of a case. */
+        CaseLink: {
+            name: string;
+            type: components["schemas"]["CaseLinkType"];
+            url: string;
+        };
+        /**
+         * @description Kind of a case link.
+         * @enum {string}
+         */
+        CaseLinkType: "link" | "issue" | "tms";
+        /** @description A page of cases. */
+        CaseList: {
+            items: components["schemas"]["CaseSummary"][];
+            next?: string | null;
+        };
+        /**
+         * @description Where a case came from.
+         * @enum {string}
+         */
+        CaseOrigin: "ui" | "code" | "import" | "ai";
+        /** @description Body of `PATCH /cases/{n}` (merge): absent keys are kept, `folderId: null` moves to the root. */
+        CasePatch: {
+            fields?: {
+                [key: string]: components["schemas"]["FieldValue"];
+            } | null;
+            /** Format: uuid */
+            folderId?: string | null;
+            status?: components["schemas"]["CaseStatus"] | null;
+            tags?: string[] | null;
+        };
+        /** @description What an AI suggestion proposes: a patch plus optionally a new name and body. */
+        CaseProposal: components["schemas"]["CasePatch"] & {
+            body?: components["schemas"]["CaseBody"] | null;
+            name?: string | null;
+        };
+        /** @description The content of a case at one version (stored zstd-compressed in `case_versions.snapshot_z`). */
+        CaseSnapshot: {
+            body: components["schemas"]["CaseBody"];
+            fields: {
+                [key: string]: components["schemas"]["FieldValue"];
+            };
+            /** Format: uuid */
+            folderId?: string | null;
+            name: string;
+            status: components["schemas"]["CaseStatus"];
+            tags: string[];
+        };
+        /**
+         * @description Lifecycle of a case.
+         * @enum {string}
+         */
+        CaseStatus: "draft" | "active" | "outdated";
+        /** @description One step of a case; steps nest up to `max_step_depth` levels. Text fields are Markdown. */
+        CaseStep: {
+            action: string;
+            /** @description Ids of attachments of the case. */
+            attachments: string[];
+            data: string;
+            expected: string;
+            /** @description Stable id across versions (`s_<ulid>`); an empty id on write is assigned by the server. */
+            id: string;
+            steps: components["schemas"]["CaseStep"][];
+        };
+        /** @description A step rendered to sanitized HTML. */
+        CaseStepHtml: {
+            action: string;
+            data: string;
+            expected: string;
+            id: string;
+            steps: components["schemas"]["CaseStepHtml"][];
+        };
+        /** @description An AI suggestion for a case, never applied without a person accepting it. */
+        CaseSuggestion: {
+            agent: string;
+            /** Format: int64 */
+            baseRevision: number;
+            /** Format: int64 */
+            caseNumber: number;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            decidedAt?: string | null;
+            decidedBy?: string | null;
+            /** Format: uuid */
+            id: string;
+            proposal: components["schemas"]["CaseProposal"];
+            rationale: string;
+            status: components["schemas"]["SuggestionStatus"];
+        };
+        /** @description A decided suggestion and the case. */
+        CaseSuggestionAccepted: {
+            case: components["schemas"]["Case"];
+            suggestion: components["schemas"]["CaseSuggestion"];
+        };
+        /** @description Suggestions of a case. */
+        CaseSuggestionList: {
+            items: components["schemas"]["CaseSuggestion"][];
+        };
+        /** @description A case in lists. */
+        CaseSummary: {
+            aiUnreviewed: boolean;
+            archived: boolean;
+            automated: boolean;
+            fields: {
+                [key: string]: components["schemas"]["FieldValue"];
+            };
+            /** Format: uuid */
+            folderId?: string | null;
+            lastResult?: components["schemas"]["LastResult"] | null;
+            name: string;
+            /** Format: int64 */
+            number: number;
+            status: components["schemas"]["CaseStatus"];
+            tags: string[];
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        /** @description Field policy of code sync, per field. */
+        CaseSyncFields: {
+            /** @default code */
+            component?: components["schemas"]["FieldPolicy"];
+            /** @default code */
+            description?: components["schemas"]["FieldPolicy"];
+            /** @default code */
+            epic?: components["schemas"]["FieldPolicy"];
+            /** @default code */
+            feature?: components["schemas"]["FieldPolicy"];
+            /** @default code */
+            layer?: components["schemas"]["FieldPolicy"];
+            /** @default code */
+            links?: components["schemas"]["FieldPolicy"];
+            /** @default code */
+            name?: components["schemas"]["FieldPolicy"];
+            /** @default code */
+            owner?: components["schemas"]["FieldPolicy"];
+            /** @default code */
+            severity?: components["schemas"]["FieldPolicy"];
+            /** @default code */
+            story?: components["schemas"]["FieldPolicy"];
+            /** @default code */
+            suite?: components["schemas"]["FieldPolicy"];
+            /** @default code */
+            tags?: components["schemas"]["FieldPolicy"];
+        };
+        /** @description How cases follow the tests in code (`caseSync`). */
+        CaseSyncSettings: {
+            /**
+             * @description Trusted branches: globs where `*` matches within a segment and `**` across `/`.
+             * @default [
+             *       "main",
+             *       "master"
+             *     ]
+             */
+            branches?: string[];
+            /**
+             * @description Create cases for new identities of trusted launches.
+             * @default true
+             */
+            createCases?: boolean;
+            /** @default true */
+            enabled?: boolean;
+            /**
+             * @default {
+             *       "name": "code",
+             *       "description": "code",
+             *       "links": "code",
+             *       "tags": "code",
+             *       "epic": "code",
+             *       "feature": "code",
+             *       "story": "code",
+             *       "suite": "code",
+             *       "severity": "code",
+             *       "owner": "code",
+             *       "layer": "code",
+             *       "component": "code"
+             *     }
+             */
+            fields?: components["schemas"]["CaseSyncFields"];
+            /** @default suite */
+            folderFrom?: components["schemas"]["FolderFrom"];
+            /**
+             * @description Also trust debug launches.
+             * @default false
+             */
+            includeDebug?: boolean;
+            /**
+             * @description Match identities to cases by TMS links (`tms` labels) of TestRail or Qase keys.
+             * @default false
+             */
+            matchTmsLinks?: boolean;
+            /**
+             * @description Folder under which created cases are placed.
+             * @default Automated
+             */
+            rootFolder?: string;
+            /**
+             * Format: int32
+             * @description Days without a trusted result after which a case counts as stale.
+             * @default 30
+             */
+            staleAfterDays?: number;
+            /**
+             * @description Also trust the CI default branch (`vcs.defaultBranch`).
+             * @default true
+             */
+            useCiDefaultBranch?: boolean;
+        };
+        /** @description One level of the case tree. */
+        CaseTree: {
+            nodes: components["schemas"]["CaseTreeNode"][];
+        };
+        /**
+         * @description Grouping of `GET /cases/tree`.
+         * @enum {string}
+         */
+        CaseTreeGroupBy: "folder" | "behavior" | "suite";
+        /**
+         * @description A node of `GET /cases/tree`; for `groupBy=behavior|suite` the id is the value path joined
+         *     by U+001F.
+         */
+        CaseTreeNode: {
+            counts: components["schemas"]["FolderCounts"];
+            hasChildren: boolean;
+            id: string;
+            name: string;
+        };
+        /** @description A version with its snapshot. */
+        CaseVersion: components["schemas"]["CaseVersionSummary"] & {
+            snapshot: components["schemas"]["CaseSnapshot"];
+        };
+        /** @description A page of versions. */
+        CaseVersionList: {
+            items: components["schemas"]["CaseVersionSummary"][];
+            next?: string | null;
+        };
+        /** @description A version of a case in its history. */
+        CaseVersionSummary: {
+            /** @description Top-level keys that changed. */
+            changed: string[];
+            /** Format: date-time */
+            createdAt: string;
+            createdBy: string;
+            /** Format: uuid */
+            launchId?: string | null;
+            source: components["schemas"]["VersionSource"];
+            /** Format: int32 */
+            version: number;
+        };
+        /** @description Body of `POST /cases` and `PUT /cases/{n}`. */
+        CaseWrite: {
+            body: components["schemas"]["CaseBody"];
+            fields?: {
+                [key: string]: components["schemas"]["FieldValue"];
+            } | null;
+            /**
+             * Format: uuid
+             * @description The folder; absent or `null` is the root.
+             */
+            folderId?: string | null;
+            name: string;
+            status?: components["schemas"]["CaseStatus"] | null;
+            tags?: string[] | null;
         };
         /** @description A unique error of a launch. */
         Cluster: {
@@ -900,6 +2085,8 @@ export interface components {
             /** Format: int64 */
             unknown: number;
         };
+        /** @description What `POST /test-plans` answers: the managed plan, or the id and test count of an adhoc one. */
+        CreatedTestPlan: components["schemas"]["TestPlan"] | components["schemas"]["TestPlanCreated"];
         /** @description Answer of `POST /api/v1/tokens`: the token metadata and its value, shown only here. */
         CreatedToken: components["schemas"]["Token"] & {
             /** @description The value (`fp_…`): store it now. */
@@ -1082,6 +2269,29 @@ export interface components {
             /** @description Admin base URL, e.g. `https://fastmock.example.com:9090`. */
             url: string;
         };
+        /** @description An option of a select or multiselect field. */
+        FieldOption: {
+            archived: boolean;
+            /** @description `#rrggbb`. */
+            color?: string | null;
+            value: string;
+        };
+        /**
+         * @description Who owns a case field on automated cases: `code` (sync overwrites it, the UI shows it
+         *     read-only) or `case` (code fills it only when it creates the case).
+         * @enum {string}
+         */
+        FieldPolicy: "code" | "case";
+        /**
+         * @description Type of a case field.
+         * @enum {string}
+         */
+        FieldType: "select" | "multiselect" | "text" | "number" | "date";
+        /**
+         * @description Value of a case field: select and text are strings, multiselect a list of strings, number
+         *     a number, date an ISO `yyyy-mm-dd` string; `null` when unset.
+         */
+        FieldValue: string | string[] | number | null;
         /** @description Body of `POST .../launches/{id}/finish`. */
         FinishLaunch: {
             /** @description `finished` (default) or `interrupted`. */
@@ -1127,6 +2337,25 @@ export interface components {
              */
             stabilizationPeriod?: number;
         };
+        /** @description Cases in a folder and its subfolders (not archived). */
+        FolderCounts: {
+            /** Format: int64 */
+            automated: number;
+            /** Format: int64 */
+            manual: number;
+            /** Format: int64 */
+            total: number;
+        };
+        /**
+         * @description What deleting a non-empty folder does with its content.
+         * @enum {string}
+         */
+        FolderDeleteMode: "moveUp" | "archiveCases";
+        /**
+         * @description Where code sync puts the cases it creates.
+         * @enum {string}
+         */
+        FolderFrom: "suite" | "package" | "none";
         /** @description A quality gate. */
         Gate: {
             /** @description Branch globs (`*` matches any text); every branch when absent. */
@@ -1210,6 +2439,67 @@ export interface components {
             items: components["schemas"]["HistoryEntry"][];
             testCase: components["schemas"]["TestCaseView"];
         };
+        /**
+         * @description A code identity (from uploads) or the manual identity of a case.
+         * @enum {string}
+         */
+        IdentityKind: "code" | "manual";
+        /**
+         * @description Format of an import file.
+         * @enum {string}
+         */
+        ImportFormat: "generic-csv" | "testrail-csv" | "qase-csv" | "qase-json" | "testops-csv" | "fastproof-ndjson";
+        /**
+         * @description Whether an import only creates cases or also updates matching ones.
+         * @enum {string}
+         */
+        ImportMode: "createOnly" | "upsert";
+        /** @description Options of a file import. */
+        ImportOptions: {
+            format: components["schemas"]["ImportFormat"];
+            mapping?: {
+                [key: string]: string;
+            } | null;
+            mode: components["schemas"]["ImportMode"];
+            stepsLayout?: components["schemas"]["StepsLayout"] | null;
+            /** Format: uuid */
+            targetFolderId?: string | null;
+            unknownFieldValues: components["schemas"]["UnknownFieldValues"];
+        };
+        /** @description First rows of an import file and the suggested column mapping. */
+        ImportPreview: {
+            format: components["schemas"]["ImportFormat"];
+            headers: string[];
+            rows: string[][];
+            stepsLayout: components["schemas"]["StepsLayout"];
+            suggestedMapping: {
+                [key: string]: string;
+            };
+        };
+        /** @description What an import does (dry run) or did. */
+        ImportReport: {
+            /** Format: int64 */
+            create: number;
+            /** @description The first 1000 errors. */
+            errors: components["schemas"]["ImportRowError"][];
+            /** Format: int64 */
+            folders: number;
+            /** Format: int64 */
+            skip: number;
+            unknownFields: string[];
+            unknownValues: {
+                [key: string]: string[];
+            };
+            /** Format: int64 */
+            update: number;
+        };
+        /** @description One row error of an import. */
+        ImportRowError: {
+            code: string;
+            message: string;
+            /** Format: int64 */
+            row: number;
+        };
         /** @description Outcome of `POST .../results`. */
         IngestSummary: {
             /** Format: int64 */
@@ -1258,6 +2548,17 @@ export interface components {
             startedAt: string;
             status: string;
         };
+        /** @description The newest result of a case over all its identities. */
+        LastResult: {
+            /** Format: date-time */
+            at: string;
+            /** Format: uuid */
+            launchId: string;
+            /** Format: uuid */
+            resultId: string;
+            source: components["schemas"]["ResultSource"];
+            status: string;
+        };
         /** @description A launch: one run of a test suite, made of any number of uploads. */
         Launch: {
             attributes: components["schemas"]["Attribute"][];
@@ -1274,6 +2575,7 @@ export interface components {
             id: string;
             /** @description Kept by retention. */
             important: boolean;
+            manual?: components["schemas"]["LaunchManual"] | null;
             name: string;
             /** Format: int64 */
             number: number;
@@ -1281,6 +2583,11 @@ export interface components {
             startedAt: string;
             /** @description `running`, `finished` or `interrupted`. */
             status: string;
+            /**
+             * Format: uuid
+             * @description The managed plan the launch was started from.
+             */
+            testPlanId?: string | null;
             uploads: components["schemas"]["UploadCounts"];
             vcs?: components["schemas"]["LaunchVcs"] | null;
         };
@@ -1320,6 +2627,24 @@ export interface components {
                 [key: string]: string;
             };
         };
+        /** @description Manual progress of a launch (present when the launch has a manual run). */
+        LaunchManual: {
+            /** Format: int64 */
+            blocked: number;
+            /** Format: int64 */
+            failed: number;
+            /** Format: int64 */
+            inProgress: number;
+            /** Format: int64 */
+            passed: number;
+            /** Format: int64 */
+            skipped: number;
+            state: components["schemas"]["ManualState"];
+            /** Format: int64 */
+            total: number;
+            /** Format: int64 */
+            untested: number;
+        };
         /** @description Body of `PATCH .../launches/{id}`. */
         LaunchPatch: {
             attributes?: components["schemas"]["Attribute"][] | null;
@@ -1348,6 +2673,12 @@ export interface components {
              * @default null
              */
             commitUrl?: string | null;
+            /**
+             * @description The default branch of the repository as the CI reports it (trusted by code sync when
+             *     `caseSync.useCiDefaultBranch`).
+             * @default null
+             */
+            defaultBranch?: string | null;
             /** @default null */
             repository?: string | null;
         };
@@ -1429,6 +2760,66 @@ export interface components {
         LogStreamBatch: {
             lines: components["schemas"]["LogLine"][];
         };
+        /** @description Body of `POST /launches/{id}/manual/close`. */
+        ManualClose: {
+            untestedTo: components["schemas"]["ManualUntestedTo"];
+        };
+        /** @description The JSON manual report. */
+        ManualReport: {
+            items: components["schemas"]["ManualReportItem"][];
+            /** Format: uuid */
+            launchId: string;
+            launchName: string;
+            /** Format: int64 */
+            launchNumber: number;
+        };
+        /** @description One run item of the manual report. */
+        ManualReportItem: {
+            assignee?: string | null;
+            /** Format: int64 */
+            caseNumber: number;
+            /** Format: int32 */
+            caseVersion: number;
+            comment: string;
+            defect?: unknown;
+            executedBy?: string | null;
+            /** Format: int32 */
+            executionNo: number;
+            /** Format: date-time */
+            finishedAt?: string | null;
+            name: string;
+            /** Format: date-time */
+            startedAt?: string | null;
+            status: components["schemas"]["RunStatus"];
+            steps: components["schemas"]["ManualReportStep"][];
+        };
+        /** @description One step of the manual report. */
+        ManualReportStep: {
+            action: string;
+            actual: string;
+            comment: string;
+            expected: string;
+            path: string;
+            status: components["schemas"]["StepStatus"];
+        };
+        /**
+         * @description State of a manual run.
+         * @enum {string}
+         */
+        ManualState: "open" | "closed";
+        /**
+         * @description What closing a manual run does with untested items.
+         * @enum {string}
+         */
+        ManualUntestedTo: "skipped" | "leave";
+        /** @description Rendered Markdown. */
+        MarkdownHtml: {
+            html: string;
+        };
+        /** @description Body of `POST /markdown/preview`. */
+        MarkdownPreview: {
+            markdown: string;
+        };
         /** @description The caller (`GET /api/v1/me`). */
         Me: {
             /** @description `session`, `bearer`, `staticToken` or `managedToken`. */
@@ -1505,12 +2896,24 @@ export interface components {
              */
             until?: string | null;
         };
+        /** @description A run item in "my queue", with its launch. */
+        MyRunItem: components["schemas"]["RunItemSummary"] & {
+            /** Format: uuid */
+            launchId: string;
+            launchName: string;
+            /** Format: int64 */
+            launchNumber: number;
+        };
         /** @description Body of `POST .../defect-types`. */
         NewDefectType: {
             color?: string | null;
             group: string;
             name: string;
             shortName?: string | null;
+        };
+        /** @description A prefilled "new issue" link. */
+        NewIssueUrl: {
+            url: string;
         };
         /** @description Body of `POST /api/v1/projects`. */
         NewProject: {
@@ -1530,11 +2933,17 @@ export interface components {
         };
         /** @description Body of `POST .../test-plans`. */
         NewTestPlan: {
+            /** @description Managed plans: cases added explicitly. */
+            caseNumbers?: number[] | null;
+            /** @description Managed plans: Markdown description. */
+            description?: string | null;
+            filter?: components["schemas"]["CaseFilter"] | null;
             /**
              * Format: uuid
              * @description Take the tests of this launch with `statuses`.
              */
             fromLaunchId?: string | null;
+            kind?: components["schemas"]["TestPlanKind"] | null;
             name: string;
             /** @description Statuses picked from the launch (default `failed`, `broken`). */
             statuses?: string[] | null;
@@ -1565,7 +2974,7 @@ export interface components {
             id: string;
             /** @description `webhook`, `slack`, `teams`, `email` or `telegram`. */
             kind: string;
-            /** @description `launchFinished`, `gateFailed`, `newFailures`. */
+            /** @description `launchFinished`, `gateFailed`, `newFailures`, `manualRunClosed`. */
             on: string[];
             /**
              * @description Webhook: the HMAC signing key (purpose `webhook`); Telegram: the bot token (purpose
@@ -1666,6 +3075,7 @@ export interface components {
                 id: string;
                 /** @description Kept by retention. */
                 important: boolean;
+                manual?: components["schemas"]["LaunchManual"] | null;
                 name: string;
                 /** Format: int64 */
                 number: number;
@@ -1673,6 +3083,11 @@ export interface components {
                 startedAt: string;
                 /** @description `running`, `finished` or `interrupted`. */
                 status: string;
+                /**
+                 * Format: uuid
+                 * @description The managed plan the launch was started from.
+                 */
+                testPlanId?: string | null;
                 uploads: components["schemas"]["UploadCounts"];
                 vcs?: components["schemas"]["LaunchVcs"] | null;
             }[];
@@ -1709,10 +3124,27 @@ export interface components {
             next?: string | null;
         };
         /** @description A page of a list. */
+        Page_MyRunItem: {
+            items: (components["schemas"]["RunItemSummary"] & {
+                /** Format: uuid */
+                launchId: string;
+                launchName: string;
+                /** Format: int64 */
+                launchNumber: number;
+            })[];
+            /** @description Opaque cursor for the next page (`before=`), `null` on the last page. */
+            next?: string | null;
+        };
+        /** @description A page of a list. */
         Page_ResultSummary: {
             items: {
                 /** Format: int32 */
                 attemptCount: number;
+                /**
+                 * Format: int64
+                 * @description Number of the case the result's identity is linked to.
+                 */
+                caseNumber?: number | null;
                 /**
                  * @description Client ids of the attempts sent through the results API (the `id` reporters send, also
                  *     the `resultId` of their log lines), in result lists of a launch.
@@ -1740,7 +3172,17 @@ export interface components {
                 muteUntil?: string | null;
                 muted: boolean;
                 name: string;
+                /**
+                 * Format: uuid
+                 * @description The run item a manual result is projected from.
+                 */
+                runItemId?: string | null;
                 seriesKey: string;
+                /**
+                 * @description `manual` for results projected from a manual run (always sent; optional in the schema
+                 *     so that older clients and fixtures stay valid).
+                 */
+                source?: components["schemas"]["ResultSource"];
                 /** Format: date-time */
                 startedAt?: string | null;
                 status: string;
@@ -1752,6 +3194,64 @@ export interface components {
                  *     `fixed`, `regressed` or `malfunctioned`.
                  */
                 transition?: string | null;
+            }[];
+            /** @description Opaque cursor for the next page (`before=`), `null` on the last page. */
+            next?: string | null;
+        };
+        /** @description A page of a list. */
+        Page_RunItemSummary: {
+            items: {
+                assignee?: string | null;
+                /** Format: int64 */
+                caseNumber: number;
+                /** Format: int32 */
+                executionNo: number;
+                folderPath: string[];
+                /** Format: uuid */
+                id: string;
+                name: string;
+                status: components["schemas"]["RunStatus"];
+                /** Format: date-time */
+                updatedAt: string;
+            }[];
+            /** @description Opaque cursor for the next page (`before=`), `null` on the last page. */
+            next?: string | null;
+        };
+        /** @description A page of a list. */
+        Page_TestPlan: {
+            items: {
+                archived: boolean;
+                counts: components["schemas"]["FolderCounts"];
+                /** Format: date-time */
+                createdAt: string;
+                createdBy?: string | null;
+                description: string;
+                filter?: components["schemas"]["CaseFilter"] | null;
+                /** Format: uuid */
+                id: string;
+                kind: components["schemas"]["TestPlanKind"];
+                name: string;
+                /** Format: int64 */
+                revision: number;
+                /** Format: date-time */
+                updatedAt?: string | null;
+            }[];
+            /** @description Opaque cursor for the next page (`before=`), `null` on the last page. */
+            next?: string | null;
+        };
+        /** @description A page of a list. */
+        Page_TestPlanItem: {
+            items: {
+                assignee?: string | null;
+                automated: boolean;
+                /** Format: int64 */
+                caseNumber: number;
+                /** Format: uuid */
+                folderId?: string | null;
+                name: string;
+                /** Format: int32 */
+                position: number;
+                viaFilter: boolean;
             }[];
             /** @description Opaque cursor for the next page (`before=`), `null` on the last page. */
             next?: string | null;
@@ -1819,6 +3319,27 @@ export interface components {
             description?: string | null;
             name?: string | null;
         };
+        /**
+         * @description Who the items of a launch started from a plan are assigned to.
+         * @enum {string}
+         */
+        PlanAssign: "plan" | "me" | "none";
+        /** @description A launch started from a plan, with the CI hand-off. */
+        PlanLaunch: {
+            ciHint: string;
+            launch: components["schemas"]["Launch"];
+            testplanUrl: string;
+        };
+        /** @description A launch attribute given when starting a launch from a plan. */
+        PlanLaunchAttribute: {
+            key: string;
+            value: string;
+        };
+        /** @description What syncing a filter plan adds and removes. */
+        PlanSyncDiff: {
+            added: number[];
+            removed: number[];
+        };
         /** @description A project. */
         Project: {
             /** Format: date-time */
@@ -1842,6 +3363,38 @@ export interface components {
          *     key such as `vcs`) are kept as given and validated by the integrations feature.
          */
         ProjectSettings: {
+            /**
+             * @description Code sync of test cases.
+             * @default {
+             *       "enabled": true,
+             *       "branches": [
+             *         "main",
+             *         "master"
+             *       ],
+             *       "useCiDefaultBranch": true,
+             *       "includeDebug": false,
+             *       "createCases": true,
+             *       "folderFrom": "suite",
+             *       "rootFolder": "Automated",
+             *       "staleAfterDays": 30,
+             *       "matchTmsLinks": false,
+             *       "fields": {
+             *         "name": "code",
+             *         "description": "code",
+             *         "links": "code",
+             *         "tags": "code",
+             *         "epic": "code",
+             *         "feature": "code",
+             *         "story": "code",
+             *         "suite": "code",
+             *         "severity": "code",
+             *         "owner": "code",
+             *         "layer": "code",
+             *         "component": "code"
+             *       }
+             *     }
+             */
+            caseSync?: components["schemas"]["CaseSyncSettings"];
             fastmock?: components["schemas"]["FastMockSettings"] | null;
             /**
              * @default {
@@ -1870,7 +3423,8 @@ export interface components {
             /**
              * @default {
              *       "rawDays": 90,
-             *       "keepImportant": true
+             *       "keepImportant": true,
+             *       "manualDays": 0
              *     }
              */
             retention?: components["schemas"]["RetentionSettings"];
@@ -2003,10 +3557,20 @@ export interface components {
             muteReason?: string | null;
             parameters: components["schemas"]["ParameterView"][];
         };
+        /**
+         * @description Whether a result comes from a manual run or from an upload; also the automation filter.
+         * @enum {string}
+         */
+        ResultSource: "manual" | "automated";
         /** @description One result per series per launch. */
         ResultSummary: {
             /** Format: int32 */
             attemptCount: number;
+            /**
+             * Format: int64
+             * @description Number of the case the result's identity is linked to.
+             */
+            caseNumber?: number | null;
             /**
              * @description Client ids of the attempts sent through the results API (the `id` reporters send, also
              *     the `resultId` of their log lines), in result lists of a launch.
@@ -2034,7 +3598,17 @@ export interface components {
             muteUntil?: string | null;
             muted: boolean;
             name: string;
+            /**
+             * Format: uuid
+             * @description The run item a manual result is projected from.
+             */
+            runItemId?: string | null;
             seriesKey: string;
+            /**
+             * @description `manual` for results projected from a manual run (always sent; optional in the schema
+             *     so that older clients and fixtures stay valid).
+             */
+            source?: components["schemas"]["ResultSource"];
             /** Format: date-time */
             startedAt?: string | null;
             status: string;
@@ -2076,6 +3650,13 @@ export interface components {
              * @default null
              */
             launchesKeep?: number | null;
+            /**
+             * Format: int32
+             * @description Launches with a manual run older than this many days are deleted; `0` keeps them
+             *     forever (they are evidence for quality audits).
+             * @default 0
+             */
+            manualDays?: number;
             /**
              * Format: int32
              * @description Launches older than this many days are deleted (after their history is rolled up).
@@ -2168,6 +3749,110 @@ export interface components {
             /** Format: uuid */
             launchId: string;
             rule: components["schemas"]["NewRule"];
+        };
+        /** @description Body of `POST /run-items/{itemId}/defect`. */
+        RunDefect: {
+            comment?: string | null;
+            /** Format: uuid */
+            defectTypeId?: string | null;
+            issue?: components["schemas"]["RunDefectIssue"] | null;
+        };
+        /** @description An issue linked to a run item. */
+        RunDefectIssue: {
+            key?: string | null;
+            url: string;
+        };
+        /** @description A run item with the executed version of its case. */
+        RunItem: components["schemas"]["RunItemSummary"] & {
+            /** Format: int32 */
+            caseVersion: number;
+            comment: string;
+            defect?: unknown;
+            executedBy?: string | null;
+            /** Format: date-time */
+            finishedAt?: string | null;
+            /** Format: uuid */
+            launchId: string;
+            preconditions: string;
+            preconditionsHtml: string;
+            /** Format: uuid */
+            resultId?: string | null;
+            /** Format: int64 */
+            revision: number;
+            /** Format: date-time */
+            startedAt?: string | null;
+            stepResults: components["schemas"]["RunStepResult"][];
+            steps: components["schemas"]["CaseStep"][];
+            stepsHtml: components["schemas"]["CaseStepHtml"][];
+        };
+        /** @description Body of `PATCH /run-items/{itemId}`. */
+        RunItemPatch: {
+            assignee?: string | null;
+            comment?: string | null;
+            status?: components["schemas"]["RunStatus"] | null;
+            untestedStepsTo?: components["schemas"]["UntestedStepsTo"] | null;
+        };
+        /** @description A run item in lists. */
+        RunItemSummary: {
+            assignee?: string | null;
+            /** Format: int64 */
+            caseNumber: number;
+            /** Format: int32 */
+            executionNo: number;
+            folderPath: string[];
+            /** Format: uuid */
+            id: string;
+            name: string;
+            status: components["schemas"]["RunStatus"];
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        /** @description Body of `POST /launches/{id}/run-items`. */
+        RunItemsAdd: {
+            assignee?: string | null;
+            caseNumbers?: number[] | null;
+            /** Format: uuid */
+            planId?: string | null;
+        };
+        /** @description Outcome of adding run items. */
+        RunItemsAdded: {
+            /** Format: int64 */
+            added: number;
+            /** Format: int64 */
+            skipped: number;
+        };
+        /**
+         * @description Status of a run item.
+         * @enum {string}
+         */
+        RunStatus: "untested" | "in_progress" | "passed" | "failed" | "blocked" | "skipped";
+        /** @description Answer to a step write. */
+        RunStepAck: {
+            itemStatus: components["schemas"]["RunStatus"];
+            /** Format: int64 */
+            revision: number;
+            suggestedStatus: components["schemas"]["RunStatus"];
+        };
+        /**
+         * @description The result of one step of a run item; `path` is `1`, `1.2`, `1.2.3` over the executed
+         *     version.
+         */
+        RunStepResult: {
+            actual: string;
+            attachments: components["schemas"]["AttachmentRef"][];
+            comment: string;
+            path: string;
+            status: components["schemas"]["StepStatus"];
+            /** Format: date-time */
+            updatedAt: string;
+            updatedBy: string;
+        };
+        /** @description Body of `PUT /run-items/{itemId}/steps/{path}`. */
+        RunStepWrite: {
+            actual?: string | null;
+            attachmentIds?: string[] | null;
+            comment?: string | null;
+            status: components["schemas"]["StepStatus"];
         };
         /** @description A periodic job of the scheduler. */
         ScheduledJob: {
@@ -2264,11 +3949,27 @@ export interface components {
              */
             score: number;
         };
+        /** @description Body of `POST /test-plans/{id}/launches`. */
+        StartPlanLaunch: {
+            assign: components["schemas"]["PlanAssign"];
+            attributes?: components["schemas"]["PlanLaunchAttribute"][] | null;
+            environment?: {
+                [key: string]: string;
+            } | null;
+            externalId?: string | null;
+            includeAutomated: boolean;
+            name: string;
+        };
         /**
          * @description Final outcome of a test result, attempt or step.
          * @enum {string}
          */
         Status: "passed" | "failed" | "broken" | "skipped" | "unknown";
+        /**
+         * @description Status of one step of a run item.
+         * @enum {string}
+         */
+        StepStatus: "untested" | "passed" | "failed" | "blocked" | "skipped";
         /** @description A step or fixture. */
         StepView: {
             attachments: components["schemas"]["AttachmentView"][];
@@ -2286,6 +3987,16 @@ export interface components {
             /** Format: date-time */
             stoppedAt?: string | null;
         };
+        /**
+         * @description How steps are laid out in a CSV import.
+         * @enum {string}
+         */
+        StepsLayout: "rows" | "cells";
+        /**
+         * @description State of an AI suggestion.
+         * @enum {string}
+         */
+        SuggestionStatus: "pending" | "accepted" | "rejected" | "stale";
         /** @description A background task. */
         Task: {
             /** Format: date-time */
@@ -2307,6 +4018,69 @@ export interface components {
             id: string;
             name: string;
         };
+        /** @description A test identity, linked or not. */
+        TestIdentity: {
+            branches: string[];
+            /** Format: int64 */
+            caseNumber?: number | null;
+            displayName: string;
+            /** Format: date-time */
+            firstSeenAt: string;
+            fullName: string;
+            kind: components["schemas"]["IdentityKind"];
+            /** Format: date-time */
+            lastSeenAt: string;
+            /** Format: uuid */
+            testCaseId: string;
+        };
+        /** @description A page of test identities. */
+        TestIdentityList: {
+            items: components["schemas"]["TestIdentity"][];
+            next?: string | null;
+        };
+        /**
+         * @description An import from the Allure TestOps API. The token is stored as a project secret at once and
+         *     never returned, logged or audited.
+         */
+        TestOpsImport: {
+            baseUrl: string;
+            mode: components["schemas"]["ImportMode"];
+            /** Format: int64 */
+            remoteProjectId: number;
+            source: components["schemas"]["TestOpsSource"];
+            /** Format: uuid */
+            targetFolderId?: string | null;
+            token: string;
+        };
+        /**
+         * @description Source of an API import.
+         * @enum {string}
+         */
+        TestOpsSource: "allure-testops";
+        /** @description A test plan (adhoc or managed). */
+        TestPlan: {
+            archived: boolean;
+            counts: components["schemas"]["FolderCounts"];
+            /** Format: date-time */
+            createdAt: string;
+            createdBy?: string | null;
+            description: string;
+            filter?: components["schemas"]["CaseFilter"] | null;
+            /** Format: uuid */
+            id: string;
+            kind: components["schemas"]["TestPlanKind"];
+            name: string;
+            /** Format: int64 */
+            revision: number;
+            /** Format: date-time */
+            updatedAt?: string | null;
+        };
+        /** @description A new assignee of a plan case. */
+        TestPlanAssign: {
+            assignee?: string | null;
+            /** Format: int64 */
+            number: number;
+        };
         /** @description A created plan. */
         TestPlanCreated: {
             /** Format: uuid */
@@ -2314,10 +4088,45 @@ export interface components {
             /** Format: int64 */
             testCount: number;
         };
+        /** @description A case of a plan. */
+        TestPlanItem: {
+            assignee?: string | null;
+            automated: boolean;
+            /** Format: int64 */
+            caseNumber: number;
+            /** Format: uuid */
+            folderId?: string | null;
+            name: string;
+            /** Format: int32 */
+            position: number;
+            viaFilter: boolean;
+        };
+        /** @description Body of `POST /test-plans/{id}/items`. */
+        TestPlanItemsChange: {
+            add?: number[] | null;
+            assign?: components["schemas"]["TestPlanAssign"][] | null;
+            remove?: number[] | null;
+        };
         /** @description Allure `testplan.json` (version 1.0). */
         TestPlanJson: {
+            /** @description Muted tests of a managed plan (read by allure-js; also listed in `tests`). */
+            mutedTests?: components["schemas"]["TestPlanTest"][] | null;
             tests: components["schemas"]["TestPlanTest"][];
             version: string;
+        };
+        /**
+         * @description Kind of a test plan: `adhoc` (stage 1, expires) or `managed`.
+         * @enum {string}
+         */
+        TestPlanKind: "adhoc" | "managed";
+        /**
+         * @description Body of `PATCH /test-plans/{id}` (with `If-Match`): every field optional, `filter: null`
+         *     removes the filter (the items it added stay until the next sync).
+         */
+        TestPlanPatch: {
+            description?: string | null;
+            filter?: components["schemas"]["CaseFilter"] | null;
+            name?: string | null;
         };
         /** @description One test of an Allure test plan. */
         TestPlanTest: {
@@ -2326,6 +4135,45 @@ export interface components {
             /** @description Full name as the Allure adapter reports it. */
             selector: string;
         };
+        /** @description Body of creating or replacing a managed plan. */
+        TestPlanWrite: {
+            caseNumbers?: number[] | null;
+            description?: string | null;
+            filter?: components["schemas"]["CaseFilter"] | null;
+            name: string;
+        };
+        /** @description A background job (import, export, backfill). */
+        TmJob: {
+            /** Format: date-time */
+            createdAt: string;
+            createdBy?: string | null;
+            downloadUrl?: string | null;
+            /** Format: date-time */
+            finishedAt?: string | null;
+            /** Format: uuid */
+            id: string;
+            kind: components["schemas"]["TmJobKind"];
+            progress: components["schemas"]["TmJobProgress"];
+            report?: components["schemas"]["ImportReport"] | null;
+            status: components["schemas"]["TmJobStatus"];
+        };
+        /**
+         * @description Kind of a background test-management job.
+         * @enum {string}
+         */
+        TmJobKind: "import" | "export" | "backfill";
+        /** @description Progress of a job. */
+        TmJobProgress: {
+            /** Format: int64 */
+            done: number;
+            /** Format: int64 */
+            total?: number | null;
+        };
+        /**
+         * @description Status of a background test-management job.
+         * @enum {string}
+         */
+        TmJobStatus: "queued" | "dry_run" | "ready" | "running" | "done" | "failed" | "cancelled";
         /** @description A managed token; the value is never shown after creation. */
         Token: {
             /** Format: date-time */
@@ -2453,6 +4301,16 @@ export interface components {
             source?: string | null;
             unmute?: boolean | null;
         };
+        /**
+         * @description What an import does with select values that are not options yet.
+         * @enum {string}
+         */
+        UnknownFieldValues: "create" | "skip" | "fail";
+        /**
+         * @description What `untestedStepsTo` sets the untested steps of an item to.
+         * @enum {string}
+         */
+        UntestedStepsTo: "skipped";
         /** @description One upload (shard) of a launch. */
         Upload: {
             counts: components["schemas"]["UploadItemCounts"];
@@ -2534,6 +4392,11 @@ export interface components {
              */
             url: string;
         };
+        /**
+         * @description What made a case version.
+         * @enum {string}
+         */
+        VersionSource: "ui" | "code" | "import" | "ai" | "restore" | "bulk";
     };
     responses: never;
     parameters: never;
@@ -2850,6 +4713,1577 @@ export interface operations {
                 };
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    list_case_fields: {
+        parameters: {
+            query?: {
+                /** @description Include archived fields. */
+                archived?: boolean;
+            };
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaseFieldList"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    create_case_field: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CaseFieldWrite"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaseFieldDef"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description key or label taken, `limit_reached` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    delete_case_field: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    update_case_field: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CaseFieldPatch"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaseFieldDef"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    list_case_folders: {
+        parameters: {
+            query?: {
+                /** @description The folder whose children are listed; absent lists the top level. */
+                parent?: string;
+            };
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaseFolderList"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    create_case_folder: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CaseFolderWrite"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaseFolder"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `folder_name_taken` or `limit_reached` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    delete_case_folder: {
+        parameters: {
+            query?: {
+                /** @description Required when the folder has subfolders or cases. */
+                mode?: components["schemas"]["FolderDeleteMode"];
+            };
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaseFolderDeleted"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `folder_not_empty` or `folder_name_taken` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    update_case_folder: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CaseFolderPatch"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaseFolder"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `folder_name_taken` or `limit_reached` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    accept_case_suggestion: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+            };
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaseSuggestionAccepted"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    reject_case_suggestion: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaseSuggestion"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    list_cases: {
+        parameters: {
+            query?: {
+                /** @description A folder id: its cases, with `recursive=true` also those of its subfolders. */
+                folder?: string;
+                recursive?: boolean;
+                /** @description Words of the name, description, preconditions or steps, or a number (`TC-12`). */
+                q?: string;
+                /** @description `draft`, `active` or `outdated`; repeated or comma-separated. */
+                status?: string;
+                automation?: components["schemas"]["ResultSource"];
+                /** @description `key:value` of a case field; repeated: the same key matches any value, different keys all. */
+                field?: string;
+                /** @description A tag; repeated: all of them. */
+                tag?: string;
+                /** @description Automated cases without a trusted result for this many days. */
+                staleDays?: number;
+                aiUnreviewed?: boolean;
+                /** @description `true` lists the archived cases (the trash). */
+                archived?: boolean;
+                /** @description `number` (default), `-number` or `updated` (most recent first). */
+                sort?: string;
+                before?: string;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaseList"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    create_case: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CaseWrite"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Case"];
+                };
+            };
+            /** @description `invalid_case` or `invalid_markdown` */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description folder or attachment of another project */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `limit_reached` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    start_case_backfill: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TmJob"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    bulk_cases: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CaseBulk"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaseBulkResult"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `limit_reached` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    case_tree: {
+        parameters: {
+            query?: {
+                /** @description `folder` (default), `behavior` (epic → feature → story) or `suite`. */
+                groupBy?: components["schemas"]["CaseTreeGroupBy"];
+                /** @description The node whose children are listed (a folder id, or a value path joined by U+001F). */
+                parent?: string;
+            };
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaseTree"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    get_case: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                /** @description case number */
+                n: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    /** @description "r<revision>" */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Case"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    update_case: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description "r<revision>" */
+                "If-Match": string;
+            };
+            path: {
+                key: string;
+                n: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CaseWrite"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Case"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `field_from_code` or `limit_reached` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `precondition_failed` with `{currentRevision, changedBy, source}` */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    archive_case: {
+        parameters: {
+            query?: {
+                /** @description Deletes the case for good (`settings:write`). */
+                purge?: boolean;
+            };
+            header?: never;
+            path: {
+                key: string;
+                n: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    patch_case: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+            };
+            path: {
+                key: string;
+                n: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CasePatch"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Case"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    upload_case_attachment: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description file name */
+                "X-FastProof-Attachment-Name"?: string | null;
+            };
+            path: {
+                key: string;
+                n: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/octet-stream": number[];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AttachmentRef"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `limit_reached` (maxCaseAttachments) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    case_history: {
+        parameters: {
+            query?: {
+                branch?: string;
+                environment?: string;
+                source?: components["schemas"]["ResultSource"];
+                before?: string;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                key: string;
+                n: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaseHistoryList"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    link_case_identity: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                n: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CaseIdentityLink"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Case"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    unlink_case_identity: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                n: number;
+                testCaseId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Case"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    restore_case: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                n: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Case"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    review_case: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+            };
+            path: {
+                key: string;
+                n: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Case"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    list_case_suggestions: {
+        parameters: {
+            query?: {
+                status?: components["schemas"]["SuggestionStatus"];
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                key: string;
+                n: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaseSuggestionList"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    list_case_versions: {
+        parameters: {
+            query?: {
+                before?: string;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                key: string;
+                n: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaseVersionList"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    get_case_version: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                n: number;
+                v: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaseVersion"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    restore_case_version: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+            };
+            path: {
+                key: string;
+                n: number;
+                v: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Case"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            428: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3897,6 +7331,178 @@ export interface operations {
             };
         };
     };
+    manual_report: {
+        parameters: {
+            query?: {
+                /** @description `csv` (default) or `json`. */
+                format?: string;
+            };
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description JSON, or text/csv */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ManualReport"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    close_manual_run: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ManualClose"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Launch"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `manual_run_closed`, `no_manual_run` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    reopen_manual_run: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Launch"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `manual_run_open`, `no_manual_run` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     results_list: {
         parameters: {
             query?: {
@@ -3910,6 +7516,8 @@ export interface operations {
                 label?: string;
                 flaky?: boolean;
                 fingerprint?: string;
+                /** @description `manual` (projected from run items) or `automated`. */
+                source?: components["schemas"]["ResultSource"];
                 before?: string;
                 limit?: number;
             };
@@ -4023,6 +7631,167 @@ export interface operations {
             };
         };
     };
+    list_run_items: {
+        parameters: {
+            query?: {
+                /** @description One status or a comma-separated list. */
+                status?: string;
+                /** @description `me`, `none` (unassigned) or a name. */
+                assignee?: string;
+                /** @description Cases in this folder or its subfolders. */
+                folder?: string;
+                before?: string;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_RunItemSummary"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    add_run_items: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunItemsAdd"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunItemsAdded"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `manual_run_closed`, `limit_reached` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    launch_testplan_json: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TestPlanJson"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `plan_has_no_automated_cases` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     results_tree: {
         parameters: {
             query?: {
@@ -4039,6 +7808,8 @@ export interface operations {
                 q?: string;
                 /** @description Only results flaky in this run. */
                 flaky?: boolean;
+                /** @description `manual` or `automated`. */
+                source?: components["schemas"]["ResultSource"];
                 /** @description A result whose group is inlined first (to reveal a deep-linked result). */
                 reveal?: string;
             };
@@ -4095,6 +7866,8 @@ export interface operations {
                 status?: string;
                 q?: string;
                 flaky?: boolean;
+                /** @description `manual` or `automated`. */
+                source?: components["schemas"]["ResultSource"];
                 before?: string;
                 limit?: number;
             };
@@ -4234,6 +8007,64 @@ export interface operations {
                 };
             };
             413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    markdown_preview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MarkdownPreview"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MarkdownHtml"];
+                };
+            };
+            /** @description `invalid_markdown` */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -4854,6 +8685,460 @@ export interface operations {
             };
         };
     };
+    my_run_items: {
+        parameters: {
+            query?: {
+                /** @description `me` (the default and the only value). */
+                assignee?: string;
+                /** @description One status or a comma-separated list (default `untested,in_progress`). */
+                status?: string;
+                before?: string;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_MyRunItem"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    get_run_item: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                itemId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunItem"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    patch_run_item: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description ETag of the item */
+                "If-Match": string;
+            };
+            path: {
+                key: string;
+                itemId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunItemPatch"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunItem"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `manual_run_closed` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    upload_run_attachment: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description file name */
+                "X-FastProof-Attachment-Name"?: string | null;
+            };
+            path: {
+                key: string;
+                itemId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/octet-stream": number[];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AttachmentCreated"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `manual_run_closed` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    run_item_defect: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                itemId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunDefect"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunItem"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `run_item_not_final` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    run_item_new_issue_url: {
+        parameters: {
+            query?: {
+                /** @description `jira`, `gitlab` or `github` (default: the first configured issue tracker). */
+                tracker?: string;
+            };
+            header?: never;
+            path: {
+                key: string;
+                itemId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NewIssueUrl"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `no_issue_tracker` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    rerun_run_item: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                itemId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunItem"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `manual_run_closed` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    put_run_step: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                itemId: string;
+                path: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunStepWrite"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunStepAck"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `manual_run_closed`, `limit_reached` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     logs_search: {
         parameters: {
             query: {
@@ -5232,27 +9517,32 @@ export interface operations {
             };
         };
     };
-    analysis_create_test_plan: {
+    list_test_identities: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Only tests without a case (feature branches, untrusted launches, new tests). */
+                unlinked?: boolean;
+                /** @description Seen on this branch. */
+                branch?: string;
+                /** @description Substring of the full or display name. */
+                q?: string;
+                before?: string;
+                limit?: number;
+            };
             header?: never;
             path: {
                 key: string;
             };
             cookie?: never;
         };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["NewTestPlan"];
-            };
-        };
+        requestBody?: never;
         responses: {
-            201: {
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["TestPlanCreated"];
+                    "application/json": components["schemas"]["TestIdentityList"];
                 };
             };
             400: {
@@ -5279,7 +9569,515 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+        };
+    };
+    list_managed_plans: {
+        parameters: {
+            query?: {
+                /** @description `managed` (the only kind listed; adhoc plans are reached by id). */
+                kind?: string;
+                /** @description Substring of the name. */
+                q?: string;
+                /** @description `true`: archived plans only. */
+                archived?: boolean;
+                before?: string;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_TestPlan"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    analysis_create_test_plan: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NewTestPlan"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreatedTestPlan"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    get_test_plan: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TestPlan"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    archive_test_plan: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `plan_not_managed` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    update_test_plan: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description ETag of the plan */
+                "If-Match": string;
+            };
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TestPlanPatch"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TestPlan"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `plan_not_managed` or `plan_archived` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    list_test_plan_items: {
+        parameters: {
+            query?: {
+                /** @description Cases in this folder or its subfolders. */
+                folder?: string;
+                /** @description `me`, `none` (unassigned) or a name. */
+                assignee?: string;
+                before?: string;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_TestPlanItem"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    change_test_plan_items: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TestPlanItemsChange"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TestPlan"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `limit_reached`, `plan_archived` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    start_plan_launch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StartPlanLaunch"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlanLaunch"];
+                };
+            };
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlanLaunch"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `launch_exists`, `plan_archived`, `plan_not_managed`, `limit_reached` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    sync_test_plan: {
+        parameters: {
+            query?: {
+                /** @description `true`: only show the diff. */
+                dryRun?: boolean;
+            };
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlanSyncDiff"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -5318,6 +10116,14 @@ export interface operations {
                 };
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

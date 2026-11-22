@@ -60,7 +60,7 @@ export function diffSnapshots(a: CaseSnapshot, b: CaseSnapshot, fieldLabels: Rec
   };
   push('name', 'Name', a.name, b.name);
   push('status', 'Status', a.status, b.status);
-  push('folderId', 'Folder', folderName(a.folderId), folderName(b.folderId));
+  push('folderId', 'Folder', folderName(a.folderId ?? null), folderName(b.folderId ?? null));
   push('description', 'Description', a.body.description, b.body.description);
   push('preconditions', 'Preconditions', a.body.preconditions, b.body.preconditions);
   push('tags', 'Tags', [...a.tags].sort().join(', '), [...b.tags].sort().join(', '));

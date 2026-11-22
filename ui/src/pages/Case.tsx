@@ -6,7 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router';
 import { ApiError, errorMessage, projectPath } from '../api/client';
 import { useProject } from '../api/hooks';
-import { getVersioned, isConflict, useArchiveCase, useCase, useCaseFields, useCaseFolders, useCaseSuggestions, usePatchCase, useTmEvents, useUpdateCase, type Case as CaseDto, type CaseWrite, type ConflictDetails, type Versioned } from '../api/tm';
+import { getVersioned, isConflict, useArchiveCase, useCase, useCaseFields, useCaseFolders, useCaseSuggestions, useReviewCase, useTmEvents, useUpdateCase, type Case as CaseDto, type CaseWrite, type ConflictDetails, type Versioned } from '../api/tm';
 import { PageHeader } from '../components/PageHeader';
 import { QueryState } from '../components/QueryState';
 import { formatDateTime, formatRelative } from '../lib/format';
@@ -42,7 +42,7 @@ function CaseBody({ project, projectName, c, etag, reload }: { project: string; 
   const folders = useCaseFolders(project);
   const suggestions = useCaseSuggestions(project, c.number);
   const update = useUpdateCase(project, c.number);
-  const patch = usePatchCase(project, c.number);
+  const review = useReviewCase(project, c.number);
   const archive = useArchiveCase(project, c.number);
   const [editing, setEditing] = useState<Editing | null>(null);
   const [conflict, setConflict] = useState<{ details: ConflictDetails; current: Versioned<CaseDto> | null } | null>(null);
@@ -153,8 +153,8 @@ function CaseBody({ project, projectName, c, etag, reload }: { project: string; 
   };
 
   const markReviewed = () =>
-    patch.mutate(
-      { patch: { aiUnreviewed: false }, etag },
+    review.mutate(
+      etag,
       {
         onSuccess: () => {
           notifications.show({ color: 'green', title: 'Marked as reviewed', message: 'The AI draft badge is gone.' });
@@ -231,7 +231,7 @@ function CaseBody({ project, projectName, c, etag, reload }: { project: string; 
               )
             )}
             {c.aiUnreviewed && canWrite && !editing && (
-              <Button size="xs" variant="light" color="grape" leftSection={<IconCheck size={14} />} onClick={markReviewed} loading={patch.isPending} data-testid="case-reviewed">
+              <Button size="xs" variant="light" color="grape" leftSection={<IconCheck size={14} />} onClick={markReviewed} loading={review.isPending} data-testid="case-reviewed">
                 Reviewed
               </Button>
             )}

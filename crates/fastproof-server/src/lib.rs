@@ -10,6 +10,7 @@ pub mod ingest;
 pub mod integrations;
 pub mod limits;
 pub mod live;
+pub mod markdown;
 pub mod mcp;
 pub mod ops;
 pub mod scheduler;

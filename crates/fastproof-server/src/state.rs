@@ -16,7 +16,8 @@ use uuid::Uuid;
 use crate::config::Config;
 use crate::live::LiveHub;
 
-/// Permissions and built-in roles of FastProof (`30-interfaces.md`).
+/// Permissions and built-in roles of FastProof (`30-interfaces.md`, test management in
+/// `41-tm-interfaces.md`).
 pub fn catalog() -> anyhow::Result<Catalog> {
     Ok(Catalog::builder()
         .permission("projects:read", "See a project and its settings")
@@ -33,25 +34,62 @@ pub fn catalog() -> anyhow::Result<Catalog> {
         .permission("rules:write", "Manage triage rules")
         .permission("settings:write", "Change project settings, delete launches")
         .permission("audit:read", "Read the audit log")
+        .permission("cases:read", "Read test cases, folders, fields and plans")
+        .permission(
+            "cases:write",
+            "Create, change and archive test cases and folders",
+        )
+        .permission(
+            "cases:import",
+            "Import test cases from files and other tools",
+        )
+        .permission(
+            "cases:sync",
+            "Update test cases from code through uploaded results (CI tokens)",
+        )
+        .permission("plans:write", "Create and change test plans")
+        .permission("runs:execute", "Execute manual runs")
         .role_described(
             "viewer",
-            "Read projects and launches",
-            &["projects:read", "launches:read"],
+            "Read projects, launches and test cases",
+            &["projects:read", "launches:read", "cases:read"],
+        )
+        .role_described(
+            "tester",
+            "Read and execute manual runs",
+            &[
+                "projects:read",
+                "launches:read",
+                "cases:read",
+                "runs:execute",
+            ],
         )
         .role_described(
             "uploader",
-            "Read and upload (CI tokens)",
-            &["projects:read", "launches:read", "launches:write"],
-        )
-        .role_described(
-            "editor",
-            "Upload, triage and manage rules",
+            "Read and upload, update cases from code (CI tokens)",
             &[
                 "projects:read",
                 "launches:read",
                 "launches:write",
+                "cases:read",
+                "cases:sync",
+            ],
+        )
+        .role_described(
+            "editor",
+            "Upload, triage, manage rules, test cases, plans and manual runs",
+            &[
+                "projects:read",
+                "launches:read",
+                "launches:write",
+                "cases:read",
+                "cases:sync",
                 "results:triage",
                 "rules:write",
+                "cases:write",
+                "cases:import",
+                "plans:write",
+                "runs:execute",
             ],
         )
         .role_described("admin", "Everything", &["*"])
@@ -69,6 +107,12 @@ pub struct Perms {
     pub rules_write: Permission,
     pub settings_write: Permission,
     pub audit_read: Permission,
+    pub cases_read: Permission,
+    pub cases_write: Permission,
+    pub cases_import: Permission,
+    pub cases_sync: Permission,
+    pub plans_write: Permission,
+    pub runs_execute: Permission,
 }
 
 impl Perms {
@@ -82,6 +126,12 @@ impl Perms {
             rules_write: p.permission("rules:write"),
             settings_write: p.permission("settings:write"),
             audit_read: p.permission("audit:read"),
+            cases_read: p.permission("cases:read"),
+            cases_write: p.permission("cases:write"),
+            cases_import: p.permission("cases:import"),
+            cases_sync: p.permission("cases:sync"),
+            plans_write: p.permission("plans:write"),
+            runs_execute: p.permission("runs:execute"),
         }
     }
 }

@@ -1,443 +1,96 @@
-// Test management API (stage 2a). The DTOs are declared by hand with the contract's names until the server
-// branches land in `schemas/openapi.json`; then they become aliases of `schema.gen.ts` under the same names.
+// Test management API (stage 2a). The DTOs are the generated `schema.gen.ts` types under the contract's names.
 import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import { ApiError, projectPath, request, requestRaw, withQuery, type Query } from './client';
 import { openEventStream, eventStreamSupported } from './sse';
+import type { components } from './schema.gen';
 import type { Launch, Page } from './types';
 
-export type CaseStatus = 'draft' | 'active' | 'outdated';
-export type CaseOrigin = 'ui' | 'code' | 'import' | 'ai';
-export interface CaseStep {
-  id: string;
-  action: string;
-  expected: string;
-  data: string;
-  attachments: string[];
-  steps: CaseStep[];
-}
-export interface CaseLink {
-  name: string;
-  url: string;
-  type: 'link' | 'issue' | 'tms';
-}
-export interface CaseBody {
-  description: string;
-  preconditions: string;
-  steps: CaseStep[];
-  links: CaseLink[];
-}
-export interface CaseStepHtml {
-  id: string;
-  action: string;
-  expected: string;
-  data: string;
-  steps: CaseStepHtml[];
-}
-export interface CaseHtml {
-  description: string;
-  preconditions: string;
-  steps: CaseStepHtml[];
-}
-export type FieldValue = string | string[] | number | null;
-export interface CaseWrite {
-  name: string;
-  folderId?: string | null;
-  status?: CaseStatus;
-  body: CaseBody;
-  fields?: Record<string, FieldValue>;
-  tags?: string[];
-}
-export interface CasePatch {
-  folderId?: string | null;
-  status?: CaseStatus;
-  fields?: Record<string, FieldValue>;
-  tags?: string[];
-  /** Deviation: the contract names no route for "Reviewed"; the UI sends `{aiUnreviewed: false}` here. */
-  aiUnreviewed?: false;
-}
-export interface LastResult {
-  status: string;
-  at: string;
-  source: 'manual' | 'automated';
-  launchId: string;
-  resultId: string;
-}
-export interface CaseSummary {
-  number: number;
-  name: string;
-  status: CaseStatus;
-  automated: boolean;
-  folderId: string | null;
-  fields: Record<string, FieldValue>;
-  tags: string[];
-  lastResult?: LastResult;
-  updatedAt: string;
-  aiUnreviewed: boolean;
-  archived: boolean;
-}
-export interface CaseIdentity {
-  testCaseId: string;
-  fullName: string;
-  kind: 'code' | 'manual';
-  lastSeenAt: string;
-  branches: string[];
-}
-export interface CaseKey {
-  kind: 'allure_id' | 'testrail' | 'qase' | 'testops' | 'external';
-  value: string;
-}
-export interface Case {
-  number: number;
-  id: string;
-  name: string;
-  status: CaseStatus;
-  automated: boolean;
-  origin: CaseOrigin;
-  aiUnreviewed: boolean;
-  folder: { id: string; path: { id: string; name: string }[] } | null;
-  body: CaseBody;
-  html: CaseHtml;
-  fields: Record<string, FieldValue>;
-  tags: string[];
-  codeOwned: string[];
-  identities: CaseIdentity[];
-  keys: CaseKey[];
-  revision: number;
-  version: number;
-  createdBy: string | null;
-  createdAt: string;
-  updatedBy: string | null;
-  updatedAt: string;
-  archivedAt: string | null;
-}
-export interface CaseList {
-  items: CaseSummary[];
-  next: string | null;
-}
-export interface FolderCounts {
-  total: number;
-  manual: number;
-  automated: number;
-}
-export interface CaseFolder {
-  id: string;
-  parentId: string | null;
-  name: string;
-  position: number;
-  depth: number;
-  counts: FolderCounts;
-  hasChildren: boolean;
-}
-export interface CaseFolderWrite {
-  name: string;
-  parentId?: string | null;
-  position?: number;
-}
-export interface CaseTreeNode {
-  id: string;
-  name: string;
-  counts: FolderCounts;
-  hasChildren: boolean;
-}
-export interface CaseTree {
-  nodes: CaseTreeNode[];
-}
-export interface FieldOption {
-  value: string;
-  color?: string;
-  archived: boolean;
-}
-export type FieldType = 'select' | 'multiselect' | 'text' | 'number' | 'date';
-export interface CaseFieldDef {
-  id: string;
-  key: string;
-  name: string;
-  type: FieldType;
-  options: FieldOption[];
-  required: boolean;
-  defaultValue: FieldValue;
-  sourceLabel: string | null;
-  builtIn: boolean;
-  position: number;
-  archived: boolean;
-}
-export interface CaseFieldWrite {
-  key: string;
-  name: string;
-  type: FieldType;
-  options?: FieldOption[];
-  required?: boolean;
-  defaultValue?: FieldValue;
-  sourceLabel?: string | null;
-  position?: number;
-}
-export type VersionSource = 'ui' | 'code' | 'import' | 'ai' | 'restore' | 'bulk';
-export interface CaseVersionSummary {
-  version: number;
-  source: VersionSource;
-  changed: string[];
-  createdBy: string;
-  createdAt: string;
-  launchId?: string;
-}
-export interface CaseSnapshot {
-  name: string;
-  status: CaseStatus;
-  folderId: string | null;
-  body: CaseBody;
-  fields: Record<string, FieldValue>;
-  tags: string[];
-}
-export interface CaseVersion extends CaseVersionSummary {
-  snapshot: CaseSnapshot;
-}
-export interface CaseHistoryEntry {
-  launchId: string;
-  launchNumber: number;
-  launchName: string;
-  resultId: string;
-  status: string;
-  source: 'manual' | 'automated';
-  at: string;
-  branch: string | null;
-  environment: string | null;
-  executedBy?: string;
-}
-export interface TestIdentity {
-  testCaseId: string;
-  fullName: string;
-  displayName: string;
-  kind: 'code' | 'manual';
-  caseNumber: number | null;
-  firstSeenAt: string;
-  lastSeenAt: string;
-  branches: string[];
-}
-export type CaseBulkAction = 'move' | 'setStatus' | 'setField' | 'addTags' | 'removeTags' | 'archive' | 'restore';
-export interface CaseBulk {
-  numbers?: number[];
-  filter?: CaseFilter;
-  action: CaseBulkAction;
-  value?: unknown;
-}
-export interface CaseBulkResult {
-  updated: number;
-  skipped: { number: number; code: string }[];
-}
-export interface CaseFilter {
-  folderIds?: string[];
-  recursive?: boolean;
-  statuses?: CaseStatus[];
-  automation?: 'manual' | 'automated';
-  fields?: Record<string, string[]>;
-  tags?: string[];
-  q?: string;
-}
-export interface CaseSuggestion {
-  id: string;
-  caseNumber: number;
-  baseRevision: number;
-  proposal: CasePatch & { name?: string; body?: CaseBody };
-  rationale: string;
-  agent: string;
-  status: 'pending' | 'accepted' | 'rejected' | 'stale';
-  createdAt: string;
-  decidedBy: string | null;
-  decidedAt: string | null;
-}
-export interface AttachmentRef {
-  id: string;
-  sha256: string;
-  size: number;
-  contentType: string;
-  name: string;
-}
+type S = components['schemas'];
 
-export type RunStatus = 'untested' | 'in_progress' | 'passed' | 'failed' | 'blocked' | 'skipped';
-export type StepStatus = 'untested' | 'passed' | 'failed' | 'blocked' | 'skipped';
-export interface TestPlan {
-  id: string;
-  kind: 'adhoc' | 'managed';
-  name: string;
-  description: string;
-  filter: CaseFilter | null;
-  counts: FolderCounts;
-  revision: number;
-  createdBy: string | null;
-  createdAt: string;
-  updatedAt: string | null;
-  archived: boolean;
-}
-export interface TestPlanWrite {
-  name: string;
-  description?: string;
-  filter?: CaseFilter | null;
-  caseNumbers?: number[];
-}
-export interface TestPlanItem {
-  caseNumber: number;
-  name: string;
-  folderId: string | null;
-  automated: boolean;
-  assignee: string | null;
-  viaFilter: boolean;
-  position: number;
-}
-export interface TestPlanItemsChange {
-  add?: number[];
-  remove?: number[];
-  assign?: { number: number; assignee: string | null }[];
-}
-export interface PlanSyncDiff {
-  added: number[];
-  removed: number[];
-}
-export interface StartPlanLaunch {
-  name: string;
-  externalId?: string;
-  environment?: Record<string, string>;
-  attributes?: { key: string; value: string }[];
-  assign: 'plan' | 'me' | 'none';
-  includeAutomated: boolean;
-}
-export interface PlanLaunch {
-  launch: Launch;
-  testplanUrl: string;
-  ciHint: string;
-}
-export interface LaunchManual {
-  state: 'open' | 'closed';
-  total: number;
-  untested: number;
-  inProgress: number;
-  passed: number;
-  failed: number;
-  blocked: number;
-  skipped: number;
-}
-/** `Launch` with the stage 2a additions. */
-export type TmLaunch = Launch & { testPlanId?: string; manual?: LaunchManual };
-/** `ResultSummary` additions of stage 2a. */
-export interface ResultSourceInfo {
-  source?: 'automated' | 'manual';
-  caseNumber?: number;
-  runItemId?: string;
-}
-export interface RunItemSummary {
-  id: string;
-  caseNumber: number;
-  name: string;
-  folderPath: string[];
-  status: RunStatus;
-  assignee: string | null;
-  executionNo: number;
-  updatedAt: string;
-}
-export interface RunStepResult {
-  path: string;
-  status: StepStatus;
-  actual: string;
-  comment: string;
-  attachments: AttachmentRef[];
-  updatedBy: string;
-  updatedAt: string;
-}
-export interface RunItem extends RunItemSummary {
-  launchId: string;
-  caseVersion: number;
-  preconditions: string;
-  preconditionsHtml: string;
-  steps: CaseStep[];
-  stepsHtml: CaseStepHtml[];
-  stepResults: RunStepResult[];
-  comment: string;
-  defect: unknown;
-  resultId: string | null;
-  executedBy: string | null;
-  startedAt: string | null;
-  finishedAt: string | null;
-  revision: number;
-}
-export interface RunStepWrite {
-  status: StepStatus;
-  actual?: string;
-  comment?: string;
-  attachmentIds?: string[];
-}
-export interface RunStepAck {
-  itemStatus: RunStatus;
-  suggestedStatus: RunStatus;
-  revision: number;
-}
-export interface RunItemPatch {
-  status?: RunStatus;
-  comment?: string;
-  assignee?: string | null;
-  untestedStepsTo?: 'skipped';
-}
-export interface RunItemsAdd {
-  caseNumbers?: number[];
-  planId?: string;
-  assignee?: string | null;
-}
-export interface RunItemsAdded {
-  added: number;
-  skipped: number;
-}
-export interface RunDefect {
-  defectTypeId?: string;
-  comment?: string;
-  issue?: { url: string; key?: string };
-}
-export interface ManualClose {
-  untestedTo: 'skipped' | 'leave';
-}
+export type CaseStatus = S['CaseStatus'];
+export type CaseOrigin = S['CaseOrigin'];
+export type CaseStep = S['CaseStep'];
+export type CaseLink = S['CaseLink'];
+export type CaseBody = S['CaseBody'];
+export type CaseStepHtml = S['CaseStepHtml'];
+export type CaseHtml = S['CaseHtml'];
+export type CaseWrite = S['CaseWrite'];
+export type FieldValue = S['FieldValue'];
+export type CasePatch = S['CasePatch'];
+export type LastResult = S['LastResult'];
+export type CaseSummary = S['CaseSummary'];
+export type CaseIdentity = S['CaseIdentity'];
+export type CaseKey = S['CaseKey'];
+export type Case = S['Case'];
+export type CaseList = S['CaseList'];
+export type FolderCounts = S['FolderCounts'];
+export type CaseFolder = S['CaseFolder'];
+export type CaseFolderWrite = S['CaseFolderWrite'];
+export type CaseFolderPatch = S['CaseFolderPatch'];
+export type CaseFolderList = S['CaseFolderList'];
+export type CaseFolderRef = S['CaseFolderRef'];
+export type CaseTreeNode = S['CaseTreeNode'];
+export type CaseTree = S['CaseTree'];
+export type FieldOption = S['FieldOption'];
+export type FieldType = S['FieldType'];
+export type CaseFieldDef = S['CaseFieldDef'];
+export type CaseFieldWrite = S['CaseFieldWrite'];
+export type CaseFieldPatch = S['CaseFieldPatch'];
+export type CaseFieldList = S['CaseFieldList'];
+export type VersionSource = S['VersionSource'];
+export type CaseVersionSummary = S['CaseVersionSummary'];
+export type CaseVersionList = S['CaseVersionList'];
+export type CaseSnapshot = S['CaseSnapshot'];
+export type CaseVersion = S['CaseVersion'];
+export type CaseHistoryEntry = S['CaseHistoryEntry'];
+export type CaseHistoryList = S['CaseHistoryList'];
+export type TestIdentity = S['TestIdentity'];
+export type TestIdentityList = S['TestIdentityList'];
+export type CaseBulkAction = S['CaseBulkAction'];
+export type CaseBulk = S['CaseBulk'];
+export type CaseBulkResult = S['CaseBulkResult'];
+export type CaseFilter = S['CaseFilter'];
+export type CaseProposal = S['CaseProposal'];
+export type CaseSuggestion = S['CaseSuggestion'];
+export type CaseSuggestionList = S['CaseSuggestionList'];
+export type CaseSuggestionAccepted = S['CaseSuggestionAccepted'];
+export type AttachmentRef = S['AttachmentRef'];
+export type RunStatus = S['RunStatus'];
+export type StepStatus = S['StepStatus'];
+export type TestPlan = S['TestPlan'];
+export type TestPlanWrite = S['TestPlanWrite'];
+export type TestPlanPatch = S['TestPlanPatch'];
+export type TestPlanItem = S['TestPlanItem'];
+export type TestPlanItemsChange = S['TestPlanItemsChange'];
+export type PlanSyncDiff = S['PlanSyncDiff'];
+export type StartPlanLaunch = S['StartPlanLaunch'];
+export type PlanLaunch = S['PlanLaunch'];
+export type LaunchManual = S['LaunchManual'];
+export type RunItemSummary = S['RunItemSummary'];
+export type MyRunItem = S['MyRunItem'];
+export type RunStepResult = S['RunStepResult'];
+export type RunItem = S['RunItem'];
+export type RunStepWrite = S['RunStepWrite'];
+export type RunStepAck = S['RunStepAck'];
+export type RunItemPatch = S['RunItemPatch'];
+export type RunItemsAdd = S['RunItemsAdd'];
+export type RunItemsAdded = S['RunItemsAdded'];
+export type RunDefect = S['RunDefect'];
+export type ManualClose = S['ManualClose'];
+export type TmJob = S['TmJob'];
+export type ImportPreview = S['ImportPreview'];
+export type ImportFormat = S['ImportFormat'];
+export type ImportOptions = S['ImportOptions'];
+export type TestOpsImport = S['TestOpsImport'];
+export type ImportReport = S['ImportReport'];
+export type MarkdownHtml = S['MarkdownHtml'];
+export type NewIssueUrl = S['NewIssueUrl'];
 
-export type ImportFormat = 'generic-csv' | 'testrail-csv' | 'qase-csv' | 'qase-json' | 'testops-csv' | 'fastproof-ndjson';
-export interface ImportReport {
-  create: number;
-  update: number;
-  skip: number;
-  folders: number;
-  unknownFields: string[];
-  unknownValues: Record<string, string[]>;
-  errors: { row: number; code: string; message: string }[];
-}
-export interface TmJob {
-  id: string;
-  kind: 'import' | 'export' | 'backfill';
-  status: 'queued' | 'dry_run' | 'ready' | 'running' | 'done' | 'failed' | 'cancelled';
-  progress: { done: number; total: number | null };
-  report: ImportReport | null;
-  createdBy: string | null;
-  createdAt: string;
-  finishedAt: string | null;
-  downloadUrl?: string;
-}
-export interface ImportPreview {
-  format: ImportFormat;
-  headers: string[];
-  rows: string[][];
-  suggestedMapping: Record<string, string>;
-  stepsLayout: 'rows' | 'cells';
-}
-export interface ImportOptions {
-  format: ImportFormat;
-  mapping?: Record<string, string>;
-  stepsLayout?: 'rows' | 'cells';
-  mode: 'createOnly' | 'upsert';
-  targetFolderId?: string | null;
-  unknownFieldValues: 'create' | 'skip' | 'fail';
-}
-export interface TestOpsImport {
-  source: 'allure-testops';
-  baseUrl: string;
-  token: string;
-  remoteProjectId: number;
-  mode: 'createOnly' | 'upsert';
-  targetFolderId?: string | null;
-}
+/** `Launch` with the stage 2a additions (now part of the generated `Launch`). */
+export type TmLaunch = Launch;
+/** The stage 2a fields of a result row. */
+export type ResultSourceInfo = Pick<S['ResultSummary'], 'source' | 'caseNumber' | 'runItemId'>;
 
 /** `details` of a 412 `precondition_failed`. */
 export interface ConflictDetails {
@@ -641,6 +294,15 @@ export function usePatchCase(key: string, n: number) {
   });
 }
 
+/** "Reviewed": clears the AI-draft mark of a case (`POST /cases/{n}/review` with `If-Match`). */
+export function useReviewCase(key: string, n: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (etag: string) => writeVersioned<Case>(`${projectPath(key)}/cases/${String(n)}/review`, 'POST', etag),
+    onSuccess: (v) => afterCaseWrite(qc, key, n, v),
+  });
+}
+
 export function useArchiveCase(key: string, n: number) {
   const qc = useQueryClient();
   return useMutation({
@@ -733,12 +395,17 @@ export function useTestIdentities(key: string, q: { unlinked?: boolean; branch?:
   });
 }
 
+/** A file name as an HTTP header value (printable ASCII; other characters become `_`). */
+export function headerSafe(name: string): string {
+  return name.replace(/[^\x20-\x7e]/g, '_').slice(0, 255);
+}
+
 /** Uploads one file as a case attachment. */
 export function uploadCaseAttachment(key: string, n: number, file: Blob, name: string): Promise<AttachmentRef> {
   return request<Omit<AttachmentRef, 'name' | 'contentType'> & Partial<AttachmentRef>>(`${projectPath(key)}/cases/${String(n)}/attachments`, {
     method: 'POST',
     body: file,
-    headers: { 'Content-Type': file.type || 'application/octet-stream', 'X-FastProof-Attachment-Name': encodeURIComponent(name) },
+    headers: { 'Content-Type': file.type || 'application/octet-stream', 'X-FastProof-Attachment-Name': headerSafe(name) },
   }).then((r) => ({ name, contentType: file.type || 'application/octet-stream', ...r }));
 }
 
@@ -748,10 +415,29 @@ export function markdownPreview(key: string, markdown: string, signal?: AbortSig
 
 // Folders and fields
 
+/** Most folders read for pickers and path labels (one request per folder that has subfolders). */
+export const MAX_FOLDERS_READ = 5000;
+
+/** Every folder of the project, level by level (`GET /case-folders?parent=` lists one level). */
+export async function fetchAllFolders(key: string): Promise<CaseFolder[]> {
+  const out: CaseFolder[] = [];
+  let level: (string | null)[] = [null];
+  while (level.length && out.length < MAX_FOLDERS_READ) {
+    const pages = await Promise.all(level.map((parent) => request<CaseFolderList>(withQuery(`${projectPath(key)}/case-folders`, { parent })).then((r) => r.items)));
+    const next: string[] = [];
+    for (const items of pages) {
+      out.push(...items);
+      for (const f of items) if (f.hasChildren) next.push(f.id);
+    }
+    level = next.slice(0, Math.max(0, MAX_FOLDERS_READ - out.length));
+  }
+  return out;
+}
+
 export function useCaseFolders(key: string) {
   return useQuery({
     queryKey: tmk.folders(key),
-    queryFn: () => request<{ items: CaseFolder[] }>(withQuery(`${projectPath(key)}/case-folders`, { limit: 20000 })).then((r) => r.items),
+    queryFn: () => fetchAllFolders(key),
     staleTime: 30_000,
   });
 }
@@ -1008,7 +694,7 @@ export function uploadRunAttachment(key: string, itemId: string, file: Blob, nam
   return request<Partial<AttachmentRef> & { id: string }>(`${projectPath(key)}/run-items/${enc(itemId)}/attachments`, {
     method: 'POST',
     body: file,
-    headers: { 'Content-Type': file.type || 'application/octet-stream', 'X-FastProof-Attachment-Name': encodeURIComponent(name) },
+    headers: { 'Content-Type': file.type || 'application/octet-stream', 'X-FastProof-Attachment-Name': headerSafe(name) },
   }).then((r) => ({ sha256: '', size: file.size, contentType: file.type || 'application/octet-stream', name, ...r }));
 }
 

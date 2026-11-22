@@ -26,7 +26,7 @@ export function VersionDiffView({ diff, beforeLabel, afterLabel, showSame = fals
     <Stack gap="md" data-testid="version-diff">
       {diff.fields.length > 0 && (
         <div className="fp-table-wrap">
-          <Table withTableBorder withColumnBorders layout="fixed" verticalSpacing={4} miw={480}>
+          <Table withTableBorder withColumnBorders layout="fixed" verticalSpacing={4}>
             <Table.Thead>
               <Table.Tr>
                 <Table.Th w="22%">Field</Table.Th>

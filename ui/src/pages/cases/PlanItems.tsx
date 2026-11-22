@@ -130,7 +130,7 @@ export function PlanItems({ project, planId, items, folders, people, readOnly }:
                     {it.assignee ?? 'Unassigned'}
                   </Text>
                 ) : (
-                  <AssigneeInput key={`${String(it.caseNumber)}:${it.assignee ?? ''}`} value={it.assignee} people={people} label={`Assignee of ${caseLabel(it.caseNumber)}`} onCommit={(v) => run({ assign: [{ number: it.caseNumber, assignee: v }] }, v ? `Assigned to ${v}` : 'Unassigned')} testId="plan-item-assignee" />
+                  <AssigneeInput key={`${String(it.caseNumber)}:${it.assignee ?? ''}`} value={it.assignee ?? null} people={people} label={`Assignee of ${caseLabel(it.caseNumber)}`} onCommit={(v) => run({ assign: [{ number: it.caseNumber, assignee: v }] }, v ? `Assigned to ${v}` : 'Unassigned')} testId="plan-item-assignee" />
                 )}
                 {!readOnly && (
                   <Tooltip label="Remove from the plan">

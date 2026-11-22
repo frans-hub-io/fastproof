@@ -32,7 +32,6 @@ import { TransitionBadge } from './launch/TransitionBadge';
 import { LaunchProgress, LiveBadge } from './Launches';
 import { Manual } from './launch/Manual';
 import { ManualIcon } from './cases/common';
-import type { ResultSourceInfo, TmLaunch } from '../api/tm';
 
 function Meta({ launch }: { launch: Launch }) {
   const cUrl = commitUrl(launch.vcs, launch.ci);
@@ -94,7 +93,7 @@ function Chips({ launch }: { launch: Launch }) {
   if (!env && !launch.attributes.length) return null;
   return (
     <Group gap={6} wrap="wrap">
-      {env && (
+      {env?.key && (
         <Badge variant="light" color="fhPurple" radius="sm" style={{ textTransform: 'none' }}>
           env: {env.key}
         </Badge>
@@ -245,8 +244,7 @@ function Uploads({ project, launch }: { project: string; launch: Launch }) {
 }
 
 function ResultRow({ project, r, index, selected, onHover, types }: { project: string; r: ResultSummary; index: number; selected: boolean; onHover: (i: number) => void; types: Map<string, DefectType> }) {
-  const src = r as ResultSummary & ResultSourceInfo;
-  const manualTo = src.source === 'manual' && src.runItemId ? `/p/${project}/launches/${r.launchId}/run/${src.runItemId}` : null;
+  const manualTo = r.source === 'manual' && r.runItemId ? `/p/${project}/launches/${r.launchId}/run/${r.runItemId}` : null;
   return (
     <UnstyledButton
       component={Link}
@@ -264,7 +262,7 @@ function ResultRow({ project, r, index, selected, onHover, types }: { project: s
         </div>
         <Stack gap={2} style={{ minWidth: 0, flex: 1 }}>
           <Group gap={6} wrap="nowrap" style={{ minWidth: 0 }}>
-            {src.source === 'manual' && <ManualIcon />}
+            {r.source === 'manual' && <ManualIcon />}
             <Text size="sm" fw={600} className="fh-truncate">
               {r.name}
             </Text>
@@ -368,7 +366,7 @@ function Results({ project, launch }: { project: string; launch: Launch }) {
           </Group>
         </Chip.Group>
         <Switch size="xs" label={`Flaky only (${String(c.flaky)})`} checked={flaky} onChange={(e) => set('flaky', e.currentTarget.checked ? 'true' : null)} />
-        {(launch as TmLaunch).manual && (
+        {launch.manual && (
           <SegmentedControl
             size="xs"
             value={source || 'all'}
@@ -523,7 +521,7 @@ export default function LaunchPage() {
                   <Tabs.Tab value="logs" leftSection={l.status === 'running' ? <span className="fp-live-dot" aria-hidden /> : undefined} data-testid="tab-logs">
                     {l.status === 'running' ? 'Live' : 'Logs'}
                   </Tabs.Tab>
-                  {(l as TmLaunch).manual && (
+                  {l.manual && (
                     <Tabs.Tab value="manual" leftSection={<IconHandFinger size={14} />} data-testid="tab-manual">
                       Manual
                     </Tabs.Tab>

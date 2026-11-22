@@ -94,6 +94,7 @@ pub fn validate_start(b: &LaunchStart) -> ApiResult<()> {
             ("vcs.branch", &v.branch),
             ("vcs.commit", &v.commit),
             ("vcs.commitUrl", &v.commit_url),
+            ("vcs.defaultBranch", &v.default_branch),
         ] {
             bounded(n, x.as_deref(), 2048)?;
         }
@@ -134,9 +135,13 @@ pub async fn create(
 ) -> ApiResult<(StatusCode, Json<Launch>)> {
     let project = s.project_for(&auth, &key, &s.perms.launches_write).await?;
     validate_start(&body)?;
+    let can_sync = auth
+        .principal
+        .denial(&s.perms.cases_sync, Some(&project.key))
+        .is_none();
     let (launch, created) = s
         .store
-        .start_launch(&project, &body, &auth.principal.name)
+        .start_launch_as(&project, &body, &auth.principal.name, can_sync)
         .await?;
     if created {
         s.audit(

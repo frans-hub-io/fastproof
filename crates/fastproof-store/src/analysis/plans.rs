@@ -31,6 +31,19 @@ pub struct NewTestPlan {
     pub statuses: Option<Vec<String>>,
     /// Test cases added to the plan.
     pub test_case_ids: Option<Vec<Uuid>>,
+    /// `managed` creates a managed plan (needs `plans:write`) from `name`, `description`,
+    /// `caseNumbers` and `filter`; absent or `adhoc` is the stage-1 plan above.
+    #[serde(default)]
+    pub kind: Option<crate::tm::TestPlanKind>,
+    /// Managed plans: Markdown description.
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Managed plans: cases added explicitly.
+    #[serde(default)]
+    pub case_numbers: Option<Vec<i64>>,
+    /// Managed plans: cases added (and kept in sync) by a filter.
+    #[serde(default)]
+    pub filter: Option<crate::tm::CaseFilter>,
 }
 
 /// A created plan.
@@ -56,10 +69,39 @@ pub struct TestPlanTest {
 pub struct TestPlanJson {
     pub version: String,
     pub tests: Vec<TestPlanTest>,
+    /// Muted tests of a managed plan (read by allure-js; also listed in `tests`).
+    #[serde(
+        rename = "mutedTests",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub muted_tests: Option<Vec<TestPlanTest>>,
 }
 
 impl NewTestPlan {
+    /// A managed plan was asked for.
+    pub fn is_managed(&self) -> bool {
+        self.kind == Some(crate::tm::TestPlanKind::Managed)
+    }
+
+    /// The body of a managed plan; the adhoc fields are refused.
+    pub fn managed(&self) -> Result<crate::tm::TestPlanWrite, String> {
+        if self.from_launch_id.is_some() || self.statuses.is_some() || self.test_case_ids.is_some()
+        {
+            return Err("managed plans take caseNumbers and filter, not fromLaunchId, statuses or testCaseIds".into());
+        }
+        Ok(crate::tm::TestPlanWrite {
+            name: self.name.clone(),
+            description: self.description.clone(),
+            filter: self.filter.clone().map(Some),
+            case_numbers: self.case_numbers.clone(),
+        })
+    }
+
     pub fn validate(&self) -> Result<Vec<String>, String> {
+        if self.description.is_some() || self.case_numbers.is_some() || self.filter.is_some() {
+            return Err("description, caseNumbers and filter need kind managed".into());
+        }
         if self.name.trim().is_empty() || self.name.len() > 200 {
             return Err("name must have 1 to 200 bytes".into());
         }
@@ -109,7 +151,7 @@ impl Store {
         by: &str,
     ) -> anyhow::Result<Result<TestPlanCreated, PlanRefusal>> {
         let plans: i64 = sqlx::query_scalar(
-            "select count(*) from (select 1 from test_plans where project_id = $1 limit $2) x",
+            "select count(*) from (select 1 from test_plans where project_id = $1 and kind = 'adhoc' limit $2) x",
         )
         .bind(project_id)
         .bind(MAX_PLANS_PER_PROJECT)
@@ -187,11 +229,12 @@ impl Store {
         }))
     }
 
-    /// Deletes up to `batch` plans older than [`TEST_PLAN_DAYS`]; returns how many.
+    /// Deletes up to `batch` adhoc plans older than [`TEST_PLAN_DAYS`]; returns how many.
+    /// Managed plans never expire.
     pub async fn delete_old_test_plans(&self, batch: i64) -> anyhow::Result<u64> {
         Ok(sqlx::query(
-            "delete from test_plans where id in (select id from test_plans \
-             where created_at < now() - make_interval(days => $1) order by created_at limit $2)",
+            "delete from test_plans where id in (select id from test_plans where kind = 'adhoc' \
+             and created_at < now() - make_interval(days => $1) order by created_at limit $2)",
         )
         .bind(TEST_PLAN_DAYS as i32)
         .bind(batch)
@@ -215,6 +258,7 @@ impl Store {
         Ok(v.map(|v| TestPlanJson {
             version: "1.0".into(),
             tests: serde_json::from_value(v).unwrap_or_default(),
+            muted_tests: None,
         }))
     }
 }

@@ -22,7 +22,7 @@ function failingText(item: RunItem, local: ReadonlyMap<string, LocalStep>): stri
   return [`Step ${bad.path} ${r?.status ?? ''}: ${bad.step.action}`, bad.step.expected ? `Expected: ${bad.step.expected}` : '', r?.actual ? `Actual: ${r.actual}` : ''].filter(Boolean).join('\n');
 }
 
-export function DefectDrawer({ project, item, local, opened, onClose, beforeIssue }: { project: string; item: RunItem; local: ReadonlyMap<string, LocalStep>; opened: boolean; onClose: () => void; beforeIssue?: () => Promise<void> }) {
+export function DefectDrawer({ project, item, local, opened, onClose, beforeIssue, final = true, finishFailed }: { project: string; item: RunItem; local: ReadonlyMap<string, LocalStep>; opened: boolean; onClose: () => void; beforeIssue?: () => Promise<void>; final?: boolean; finishFailed?: () => Promise<void> }) {
   const types = useDefectTypes(project);
   const settings = useSettings(project);
   const defect = useRunItemDefect(project, item.id);
@@ -51,7 +51,19 @@ export function DefectDrawer({ project, item, local, opened, onClose, beforeIssu
     }
   };
 
-  const save = () =>
+  const [finishing, setFinishing] = useState(false);
+  const save = async () => {
+    if (!final && finishFailed) {
+      setFinishing(true);
+      try {
+        await finishFailed();
+      } finally {
+        setFinishing(false);
+      }
+    }
+    send();
+  };
+  const send = () =>
     defect.mutate(
       { ...(typeId ? { defectTypeId: typeId } : {}), ...(comment.trim() ? { comment: comment.trim() } : {}), ...(issueText ? { issue: isUrl ? { url: issueText } : { url: tracker ? tracker.urlTemplate.replace('{key}', encodeURIComponent(issueText)) : issueText, key: issueText } } : {}) },
       {
@@ -69,18 +81,23 @@ export function DefectDrawer({ project, item, local, opened, onClose, beforeIssu
         <Select label="Defect type" data={grouped} value={typeId} onChange={setTypeId} searchable clearable comboboxProps={{ withinPortal: true }} data-testid="defect-type" />
         <Textarea label="Comment" value={comment} onChange={(e) => setComment(e.currentTarget.value)} autosize minRows={4} maxLength={4000} data-autofocus data-testid="defect-comment" />
         <TextInput label="Issue" placeholder={tracker ? `Key like ${tracker.keyRegex} or a link` : 'https://…'} value={issue} onChange={(e) => setIssue(e.currentTarget.value)} data-testid="defect-issue" />
-        <Button variant="light" leftSection={<IconExternalLink size={14} />} onClick={() => void openNewIssue()} loading={opening} data-testid="defect-new-issue">
+        <Button variant="light" leftSection={<IconExternalLink size={14} />} onClick={() => void openNewIssue()} loading={opening} disabled={!tracker} data-testid="defect-new-issue">
           Open a new issue{tracker ? ` in ${tracker.type === 'gitlab' ? 'GitLab' : tracker.type === 'github' ? 'GitHub' : 'Jira'}` : ''}
         </Button>
+        {!final && (
+          <Text size="xs" c="dimmed" data-testid="defect-finish-note">
+            A defect belongs to the case's result, so saving finishes the case as Failed first.
+          </Text>
+        )}
         <Text size="xs" c="dimmed">
-          The new issue opens in the tracker with the step, the expected and the actual result and a link back here; paste its key above.
+          {tracker ? '' : 'No issue tracker is configured (Project settings → Integrations). '}The new issue opens in the tracker with the step, the expected and the actual result and a link back here; paste its key above.
         </Text>
         <Group justify="flex-end">
           <Button variant="default" onClick={onClose}>
             Cancel
           </Button>
-          <Button onClick={save} loading={defect.isPending} data-testid="defect-save">
-            Save
+          <Button onClick={() => void save()} loading={defect.isPending || finishing} data-testid="defect-save">
+            {final ? 'Save' : 'Finish as failed and save'}
           </Button>
         </Group>
       </Stack>

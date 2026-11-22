@@ -348,6 +348,7 @@ pub fn standard_jobs() -> anyhow::Result<Scheduler> {
         purge_blobs(&s).await
     })?;
     analysis_jobs(&mut sch)?;
+    case_jobs(&mut sch)?;
     Ok(sch)
 }
 
@@ -431,6 +432,41 @@ pub fn analysis_jobs(sch: &mut Scheduler) -> anyhow::Result<()> {
                 blobs = r.blobs_queued,
                 "retention applied"
             );
+        }
+        Ok(())
+    })?;
+    Ok(())
+}
+
+/// Jobs of test-management cases: code sync of finished launches and the backfill of cases
+/// from existing tests.
+pub fn case_jobs(sch: &mut Scheduler) -> anyhow::Result<()> {
+    sch.register("cases.sync", "10s", |s: AppState| async move {
+        let owner = format!("{}-cases-sync", s.instance);
+        let r = s
+            .store
+            .run_case_sync(&owner, &s.cfg.tm, Duration::from_secs(60))
+            .await?;
+        if r.created + r.linked + r.updated > 0 {
+            tracing::info!(
+                created = r.created,
+                linked = r.linked,
+                updated = r.updated,
+                "cases synced from code"
+            );
+        }
+        Ok(())
+    })?;
+    sch.register("cases.backfill", "1m", |s: AppState| async move {
+        s.store.enqueue_upgrade_backfills().await?;
+        let owner = format!("{}-cases-backfill", s.instance);
+        let r = s
+            .store
+            .run_case_backfill(&owner, &s.cfg.tm, Duration::from_secs(50))
+            .await?;
+        if let Some(job) = r.job {
+            tracing::info!(job = %job, done = r.done, scanned = r.scanned, created = r.stats.created,
+                linked = r.stats.linked, "case backfill ran");
         }
         Ok(())
     })?;

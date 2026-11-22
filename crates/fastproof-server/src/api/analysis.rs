@@ -3,8 +3,8 @@
 
 use axum::Json;
 use axum::extract::State;
-use axum::http::{HeaderValue, StatusCode, header};
-use axum::response::{IntoResponse, Response};
+use axum::http::StatusCode;
+use axum::response::Response;
 use chrono::{DateTime, NaiveDate, Utc};
 use fastproof_store::analysis::clusters::Cluster;
 use fastproof_store::analysis::compare::Comparison;
@@ -599,6 +599,15 @@ pub async fn put_settings(
         )
         .await;
     }
+    if areas.iter().any(|a| a == "caseSync") {
+        s.audit(
+            &auth,
+            "caseSync.settings",
+            Some(&p.key),
+            serde_json::json!({"caseSync": body.case_sync}),
+        )
+        .await;
+    }
     s.audit(
         &auth,
         "project.settings",
@@ -798,16 +807,35 @@ pub async fn dashboard(
 
 // Test plans.
 
+/// What `POST /test-plans` answers: the managed plan, or the id and test count of an adhoc one.
+#[derive(Serialize, ToSchema)]
+#[serde(untagged)]
+pub enum CreatedTestPlan {
+    Managed(Box<fastproof_store::tm::TestPlan>),
+    Adhoc(TestPlanCreated),
+}
+
 #[utoipa::path(post, path = "/api/v1/projects/{key}/test-plans", tag = "analysis", operation_id = "analysis_create_test_plan", request_body = NewTestPlan,
+    description = "Creates an adhoc plan (`launches:write`; expires after 90 days) or, with `kind: managed`, a managed plan \
+        (`plans:write`; answers the `TestPlan`).",
     params(("key" = String, Path)),
-    responses((status = 201, body = TestPlanCreated), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),
-        (status = 404, body = ErrorBody), (status = 429, body = ErrorBody)))]
+    responses((status = 201, body = CreatedTestPlan), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),
+        (status = 404, body = ErrorBody), (status = 409, body = ErrorBody), (status = 429, body = ErrorBody)))]
 pub async fn create_test_plan(
     State(s): State<AppState>,
     auth: Auth,
     P(key): P<String>,
     ApiJson(body): ApiJson<NewTestPlan>,
-) -> ApiResult<(StatusCode, Json<TestPlanCreated>)> {
+) -> ApiResult<(StatusCode, Json<CreatedTestPlan>)> {
+    if body.is_managed() {
+        let p = s.project_for(&auth, &key, &s.perms.plans_write).await?;
+        let w = body.managed().map_err(ApiError::bad_request)?;
+        let plan = super::plans::create_managed(&s, &auth, &p, &w).await?;
+        return Ok((
+            StatusCode::CREATED,
+            Json(CreatedTestPlan::Managed(Box::new(plan))),
+        ));
+    }
     let p = s.project_for(&auth, &key, &s.perms.launches_write).await?;
     let statuses = body.validate().map_err(ApiError::bad_request)?;
     let created = match s
@@ -834,12 +862,15 @@ pub async fn create_test_plan(
             "tests": created.test_count}),
     )
     .await;
-    Ok((StatusCode::CREATED, Json(created)))
+    Ok((StatusCode::CREATED, Json(CreatedTestPlan::Adhoc(created))))
 }
 
 #[utoipa::path(get, path = "/api/v1/projects/{key}/test-plans/{id}/testplan.json", tag = "analysis", operation_id = "analysis_testplan_json",
+    description = "Allure `testplan.json`: the stored tests of an adhoc plan, or the live automated cases of a managed plan \
+        (409 `plan_has_no_automated_cases` when it has none: an empty file would run every test).",
     params(("key" = String, Path), ("id" = Uuid, Path)),
-    responses((status = 200, body = TestPlanJson), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
+    responses((status = 200, body = TestPlanJson), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody),
+        (status = 409, body = ErrorBody)))]
 pub async fn testplan_json(
     State(s): State<AppState>,
     auth: Auth,
@@ -848,13 +879,9 @@ pub async fn testplan_json(
     let p = s.project_for(&auth, &key, &s.perms.launches_read).await?;
     let plan = s
         .store
-        .test_plan_json(p.id, id)
-        .await?
+        .plan_testplan(p.id, id)
+        .await
+        .map_err(super::tm_error)?
         .ok_or_else(|| ApiError::not_found("test plan"))?;
-    let mut r = Json(plan).into_response();
-    r.headers_mut().insert(
-        header::CONTENT_DISPOSITION,
-        HeaderValue::from_static("attachment; filename=\"testplan.json\""),
-    );
-    Ok(r)
+    Ok(super::plans::testplan_response(plan))
 }

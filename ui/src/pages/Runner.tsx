@@ -319,7 +319,7 @@ export default function RunnerPage() {
     return order.find((x) => isOpen(done.get(x.id) ?? x.status));
   };
 
-  const finish = (status: RunStatus, skipRest: boolean) => {
+  const finish = (status: RunStatus, skipRest: boolean, advance = true) => {
     if (!item || readOnly) return;
     const it = item;
     flushText(it);
@@ -353,6 +353,10 @@ export default function RunnerPage() {
       }
       track(it.id, -1);
     });
+    if (!advance) {
+      setAnnounce(`${caseLabel(it.caseNumber)} finished: ${RUN_STATUS_LABEL[status].toLowerCase()}`);
+      return;
+    }
     const next = nextOpenAfter(it.id, done);
     setAnnounce(`${caseLabel(it.caseNumber)} finished: ${RUN_STATUS_LABEL[status].toLowerCase()}.${next ? ` Next: ${caseLabel(next.caseNumber)} ${next.name}` : ' All cases in the queue are done.'}`);
     if (next) void navigate(`${runPath}/${next.id}`, { replace: true });
@@ -661,6 +665,11 @@ export default function RunnerPage() {
           onClose={() => setDefect(false)}
           beforeIssue={async () => {
             flushText(item);
+            await saver.drain();
+          }}
+          final={FINAL.includes(itemStatus)}
+          finishFailed={async () => {
+            finish('failed', untested.length > 0, false);
             await saver.drain();
           }}
         />

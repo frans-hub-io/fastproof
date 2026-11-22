@@ -46,7 +46,7 @@ function fieldText(c: CaseSummary, key: string): string {
 }
 
 function priorityColor(defs: readonly CaseFieldDef[], value: string): string | undefined {
-  return defs.find((d) => d.key === 'priority')?.options.find((o) => o.value === value)?.color;
+  return defs.find((d) => d.key === 'priority')?.options.find((o) => o.value === value)?.color ?? undefined;
 }
 
 export interface CaseListProps {
@@ -147,7 +147,7 @@ export function CaseList({ project, items, fields, folders, selected, onToggle, 
             {c.aiUnreviewed && <AiDraftBadge />}
           </Group>
           <Text size="xs" c="dimmed" className="fh-truncate">
-            {folderPathLabel(folders, c.folderId)}
+            {folderPathLabel(folders, c.folderId ?? null)}
             {c.tags.length ? ` · ${c.tags.join(', ')}` : ''}
           </Text>
         </Stack>

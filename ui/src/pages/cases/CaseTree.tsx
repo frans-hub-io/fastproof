@@ -22,9 +22,9 @@ function countsBadge(total: number) {
 function buildFolderRows(folders: readonly CaseFolder[], expanded: ReadonlySet<string>): TreeRow[] {
   const children = new Map<string | null, CaseFolder[]>();
   for (const f of folders) {
-    const list = children.get(f.parentId) ?? [];
+    const list = children.get(f.parentId ?? null) ?? [];
     list.push(f);
-    children.set(f.parentId, list);
+    children.set(f.parentId ?? null, list);
   }
   for (const list of children.values()) list.sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
   const rows: TreeRow[] = [];

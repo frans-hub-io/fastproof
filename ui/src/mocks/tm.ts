@@ -1064,19 +1064,29 @@ export function tmHandlers({ role, error, audit }: Helpers) {
       const pre = precondition(request, c.revision, c.updatedBy, lastSource(c));
       if (pre) return pre;
       const b = (await request.json()) as CasePatch;
-      if (b.aiUnreviewed === false) {
-        c.aiUnreviewed = false;
-        c.revision++;
-        c.updatedAt = now();
-        c.updatedBy = ME;
-        audit('case.review', key, { number: c.number });
-      }
       const next = snapshotOf({ ...c, folderId: b.folderId === undefined ? c.folderId : b.folderId, status: b.status ?? c.status, fields: b.fields ? { ...c.fields, ...b.fields } : c.fields, tags: b.tags ?? c.tags });
       const code = codeViolations(c, next);
       if (code.length) return error(409, 'field_from_code', 'these fields come from code', { fields: code });
       const changed = changedKeys(snapshotOf(c), next);
       Object.assign(c, { folderId: next.folderId, status: next.status, fields: next.fields, tags: next.tags });
       if (changed.length) newVersion(c, 'ui', changed, ME);
+      return withEtag(caseView(c, key), c.revision);
+    }),
+
+    http.post(`${P}/cases/:n/review`, ({ params, request }) => {
+      const key = String(params.key);
+      const c = caseOf(key, String(params.n));
+      if (!c) return notFound('case');
+      if (!writer()) return forbid('cases:write');
+      const pre = precondition(request, c.revision, c.updatedBy, lastSource(c));
+      if (pre) return pre;
+      if (c.aiUnreviewed) {
+        c.aiUnreviewed = false;
+        c.revision++;
+        c.updatedAt = now();
+        c.updatedBy = ME;
+        audit('case.review', key, { number: c.number });
+      }
       return withEtag(caseView(c, key), c.revision);
     }),
 
@@ -1236,7 +1246,11 @@ export function tmHandlers({ role, error, audit }: Helpers) {
 
     // Folders and fields
 
-    http.get(`${P}/case-folders`, ({ params }) => HttpResponse.json({ items: tmProject(String(params.key)) ? folderList() : [], next: null })),
+    http.get(`${P}/case-folders`, ({ params, request }) => {
+      const parent = new URL(request.url).searchParams.get('parent');
+      const level = tmProject(String(params.key)) ? folderList().filter((f) => f.parentId === parent) : [];
+      return HttpResponse.json({ items: level.sort((a, b) => a.position - b.position || a.name.localeCompare(b.name)) });
+    }),
 
     http.post(`${P}/case-folders`, async ({ params, request }) => {
       const key = String(params.key);
@@ -1358,7 +1372,7 @@ export function tmHandlers({ role, error, audit }: Helpers) {
       }
       const before = snapshotOf(c);
       const p = s.proposal;
-      if (p.name !== undefined) c.name = p.name;
+      if (p.name) c.name = p.name;
       if (p.body) c.body = structuredClone(p.body);
       if (p.tags) c.tags = [...p.tags];
       if (p.fields) c.fields = { ...c.fields, ...p.fields };
@@ -1432,7 +1446,7 @@ export function tmHandlers({ role, error, audit }: Helpers) {
       if (p.items.length > 50_000) return error(409, 'limit_reached', 'too many cases in the plan', { limit: 'max_plan_cases', max: 50_000 });
       for (const a of b.assign ?? []) {
         const it = p.items.find((i) => i.caseNumber === a.number);
-        if (it) it.assignee = a.assignee;
+        if (it) it.assignee = a.assignee ?? null;
       }
       p.revision++;
       p.updatedAt = now();
@@ -1515,11 +1529,11 @@ export function tmHandlers({ role, error, audit }: Helpers) {
       const p = st.plans.find((x) => x.id === params.id);
       if (!p) return undefined;
       if (!writer()) return forbid('plans:write');
-      const pre = precondition(request, p.revision, p.createdBy, 'ui');
+      const pre = precondition(request, p.revision, p.createdBy ?? null, 'ui');
       if (pre) return pre;
       const b = (await request.json()) as Partial<TestPlanWrite>;
-      if (b.name !== undefined) p.name = b.name.trim();
-      if (b.description !== undefined) p.description = b.description;
+      if (b.name) p.name = b.name.trim();
+      if (b.description !== undefined) p.description = b.description ?? '';
       if (b.filter !== undefined) p.filter = b.filter;
       p.revision++;
       p.updatedAt = now();
@@ -1734,7 +1748,7 @@ export function tmHandlers({ role, error, audit }: Helpers) {
         r.executedBy = ME;
         r.startedAt ??= now();
       }
-      if (b.comment !== undefined) r.comment = b.comment;
+      if (b.comment !== undefined) r.comment = b.comment ?? '';
       if (b.assignee !== undefined) r.assignee = b.assignee;
       project(r);
       r.revision++;
@@ -1757,6 +1771,7 @@ export function tmHandlers({ role, error, audit }: Helpers) {
       const r = st.runItems.find((x) => x.id === params.id);
       if (!r) return notFound('run item');
       if (!writer()) return forbid('runs:execute');
+      if (!r.resultId) return error(409, 'run_item_not_final', 'finish the case first: a defect is set on its result');
       const b = (await request.json()) as Record<string, unknown>;
       r.defect = { ...b, at: now(), by: ME };
       r.revision++;

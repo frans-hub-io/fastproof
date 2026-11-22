@@ -3,12 +3,19 @@
 pub mod admin;
 pub mod analysis;
 pub mod attachments;
+pub mod case_fields;
+pub mod case_folders;
+pub mod cases;
 pub mod events;
+pub mod exports;
+pub mod imports;
 pub mod integrations;
 pub mod launches;
 pub mod logs;
+pub mod plans;
 pub mod projects;
 pub mod results;
+pub mod runs;
 pub mod search;
 pub mod uploads;
 
@@ -25,6 +32,7 @@ use utoipa::{Modify, OpenApi, ToSchema};
 use uuid::Uuid;
 
 use crate::state::AppState;
+use fastproof_store::tm::{self, TmError};
 
 /// Default and largest page size of lists.
 pub const DEFAULT_LIMIT: i64 = 50;
@@ -92,11 +100,24 @@ pub fn type_project_settings(doc: &mut utoipa::openapi::OpenApi) {
     components(schemas(ErrorBody, fastproof_model::ReportResult, logs::LogStreamBatch, logs::LogGap,
         crate::integrations::settings::Gate, crate::integrations::settings::Notification,
         crate::integrations::settings::NotificationFilter, crate::integrations::settings::VcsSettings,
-        crate::integrations::settings::IssueTracker, crate::integrations::settings::FastMockSettings)),
+        crate::integrations::settings::IssueTracker, crate::integrations::settings::FastMockSettings,
+        tm::Case, tm::CaseList, tm::CaseSummary, tm::CaseWrite, tm::CasePatch, tm::CaseTree, tm::CaseTreeNode,
+        tm::CaseTreeGroupBy, tm::CaseFolder, tm::CaseFolderList, tm::CaseFolderWrite, tm::CaseFolderPatch,
+        tm::CaseFieldDef, tm::CaseFieldList, tm::CaseFieldWrite, tm::CaseFieldPatch, tm::CaseVersionSummary,
+        tm::CaseVersion, tm::CaseSnapshot, tm::CaseHistoryEntry, tm::TestIdentity, tm::CaseBulk, tm::CaseBulkResult,
+        tm::CaseFilter, tm::CaseSuggestion, tm::CaseProposal, tm::AttachmentRef, tm::TestPlan, tm::TestPlanWrite,
+        tm::TestPlanItem, tm::TestPlanItemsChange, tm::PlanSyncDiff, tm::StartPlanLaunch, tm::PlanLaunch,
+        tm::LaunchManual, tm::RunItemSummary, tm::RunStepResult, tm::RunItem, tm::RunStepWrite, tm::RunStepAck,
+        tm::RunItemPatch, tm::RunItemsAdd, tm::RunItemsAdded, tm::RunDefect, tm::ManualClose, tm::TmJob,
+        tm::ImportPreview, tm::ImportOptions, tm::TestOpsImport, tm::ImportReport, tm::FolderDeleteMode)),
     tags(
         (name = "projects"), (name = "launches"), (name = "uploads"), (name = "results"),
         (name = "attachments"), (name = "events"), (name = "admin"), (name = "integrations"),
-        (name = "analysis"), (name = "logs")
+        (name = "analysis"), (name = "logs"),
+        (name = "cases", description = "Test cases, folders, fields, versions and AI suggestions"),
+        (name = "plans", description = "Managed test plans"),
+        (name = "runs", description = "Manual runs: run items and step results"),
+        (name = "imports", description = "Imports and exports of test cases")
     )
 )]
 pub struct ApiDoc;
@@ -129,6 +150,47 @@ impl<T: DeserializeOwned + Send, S: Send + Sync> FromRequestParts<S> for P<T> {
             Ok(Path(v)) => Ok(P(v)),
             Err(_) => Err(ApiError::not_found("resource")),
         }
+    }
+}
+
+/// The answer to a [`TmError`]: 404 `not_found`, 400 or 409 with its code and details, 412
+/// `precondition_failed` with `{currentRevision, changedBy, source}`, otherwise 500 (logged).
+pub fn tm_error(e: TmError) -> ApiError {
+    use axum::http::StatusCode;
+    match e {
+        TmError::NotFound(what) => ApiError::not_found(what),
+        TmError::Invalid {
+            code,
+            message,
+            details,
+        } => with_details(
+            ApiError::new(StatusCode::BAD_REQUEST, code, message),
+            details,
+        ),
+        TmError::Conflict {
+            code,
+            message,
+            details,
+        } => with_details(ApiError::new(StatusCode::CONFLICT, code, message), details),
+        TmError::Stale {
+            current_revision,
+            changed_by,
+            source,
+        } => ApiError::new(
+            StatusCode::PRECONDITION_FAILED,
+            "precondition_failed",
+            "the resource changed since it was read",
+        )
+        .with_details(serde_json::json!({"currentRevision": current_revision,
+            "changedBy": changed_by, "source": source})),
+        TmError::Other(e) => ApiError::from(e),
+    }
+}
+
+fn with_details(e: ApiError, details: Option<serde_json::Value>) -> ApiError {
+    match details {
+        Some(d) => e.with_details(d),
+        None => e,
     }
 }
 

@@ -315,6 +315,7 @@ lists every option.
 | `testplan` | Print an Allure `testplan.json` of chosen tests, so Allure adapters and the FastProof reporters run only those: the failed ones of a launch (`--from-launch <id> --status failed,broken`), the automated cases of a [test plan](../guide/manual-runs.md) (`--plan <id>`) or of a launch started from one (`--launch <externalId>`) |
 | `cases export`, `cases import` | Export test cases as CSV or NDJSON (`--format`, `--out`); import a file, as a dry run unless `--apply` is given (see [Importing test cases](../guide/importing-test-cases.md)) |
 | `bench` | Generate launches, results and log lines against a server and measure throughput and end-to-end lag (see [Scaling](scaling.md)) |
+| `bench tm` | Load test management (cases, versions, code sync, reads, a plan launch run by virtual testers, export, a TestRail CSV import) in a new project and print p50/p95/max per operation against the lab targets; the project is deleted afterwards unless `--keep` (see [Scaling](scaling.md#test-management)) |
 | `version` | Print the version |
 
 The CLI reads:

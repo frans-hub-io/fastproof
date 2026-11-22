@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
-use clap::Args;
+use clap::{Args, Subcommand};
 use fastproof_store::launches::LaunchStart;
 use fastproof_store::logs::{LogLevel, LogLine, LogStream};
 use futures::StreamExt;
@@ -18,10 +18,61 @@ use uuid::Uuid;
 use super::Conn;
 use super::client::Client;
 
+/// `fastproof bench [tm]`: the ingest bench, or a scenario named by a subcommand.
+#[derive(Args, Debug, Clone)]
+#[command(args_conflicts_with_subcommands = true, subcommand_negates_reqs = true)]
+pub struct BenchCli {
+    #[command(subcommand)]
+    pub command: Option<BenchCommand>,
+    #[command(flatten)]
+    pub conn: BenchConn,
+    #[command(flatten)]
+    pub args: BenchArgs,
+}
+
+/// Scenarios of `fastproof bench`.
+#[derive(Subcommand, Debug, Clone)]
+pub enum BenchCommand {
+    /// Load test management (cases, versions, code sync, reads, a plan launch run by virtual
+    /// testers, export and a TestRail CSV import) and print p50/p95/max per operation against
+    /// the lab targets. Exits 1 when requests failed (not on missed targets).
+    Tm(super::bench_tm::TmBenchArgs),
+}
+
+/// Server connection of the ingest bench (required there, checked at run time so that
+/// `bench tm` does not need it).
+#[derive(Args, Debug, Clone, Default)]
+pub struct BenchConn {
+    /// Server URL.
+    #[arg(long, env = "FASTPROOF_URL")]
+    pub url: Option<String>,
+    /// File holding the API token (otherwise FASTPROOF_TOKEN).
+    #[arg(long, env = "FASTPROOF_TOKEN_FILE")]
+    pub token_file: Option<std::path::PathBuf>,
+    /// Project key.
+    #[arg(long, short, env = "FASTPROOF_PROJECT")]
+    pub project: Option<String>,
+}
+
+impl BenchConn {
+    /// The connection, when URL and project are given.
+    pub fn conn(self) -> anyhow::Result<Conn> {
+        let (Some(url), Some(project)) = (self.url, self.project) else {
+            bail!("fastproof bench needs --url (FASTPROOF_URL) and --project (FASTPROOF_PROJECT)");
+        };
+        Ok(Conn {
+            url,
+            token_file: self.token_file,
+            project,
+        })
+    }
+}
+
 /// Options of `fastproof bench`.
 #[derive(Args, Debug, Clone)]
 pub struct BenchArgs {
-    #[command(flatten)]
+    /// Set from `BenchConn` before `run`.
+    #[arg(skip)]
     pub conn: Conn,
     /// Launches.
     #[arg(long, default_value_t = 10)]

@@ -192,3 +192,52 @@ not for raw throughput; use `direct` unless one of the signals above applies.
 `fastproof bench` generates launches, results and log lines with realistic failure patterns, pushes them
 through the HTTP API (or straight to Kafka), and reports throughput and server-side lag. Run it as a
 Kubernetes Job next to the installation you want to measure.
+
+### Test management
+
+`fastproof bench tm` loads test management through the public API only, with the same `FASTPROOF_URL` and
+token as `fastproof bench` (an admin token: it creates and deletes projects). It creates a project with a
+random key (or `--project`), then:
+
+1. 30 custom fields of mixed types and a folder tree of 300 folders up to 5 levels deep;
+2. 20,000 cases with 12 steps on average (some nested), random fields and tags, 4 more versions of 2,000 of
+   them (`PUT` with `If-Match`) and 200 saves of a case with 100 steps;
+3. an allure-results upload of 5,000 tests on `main`, 2,000 of them with `ALLURE_ID` labels naming existing
+   cases, and waits until code sync has linked them;
+4. 200 samples each of a list page (50) with two filters, a tree level with counts and a case;
+5. a managed plan of 5,000 cases (2,000 manual cases by a tag filter, the rest automated by number) and a
+   launch started from it;
+6. 50 virtual testers executing the 2,000 manual run items (25 steps each, 50,000 step results), each step
+   written separately, then a final status;
+7. the automated part uploaded into the plan launch, and the manual run closed;
+8. an NDJSON export of all cases, and a dry run plus apply of a generated 20,000-case TestRail CSV into a
+   second project (`<key>-imp`).
+
+It prints p50, p95 and maximum latency per operation next to the targets, phase durations and the first
+errors; the exit code is 1 only when requests failed, not when a target is missed. Both projects are deleted
+at the end unless `--keep` is given. Every count has an option (`fastproof bench tm --help`); the data is
+generated from `--seed` while it is sent, so the client stays small (about 30 MiB).
+
+```bash
+FASTPROOF_URL=https://fastproof.example.com FASTPROOF_TOKEN_FILE=admin-token fastproof bench tm
+```
+
+The testers work flat out by default, which is a stress test: 50 testers then write about 1,500 step
+results per second. `--think-ms 200` gives each tester a pause of 0 to 400 ms before every write, about 250
+writes per second, still far busier than 50 people.
+
+| Operation (20,000 cases) | Target p95 | Flat out | `--think-ms 200` |
+|---|---|---|---|
+| List page (50) with 2 filters | < 200 ms | 177 to 190 ms | 174 ms |
+| Tree level with counts | < 150 ms | 4 ms | 3 ms |
+| Save a case with 100 steps (new version) | < 150 ms | 22 to 57 ms | 23 ms |
+| Write a step result (50 testers) | < 50 ms | 89 to 93 ms | 5 ms |
+| Final status with projection | < 150 ms | 342 to 486 ms | 15 ms |
+| Launch from a plan of 5,000 cases | < 3 s | 81 to 87 ms | (same phase) |
+| Export 23,000 cases as NDJSON | < 20 s | 1.8 to 2.5 s | |
+| Import 20,000 TestRail CSV cases (dry run + apply) | < 60 s | 13 to 14 s | |
+
+Measured with the release build on one development VM, the server limited to 4 CPUs and sharing the machine
+with PostgreSQL 18 and the bench; the server's peak memory was about 180 MiB. When testers work flat out,
+step writes and final statuses of one launch wait on each other's locks on the launch row, so their latency
+grows with the write rate of a single launch rather than with the data size.

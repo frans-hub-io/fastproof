@@ -1,8 +1,9 @@
 //! Command line: `serve`, `migrate`, `upload`, `watch`, `launch start|finish`, `testplan`,
-//! `cases export|import`, `version`.
+//! `cases export|import`, `bench [tm]`, `version`.
 
 pub mod archive;
 pub mod bench;
+pub mod bench_tm;
 pub mod cases;
 pub mod ci;
 pub mod client;
@@ -59,8 +60,9 @@ pub enum Command {
         #[command(subcommand)]
         command: cases::CasesCommand,
     },
-    /// Generate launches, results and log lines and measure throughput and end-to-end lag.
-    Bench(bench::BenchArgs),
+    /// Generate launches, results and log lines and measure throughput and end-to-end lag;
+    /// `bench tm` loads test management.
+    Bench(bench::BenchCli),
     /// Print the version.
     Version,
 }
@@ -99,7 +101,7 @@ pub enum LaunchCommand {
 }
 
 /// Server connection.
-#[derive(Args, Debug, Clone)]
+#[derive(Args, Debug, Clone, Default)]
 pub struct Conn {
     /// Server URL.
     #[arg(long, env = "FASTPROOF_URL")]
@@ -373,8 +375,18 @@ pub async fn run(cli: Cli) -> anyhow::Result<i32> {
         Command::Testplan(t) => testplan(t).await,
         Command::Cases { command } => cases::run(command).await,
         Command::Watch(w) => watch::run(w).await,
+        Command::Bench(bench::BenchCli {
+            command: Some(bench::BenchCommand::Tm(t)),
+            ..
+        }) => {
+            let r = bench_tm::run(t).await?;
+            bench_tm::print(&r)?;
+            Ok(if r.errors > 0 { 1 } else { 0 })
+        }
         Command::Bench(b) => {
-            let r = bench::run(b).await?;
+            let mut args = b.args;
+            args.conn = b.conn.conn()?;
+            let r = bench::run(args).await?;
             println!(
                 "launches {}, results {}, log lines {}: sent in {:.1}s ({:.0} results/s, {:.0} log lines/s); queryable {:.2}s after the last request; total {:.1}s",
                 r.launches,
@@ -582,5 +594,46 @@ mod tests {
         assert_eq!(s.external_id, None);
         assert!(s.ci.is_none() && s.vcs.is_none());
         assert!(s.name.starts_with("web "), "{}", s.name);
+    }
+
+    #[test]
+    fn bench_tm_parses_without_the_bench_connection() {
+        let cli = Cli::try_parse_from([
+            "fastproof",
+            "bench",
+            "tm",
+            "--url",
+            "http://localhost:8080",
+            "--cases",
+            "100",
+            "--keep",
+        ])
+        .unwrap();
+        let Command::Bench(bench::BenchCli {
+            command: Some(bench::BenchCommand::Tm(t)),
+            ..
+        }) = cli.command
+        else {
+            panic!("bench tm expected");
+        };
+        assert_eq!((t.cases, t.keep, t.project), (100, true, None));
+        let cli = Cli::try_parse_from([
+            "fastproof",
+            "bench",
+            "--url",
+            "http://localhost:8080",
+            "-p",
+            "web",
+            "--launches",
+            "3",
+        ])
+        .unwrap();
+        let Command::Bench(b) = cli.command else {
+            panic!("bench expected");
+        };
+        assert!(b.command.is_none());
+        assert_eq!(b.args.launches, 3);
+        assert_eq!(b.conn.conn().unwrap().project, "web");
+        assert!(bench::BenchConn::default().conn().is_err());
     }
 }

@@ -4,7 +4,7 @@
 
 Please report vulnerabilities privately through GitHub's
 [private vulnerability reporting](https://github.com/frans-hub-io/fastproof/security/advisories/new) for this
-repository. Do not open public issues, pull requests or discussions for security problems.
+repository, or by email to [info@franshub.io](mailto:info@franshub.io). Do not open public issues, pull requests or discussions for security problems.
 
 Include what you can of:
 

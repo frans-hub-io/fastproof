@@ -67,6 +67,10 @@ pub struct LaunchVcs {
     /// Link to the commit; computed for GitHub and GitLab repositories when not given.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub commit_url: Option<String>,
+    /// The default branch of the repository as the CI reports it (trusted by code sync when
+    /// `caseSync.useCiDefaultBranch`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_branch: Option<String>,
 }
 
 impl LaunchVcs {

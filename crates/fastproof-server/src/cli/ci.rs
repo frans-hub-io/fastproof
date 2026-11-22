@@ -38,6 +38,7 @@ pub fn detect(get: &dyn Fn(&str) -> Option<String>) -> Option<CiMeta> {
                 branch: v("CI_MERGE_REQUEST_SOURCE_BRANCH_NAME").or(v("CI_COMMIT_REF_NAME")),
                 commit: v("CI_COMMIT_SHA"),
                 commit_url: None,
+                default_branch: v("CI_DEFAULT_BRANCH"),
             },
         });
     }
@@ -73,6 +74,7 @@ pub fn detect(get: &dyn Fn(&str) -> Option<String>) -> Option<CiMeta> {
                 branch: v("GITHUB_HEAD_REF").or(v("GITHUB_REF_NAME")),
                 commit: v("GITHUB_SHA"),
                 commit_url: None,
+                default_branch: v("GITHUB_EVENT_PATH").and_then(|p| github_default_branch(&p)),
             },
         });
     }
@@ -103,10 +105,25 @@ pub fn detect(get: &dyn Fn(&str) -> Option<String>) -> Option<CiMeta> {
                     .or(v("GIT_BRANCH").map(|b| b.trim_start_matches("origin/").to_string())),
                 commit: v("GIT_COMMIT"),
                 commit_url: None,
+                default_branch: None,
             },
         });
     }
     None
+}
+
+/// Bytes of the GitHub event payload read, at most.
+const MAX_EVENT_BYTES: u64 = 16 * 1024 * 1024;
+
+/// `repository.default_branch` of the GitHub event payload (`GITHUB_EVENT_PATH`).
+fn github_default_branch(path: &str) -> Option<String> {
+    use std::io::Read;
+    let f = std::fs::File::open(path).ok()?;
+    let mut buf = Vec::new();
+    f.take(MAX_EVENT_BYTES).read_to_end(&mut buf).ok()?;
+    let v: serde_json::Value = serde_json::from_slice(&buf).ok()?;
+    let b = v.get("repository")?.get("default_branch")?.as_str()?.trim();
+    (!b.is_empty() && b.len() <= 255 && !b.chars().any(char::is_control)).then(|| b.to_string())
 }
 
 /// The pull request number of `refs/pull/<n>/merge` (or `/head`).
@@ -148,6 +165,40 @@ mod tests {
         assert_eq!(c.name.as_deref(), Some("group/app #7"));
         assert_eq!(c.ci.build_order, Some(7));
         assert_eq!(c.vcs.branch.as_deref(), Some("main"));
+        assert_eq!(c.vcs.default_branch, None);
+        let m = env(&[("GITLAB_CI", "true"), ("CI_DEFAULT_BRANCH", "trunk")]);
+        assert_eq!(
+            detect(&|k| m.get(k).cloned())
+                .unwrap()
+                .vcs
+                .default_branch
+                .as_deref(),
+            Some("trunk")
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let event = dir.path().join("event.json");
+        std::fs::write(&event, r#"{"repository": {"default_branch": "develop"}}"#).unwrap();
+        let m = env(&[
+            ("GITHUB_ACTIONS", "true"),
+            ("GITHUB_EVENT_PATH", event.to_str().unwrap()),
+        ]);
+        assert_eq!(
+            detect(&|k| m.get(k).cloned())
+                .unwrap()
+                .vcs
+                .default_branch
+                .as_deref(),
+            Some("develop")
+        );
+        let m = env(&[
+            ("GITHUB_ACTIONS", "true"),
+            ("GITHUB_EVENT_PATH", "/nonexistent/event.json"),
+        ]);
+        assert_eq!(
+            detect(&|k| m.get(k).cloned()).unwrap().vcs.default_branch,
+            None
+        );
 
         let m = env(&[
             ("GITHUB_ACTIONS", "true"),

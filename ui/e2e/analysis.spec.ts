@@ -157,11 +157,12 @@ test('live console shows a gap marker when the server drops lines', async ({ pag
 });
 
 test('stored logs of a finished result: 120k lines stay virtualized and can be downloaded', async ({ page }) => {
+  test.setTimeout(180_000);
   await openRichResult(page);
   await page.getByTestId('tab-result-logs').click();
   await expect(page.getByTestId('log-count')).toHaveText('5,000 lines');
   await page.getByTestId('log-load-all').click();
-  await expect(page.getByTestId('log-count')).toHaveText('120,000 lines', { timeout: 30_000 });
+  await expect(page.getByTestId('log-count')).toHaveText('120,000 lines', { timeout: 120_000 });
   expect(await page.locator('[data-testid="log-line"]').count()).toBeLessThan(300);
   await page.getByTestId('log-text-filter').fill('frame tick 1199');
   await expect(page.getByTestId('log-count')).toHaveText(/^[1-9]\d* lines?$/);

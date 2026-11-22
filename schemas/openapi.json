@@ -4618,6 +4618,138 @@
         }
       }
     },
+    "/api/v1/projects/{key}/launches/{id}/environments": {
+      "get": {
+        "tags": [
+          "results"
+        ],
+        "description": "The environments the results of a launch ran in (the environment key of their series: the launch environment, and for some formats a project or target per result), with status counts.",
+        "operationId": "results_environments",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnvironmentCountsList"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/launches/{id}/facets": {
+      "get": {
+        "tags": [
+          "results"
+        ],
+        "description": "How many results of a launch (in one environment) each explorer filter value keeps.",
+        "operationId": "results_facets",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "env",
+            "in": "query",
+            "description": "An environment key; `(none)` for results without one.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LaunchFacets"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{key}/launches/{id}/finish": {
       "post": {
         "tags": [
@@ -4751,6 +4883,81 @@
           },
           "409": {
             "description": "the gate settings are invalid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/launches/{id}/labels": {
+      "get": {
+        "tags": [
+          "results"
+        ],
+        "description": "The label names of the results of a launch with how many results have each and how many distinct values it has: the choices of a custom tree grouping.",
+        "operationId": "results_labels",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "env",
+            "in": "query",
+            "description": "An environment key; `(none)` for results without one.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LabelNameList"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
             "content": {
               "application/json": {
                 "schema": {
@@ -5450,6 +5657,112 @@
               "type": "integer",
               "format": "int64"
             }
+          },
+          {
+            "name": "message",
+            "in": "query",
+            "description": "Substring of the error message.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "retried",
+            "in": "query",
+            "description": "`true`: only results with more than one attempt.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "muted",
+            "in": "query",
+            "description": "`true` or `false`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "newFailures",
+            "in": "query",
+            "description": "`true`: failed or broken, not muted results whose series did not fail in the previous\nfinished launch on the same branch and environment.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "severity",
+            "in": "query",
+            "description": "Severity label values; `(none)` matches results without the label.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "owner",
+            "in": "query",
+            "description": "Owner label values; `(none)` matches results without the label.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tag",
+            "in": "query",
+            "description": "Tag label values; `(none)` matches results without the label.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "minDurationMs",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "maxDurationMs",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "defect",
+            "in": "query",
+            "description": "Defect type ids; `none` matches results without a defect.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "attachment",
+            "in": "query",
+            "description": "`trace`, `video` or `screenshot`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "env",
+            "in": "query",
+            "description": "An environment key of the results' series; `(none)` matches results without one.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -5883,7 +6196,7 @@
           {
             "name": "groupBy",
             "in": "query",
-            "description": "`suite` (default), `feature` or `package`.",
+            "description": "`suite` (default), `feature` or `package`, or up to five label names separated by\ncommas (`epic,feature,story`, `owner`); `label:<name>` names a label that is also a\npreset (`label:feature`).",
             "required": false,
             "schema": {
               "type": "string"
@@ -5942,6 +6255,112 @@
             "schema": {
               "type": "string",
               "format": "uuid"
+            }
+          },
+          {
+            "name": "message",
+            "in": "query",
+            "description": "Substring of the error message.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "retried",
+            "in": "query",
+            "description": "`true`: only results with more than one attempt.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "muted",
+            "in": "query",
+            "description": "`true` or `false`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "newFailures",
+            "in": "query",
+            "description": "`true`: failed or broken, not muted results whose series did not fail in the previous\nfinished launch on the same branch and environment.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "severity",
+            "in": "query",
+            "description": "Severity label values; `(none)` matches results without the label.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "owner",
+            "in": "query",
+            "description": "Owner label values; `(none)` matches results without the label.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tag",
+            "in": "query",
+            "description": "Tag label values; `(none)` matches results without the label.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "minDurationMs",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "maxDurationMs",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "defect",
+            "in": "query",
+            "description": "Defect type ids; `none` matches results without a defect.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "attachment",
+            "in": "query",
+            "description": "`trace`, `video` or `screenshot`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "env",
+            "in": "query",
+            "description": "An environment key of the results' series; `(none)` matches results without one.",
+            "required": false,
+            "schema": {
+              "type": "string"
             }
           }
         ],
@@ -6012,7 +6431,7 @@
           {
             "name": "groupBy",
             "in": "query",
-            "description": "`suite` (default), `feature` or `package`.",
+            "description": "As in the tree.",
             "required": false,
             "schema": {
               "type": "string"
@@ -6075,6 +6494,112 @@
             "schema": {
               "type": "integer",
               "format": "int64"
+            }
+          },
+          {
+            "name": "message",
+            "in": "query",
+            "description": "Substring of the error message.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "retried",
+            "in": "query",
+            "description": "`true`: only results with more than one attempt.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "muted",
+            "in": "query",
+            "description": "`true` or `false`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "newFailures",
+            "in": "query",
+            "description": "`true`: failed or broken, not muted results whose series did not fail in the previous\nfinished launch on the same branch and environment.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "severity",
+            "in": "query",
+            "description": "Severity label values; `(none)` matches results without the label.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "owner",
+            "in": "query",
+            "description": "Owner label values; `(none)` matches results without the label.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tag",
+            "in": "query",
+            "description": "Tag label values; `(none)` matches results without the label.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "minDurationMs",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "maxDurationMs",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "defect",
+            "in": "query",
+            "description": "Defect type ids; `none` matches results without a defect.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "attachment",
+            "in": "query",
+            "description": "`trace`, `video` or `screenshot`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "env",
+            "in": "query",
+            "description": "An environment key of the results' series; `(none)` matches results without one.",
+            "required": false,
+            "schema": {
+              "type": "string"
             }
           }
         ],
@@ -12715,6 +13240,41 @@
           }
         }
       },
+      "EnvironmentCounts": {
+        "type": "object",
+        "description": "The results of one environment of a launch.",
+        "required": [
+          "counts"
+        ],
+        "properties": {
+          "counts": {
+            "$ref": "#/components/schemas/Counts"
+          },
+          "key": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The environment key of the series; `null` for results without one."
+          }
+        }
+      },
+      "EnvironmentCountsList": {
+        "type": "object",
+        "description": "The environments of a launch.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EnvironmentCounts"
+            },
+            "description": "Largest first, at most 100."
+          }
+        }
+      },
       "ErrorBody": {
         "type": "object",
         "description": "The uniform error body (`franshub_http::ErrorBody`), for the documentation.",
@@ -13610,6 +14170,77 @@
           }
         }
       },
+      "LabelFacet": {
+        "type": "object",
+        "description": "The values of one label in a launch.",
+        "required": [
+          "name",
+          "values",
+          "none",
+          "more"
+        ],
+        "properties": {
+          "more": {
+            "type": "boolean",
+            "description": "More values exist than listed."
+          },
+          "name": {
+            "type": "string"
+          },
+          "none": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Results without the label."
+          },
+          "values": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ValueCount"
+            },
+            "description": "Most frequent first, at most [`MAX_FACET_VALUES`]."
+          }
+        }
+      },
+      "LabelName": {
+        "type": "object",
+        "description": "A label name of a launch.",
+        "required": [
+          "name",
+          "count",
+          "values"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Results with the label."
+          },
+          "name": {
+            "type": "string"
+          },
+          "values": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Distinct values."
+          }
+        }
+      },
+      "LabelNameList": {
+        "type": "object",
+        "description": "Label names of a launch.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LabelName"
+            },
+            "description": "Most used first, at most 200."
+          }
+        }
+      },
       "LabelView": {
         "type": "object",
         "description": "A label of a result.",
@@ -13904,6 +14535,78 @@
             "propertyNames": {
               "type": "string"
             }
+          }
+        }
+      },
+      "LaunchFacets": {
+        "type": "object",
+        "description": "Counts per value of the explorer filters, over the launch (in the environment asked for).",
+        "required": [
+          "counts",
+          "retried",
+          "newFailures",
+          "manual",
+          "automated",
+          "labels",
+          "defects",
+          "attachments"
+        ],
+        "properties": {
+          "attachments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ValueCount"
+            },
+            "description": "`trace`, `video` and `screenshot`."
+          },
+          "automated": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "baselineLaunchId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "The launch compared with: the previous finished launch on the same branch and\nenvironment (absent without one; then every failure is new)."
+          },
+          "counts": {
+            "$ref": "#/components/schemas/Counts"
+          },
+          "defects": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ValueCount"
+            },
+            "description": "Defect type ids (`none`: results without a defect)."
+          },
+          "labels": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LabelFacet"
+            },
+            "description": "`severity`, `owner` and `tag`."
+          },
+          "manual": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "maxDurationMs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "newFailures": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Failed or broken, not muted results whose series did not fail in the baseline launch."
+          },
+          "retried": {
+            "type": "integer",
+            "format": "int64"
           }
         }
       },
@@ -19025,6 +19728,16 @@
             "format": "int64",
             "description": "Sum of the durations of the results under the node."
           },
+          "levels": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "On the root of a label grouping: the label names of the levels, without those no\nresult has (pass them as `groupBy` to `.../tree/tests`)."
+          },
           "name": {
             "type": "string"
           },
@@ -19397,6 +20110,23 @@
             "items": {
               "$ref": "#/components/schemas/Upload"
             }
+          }
+        }
+      },
+      "ValueCount": {
+        "type": "object",
+        "description": "A value and how many results have it.",
+        "required": [
+          "value",
+          "count"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "value": {
+            "type": "string"
           }
         }
       },

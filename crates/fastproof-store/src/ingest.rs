@@ -961,6 +961,8 @@ pub async fn persist_attempts_in(
         Vec::<serde_json::Value>::new(),
     );
     let mut partial = (Vec::<Uuid>::new(), Vec::<i32>::new(), Vec::<bool>::new());
+    let mut full_kinds = Vec::<i32>::new();
+    let mut partial_kinds = Vec::<i32>::new();
     let mut events = Vec::new();
     for g in &groups {
         let latest = &all[g.latest];
@@ -978,7 +980,15 @@ pub async fn persist_attempts_in(
             })
             .collect();
         let test_case_id = tc_of_series.get(&series_id).copied().unwrap_or_default();
+        let kinds = g
+            .attempts
+            .iter()
+            .filter_map(|&i| by_attempt.get(&all[i].1))
+            .fold(0, |m, &p| {
+                m | crate::results::attachment_mask(&prepared[p].r)
+            });
         if let Some(&pi) = by_attempt.get(&latest.1) {
+            full_kinds.push(kinds);
             let r = &prepared[pi].r;
             full.0.push(result_id);
             full.1.push(test_case_id);
@@ -1008,6 +1018,7 @@ pub async fn persist_attempts_in(
                     "uploadId": upload_id, "attempts": new_attempts}));
         } else {
             partial.0.push(result_id);
+            partial_kinds.push(kinds);
             partial.1.push(count);
             partial.2.push(g.flaky_in_run);
             events.push(
@@ -1021,18 +1032,18 @@ pub async fn persist_attempts_in(
         sqlx::query(
                 "insert into results (id, launch_created_at, project_id, launch_id, test_case_id, series_id, name, \
                    full_name, suite_path, status, flaky_in_run, attempt_count, started_at, stopped_at, duration_ms, \
-                   message, labels) \
+                   message, labels, attachment_kinds) \
                  select i, $1, $2, $3, tc, se, n, f, array(select jsonb_array_elements_text(sp)), st, fl, ac, sa, so, \
-                   d, m, lb \
+                   d, m, lb, ak \
                  from unnest($4::uuid[], $5::uuid[], $6::uuid[], $7::text[], $8::text[], $9::jsonb[], $10::text[], \
                    $11::bool[], $12::int[], $13::timestamptz[], $14::timestamptz[], $15::bigint[], $16::text[], \
-                   $17::jsonb[]) as t(i, tc, se, n, f, sp, st, fl, ac, sa, so, d, m, lb) \
+                   $17::jsonb[], $18::int[]) as t(i, tc, se, n, f, sp, st, fl, ac, sa, so, d, m, lb, ak) \
                  on conflict (launch_id, series_id, launch_created_at) do update set name = excluded.name, \
                    full_name = excluded.full_name, suite_path = excluded.suite_path, status = excluded.status, \
                    flaky_in_run = excluded.flaky_in_run, attempt_count = excluded.attempt_count, \
                    started_at = excluded.started_at, stopped_at = excluded.stopped_at, \
                    duration_ms = excluded.duration_ms, message = excluded.message, labels = excluded.labels, \
-                   updated_at = now()",
+                   attachment_kinds = results.attachment_kinds | excluded.attachment_kinds, updated_at = now()",
             )
             .bind(launch.created_at)
             .bind(launch.project_id)
@@ -1051,19 +1062,22 @@ pub async fn persist_attempts_in(
             .bind(&times.2)
             .bind(&times.3)
             .bind(&times.4)
+            .bind(&full_kinds)
             .execute(&mut *conn)
             .await?;
     }
     if !partial.0.is_empty() {
         sqlx::query(
-            "update results r set attempt_count = t.ac, flaky_in_run = t.fl, updated_at = now() \
-                 from unnest($1::uuid[], $2::int[], $3::bool[]) as t(i, ac, fl) \
+            "update results r set attempt_count = t.ac, flaky_in_run = t.fl, \
+                   attachment_kinds = r.attachment_kinds | t.ak, updated_at = now() \
+                 from unnest($1::uuid[], $2::int[], $3::bool[], $5::int[]) as t(i, ac, fl, ak) \
                  where r.id = t.i and r.launch_created_at = $4",
         )
         .bind(&partial.0)
         .bind(&partial.1)
         .bind(&partial.2)
         .bind(launch.created_at)
+        .bind(&partial_kinds)
         .execute(&mut *conn)
         .await?;
     }

@@ -124,6 +124,9 @@ const ERRORS: [&str; 5] = [
     "ElementNotInteractableException: element <button id=pay-{n}> is not clickable",
 ];
 
+const OWNERS: [&str; 4] = ["qa", "alice", "bob", "carol"];
+const SEVERITIES: [&str; 5] = ["blocker", "critical", "normal", "minor", "trivial"];
+
 fn rnd(seed: u64) -> u64 {
     let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15);
     x ^= x >> 31;
@@ -160,7 +163,10 @@ fn plan(launch: usize, m: usize, l: usize, attachments: &[(usize, String)], now:
             let mut res = json!({"id": id, "name": format!("case {j}"), "fullName": full,
                 "status": if fails { "failed" } else { "passed" }, "start": now + a as i64 * 100,
                 "stop": now + a as i64 * 100 + 90, "retry": a, "steps": steps,
-                "labels": [{"name": "suite", "value": format!("suite{}", j % 20)}, {"name": "owner", "value": "qa"}]});
+                "labels": [{"name": "suite", "value": format!("suite{}", j % 20)}, {"name": "owner", "value": OWNERS[j % OWNERS.len()]},
+                    {"name": "severity", "value": SEVERITIES[(r >> 40) as usize % SEVERITIES.len()]},
+                    {"name": "epic", "value": format!("Epic {}", j % 4)}, {"name": "feature", "value": format!("Feature {}", j % 7)},
+                    {"name": "story", "value": format!("Story {}", j % 30)}, {"name": "tag", "value": if j % 3 == 0 { "smoke" } else { "regression" }}]});
             if fails {
                 res["error"] = json!({"message": pattern, "trace": format!("{pattern}\n\tat com.example.Test.case{j}(Test.java:42)")});
             }

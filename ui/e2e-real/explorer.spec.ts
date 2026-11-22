@@ -1,5 +1,8 @@
 import { expect, test } from '@playwright/test';
-import { ADMIN_TOKEN, BASE_URL, ENABLED, PROJECT, seeded } from './env';
+import { randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { ADMIN_TOKEN, BASE_URL, ENABLED, FIXTURES, PROJECT, seeded } from './env';
 import { signInWithToken, Watcher } from './watch';
 
 test.skip(!ENABLED, 'set FASTPROOF_E2E_REAL=1 to run against a real server');
@@ -29,9 +32,11 @@ test('explorer: a nested failed Allure test opens beside the tree with its steps
   await expect.poll(async () => new Set(await tree.getByTestId('explorer-test').evaluateAll((els) => els.map((e) => e.getAttribute('data-status'))))).toEqual(new Set(['failed']));
   await page.getByTestId('explorer').locator('label').filter({ hasText: /^Failed \d+$/ }).click();
 
-  await page.getByTestId('explorer-view').getByText('Features').click();
+  await page.getByTestId('explorer-view').click();
+  await page.getByRole('option', { name: 'Behaviors', exact: true }).click();
   await expect(tree.getByTestId('explorer-group').filter({ hasText: 'Web shop' })).toBeVisible();
-  await page.getByTestId('explorer-view').getByText('Packages').click();
+  await page.getByTestId('explorer-view').click();
+  await page.getByRole('option', { name: 'Packages', exact: true }).click();
   await expect(tree.getByTestId('explorer-group').first()).toBeVisible();
   w.check();
 });
@@ -61,3 +66,57 @@ test('explorer: Playwright and JUnit launches nest down to the tests; a deep lin
   await expect(tree.locator('[data-testid="explorer-test"][aria-selected="true"]')).toHaveAttribute('title', name);
   w.check();
 });
+
+async function api(method: string, path: string, body?: BodyInit, contentType = 'application/json'): Promise<{ status: number; body: Record<string, unknown> }> {
+  const res = await fetch(`${BASE_URL}${path}`, { method, headers: { Authorization: `Bearer ${ADMIN_TOKEN}`, 'Content-Type': contentType }, body });
+  const text = await res.text();
+  return { status: res.status, body: text ? (JSON.parse(text) as Record<string, unknown>) : {} };
+}
+
+test('explorer: a Playwright launch with two projects switches environments, groups by a label and filters', async ({ page }) => {
+  const l = await api('POST', `/api/v1/projects/${PROJECT}/launches`, JSON.stringify({ externalId: `e2e-envs-${randomBytes(4).toString('hex')}`, name: 'playwright projects', vcs: { branch: 'e2e/environments' } }));
+  expect(l.status).toBeLessThan(300);
+  const id = String(l.body.id);
+  const u = await api('POST', `/api/v1/projects/${PROJECT}/launches/${id}/uploads?fileName=results.json`, readFileSync(join(FIXTURES, 'playwright/results.json')), 'application/octet-stream');
+  expect(u.status).toBe(202);
+  await expect
+    .poll(async () => (await api('GET', `/api/v1/projects/${PROJECT}/launches/${id}/uploads`)).body.items as { status: string }[] | undefined, { timeout: 60_000 })
+    .toEqual([expect.objectContaining({ status: 'done' })]);
+  expect((await api('POST', `/api/v1/projects/${PROJECT}/launches/${id}/finish`, '{}')).status).toBeLessThan(300);
+
+  const w = new Watcher(page, BASE_URL);
+  await signInWithToken(page, ADMIN_TOKEN);
+  await page.goto(`${P}/launches/${id}`);
+  const box = page.getByTestId('environments');
+  await expect(box.getByTestId('environment-row')).toHaveCount(2);
+  const staging = box.locator('label').filter({ hasText: /^staging · \d+$/ });
+  const n = Number(/(\d+)$/.exec((await staging.textContent()) ?? '')?.[1]);
+  await staging.click();
+  await expect(page).toHaveURL(/env=staging/);
+  await expect(page.getByTestId('stat-total')).toContainText(String(n));
+  await expect(page.getByTestId('explorer').getByText(new RegExp(`^${String(n)} tests`))).toBeVisible();
+
+  await page.getByTestId('explorer-view').click();
+  await page.getByRole('option', { name: 'Custom…', exact: true }).click();
+  await page.getByTestId('explorer-custom-levels').click();
+  await page.getByRole('option', { name: /^tag/ }).click();
+  await page.keyboard.press('Escape');
+  await expect(page).toHaveURL(/by=tag/);
+  const tree = page.getByTestId('explorer-tree');
+  await expect(tree.locator('[data-testid="explorer-group"][aria-level="1"]').first()).toBeVisible();
+
+  await page.getByTestId('explorer-filters').click();
+  const menu = page.getByTestId('explorer-filters-menu');
+  const failing = await api('GET', `/api/v1/projects/${PROJECT}/launches/${id}/facets?env=staging`);
+  const kinds = (failing.body.attachments as { value: string; count: number }[]).filter((a) => a.count > 0);
+  expect(kinds.length).toBeGreaterThan(0);
+  const kind = kinds[0];
+  await menu.getByTestId(`filter-attachment-${kind?.value ?? ''}`).check();
+  await page.keyboard.press('Escape');
+  await expect(page).toHaveURL(new RegExp(`attachment=${kind?.value ?? ''}`));
+  await expect(page.getByTestId('explorer').getByText(new RegExp(`^${String(kind?.count)} of ${String(n)} tests`))).toBeVisible();
+  await page.getByRole('tab', { name: 'Results' }).click();
+  await expect(page.getByTestId('result-row')).toHaveCount(kind?.count ?? -1);
+  w.check();
+});
+

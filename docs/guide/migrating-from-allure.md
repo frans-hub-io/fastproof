@@ -23,7 +23,9 @@ flaky detection and triage live in one place for every branch and every job.
 | One report per job; shards merged by copying directories | One launch per pipeline; every shard uploads into it |
 | Report published as static files (Pages, S3, artefacts) | One URL per launch, with access control per project |
 | Retries shown per report | Retries become attempts of one result; flaky in run and across launches |
-| Suites, Behaviors and Packages trees | The launch opens on a tree grouped by suites, features (epic › feature › story) or packages, down to the tests; the selected test opens beside it, and its link opens the same view |
+| Suites, Behaviors and Packages trees, `groupBy` | The launch opens on a tree grouped by suites, behaviors (epic › feature › story), packages, owner, severity or up to five labels of your choice, down to the tests; the selected test opens beside it, and its link opens the same view (see [Launch explorer](launch-explorer.md)) |
+| Tree filters (status, flaky, retried, new, severity, tags) | The same, plus owner, muted, defect type, attachment kind, duration and error text, each value with its count, applied to the tree and the result list |
+| `environments` matchers and the environment picker | Results carry the environment key of their series; a launch with several shows an environment switcher and per-environment counts |
 | Known issues in `categories.json` or Allure 3 `resolutions` | Triage in the UI: defect types, issue links, mutes with expiry, applied by fingerprint |
 
 ## Steps

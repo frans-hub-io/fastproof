@@ -432,6 +432,10 @@ pub struct TreeNode {
     /// absent while `testCount` is above zero, they are read page by page from `.../tree/tests`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tests: Option<Vec<TreeTest>>,
+    /// On the root of a label grouping: the label names of the levels, without those no
+    /// result has (pass them as `groupBy` to `.../tree/tests`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub levels: Option<Vec<String>>,
 }
 
 /// A result as a leaf of the launch tree.

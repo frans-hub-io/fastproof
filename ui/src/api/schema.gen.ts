@@ -735,6 +735,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{key}/launches/{id}/environments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description The environments the results of a launch ran in (the environment key of their series: the launch environment, and for some formats a project or target per result), with status counts. */
+        get: operations["results_environments"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/launches/{id}/facets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description How many results of a launch (in one environment) each explorer filter value keeps. */
+        get: operations["results_facets"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{key}/launches/{id}/finish": {
         parameters: {
             query?: never;
@@ -761,6 +795,23 @@ export interface paths {
         };
         /** @description Evaluates the project's quality gates for the launch now. `pending` while the launch runs or has unprocessed uploads; `failed` when a rule of an enabled gate that applies to the launch branch does not hold. A rule holds when `actual op value`. */
         get: operations["integrations_gate"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/launches/{id}/labels": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description The label names of the results of a launch with how many results have each and how many distinct values it has: the choices of a custom tree grouping. */
+        get: operations["results_labels"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2441,6 +2492,17 @@ export interface components {
             /** Format: date */
             t: string;
         };
+        /** @description The results of one environment of a launch. */
+        EnvironmentCounts: {
+            counts: components["schemas"]["Counts"];
+            /** @description The environment key of the series; `null` for results without one. */
+            key?: string | null;
+        };
+        /** @description The environments of a launch. */
+        EnvironmentCountsList: {
+            /** @description Largest first, at most 100. */
+            items: components["schemas"]["EnvironmentCounts"][];
+        };
         /** @description The uniform error body (`franshub_http::ErrorBody`), for the documentation. */
         ErrorBody: {
             code: string;
@@ -2750,6 +2812,38 @@ export interface components {
             name: string;
             value: string;
         };
+        /** @description The values of one label in a launch. */
+        LabelFacet: {
+            /** @description More values exist than listed. */
+            more: boolean;
+            name: string;
+            /**
+             * Format: int64
+             * @description Results without the label.
+             */
+            none: number;
+            /** @description Most frequent first, at most [`MAX_FACET_VALUES`]. */
+            values: components["schemas"]["ValueCount"][];
+        };
+        /** @description A label name of a launch. */
+        LabelName: {
+            /**
+             * Format: int64
+             * @description Results with the label.
+             */
+            count: number;
+            name: string;
+            /**
+             * Format: int64
+             * @description Distinct values.
+             */
+            values: number;
+        };
+        /** @description Label names of a launch. */
+        LabelNameList: {
+            /** @description Most used first, at most 200. */
+            items: components["schemas"]["LabelName"][];
+        };
         /** @description A label of a result. */
         LabelView: {
             name: string;
@@ -2845,6 +2939,35 @@ export interface components {
             values?: {
                 [key: string]: string;
             };
+        };
+        /** @description Counts per value of the explorer filters, over the launch (in the environment asked for). */
+        LaunchFacets: {
+            /** @description `trace`, `video` and `screenshot`. */
+            attachments: components["schemas"]["ValueCount"][];
+            /** Format: int64 */
+            automated: number;
+            /**
+             * Format: uuid
+             * @description The launch compared with: the previous finished launch on the same branch and
+             *     environment (absent without one; then every failure is new).
+             */
+            baselineLaunchId?: string | null;
+            counts: components["schemas"]["Counts"];
+            /** @description Defect type ids (`none`: results without a defect). */
+            defects: components["schemas"]["ValueCount"][];
+            /** @description `severity`, `owner` and `tag`. */
+            labels: components["schemas"]["LabelFacet"][];
+            /** Format: int64 */
+            manual: number;
+            /** Format: int64 */
+            maxDurationMs?: number | null;
+            /**
+             * Format: int64
+             * @description Failed or broken, not muted results whose series did not fail in the baseline launch.
+             */
+            newFailures: number;
+            /** Format: int64 */
+            retried: number;
         };
         /** @description Manual progress of a launch (present when the launch has a manual run). */
         LaunchManual: {
@@ -4553,6 +4676,11 @@ export interface components {
              * @description Sum of the durations of the results under the node.
              */
             durationMs?: number | null;
+            /**
+             * @description On the root of a label grouping: the label names of the levels, without those no
+             *     result has (pass them as `groupBy` to `.../tree/tests`).
+             */
+            levels?: string[] | null;
             name: string;
             path: string[];
             resultIds?: string[] | null;
@@ -4683,6 +4811,12 @@ export interface components {
         /** @description Uploads of a launch. */
         UploadList: {
             items: components["schemas"]["Upload"][];
+        };
+        /** @description A value and how many results have it. */
+        ValueCount: {
+            /** Format: int64 */
+            count: number;
+            value: string;
         };
         /** @description Merge request comments and commit statuses. */
         VcsSettings: {
@@ -7785,6 +7919,93 @@ export interface operations {
             };
         };
     };
+    results_environments: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnvironmentCountsList"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    results_facets: {
+        parameters: {
+            query?: {
+                /** @description An environment key; `(none)` for results without one. */
+                env?: string;
+            };
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LaunchFacets"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     launches_finish: {
         parameters: {
             query?: never;
@@ -7874,6 +8095,55 @@ export interface operations {
             };
             /** @description the gate settings are invalid */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    results_labels: {
+        parameters: {
+            query?: {
+                /** @description An environment key; `(none)` for results without one. */
+                env?: string;
+            };
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LabelNameList"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8282,6 +8552,31 @@ export interface operations {
                 source?: components["schemas"]["ResultSource"];
                 before?: string;
                 limit?: number;
+                /** @description Substring of the error message. */
+                message?: string;
+                /** @description `true`: only results with more than one attempt. */
+                retried?: string;
+                /** @description `true` or `false`. */
+                muted?: string;
+                /**
+                 * @description `true`: failed or broken, not muted results whose series did not fail in the previous
+                 *     finished launch on the same branch and environment.
+                 */
+                newFailures?: string;
+                /** @description Severity label values; `(none)` matches results without the label. */
+                severity?: string;
+                /** @description Owner label values; `(none)` matches results without the label. */
+                owner?: string;
+                /** @description Tag label values; `(none)` matches results without the label. */
+                tag?: string;
+                minDurationMs?: string;
+                maxDurationMs?: string;
+                /** @description Defect type ids; `none` matches results without a defect. */
+                defect?: string;
+                /** @description `trace`, `video` or `screenshot`. */
+                attachment?: string;
+                /** @description An environment key of the results' series; `(none)` matches results without one. */
+                env?: string;
             };
             header?: never;
             path: {
@@ -8565,7 +8860,11 @@ export interface operations {
     results_tree: {
         parameters: {
             query?: {
-                /** @description `suite` (default), `feature` or `package`. */
+                /**
+                 * @description `suite` (default), `feature` or `package`, or up to five label names separated by
+                 *     commas (`epic,feature,story`, `owner`); `label:<name>` names a label that is also a
+                 *     preset (`label:feature`).
+                 */
                 groupBy?: string;
                 /**
                  * @description Leaves (`tests`, `testCount`) instead of `resultIds`; groups that do not fit the
@@ -8582,6 +8881,31 @@ export interface operations {
                 source?: components["schemas"]["ResultSource"];
                 /** @description A result whose group is inlined first (to reveal a deep-linked result). */
                 reveal?: string;
+                /** @description Substring of the error message. */
+                message?: string;
+                /** @description `true`: only results with more than one attempt. */
+                retried?: string;
+                /** @description `true` or `false`. */
+                muted?: string;
+                /**
+                 * @description `true`: failed or broken, not muted results whose series did not fail in the previous
+                 *     finished launch on the same branch and environment.
+                 */
+                newFailures?: string;
+                /** @description Severity label values; `(none)` matches results without the label. */
+                severity?: string;
+                /** @description Owner label values; `(none)` matches results without the label. */
+                owner?: string;
+                /** @description Tag label values; `(none)` matches results without the label. */
+                tag?: string;
+                minDurationMs?: string;
+                maxDurationMs?: string;
+                /** @description Defect type ids; `none` matches results without a defect. */
+                defect?: string;
+                /** @description `trace`, `video` or `screenshot`. */
+                attachment?: string;
+                /** @description An environment key of the results' series; `(none)` matches results without one. */
+                env?: string;
             };
             header?: never;
             path: {
@@ -8629,7 +8953,7 @@ export interface operations {
     results_tree_tests: {
         parameters: {
             query: {
-                /** @description `suite` (default), `feature` or `package`. */
+                /** @description As in the tree. */
                 groupBy?: string;
                 /** @description The group: its `path` as a JSON array of names (`[]` for the root). */
                 path: string;
@@ -8640,6 +8964,31 @@ export interface operations {
                 source?: components["schemas"]["ResultSource"];
                 before?: string;
                 limit?: number;
+                /** @description Substring of the error message. */
+                message?: string;
+                /** @description `true`: only results with more than one attempt. */
+                retried?: string;
+                /** @description `true` or `false`. */
+                muted?: string;
+                /**
+                 * @description `true`: failed or broken, not muted results whose series did not fail in the previous
+                 *     finished launch on the same branch and environment.
+                 */
+                newFailures?: string;
+                /** @description Severity label values; `(none)` matches results without the label. */
+                severity?: string;
+                /** @description Owner label values; `(none)` matches results without the label. */
+                owner?: string;
+                /** @description Tag label values; `(none)` matches results without the label. */
+                tag?: string;
+                minDurationMs?: string;
+                maxDurationMs?: string;
+                /** @description Defect type ids; `none` matches results without a defect. */
+                defect?: string;
+                /** @description `trace`, `video` or `screenshot`. */
+                attachment?: string;
+                /** @description An environment key of the results' series; `(none)` matches results without one. */
+                env?: string;
             };
             header?: never;
             path: {

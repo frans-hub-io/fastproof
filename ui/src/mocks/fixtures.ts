@@ -939,8 +939,42 @@ export function uploadsOf(def: LaunchDef): Upload[] {
   return list;
 }
 
+/** The label names of a label grouping (`epic,feature`, `label:feature`), or null for a preset. */
+export function labelLevels(groupBy: TreeGroupBy): string[] | null {
+  if (groupBy === 'suite' || groupBy === 'feature' || groupBy === 'package') return null;
+  return groupBy.split(',').map((n) => n.trim().replace(/^label:/, ''));
+}
+
+/** The group path of a label grouping: `''` where a level's label is missing, trailing ones left out. */
+export function labelPath(names: readonly string[], labels: readonly { name: string; value: string }[]): string[] {
+  const values = names.map((n) => labels.find((l) => l.name === n)?.value || null);
+  const last = values.findLastIndex((v) => v !== null);
+  if (last < 0) return [''];
+  return values.slice(0, last + 1).map((v) => v ?? '');
+}
+
 function groupPath(r: ResultSummary, def: TestDef, groupBy: TreeGroupBy): string[] {
+  const levels = labelLevels(groupBy);
+  if (levels) return labelPath(levels, r.labels);
   return groupBy === 'suite' ? r.suitePath : groupBy === 'feature' ? [def.feature, def.story] : def.pkg.split('.');
+}
+
+/** The environment of a result: the rich launch ran part of its UI tests in a second browser. */
+export function resultEnv(r: ResultSummary): string | null {
+  const stored = resultsById.get(r.id);
+  const launch = launches.get(r.launchId)?.launch;
+  if (stored && r.launchId === RICH_LAUNCH && stored.def.kind === 'ui' && stored.def.index % 3 === 0) return 'staging-firefox';
+  return launch?.environment?.key ?? null;
+}
+
+/** The attachment kinds of a result, as the explorer filter names them. */
+export function resultKinds(r: ResultSummary): string[] {
+  const def = resultsById.get(r.id)?.def;
+  if (!def || def.kind !== 'ui') return [];
+  const out: string[] = [];
+  if (r.status === 'failed' || r.status === 'broken') out.push('screenshot', 'trace');
+  if (def.index % 7 === 0) out.push('video');
+  return out;
 }
 
 function leafOf(r: ResultSummary): TreeTest {
@@ -969,6 +1003,12 @@ export interface TreeOptions {
 export function treeOf(launchId: string, groupBy: TreeGroupBy, o: TreeOptions = {}): TreeNode {
   const results = o.results ?? launchResults(launchId);
   const root: TreeNode = { name: 'root', path: [], counts: emptyCounts(), children: [] };
+  const asked = labelLevels(groupBy);
+  if (asked) {
+    const levels = asked.filter((n) => results.some((r) => r.labels.some((l) => l.name === n && l.value)));
+    groupBy = levels.join(',');
+    root.levels = levels;
+  }
   const byId = new Map<string, StoredResult>();
   for (const r of resultsByLaunch.get(launchId) ?? []) byId.set(r.summary.id, r);
   const direct = new Map<TreeNode, ResultSummary[]>();

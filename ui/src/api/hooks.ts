@@ -6,8 +6,12 @@ import type {
   AuditPage,
   CreatedToken,
   CreateToken,
+  ExplorerParams,
   ItemList,
+  LabelName,
   Launch,
+  EnvironmentCounts,
+  LaunchFacets,
   LaunchFilters,
   Page,
   Project,
@@ -106,8 +110,27 @@ export function useUploads(key: string, id: string) {
   });
 }
 
+/** The query parameters of the explorer filters. */
+export function explorerQuery(f: ExplorerParams) {
+  return {
+    message: f.message,
+    retried: f.retried ? 'true' : undefined,
+    muted: f.muted === undefined ? undefined : String(f.muted),
+    newFailures: f.newFailures ? 'true' : undefined,
+    severity: f.severity,
+    owner: f.owner,
+    tag: f.tag,
+    minDurationMs: f.minDurationMs,
+    maxDurationMs: f.maxDurationMs,
+    defect: f.defect,
+    attachment: f.attachment,
+    env: f.env,
+  };
+}
+
 export function resultQuery(filters: ResultFilters) {
   return {
+    ...explorerQuery(filters),
     status: filters.status,
     q: filters.q,
     suite: filters.suite,
@@ -139,7 +162,38 @@ export function useTree(key: string, id: string, groupBy: TreeGroupBy) {
 }
 
 function treeFilterQuery(f: TreeFilters) {
-  return { groupBy: f.groupBy, status: f.status, q: f.q, flaky: f.flaky ? 'true' : undefined };
+  return { ...explorerQuery(f), groupBy: f.groupBy, status: f.status, q: f.q, flaky: f.flaky ? 'true' : undefined, source: f.source };
+}
+
+/** The label names of a launch (choices of a custom grouping). */
+export function useLaunchLabels(key: string, id: string, env: string | undefined, enabled = true) {
+  return useQuery({
+    queryKey: [...qk.tree(key, id), 'labels', env ?? ''] as const,
+    queryFn: () => request<ItemList<LabelName>>(withQuery(`${projectPath(key)}/launches/${encodeURIComponent(id)}/labels`, { env })).then((r) => r.items),
+    enabled: !!id && enabled,
+    staleTime: 60_000,
+  });
+}
+
+/** How many results each explorer filter value keeps. */
+export function useLaunchFacets(key: string, id: string, env: string | undefined, running: boolean, enabled = true) {
+  return useQuery({
+    queryKey: [...qk.tree(key, id), 'facets', env ?? ''] as const,
+    queryFn: () => request<LaunchFacets>(withQuery(`${projectPath(key)}/launches/${encodeURIComponent(id)}/facets`, { env })),
+    enabled: !!id && enabled,
+    placeholderData: keepPreviousData,
+    refetchInterval: running ? 30_000 : false,
+  });
+}
+
+/** The environments the results of a launch ran in, with counts. */
+export function useLaunchEnvironments(key: string, id: string, running: boolean) {
+  return useQuery({
+    queryKey: [...qk.tree(key, id), 'environments'] as const,
+    queryFn: () => request<ItemList<EnvironmentCounts>>(`${projectPath(key)}/launches/${encodeURIComponent(id)}/environments`).then((r) => r.items),
+    enabled: !!id,
+    refetchInterval: running ? 15_000 : false,
+  });
 }
 
 /** The launch tree with its tests as leaves (groups that do not fit are read with `fetchTreeTests`). */

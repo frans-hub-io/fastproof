@@ -18,7 +18,7 @@ tests:
     asserts:
       - equal:
           path: spec.template.spec.containers[0].image
-          value: registry.example.com/mirror/franshub/fastproof:0.1.0-dev1@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          value: registry.example.com/mirror/franshub/fastproof:0.1.0-dev2@sha256:0000000000000000000000000000000000000000000000000000000000000000
       - equal:
           path: spec.template.spec.imagePullSecrets[0].name
           value: mirror-pull

@@ -1,10 +1,10 @@
-import { Button, Drawer, Group, Select, Stack, Text, Textarea, TextInput } from '@mantine/core';
+import { Anchor, Button, Card, CopyButton, Drawer, Group, Select, Stack, Text, Textarea, TextInput } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
-import { IconExternalLink } from '@tabler/icons-react';
+import { IconCheck, IconCopy, IconExternalLink } from '@tabler/icons-react';
 import { useMemo, useState } from 'react';
 import { errorMessage } from '../../api/client';
 import { useDefectTypes, useSettings } from '../../api/stageC';
-import { fetchNewIssueUrl, useRunItemDefect, type RunItem } from '../../api/tm';
+import { fetchNewIssue, useRunItemDefect, type RunItem } from '../../api/tm';
 import { GROUP_LABEL } from '../../lib/defects';
 import { DEFECT_GROUPS } from '../../api/types-next';
 import { caseLabel } from '../../lib/tm/filters';
@@ -30,6 +30,7 @@ export function DefectDrawer({ project, item, local, opened, onClose, beforeIssu
   const [comment, setComment] = useState(() => failingText(item, local));
   const [issue, setIssue] = useState('');
   const [opening, setOpening] = useState(false);
+  const [prefill, setPrefill] = useState<{ url: string; text: string } | null>(null);
   const tracker = settings.data?.issueTrackers[0];
   const grouped = useMemo(
     () => DEFECT_GROUPS.map((g) => ({ group: GROUP_LABEL[g], items: (types.data ?? []).filter((t) => t.group === g).map((t) => ({ value: t.id, label: t.name })) })).filter((g) => g.items.length > 0),
@@ -42,8 +43,10 @@ export function DefectDrawer({ project, item, local, opened, onClose, beforeIssu
     setOpening(true);
     try {
       await beforeIssue?.();
-      const url = await fetchNewIssueUrl(project, item.id, tracker?.type);
-      if (/^https?:\/\//i.test(url)) window.open(url, '_blank', 'noopener,noreferrer');
+      const r = await fetchNewIssue(project, item.id, tracker?.type);
+      const url = /^https?:\/\//i.test(r.url) ? r.url : '';
+      if (!r.prefilled && r.prefill) setPrefill({ url, text: `${r.prefill.title}\n\n${r.prefill.description}` });
+      else if (url) window.open(url, '_blank', 'noopener,noreferrer');
     } catch (e) {
       notifications.show({ color: 'red', title: 'No issue link', message: errorMessage(e) });
     } finally {
@@ -84,13 +87,35 @@ export function DefectDrawer({ project, item, local, opened, onClose, beforeIssu
         <Button variant="light" leftSection={<IconExternalLink size={14} />} onClick={() => void openNewIssue()} loading={opening} disabled={!tracker} data-testid="defect-new-issue">
           Open a new issue{tracker ? ` in ${tracker.type === 'gitlab' ? 'GitLab' : tracker.type === 'github' ? 'GitHub' : 'Jira'}` : ''}
         </Button>
+        {prefill && (
+          <Card withBorder radius="sm" padding="xs" data-testid="defect-prefill">
+            <Stack gap={6}>
+              <Text size="xs">The tracker's create page cannot be filled in by a link (set the Jira project and issue type ids in the project settings for that). Copy the text and paste it into the new issue.</Text>
+              <Textarea aria-label="Issue text" value={prefill.text} readOnly autosize minRows={3} maxRows={8} classNames={{ input: 'fp-mono' }} />
+              <Group gap="xs">
+                <CopyButton value={prefill.text}>
+                  {({ copied, copy }) => (
+                    <Button size="xs" variant="light" leftSection={copied ? <IconCheck size={14} /> : <IconCopy size={14} />} onClick={copy} data-testid="defect-copy-text">
+                      {copied ? 'Copied' : 'Copy issue text'}
+                    </Button>
+                  )}
+                </CopyButton>
+                {prefill.url && (
+                  <Anchor href={prefill.url} target="_blank" rel="noopener noreferrer" size="sm" data-testid="defect-create-link">
+                    Open the create page
+                  </Anchor>
+                )}
+              </Group>
+            </Stack>
+          </Card>
+        )}
         {!final && (
           <Text size="xs" c="dimmed" data-testid="defect-finish-note">
             A defect belongs to the case's result, so saving finishes the case as Failed first.
           </Text>
         )}
         <Text size="xs" c="dimmed">
-          {tracker ? '' : 'No issue tracker is configured (Project settings → Integrations). '}The new issue opens in the tracker with the step, the expected and the actual result and a link back here; paste its key above.
+          {tracker ? '' : 'No issue tracker is configured (Project settings → Integrations). '}The new issue opens in the tracker with the step, the expected and the actual result and a link back here (FastProof creates nothing in the tracker); paste its key above.
         </Text>
         <Group justify="flex-end">
           <Button variant="default" onClick={onClose}>

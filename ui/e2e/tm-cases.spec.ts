@@ -69,16 +69,17 @@ test('412: a code sync during editing shows the banner and the conflict dialog',
   await page.getByTestId('case-edit').click();
   await page.getByTestId('case-name-input').fill('Pay with a new card (edited)');
   await page.evaluate((num) => (window as unknown as { __fastproofMockTm: { touchCase: (n: number) => number } }).__fastproofMockTm.touchCase(num), n);
-  await expect(page.getByTestId('case-changed-banner')).toContainText('the code sync');
+  await expect(page.getByTestId('case-changed-banner')).toContainText('saved by ci through the code sync');
   await page.getByTestId('case-save').click();
   const dialog = page.getByTestId('conflict-dialog');
   await expect(dialog).toBeVisible();
   await expect(dialog).toContainText('saved by ci through the code sync');
   await expect(dialog.getByTestId('diff-field').filter({ hasText: 'Name' })).toContainText('Pay with a new card (edited)');
-  await expect(dialog.getByTestId('diff-field').filter({ hasText: 'Description' })).toContainText('Updated by the code sync');
+  await expect(dialog.getByTestId('diff-field').filter({ hasText: 'Description' })).toHaveCount(0);
   await page.getByTestId('conflict-mine').click();
   await expect(page.getByText(`TC-${String(n)} is now version`)).toBeVisible();
   await expect(page.getByTestId('case-title')).toContainText('Pay with a new card (edited)');
+  await expect(page.getByText('Updated by the code sync.').first()).toBeVisible();
   await expect(page.getByTestId('conflict-dialog')).toHaveCount(0);
 });
 

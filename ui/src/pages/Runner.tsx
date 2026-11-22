@@ -18,6 +18,7 @@ import { effectiveStatuses, flattenSteps, RUN_STATUS_LABEL, suggestedStatus, unt
 import { CaseHtml } from './cases/CaseHtml';
 import { LiveRegion, RunStatusBadge } from './cases/common';
 import { DefectDrawer } from './runner/DefectDrawer';
+import { Executions } from './runner/Executions';
 import { HelpModal } from './runner/HelpModal';
 import { runnerAction } from './runner/keymap';
 import { RunQueue, type QueueFilter } from './runner/RunQueue';
@@ -374,15 +375,24 @@ export default function RunnerPage() {
   const rerun = async () => {
     if (!item) return;
     try {
-      const r = await rerunRunItem(key, item.id);
+      flushText(item);
+      await saver.drain();
+      const v = await rerunRunItem(key, item.id, etagOf(revRef.current.get(item.id) ?? item.revision));
+      const r = v.value;
       localRef.current.set(item.id, new Map());
       publish();
       revRef.current.set(item.id, r.revision);
       setOverrides((o) => new Map(o).set(item.id, r.status));
-      qc.setQueryData(tmk.runItem(key, item.id), { value: r, etag: etagOf(r.revision) });
+      qc.setQueryData(tmk.runItem(key, item.id), v);
+      void qc.invalidateQueries({ queryKey: [...tmk.runItem(key, item.id), 'executions'] });
       setStepIdx(0);
       setAnnounce(`${caseLabel(item.caseNumber)}: run ${String(r.executionNo)} started`);
     } catch (e) {
+      if (isConflict(e)) {
+        void itemQ.refetch();
+        notifications.show({ color: 'orange', title: 'Not restarted', message: 'The case changed meanwhile and was reloaded; check it and press Run again.' });
+        return;
+      }
       notifications.show({ color: 'red', title: 'Not restarted', message: errorMessage(e) });
     }
   };
@@ -588,10 +598,12 @@ export default function RunnerPage() {
                         <Group justify="space-between" gap="xs" wrap="wrap">
                           <Group gap={6}>
                             <Text size="sm">Suggested:</Text>
-                            <RunStatusBadge status={untested.length && skipUntested ? suggestedStatus(item.steps, statusMap, true) : suggested} />
+                            <span data-testid="suggested-status" data-status={suggested}>
+                              <RunStatusBadge status={suggested} />
+                            </span>
                             {untested.length > 0 && (
-                              <Text size="xs" c="dimmed">
-                                {untested.length} untested
+                              <Text size="xs" c="dimmed" data-testid="suggested-untested">
+                                {untested.length} untested{skipUntested && FINAL.includes(suggestedStatus(item.steps, statusMap, true)) ? ` · finishing marks them skipped: ${RUN_STATUS_LABEL[suggestedStatus(item.steps, statusMap, true)].toLowerCase()}` : ''}
                               </Text>
                             )}
                           </Group>
@@ -617,6 +629,7 @@ export default function RunnerPage() {
                             <Button
                               key={s}
                               size="xs"
+                              h={mobile ? 44 : undefined}
                               variant={s === suggested ? 'filled' : 'light'}
                               color={s === 'passed' ? 'green' : s === 'failed' ? 'red' : s === 'blocked' ? 'orange' : 'gray'}
                               onClick={() => finish(s, untested.length > 0 && skipUntested)}
@@ -632,6 +645,7 @@ export default function RunnerPage() {
                         </Group>
                       </Stack>
                     </Card>
+                    <Executions project={key} itemId={item.id} executionNo={item.executionNo} />
                     {mobile && cur && (
                       <div className="fp-tm-sticky-bar" data-testid="sticky-bar">
                         <StatusButtons path={cur.path} current={local.get(cur.path)?.status ?? 'untested'} readOnly={readOnly} onSet={(s) => setStep(cur.path, s)} size="lg" />

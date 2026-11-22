@@ -1,15 +1,36 @@
-import { ActionIcon, Badge, Button, Group, Modal, Radio, SegmentedControl, Stack, Text, TextInput, Tooltip } from '@mantine/core';
+import { ActionIcon, Badge, Button, Group, Modal, Radio, SegmentedControl, Select, Stack, Text, TextInput, Tooltip } from '@mantine/core';
 import { useCan } from '@franshub/ui-shell';
 import { notifications } from '@mantine/notifications';
-import { IconFolder, IconFolderPlus, IconPencil, IconTrash } from '@tabler/icons-react';
+import { IconArrowDown, IconArrowUp, IconFolder, IconFolderPlus, IconFolderSymlink, IconPencil, IconTrash } from '@tabler/icons-react';
 import { useQueries } from '@tanstack/react-query';
 import { useMemo, useState, type DragEvent } from 'react';
 import { errorMessage, projectPath, request, withQuery } from '../../api/client';
 import { tmk, useCaseFolders, useDeleteFolder, useSaveFolder, type CaseFolder, type CaseTree as CaseTreeBody, type CaseTreeNode } from '../../api/tm';
 import type { TreeMode } from '../../lib/tm/filters';
+import { folderPathLabel } from '../../lib/tm/ui';
 import { TreeView, type TreeRow } from './TreeView';
 
 export const DRAG_TYPE = 'application/x-fastproof-cases';
+export const FOLDER_DRAG_TYPE = 'application/x-fastproof-folder';
+
+function siblingsOf(folders: readonly CaseFolder[], parentId: string | null): CaseFolder[] {
+  return folders.filter((f) => (f.parentId ?? null) === parentId).sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
+}
+
+/** The folder and every folder below it. */
+function subtree(folders: readonly CaseFolder[], id: string): Set<string> {
+  const out = new Set([id]);
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const f of folders) {
+      if (f.parentId && out.has(f.parentId) && !out.has(f.id)) {
+        out.add(f.id);
+        grew = true;
+      }
+    }
+  }
+  return out;
+}
 
 function countsBadge(total: number) {
   return (
@@ -33,7 +54,7 @@ function buildFolderRows(folders: readonly CaseFolder[], expanded: ReadonlySet<s
     list.forEach((f, i) => {
       const has = (children.get(f.id)?.length ?? 0) > 0;
       const open = expanded.has(f.id);
-      rows.push({ id: f.id, level, text: f.name, hasChildren: has, expanded: open, setSize: list.length, posInSet: i + 1, extra: countsBadge(f.counts.total), icon: <IconFolder size={14} aria-hidden style={{ flex: 'none' }} />, testId: 'folder-row' });
+      rows.push({ id: f.id, level, text: f.name, hasChildren: has, expanded: open, setSize: list.length, posInSet: i + 1, extra: countsBadge(f.counts.total), icon: <IconFolder size={14} aria-hidden style={{ flex: 'none' }} />, testId: 'folder-row', draggable: true });
       if (has && open) walk(f.id, level + 1);
     });
   };
@@ -71,6 +92,51 @@ function FolderDialog({ project, folder, parent, onClose }: { project: string; f
             </Button>
             <Button type="submit" loading={save.isPending} disabled={!name.trim()} data-testid="folder-save">
               Save
+            </Button>
+          </Group>
+        </Stack>
+      </form>
+    </Modal>
+  );
+}
+
+function MoveFolderDialog({ project, folder, folders, onClose }: { project: string; folder: CaseFolder; folders: readonly CaseFolder[]; onClose: () => void }) {
+  const save = useSaveFolder(project);
+  const [target, setTarget] = useState<string>(folder.parentId ?? 'root');
+  const data = useMemo(() => {
+    const own = subtree(folders, folder.id);
+    const list = folders.filter((f) => !own.has(f.id)).map((f) => ({ value: f.id, label: folderPathLabel(folders, f.id) }));
+    list.sort((a, b) => a.label.localeCompare(b.label));
+    return [{ value: 'root', label: 'Top level' }, ...list];
+  }, [folders, folder.id]);
+  const parentId = target === 'root' ? null : target;
+  const unchanged = parentId === (folder.parentId ?? null);
+  return (
+    <Modal opened onClose={onClose} title={`Move ${folder.name}`} attributes={{ content: { 'data-testid': 'folder-move-dialog' } }}>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (unchanged) return;
+          save.mutate(
+            { id: folder.id, body: { parentId } },
+            {
+              onSuccess: () => {
+                notifications.show({ color: 'green', title: 'Folder moved', message: `${folder.name} → ${parentId ? folderPathLabel(folders, parentId) : 'top level'}` });
+                onClose();
+              },
+              onError: (err) => notifications.show({ color: 'red', title: 'Folder not moved', message: errorMessage(err) }),
+            },
+          );
+        }}
+      >
+        <Stack gap="sm">
+          <Select label="Move into" description="The folder moves with its subfolders and cases" data={data} value={target} onChange={(v) => setTarget(v ?? 'root')} searchable allowDeselect={false} comboboxProps={{ withinPortal: true }} data-autofocus data-testid="folder-move-target" />
+          <Group justify="flex-end">
+            <Button variant="default" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button type="submit" loading={save.isPending} disabled={unchanged} data-testid="folder-move-confirm">
+              Move
             </Button>
           </Group>
         </Stack>
@@ -136,7 +202,9 @@ export function CaseTree({ project, selection, onSelect, onDropCases }: { projec
   const folders = useCaseFolders(project);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [active, setActive] = useState<string | null>(selection.id);
-  const [dialog, setDialog] = useState<null | { kind: 'new' | 'rename' | 'delete' }>(null);
+  const [dialog, setDialog] = useState<null | { kind: 'new' | 'rename' | 'delete' | 'move' }>(null);
+  const saveFolder = useSaveFolder(project);
+  const [reordering, setReordering] = useState(false);
 
   const byId = useMemo(() => new Map((folders.data ?? []).map((f) => [f.id, f] as const)), [folders.data]);
 
@@ -186,8 +254,50 @@ export function CaseTree({ project, selection, onSelect, onDropCases }: { projec
     });
 
   const activeFolder = mode === 'folder' && active ? (byId.get(active) ?? null) : null;
+  const activeSiblings = activeFolder ? siblingsOf(folders.data ?? [], activeFolder.parentId ?? null) : [];
+  const activeIndex = activeFolder ? activeSiblings.findIndex((f) => f.id === activeFolder.id) : -1;
+
+  /** Moves the active folder one place among its siblings, renumbering only the positions that change. */
+  const reorder = async (dir: -1 | 1) => {
+    if (!activeFolder) return;
+    const order = [...activeSiblings];
+    const j = activeIndex + dir;
+    const other = order[j];
+    if (activeIndex < 0 || !other) return;
+    order[activeIndex] = other;
+    order[j] = activeFolder;
+    setReordering(true);
+    try {
+      for (const [pos, f] of order.entries()) if (f.position !== pos) await saveFolder.mutateAsync({ id: f.id, body: { position: pos } });
+    } catch (e) {
+      notifications.show({ color: 'red', title: 'Order not saved', message: errorMessage(e) });
+    } finally {
+      setReordering(false);
+    }
+  };
+
+  const moveFolder = (id: string, parentId: string | null) => {
+    const f = byId.get(id);
+    if (!f || (f.parentId ?? null) === parentId) return;
+    if (parentId && subtree(folders.data ?? [], id).has(parentId)) {
+      notifications.show({ color: 'red', title: 'Folder not moved', message: 'A folder cannot move into itself or one of its subfolders.' });
+      return;
+    }
+    saveFolder.mutate(
+      { id, body: { parentId } },
+      {
+        onSuccess: () => notifications.show({ color: 'green', title: 'Folder moved', message: `${f.name} → ${parentId ? folderPathLabel(folders.data, parentId) : 'top level'}` }),
+        onError: (e) => notifications.show({ color: 'red', title: 'Folder not moved', message: errorMessage(e) }),
+      },
+    );
+  };
 
   const onDrop = (id: string, e: DragEvent<HTMLDivElement>) => {
+    const folderId = e.dataTransfer.getData(FOLDER_DRAG_TYPE);
+    if (folderId) {
+      if (folderId !== id) moveFolder(folderId, id);
+      return;
+    }
     const raw = e.dataTransfer.getData(DRAG_TYPE);
     try {
       const numbers = JSON.parse(raw) as unknown;
@@ -227,17 +337,32 @@ export function CaseTree({ project, selection, onSelect, onDropCases }: { projec
         {mode === 'folder' && canWrite && (
           <Group gap={2} wrap="nowrap">
             <Tooltip label={activeFolder ? `New folder in ${activeFolder.name}` : 'New folder'}>
-              <ActionIcon variant="subtle" size="sm" aria-label={activeFolder ? `New folder in ${activeFolder.name}` : 'New folder'} onClick={() => setDialog({ kind: 'new' })} data-testid="folder-new">
+              <ActionIcon variant="subtle" size="md" aria-label={activeFolder ? `New folder in ${activeFolder.name}` : 'New folder'} onClick={() => setDialog({ kind: 'new' })} data-testid="folder-new">
                 <IconFolderPlus size={16} />
               </ActionIcon>
             </Tooltip>
             <Tooltip label="Rename folder">
-              <ActionIcon variant="subtle" size="sm" aria-label="Rename folder" disabled={!activeFolder} onClick={() => setDialog({ kind: 'rename' })} data-testid="folder-rename">
+              <ActionIcon variant="subtle" size="md" aria-label="Rename folder" disabled={!activeFolder} onClick={() => setDialog({ kind: 'rename' })} data-testid="folder-rename">
                 <IconPencil size={16} />
               </ActionIcon>
             </Tooltip>
+            <Tooltip label="Move folder…">
+              <ActionIcon variant="subtle" size="md" aria-label="Move folder" disabled={!activeFolder} onClick={() => setDialog({ kind: 'move' })} data-testid="folder-move">
+                <IconFolderSymlink size={16} />
+              </ActionIcon>
+            </Tooltip>
+            <Tooltip label="Move folder up">
+              <ActionIcon variant="subtle" size="md" aria-label="Move folder up" disabled={!activeFolder || activeIndex <= 0 || reordering} onClick={() => void reorder(-1)} data-testid="folder-up">
+                <IconArrowUp size={16} />
+              </ActionIcon>
+            </Tooltip>
+            <Tooltip label="Move folder down">
+              <ActionIcon variant="subtle" size="md" aria-label="Move folder down" disabled={!activeFolder || activeIndex < 0 || activeIndex >= activeSiblings.length - 1 || reordering} onClick={() => void reorder(1)} data-testid="folder-down">
+                <IconArrowDown size={16} />
+              </ActionIcon>
+            </Tooltip>
             <Tooltip label="Delete folder">
-              <ActionIcon variant="subtle" size="sm" color="red" aria-label="Delete folder" disabled={!activeFolder} onClick={() => setDialog({ kind: 'delete' })} data-testid="folder-delete">
+              <ActionIcon variant="subtle" size="md" color="red" aria-label="Delete folder" disabled={!activeFolder} onClick={() => setDialog({ kind: 'delete' })} data-testid="folder-delete">
                 <IconTrash size={16} />
               </ActionIcon>
             </Tooltip>
@@ -253,7 +378,15 @@ export function CaseTree({ project, selection, onSelect, onDropCases }: { projec
         onToggle={toggle}
         onActivate={(id) => onSelect({ mode, id })}
         onDropOn={mode === 'folder' && canWrite ? onDrop : undefined}
-        acceptsDrop={(e) => e.dataTransfer.types.includes(DRAG_TYPE)}
+        onDragStartRow={
+          mode === 'folder' && canWrite
+            ? (id, e) => {
+                e.dataTransfer.setData(FOLDER_DRAG_TYPE, id);
+                e.dataTransfer.effectAllowed = 'move';
+              }
+            : undefined
+        }
+        acceptsDrop={(e) => e.dataTransfer.types.includes(DRAG_TYPE) || e.dataTransfer.types.includes(FOLDER_DRAG_TYPE)}
         testId="case-tree-view"
         empty={
           <Text size="sm" c="dimmed" p="xs">
@@ -262,6 +395,7 @@ export function CaseTree({ project, selection, onSelect, onDropCases }: { projec
         }
       />
       {dialog?.kind === 'new' && <FolderDialog project={project} folder={null} parent={activeFolder} onClose={() => setDialog(null)} />}
+      {dialog?.kind === 'move' && activeFolder && <MoveFolderDialog project={project} folder={activeFolder} folders={folders.data ?? []} onClose={() => setDialog(null)} />}
       {dialog?.kind === 'rename' && activeFolder && <FolderDialog project={project} folder={activeFolder} parent={null} onClose={() => setDialog(null)} />}
       {dialog?.kind === 'delete' && activeFolder && (
         <DeleteFolderDialog

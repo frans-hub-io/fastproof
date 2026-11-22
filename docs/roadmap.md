@@ -17,7 +17,8 @@ in order of the stages, without dates:
 **In the next release:** [test cases](guide/test-management.md) next to the results they produce, manual and
 automated tests in one case kept in sync with the code, [test plans and manual runs](guide/manual-runs.md)
 combined with CI in one launch, and [imports](guide/importing-test-cases.md) from TestRail, Qase and Allure
-TestOps.
+TestOps (CSV formats built from the vendors' documented columns; the TestOps API import is a beta). Quick issue
+links from manual runs open a prefilled form in the tracker; FastProof does not create the issue itself yet.
 
 After that:
 

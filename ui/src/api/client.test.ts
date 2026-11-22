@@ -61,3 +61,12 @@ describe('urls', () => {
     expect(normalizeKind('weird')).toBe('other');
   });
 });
+
+describe('messages for fix-wave error codes', () => {
+  it('explain ai_self_review, export_busy and launch_finished in plain words', () => {
+    expect(errorMessage(new ApiError(403, { code: 'ai_self_review', message: 'x', details: { required: 'cases:write' } }))).toMatch(/needs a second person/);
+    expect(errorMessage(new ApiError(409, { code: 'export_busy', message: 'x' }))).toMatch(/at most 2 per person and 4 per project/);
+    expect(errorMessage(new ApiError(409, { code: 'launch_finished', message: 'x' }))).toMatch(/The launch is finished/);
+    expect(errorMessage(new ApiError(409, { code: 'other', message: 'kept' }))).toBe('kept');
+  });
+});

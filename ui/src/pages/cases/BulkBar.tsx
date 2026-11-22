@@ -7,6 +7,8 @@ import { useBulkCases, useCaseFolders, useManagedPlans, type CaseBulk, type Case
 import { CASE_STATUSES, CASE_STATUS_LABEL } from '../../lib/tm/filters';
 import { FolderPicker } from './common';
 
+const SKIP_TEXT: Record<string, string> = { ai_self_review: 'AI drafts you created need another person', field_from_code: 'field set from code' };
+
 function FieldValueInput({ def, value, onChange }: { def: CaseFieldDef; value: FieldValue; onChange: (v: FieldValue) => void }) {
   const opts = def.options.filter((o) => !o.archived).map((o) => o.value);
   switch (def.type) {
@@ -47,7 +49,7 @@ export function BulkBar({ project, numbers, fields, archived, onDone }: { projec
           notifications.show({
             color: skipped.length ? 'yellow' : 'green',
             title: label,
-            message: `${String(r.updated)} updated${skipped.length ? `, ${String(skipped.length)} skipped (${[...new Set(skipped.map((s) => s.code))].join(', ')})` : ''}`,
+            message: `${String(r.updated)} updated${skipped.length ? `, ${String(skipped.length)} skipped (${[...new Set(skipped.map((s) => SKIP_TEXT[s.code] ?? s.code))].join(', ')})` : ''}`,
           });
           setDialog(null);
           onDone();

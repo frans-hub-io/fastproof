@@ -2,7 +2,7 @@ import { Anchor, Button, Checkbox, Drawer, Group, Menu, Modal, Select, Stack, Ta
 import { EmptyState, useCan } from '@franshub/ui-shell';
 import { useMediaQuery } from '@mantine/hooks';
 import { notifications } from '@mantine/notifications';
-import { IconChevronDown, IconFileExport, IconFileImport, IconFolders, IconLinkOff, IconListDetails, IconPlus } from '@tabler/icons-react';
+import { IconChevronDown, IconFileExport, IconFileImport, IconFolders, IconForms, IconLinkOff, IconListDetails, IconPlus } from '@tabler/icons-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
 import { errorMessage } from '../api/client';
@@ -204,6 +204,9 @@ export default function CasesPage() {
                 Import
               </Button>
             )}
+            <Button size="xs" variant="default" component={Link} to={`/p/${key}/settings/case-fields`} leftSection={<IconForms size={14} />} data-testid="open-case-fields">
+              Fields
+            </Button>
             <Menu withinPortal>
               <Menu.Target>
                 <Button size="xs" variant="default" leftSection={<IconFileExport size={14} />} rightSection={<IconChevronDown size={12} />} data-testid="open-export">

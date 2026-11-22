@@ -34,6 +34,9 @@ const CaseImportPage = lazy(() => import('./pages/CaseImport'));
 const PlansPage = lazy(() => import('./pages/Plans'));
 const PlanPage = lazy(() => import('./pages/Plan'));
 const RunnerPage = lazy(() => import('./pages/Runner'));
+const CaseFieldsPage = lazy(() => import('./pages/CaseFields'));
+const MyRunsPage = lazy(() => import('./pages/MyRuns'));
+const ManualPrintPage = lazy(() => import('./pages/ManualPrint'));
 
 setLoginRedirect(navigateForAuth);
 
@@ -62,6 +65,9 @@ export function AppRoutes() {
         <Route path="p/:key/gates" element={<GatesPage />} />
         <Route path="p/:key/notifications" element={<NotificationsPage />} />
         <Route path="p/:key/settings" element={<SettingsPage />} />
+        <Route path="p/:key/settings/case-fields" element={<CaseFieldsPage />} />
+        <Route path="p/:key/my-runs" element={<MyRunsPage />} />
+        <Route path="p/:key/launches/:id/manual/print" element={<ManualPrintPage />} />
         <Route path="p/:key/cases" element={<CasesPage />} />
         <Route path="p/:key/cases/import" element={<CaseImportPage />} />
         <Route path="p/:key/cases/:n" element={<CasePage />} />

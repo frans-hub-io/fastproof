@@ -34,7 +34,7 @@ Permissions are `resource:action` strings:
 | `cases:read` | See test cases, folders, fields, plans and their history |
 | `cases:write` | Create, change and archive test cases and folders |
 | `cases:import` | Import test cases from files and other tools |
-| `cases:sync` | Let launches created with this permission update test cases from code ([code sync](../guide/test-management.md#code-sync)) |
+| `cases:sync` | Let results uploaded with this permission into launches created with it update test cases from code ([code sync](../guide/test-management.md#code-sync)) |
 | `plans:write` | Create, change, sync and archive test plans; reopen closed manual runs |
 | `runs:execute` | Start launches from test plans and execute manual runs |
 | `tokens:read`, `tokens:write` | List and manage API tokens |

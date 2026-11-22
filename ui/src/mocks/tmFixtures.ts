@@ -17,6 +17,7 @@ import type {
   StepStatus,
   TestIdentity,
   TestPlan,
+  RunItemExecution,
 } from '../api/tm';
 import { CATALOG, launchResults, launchView, NOW, projectLaunches } from './fixtures';
 
@@ -282,6 +283,8 @@ export interface TmState {
   runItems: MockRunItem[];
   manual: Map<string, MockManualLaunch>;
   createdLaunches: Map<string, ReturnType<typeof launchView>>;
+  /** Earlier executions of run items, kept by rerun. */
+  executions: (RunItemExecution & { itemId: string })[];
   attachments: Map<string, { name: string; contentType: string; body: ArrayBuffer }>;
   jobs: Map<string, import('../api/tm').TmJob & { rows?: string[][]; headers?: string[]; options?: import('../api/tm').ImportOptions; tick: number }>;
 }
@@ -476,6 +479,7 @@ export function buildTmState(): TmState {
     runItems: [],
     manual: new Map(),
     createdLaunches: new Map(),
+    executions: [],
     attachments: new Map(),
     jobs: new Map(),
   };

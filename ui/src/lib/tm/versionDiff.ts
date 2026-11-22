@@ -100,14 +100,19 @@ export function diffSnapshots(a: CaseSnapshot, b: CaseSnapshot, fieldLabels: Rec
   return { fields, steps, same: fields.length === 0 && steps.every((s) => s.kind === 'same') };
 }
 
+/** The folder of a case (`folderId`; `folder.id` from servers before it). */
+export function folderIdOf(c: Case): string | null {
+  return c.folderId !== undefined ? c.folderId : (c.folder?.id ?? null);
+}
+
 export function currentSnapshot(c: Case): CaseSnapshot {
-  return { name: c.name, status: c.status, folderId: c.folder?.id ?? null, body: c.body, fields: c.fields, tags: c.tags };
+  return { name: c.name, status: c.status, folderId: folderIdOf(c), body: c.body, fields: c.fields, tags: c.tags };
 }
 
 export function writeSnapshot(w: CaseWrite, c: Case): CaseSnapshot {
-  return { name: w.name, status: w.status ?? c.status, folderId: w.folderId === undefined ? (c.folder?.id ?? null) : w.folderId, body: w.body, fields: w.fields ?? c.fields, tags: w.tags ?? c.tags };
+  return { name: w.name, status: w.status ?? c.status, folderId: w.folderId === undefined ? folderIdOf(c) : w.folderId, body: w.body, fields: w.fields ?? c.fields, tags: w.tags ?? c.tags };
 }
 
 export function toWrite(c: Case): CaseWrite {
-  return structuredClone({ name: c.name, folderId: c.folder?.id ?? null, status: c.status, body: c.body, fields: c.fields, tags: c.tags });
+  return structuredClone({ name: c.name, folderId: folderIdOf(c), status: c.status, body: c.body, fields: c.fields, tags: c.tags });
 }

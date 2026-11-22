@@ -22,7 +22,7 @@ import {
 } from './fixtures';
 import { stageCHandlers } from './handlersC';
 import { analyze, analyzeDetail, isImportant, resetStageC } from './stageC';
-import { resetTm, subscribeTmEvents, tmHandlers } from './tm';
+import { resetTm, subscribeTmEvents, tmHandlers, tmLaunchList } from './tm';
 
 const API = '/api/v1';
 export const MOCK_ROLE_KEY = 'fastproof-mock-role';
@@ -197,7 +197,7 @@ export const handlers = [
     const key = String(params.key);
     if (!hasProject(key)) return error(404, 'not_found', 'project not found');
     const url = new URL(request.url);
-    const list = filterLaunches(projectLaunches(key).map(withImportant), url);
+    const list = filterLaunches(tmLaunchList(key, projectLaunches(key).map(withImportant)), url);
     return HttpResponse.json(page(list, url, (l) => l.id));
   }),
 

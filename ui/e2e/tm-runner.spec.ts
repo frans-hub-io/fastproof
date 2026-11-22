@@ -105,7 +105,7 @@ test('single-key shortcuts can be turned off; saves retry after a network failur
   await expect(page.getByTestId('save-state')).toHaveAttribute('data-state', 'saved');
 });
 
-test('quick defect from a failed step with the new-issue link', async ({ page, context }) => {
+test('quick defect from a failed step with the issue text for a Jira without project ids', async ({ page }) => {
   await openManualLaunch(page);
   await page.getByTestId('tab-manual').click();
   await page.getByTestId('continue-testing').click();
@@ -116,13 +116,10 @@ test('quick defect from a failed step with the new-issue link', async ({ page, c
   await page.keyboard.press('d');
   const drawer = page.getByTestId('defect-drawer');
   await expect(drawer.getByTestId('defect-comment')).toHaveValue(/failed: .*\n.*\nActual: Blank page after Pay/);
-  await context.route('https://gitlab.example.com/**', (r) => r.fulfill({ body: 'new issue' }));
-  const popupP = page.waitForEvent('popup');
   await drawer.getByTestId('defect-new-issue').click();
-  const popup = await popupP;
-  expect(popup.url()).toContain('https://gitlab.example.com/shop/web-shop/-/issues/new?');
-  expect(new URL(popup.url()).searchParams.get('issue[description]')).toContain('Actual: Blank page after Pay');
-  await popup.close();
+  const prefill = drawer.getByTestId('defect-prefill');
+  await expect(prefill.getByRole('textbox')).toHaveValue(/Actual: Blank page after Pay/);
+  await expect(prefill.getByTestId('defect-create-link')).toHaveAttribute('href', 'https://issues.example.com/secure/CreateIssue!default.jspa');
   await drawer.getByTestId('defect-issue').fill('https://gitlab.example.com/shop/web-shop/-/issues/77');
   await drawer.getByTestId('defect-save').click();
   await expect(page.getByText('Defect saved')).toBeVisible();

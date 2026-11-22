@@ -42,6 +42,8 @@ interface CaseDto {
   number: number;
   name: string;
   revision: number;
+  tags: string[];
+  folderId?: string | null;
 }
 
 async function folder(name: string, parentId?: string): Promise<Folder> {
@@ -136,12 +138,17 @@ test('real: a change by someone else while editing shows the banner (SSE) and th
   await expect(page.getByTestId('case-changed-banner')).toBeVisible();
   await page.getByTestId('case-save').click();
   const dialog = page.getByTestId('conflict-dialog');
-  await expect(dialog).toContainText(`Revision ${String(cur.body.revision + 1)} was saved by e2e-admin`);
+  // The page and the API call use the same admin token, so the dialog names "you (another tab)".
+  await expect(dialog).toContainText(`Revision ${String(cur.body.revision + 1)} was saved by you (another tab)`);
   await expect(dialog.getByTestId('diff-field').filter({ hasText: 'Name' })).toContainText('(mine)');
-  await expect(dialog.getByTestId('diff-field').filter({ hasText: 'Tags' })).toContainText('changed-elsewhere');
+  await expect(dialog.getByTestId('diff-field').filter({ hasText: 'Tags' })).toHaveCount(0);
   await dialog.getByTestId('conflict-mine').click();
   await expect(page.getByText(new RegExp(`TC-${String(c.number)} is now version`))).toBeVisible();
   await expect(page.getByTestId('case-title')).toContainText('(mine)');
+  const saved = await api<CaseDto>('GET', `${API}/cases/${String(c.number)}`);
+  expect(saved.body.name).toBe(`${c.name} (mine)`);
+  expect(saved.body.tags).toContain('changed-elsewhere');
+  expect(saved.body.folderId).toBe(f.id);
   w.check();
 });
 
@@ -266,5 +273,74 @@ test('real: a combined launch from a plan, its testplan command, an allure-resul
   await page.getByTestId('source-filter').getByText('Automated').click();
   await expect(page.getByTestId('result-row')).toHaveCount(automatedCount);
   await expect(page.getByTestId('stat-total')).toContainText(String(automatedCount + 1));
+  w.check();
+});
+
+test('real: run management, My runs, rerun history, print view, plan launches and case fields', async ({ page }) => {
+  test.setTimeout(180_000);
+  const w = new Watcher(page, BASE_URL);
+  const f = await folder(`Fixwave ${run}`);
+  const cases = [await caseIn(f.id, `Pay by card ${run}`, 2), await caseIn(f.id, `Pay by voucher ${run}`, 1)];
+  const planName = `Fixwave plan ${run}`;
+  const plan = await ok(api<{ id: string }>('POST', `${API}/test-plans`, { kind: 'managed', name: planName, caseNumbers: cases.map((c) => c.number) }), 201);
+  const started = await ok(api<{ launch: { id: string; number: number } }>('POST', `${API}/test-plans/${plan.id}/launches`, { name: planName, assign: 'none', includeAutomated: false }), 201);
+  const launchId = started.launch.id;
+
+  await page.goto(`${P}/launches/${launchId}?tab=manual`);
+  await expect(page.getByTestId('manual-item')).toHaveCount(2);
+  await page.getByTestId('manual-select-all').check();
+  await page.getByTestId('manual-bulk-assign').click();
+  const assign = page.getByTestId('assign-dialog');
+  await assign.getByTestId('assign-input').fill('e2e-ad');
+  await page.getByRole('option', { name: /e2e-admin/ }).click();
+  await assign.getByTestId('assign-confirm').click();
+  await expect(page.getByText('Assigned to e2e-admin')).toBeVisible();
+  await expect(page.getByTestId('manual-item-assignee').filter({ hasText: 'e2e-admin' })).toHaveCount(2);
+
+  await page.goto(`${P}/my-runs`);
+  const group = page.getByTestId('my-runs-launch').filter({ hasText: planName });
+  await expect(group.getByTestId('my-run-item')).toHaveCount(2);
+  await group.getByTestId('my-run-item').filter({ hasText: `Pay by card ${run}` }).getByRole('link').click();
+  await expect(page.getByTestId('run-case-title')).toContainText(`Pay by card ${run}`);
+  await page.keyboard.press('p');
+  await expect(page.getByTestId('suggested-status')).toHaveAttribute('data-status', 'in_progress');
+  await page.keyboard.press('f');
+  await page.keyboard.type('Declined although the card is valid');
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('suggested-status')).toHaveAttribute('data-status', 'failed');
+  await page.keyboard.press(`${MOD}+Enter`);
+  await expect(page.getByTestId('queue-item').filter({ hasText: `Pay by card ${run}` })).toHaveAttribute('data-status', 'failed');
+  await page.getByTestId('queue-item').filter({ hasText: `Pay by card ${run}` }).click();
+  await expect(page.getByTestId('save-state')).toHaveAttribute('data-state', 'saved');
+  await page.getByTestId('rerun').click();
+  await expect(page.getByTestId('live-region')).toContainText('run 2 started');
+  const earlier = page.getByTestId('run-execution');
+  await expect(earlier).toHaveCount(1);
+  await expect(earlier).toContainText('Failed');
+  await expect(earlier).toContainText('Declined although the card is valid');
+
+  await page.goto(`${P}/launches/${launchId}/manual/print`);
+  await expect(page.getByTestId('print-item')).toHaveCount(2);
+  await expect(page.getByTestId('print-item').filter({ hasText: `Pay by voucher ${run}` })).toContainText('Untested');
+
+  await page.goto(P);
+  await expect(page.getByTestId('launch-row').filter({ hasText: planName }).getByTestId('launch-manual')).toHaveAttribute('data-state', 'open');
+  await openPlan(page, planName);
+  await expect(page.getByTestId('plan-launch').filter({ hasText: planName })).toHaveCount(1);
+
+  await page.goto(`${P}/settings/case-fields`);
+  await page.getByTestId('field-new').click();
+  const dialog = page.getByTestId('field-dialog');
+  await dialog.getByTestId('field-name').fill(`Browser ${run}`);
+  await dialog.getByTestId('field-key').fill(`browser_${run}`);
+  await dialog.getByTestId('field-option-add').click();
+  await dialog.getByTestId('field-option-value').fill('firefox');
+  await dialog.getByTestId('field-save').click();
+  const row = page.getByTestId('field-row').filter({ hasText: `Browser ${run}` });
+  await expect(row).toContainText('firefox');
+  await row.getByTestId('field-up').click();
+  await expect(row.getByTestId('field-up')).toBeEnabled();
+  await row.getByTestId('field-archive').click();
+  await expect(page.getByTestId('field-row').filter({ hasText: `Browser ${run}` })).toHaveCount(0);
   w.check();
 });

@@ -43,6 +43,7 @@ export default function CaseImportPage() {
   const [mode, setMode] = useState<ImportOptions['mode']>('createOnly');
   const [target, setTarget] = useState<string | null>(null);
   const [unknown, setUnknown] = useState<ImportOptions['unknownFieldValues']>('skip');
+  const [status, setStatus] = useState<'source' | 'draft' | 'active'>('source');
   const [busy, setBusy] = useState(false);
   const [jobId, setJobId] = useState<string | null>(null);
   const [testops, setTestops] = useState({ baseUrl: '', token: '', remoteProjectId: 0 });
@@ -113,7 +114,7 @@ export default function CaseImportPage() {
     setBusy(true);
     try {
       const sendMapping = csv && format === preview?.format && Object.keys(mapping).length > 0 ? Object.fromEntries(Object.entries(mapping).map(([k, v]) => [k, v || 'ignore'])) : undefined;
-      const created = await createImport(key, file, { format, mapping: sendMapping, stepsLayout: csv ? layout : undefined, mode, targetFolderId: target, unknownFieldValues: unknown }, zip);
+      const created = await createImport(key, file, { format, mapping: sendMapping, stepsLayout: csv ? layout : undefined, mode, targetFolderId: target, unknownFieldValues: unknown, ...(status === 'source' ? {} : { status }) }, zip);
       setJobId(created.id);
       setStep(2);
     } catch (e) {
@@ -232,7 +233,34 @@ export default function CaseImportPage() {
                   />
                 </Stack>}
                 <Select label="Existing cases" data={[{ value: 'createOnly', label: 'Skip them' }, { value: 'upsert', label: 'Update them' }]} value={mode} onChange={(v) => setMode(v === 'upsert' ? 'upsert' : 'createOnly')} allowDeselect={false} w={180} comboboxProps={{ withinPortal: true }} />
-                <Select label="Unknown field values" data={[{ value: 'skip', label: 'Leave empty' }, { value: 'create', label: 'Add as options' }, { value: 'fail', label: 'Fail the row' }]} value={unknown} onChange={(v) => setUnknown(v === 'create' || v === 'fail' ? v : 'skip')} allowDeselect={false} w={200} comboboxProps={{ withinPortal: true }} />
+                <Select
+                  label="Unknown fields and values"
+                  data={[
+                    { value: 'skip', label: 'Leave them out' },
+                    { value: 'create', label: 'Create fields and options' },
+                    { value: 'fail', label: 'Fail the row' },
+                  ]}
+                  value={unknown}
+                  onChange={(v) => setUnknown(v === 'create' || v === 'fail' ? v : 'skip')}
+                  allowDeselect={false}
+                  w={220}
+                  comboboxProps={{ withinPortal: true }}
+                  data-testid="import-unknown"
+                />
+                <Select
+                  label="Status of new cases"
+                  data={[
+                    { value: 'source', label: 'From the source, else active' },
+                    { value: 'draft', label: 'Draft' },
+                    { value: 'active', label: 'Active' },
+                  ]}
+                  value={status}
+                  onChange={(v) => setStatus(v === 'draft' || v === 'active' ? v : 'source')}
+                  allowDeselect={false}
+                  w={240}
+                  comboboxProps={{ withinPortal: true }}
+                  data-testid="import-status"
+                />
                 <Select label="Into folder" data={folderData} value={target} onChange={setTarget} clearable searchable w={260} comboboxProps={{ withinPortal: true }} />
               </Group>
               <Text size="xs" c="dimmed">
@@ -355,8 +383,17 @@ export default function CaseImportPage() {
                     </Text>
                   </Card>
                 </SimpleGrid>
+                {(j.report.createdFields ?? []).length > 0 && (
+                  <Alert color="blue" title={j.status === 'done' ? 'Fields created' : 'Fields the import will create'} data-testid="report-created-fields">
+                    {(j.report.createdFields ?? []).map((f) => (
+                      <Code key={f} mr={4}>
+                        {f}
+                      </Code>
+                    ))}
+                  </Alert>
+                )}
                 {j.report.unknownFields.length > 0 && (
-                  <Alert color="yellow" title="Fields that do not exist">
+                  <Alert color="yellow" title="Fields that do not exist (their values are left out)" data-testid="report-unknown-fields">
                     {j.report.unknownFields.map((f) => (
                       <Code key={f} mr={4}>
                         {f}
@@ -369,6 +406,15 @@ export default function CaseImportPage() {
                     {Object.entries(j.report.unknownValues).map(([k, vals]) => (
                       <Text key={k} size="sm">
                         {k}: {vals.join(', ')}
+                      </Text>
+                    ))}
+                  </Alert>
+                )}
+                {(j.report.warnings ?? []).length > 0 && (
+                  <Alert color="yellow" title={`${String((j.report.warnings ?? []).length)} rows imported with a change`} data-testid="report-warnings">
+                    {(j.report.warnings ?? []).slice(0, 20).map((w) => (
+                      <Text key={`${String(w.row)}:${w.code}`} size="sm">
+                        Row {w.row}: {w.message}
                       </Text>
                     ))}
                   </Alert>

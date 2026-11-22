@@ -69,7 +69,15 @@ export async function requestRaw(path: string, init?: RequestInit & { json?: unk
   return { data: text ? (JSON.parse(text) as unknown) : undefined, headers: res.headers, status: res.status };
 }
 
+/** Plain-language messages for error codes whose server text assumes API knowledge. */
+const CODE_MESSAGES: Record<string, string> = {
+  ai_self_review: 'An AI draft or suggestion needs a second person: whoever created it cannot review it, make it active or accept it. Ask a colleague to do it.',
+  export_busy: 'Too many zip exports are being built (at most 2 per person and 4 per project). Wait for one to finish or download it first.',
+  launch_finished: 'The launch is finished: only the one who created it, or a caller allowed to sync cases, can add results to it.',
+};
+
 export function errorMessage(e: unknown): string {
+  if (e instanceof ApiError && e.code in CODE_MESSAGES) return CODE_MESSAGES[e.code] ?? e.message;
   if (e instanceof ApiError) {
     const details = describeDetails(e.details);
     return details ? `${e.message} (${details})` : e.message;

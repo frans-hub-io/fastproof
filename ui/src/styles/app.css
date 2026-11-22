@@ -1135,7 +1135,14 @@
   display: none;
 }
 
+.fp-print-item {
+  padding-top: 12px;
+  border-top: 1px solid var(--fh-ui-hairline);
+}
+
 @media print {
+  div:has(> div > main#main) > header,
+  div:has(> main#main) > div:has(aside),
   .fp-no-print,
   .mantine-AppShell-header,
   .mantine-AppShell-navbar,
@@ -1145,8 +1152,21 @@
     display: none !important;
   }
 
-  .mantine-AppShell-main {
+  .mantine-AppShell-main,
+  main#main {
     padding: 0 !important;
+  }
+
+  .fp-print-steps tr {
+    break-inside: avoid;
+  }
+
+  .fp-print-table {
+    overflow: visible !important;
+  }
+
+  .fp-print-table table {
+    min-width: 0 !important;
   }
 
   .fp-print-only {

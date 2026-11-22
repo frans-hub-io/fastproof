@@ -13,7 +13,8 @@ Everything the UI and the CLI do goes through the HTTP API at `/api/v1`. It is d
 - **JSON** field names are camelCase. Ids are UUIDs (version 7). Project keys match
   `^[a-z0-9][a-z0-9-]{1,62}$`.
 - **Errors** have one shape: `{"code": "...", "message": "...", "details": {...}}`. `401` never tells why a
-  credential was refused; `403` names the missing permission in `details.required`.
+  credential was refused; `403` names the missing permission in `details.required`, also where a route allows
+  an action only on your own items (for example a quick defect on a run item someone else executed).
 - **Lists** return `{"items": [...], "next": "..."}`. Pass `next` as `before` to get the next page; `limit`
   defaults to 50, at most 500. The tokens list is the exception, see [Tokens](#tokens).
 - **Limits** answer `413` with a message that names the limit and its unit, for example
@@ -35,8 +36,9 @@ Everything the UI and the CLI do goes through the HTTP API at `/api/v1`. It is d
 | Triage and analysis | defect types, `POST .../triage`, clusters, rules, flaky tests, compare, dashboard, test plans (see [Rules and triage](../guide/rules-and-triage.md)) |
 | Integrations | `GET .../launches/{id}/gate`, project secrets, deliveries (see [Quality gates](../guide/quality-gates.md), [Notifications](../guide/notifications.md)) |
 | History | `GET /api/v1/projects/{key}/test-cases/{testCaseId}/history?branch=&environment=` |
-| Test cases | `GET/POST .../cases`, `GET/PUT/PATCH/DELETE .../cases/{n}`, `POST .../cases/{n}/review`, `.../cases/{n}/versions`, `.../history`, `.../identities`, `.../attachments`, `POST .../cases/bulk`, `GET .../cases/tree`, `.../case-folders`, `.../case-fields`, `GET .../test-identities`, `POST .../markdown/preview`, `POST .../cases/backfill` (see [Test cases](../guide/test-management.md)) |
-| Test plans and manual runs | `GET/POST .../test-plans`, `GET/PATCH/DELETE .../test-plans/{id}`, `.../items`, `.../sync`, `.../launches`, `.../testplan.json`; `GET/POST .../launches/{id}/run-items`, `GET .../run-items`, `GET/PATCH .../run-items/{itemId}`, `PUT .../run-items/{itemId}/steps/{path}`, `POST .../manual/close`, `.../manual/reopen`, `GET .../manual-report` (see [Test plans and manual runs](../guide/manual-runs.md)) |
+| Test cases | `GET/POST .../cases` (`POST` needs `name` and `body`), `GET/PUT/PATCH/DELETE .../cases/{n}`, `POST .../cases/{n}/review`, `.../cases/{n}/versions`, `.../history`, `.../identities`, `.../attachments`, `POST .../cases/bulk`, `GET .../cases/tree`, `.../case-folders`, `.../case-fields`, `GET .../test-identities`, `POST .../markdown/preview`, `POST .../cases/backfill` (see [Test cases](../guide/test-management.md)) |
+| Test plans and manual runs | `GET/POST .../test-plans`, `GET/PATCH/DELETE .../test-plans/{id}`, `.../items`, `.../sync`, `GET/POST .../test-plans/{id}/launches` (`GET` lists the launches started from the plan), `.../testplan.json`; `GET/POST .../launches/{id}/run-items`, `GET .../run-items`, `GET/PATCH .../run-items/{itemId}`, `GET .../run-items/{itemId}/executions`, `PUT .../run-items/{itemId}/steps/{path}`, `POST .../run-items/{itemId}/rerun` (needs `If-Match`), `POST .../manual/close`, `.../manual/reopen`, `GET .../manual-report` (see [Test plans and manual runs](../guide/manual-runs.md)) |
+| People | `GET /api/v1/projects/{key}/people?q=` (`projects:read`): up to 100 principals known to the project (users bound to it in the access file, active managed tokens whose role can execute runs there, and names used as assignees or executors in its runs and plans) as `{items: [{principal, display?}]}`, for assignee pickers |
 | Imports and exports | `POST .../imports/preview`, `POST .../imports`, `GET/DELETE .../imports/{id}`, `POST .../imports/{id}/apply`, `GET .../cases/export`, `POST .../cases/exports` (see [Importing test cases](../guide/importing-test-cases.md)) |
 | Live events | `GET /api/v1/projects/{key}/events` (Server-Sent Events: `launch.updated`, `upload.updated`; for test management `case.updated`, `case.archived`, `runItem.updated`, `manualRun.updated`, `tmJob.updated`) |
 | Identity and tokens | `GET /api/v1/me`, `GET/POST /api/v1/tokens`, `GET /api/v1/tokens/options`, `GET /api/v1/tokens/self`, `GET/DELETE /api/v1/tokens/{id}` (see [Tokens](#tokens)) |
@@ -48,7 +50,10 @@ Everything the UI and the CLI do goes through the HTTP API at `/api/v1`. It is d
 `projects:read`). `PUT` (needs `settings:write`) updates it by top-level area:
 
 - each area present in the body replaces the stored area as a whole: `flaky`, `retention`, `rollup`, `gates`,
-  `notifications`, `issueTrackers`, `fastmock`, `vcs`, `caseSync` ([code sync](../guide/test-management.md#settings));
+  `notifications`, `issueTrackers`, `fastmock`, `vcs`;
+- `caseSync` ([code sync](../guide/test-management.md#settings)) is the exception: its keys are merged into the
+  stored ones (`fields` by field), so `{"caseSync": {"branches": [...]}}` changes only the branches; `null`
+  for a key returns it to its default and `"caseSync": null` resets the area;
 - areas left out of the body are kept as they are;
 - `null` resets an area to its default (for lists and `fastmock`/`vcs`: removes it).
 
@@ -98,9 +103,9 @@ actions:
 | Projects and settings | `project.create`, `project.update`, `project.delete`, `project.settings` |
 | Launches and uploads | `launch.create` (a new launch, not a joined one), `launch.update`, `launch.finish`, `launch.delete`, `upload.create` |
 | Triage and rules | `results.triage`, `triage.apply` (through MCP), `defectType.create`, `defectType.update`, `defectType.delete`, `rule.create`, `rule.update`, `rule.delete`, `rule.apply`, `testPlan.create` |
-| Test cases | `case.create`, `case.update`, `case.move`, `case.archive`, `case.restore`, `case.purge`, `case.bulk`, `case.linkIdentity`, `case.unlinkIdentity`, `case.backfill`, `caseFolder.create`, `caseFolder.update`, `caseFolder.delete`, `caseField.create`, `caseField.update`, `caseField.delete`, `caseSuggestion.accept`, `caseSuggestion.reject`, `caseSync.settings` |
-| Plans and manual runs | `testPlan.create`, `testPlan.update`, `testPlan.items`, `testPlan.sync`, `testPlan.archive`, `run.start`, `runItem.update` (final status, defect, assignee), `manualRun.close`, `manualRun.reopen` |
-| Imports and exports | `import.start`, `import.apply`, `import.cancel`, `export.create` (TestOps tokens are never recorded) |
+| Test cases | `case.create`, `case.update`, `case.move`, `case.archive`, `case.restore`, `case.purge`, `case.bulk`, `case.linkIdentity`, `case.unlinkIdentity`, `case.review`, `case.backfill`, `caseFolder.create`, `caseFolder.update`, `caseFolder.delete`, `caseField.create`, `caseField.update`, `caseField.delete`, `caseSuggestion.accept`, `caseSuggestion.reject`, `caseSync.settings` |
+| Plans and manual runs | `testPlan.create`, `testPlan.update`, `testPlan.items`, `testPlan.sync`, `testPlan.archive`, `run.start`, `runItem.update` (final status, defect, assignee), `runItem.rerun`, `manualRun.close`, `manualRun.reopen` |
+| Imports and exports | `import.start`, `import.apply`, `import.cancel`, `export.create`, `export.download` (TestOps tokens are never recorded) |
 | Secrets | `secret.create`, `secret.update`, `secret.delete` (names only, never values) |
 | Access | `token.create`, `token.revoke`, `auth.login`, `auth.login_failed`, `auth.logout` |
 
@@ -134,10 +139,14 @@ management routes answer:
 | 409 | `manual_run_open` | Reopening a run that is open |
 | 409 | `run_item_not_final` | A defect on a run item without a final status |
 | 409 | `no_issue_tracker` | A new-issue link when the project has no matching issue tracker |
+| 403 | `ai_self_review` | The creator of an unreviewed AI case reviews or activates it, or the author of a suggestion accepts it |
+| 409 | `launch_finished` | Uploads, results or a second finish into a finished launch by a caller that neither created it nor has `cases:sync` |
 | 409 | `import_busy` | Another import of the project is running |
+| 409 | `export_busy` | Too many zip exports of the caller (2) or the project (4) are queued or running; `details {limit, max}` |
 | 412 | `precondition_failed` | `If-Match` names an older revision; `details` `{currentRevision, changedBy, source}` |
 | 413 | `payload_too_large` | An attachment or import file over its limit |
-| 422 | `bad_request` | The body is not valid JSON or has unknown fields |
+| 400 | `bad_request` | The body is not valid JSON |
+| 422 | `bad_request` | The body is valid JSON but has unknown fields, misses a required field or has a value of the wrong type |
 | 428 | `precondition_required` | `PUT` or `PATCH` of a case, plan or run item without `If-Match` |
 
 Unknown or archived case numbers in a plan or run item request answer `400` with `details.unknownCases`.

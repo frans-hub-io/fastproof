@@ -87,6 +87,16 @@ export type TestOpsImport = S['TestOpsImport'];
 export type ImportReport = S['ImportReport'];
 export type MarkdownHtml = S['MarkdownHtml'];
 export type NewIssueUrl = S['NewIssueUrl'];
+export type ManualReport = S['ManualReport'];
+export type ManualReportItem = S['ManualReportItem'];
+export type ManualReportStep = S['ManualReportStep'];
+
+/** A person known to the project (`GET /people`). */
+export type Person = S['Person'];
+/** `GET /run-items/{id}/new-issue-url`; `prefilled: false` means the text to paste is in `prefill`. */
+export type NewIssue = S['NewIssueUrl'];
+/** An earlier execution of a run item (`GET /run-items/{id}/executions`). */
+export type RunItemExecution = S['RunItemExecution'];
 
 /** `Launch` with the stage 2a additions (now part of the generated `Launch`). */
 export type TmLaunch = Launch;
@@ -177,6 +187,9 @@ export const tmk = {
   runItems: (key: string, launchId: string, q?: object) => (q ? (['tm', key, 'run', launchId, q] as const) : (['tm', key, 'run', launchId] as const)),
   runItem: (key: string, id: string) => ['tm', key, 'runItem', id] as const,
   myRunItems: (key: string) => ['tm', key, 'myRunItems'] as const,
+  people: (key: string, q: string) => ['tm', key, 'people', q] as const,
+  planLaunches: (key: string, id: string) => ['tm', key, 'plan', id, 'launches'] as const,
+  manualReport: (key: string, launchId: string) => ['tm', key, 'run', launchId, 'report'] as const,
   job: (key: string, id: string) => ['tm', key, 'job', id] as const,
   launch: (key: string, id: string) => ['launch', key, id] as const,
 };
@@ -457,10 +470,18 @@ export function useCaseFields(key: string) {
   });
 }
 
+/** Every field definition including archived ones (the Case fields page). */
+export function useAllCaseFields(key: string) {
+  return useQuery({
+    queryKey: [...tmk.fields(key), 'all'],
+    queryFn: () => request<{ items: CaseFieldDef[] }>(withQuery(`${projectPath(key)}/case-fields`, { archived: true })).then((r) => r.items),
+  });
+}
+
 export function useSaveCaseField(key: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, body }: { id?: string; body: Partial<CaseFieldWrite> }) =>
+    mutationFn: ({ id, body }: { id?: string; body: Partial<CaseFieldWrite> & CaseFieldPatch }) =>
       id
         ? request<CaseFieldDef>(`${projectPath(key)}/case-fields/${enc(id)}`, { method: 'PATCH', json: body })
         : request<CaseFieldDef>(`${projectPath(key)}/case-fields`, { method: 'POST', json: body }),
@@ -611,6 +632,7 @@ export function useStartPlanLaunch(key: string, id: string) {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['launches', key] });
       void qc.invalidateQueries({ queryKey: tmk.myRunItems(key) });
+      void qc.invalidateQueries({ queryKey: tmk.planLaunches(key, id) });
     },
   });
 }
@@ -621,10 +643,7 @@ export function useAddRunItems(key: string, launchId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (body: RunItemsAdd) => request<RunItemsAdded>(`${projectPath(key)}/launches/${enc(launchId)}/run-items`, { method: 'POST', json: body }),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: tmk.runItems(key, launchId) });
-      void qc.invalidateQueries({ queryKey: tmk.launch(key, launchId) });
-    },
+    onSuccess: () => invalidateRun(qc, key, launchId),
   });
 }
 
@@ -654,11 +673,89 @@ export function useRunItems(key: string, launchId: string, q: RunItemQuery, enab
   });
 }
 
+/** Open run items assigned to the caller over every launch of the project (`GET /run-items?assignee=me`). */
 export function useMyRunItems(key: string) {
-  return useQuery({
+  return useInfiniteQuery({
     queryKey: tmk.myRunItems(key),
-    queryFn: () => request<Page<RunItemSummary & { launchId?: string }>>(withQuery(`${projectPath(key)}/run-items`, { assignee: 'me', status: 'untested,in_progress', limit: 100 })).then((r) => r.items),
+    initialPageParam: undefined as string | undefined,
+    queryFn: ({ pageParam }) => request<Page<MyRunItem>>(withQuery(`${projectPath(key)}/run-items`, { assignee: 'me', status: 'untested,in_progress', before: pageParam, limit: 200 })),
+    getNextPageParam: (last) => last.next ?? undefined,
   });
+}
+
+/** People known to the project for assignee pickers (`GET /people?q=`, at most 100). */
+export function usePeople(key: string, q = '', enabled = true) {
+  return useQuery({
+    queryKey: tmk.people(key, q),
+    queryFn: () => request<{ items: Person[] }>(withQuery(`${projectPath(key)}/people`, { q: q || undefined })).then((r) => r.items),
+    enabled: !!key && enabled,
+    staleTime: 60_000,
+    placeholderData: keepPreviousData,
+  });
+}
+
+/** Launches started from a managed plan, newest first (`GET /test-plans/{id}/launches`). */
+export function usePlanLaunches(key: string, id: string) {
+  return useQuery({
+    queryKey: tmk.planLaunches(key, id),
+    queryFn: () => request<Page<Launch>>(withQuery(`${projectPath(key)}/test-plans/${enc(id)}/launches`, { limit: 50 })),
+    enabled: !!id,
+  });
+}
+
+/** The full manual run report (`GET /launches/{id}/manual-report?format=json`): every item with its steps. */
+export function useManualReport(key: string, launchId: string) {
+  return useQuery({
+    queryKey: tmk.manualReport(key, launchId),
+    queryFn: () => request<ManualReport>(manualReportUrl(key, launchId, 'json')),
+    enabled: !!launchId,
+  });
+}
+
+export interface RunItemBulkResult {
+  done: number;
+  failed: { id: string; message: string }[];
+}
+
+/**
+ * Applies one patch to many run items: each item is read for its `ETag` and patched with `If-Match` (a 412 is
+ * retried once on a fresh read). Runs a few items at a time; there is no bulk route for run items.
+ */
+export async function patchRunItems(key: string, ids: readonly string[], patch: RunItemPatch, onProgress?: (done: number) => void): Promise<RunItemBulkResult> {
+  const out: RunItemBulkResult = { done: 0, failed: [] };
+  const queue = [...ids];
+  const path = (id: string) => `${projectPath(key)}/run-items/${enc(id)}`;
+  const one = async (id: string) => {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const cur = await getVersioned<RunItem>(path(id));
+        await patchRunItem(key, id, cur.etag, patch);
+        return;
+      } catch (e) {
+        if (attempt === 0 && isConflict(e)) continue;
+        throw e;
+      }
+    }
+  };
+  const worker = async () => {
+    for (let id = queue.shift(); id !== undefined; id = queue.shift()) {
+      try {
+        await one(id);
+        out.done++;
+      } catch (e) {
+        out.failed.push({ id, message: e instanceof Error ? e.message : String(e) });
+      }
+      onProgress?.(out.done + out.failed.length);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(4, ids.length) }, worker));
+  return out;
+}
+
+export function invalidateRun(qc: QueryClient, key: string, launchId: string): void {
+  void qc.invalidateQueries({ queryKey: tmk.runItems(key, launchId) });
+  void qc.invalidateQueries({ queryKey: tmk.launch(key, launchId) });
+  void qc.invalidateQueries({ queryKey: tmk.myRunItems(key) });
 }
 
 export function useRunItem(key: string, id: string | undefined) {
@@ -697,12 +794,21 @@ export function useRunItemDefect(key: string, itemId: string) {
   });
 }
 
-export function fetchNewIssueUrl(key: string, itemId: string, tracker?: string): Promise<string> {
-  return request<{ url: string }>(withQuery(`${projectPath(key)}/run-items/${enc(itemId)}/new-issue-url`, { tracker })).then((r) => r.url);
+export function fetchNewIssue(key: string, itemId: string, tracker?: string): Promise<NewIssue> {
+  return request<NewIssue>(withQuery(`${projectPath(key)}/run-items/${enc(itemId)}/new-issue-url`, { tracker }));
 }
 
-export function rerunRunItem(key: string, itemId: string): Promise<RunItem> {
-  return request<RunItem>(`${projectPath(key)}/run-items/${enc(itemId)}/rerun`, { method: 'POST' });
+/** Starts a new execution; needs the item's `ETag` (the earlier execution is kept, see `useRunItemExecutions`). */
+export function rerunRunItem(key: string, itemId: string, etag: string): Promise<Versioned<RunItem>> {
+  return writeVersioned<RunItem>(`${projectPath(key)}/run-items/${enc(itemId)}/rerun`, 'POST', etag);
+}
+
+export function useRunItemExecutions(key: string, itemId: string | undefined, enabled = true) {
+  return useQuery({
+    queryKey: [...tmk.runItem(key, itemId ?? ''), 'executions'],
+    queryFn: () => request<Page<RunItemExecution>>(withQuery(`${projectPath(key)}/run-items/${enc(itemId ?? '')}/executions`, { limit: 20 })).then((r) => r.items),
+    enabled: !!itemId && enabled,
+  });
 }
 
 export function useManualRunState(key: string, launchId: string) {

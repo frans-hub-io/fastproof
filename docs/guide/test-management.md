@@ -25,7 +25,7 @@ case by its number (`GET $api/cases/12`). A case holds:
 |---|---|
 | `name` | 1 to 500 bytes |
 | `status` | `draft`, `active` or `outdated` (see [Status](#status-and-the-trash)) |
-| `folderId` | The folder the case is in, or `null` for the top level |
+| `folderId` | The folder the case is in, or `null` for the top level; `GET` also returns `folder` with its path |
 | `body.description`, `body.preconditions` | Markdown |
 | `body.steps` | Steps with `action`, `expected` and `data` (Markdown each), `attachments` and nested `steps`, up to 3 levels and 500 steps in all |
 | `body.links` | `{name, url, type}` with `type` `link`, `issue` or `tms`; `http`, `https` and `mailto` URLs |
@@ -75,6 +75,11 @@ and automated.
 | `PATCH $api/case-folders/{id}` `{name?, parentId?, position?}` | Rename, reorder or move with the subtree (`parentId: null` = top level) |
 | `DELETE $api/case-folders/{id}?mode=moveUp\|archiveCases` | Delete; a folder with subfolders or cases needs `mode`: `moveUp` moves them to the parent, `archiveCases` moves the cases to the trash |
 
+In the UI, the buttons above the folder tree create, rename, delete, move and reorder the selected folder:
+**Move…** opens a dialog to choose the new parent (or the top level), and **Move up** / **Move down** change
+its place among its siblings. With a mouse you can also drag a folder onto another folder to move it there.
+Everything works from the keyboard: the tree takes arrow keys, and the dialog and buttons replace dragging.
+
 Besides folders, the tree can group cases by their Allure behaviours (epic, feature, story) or by suite:
 `GET $api/cases/tree?groupBy=folder|behavior|suite&parent=`.
 
@@ -83,7 +88,18 @@ Besides folders, the tree can group cases by their Allure behaviours (epic, feat
 Every project starts with built-in fields: `priority` (select: critical, high, medium, low), `severity`
 (select: blocker, critical, normal, minor, trivial), and the text fields `layer`, `owner`, `epic`, `feature`,
 `story`, `suite` and `component`. Admins (`settings:write`) add up to 100 fields of the types `select`,
-`multiselect`, `text`, `number` and `date` (`yyyy-mm-dd`):
+`multiselect`, `text`, `number` and `date` (`yyyy-mm-dd`).
+
+In the UI, fields are managed on the **Case fields** page: open **Project settings → Case fields**, or the
+**Fields** button on the **Test cases** page. There you can:
+
+- create a field with its key, name, type, options, required flag, default value and source label;
+- edit a field's name, options (add, recolour, archive or restore an option), required flag, default value and
+  source label;
+- archive a field and restore it later (switch on **Show archived** to see archived fields);
+- change the order with **Move up** and **Move down**; the order is the order of fields on a case.
+
+The same through the API:
 
 ```sh
 curl -fsS -X POST "$api/case-fields" -H "$auth" -H 'Content-Type: application/json' \
@@ -96,7 +112,7 @@ curl -fsS -X POST "$api/case-fields" -H "$auth" -H 'Content-Type: application/js
 | `key` | `^[a-z][a-z0-9_]{0,62}$`, unique in the project, used in `fields` and filters |
 | `type` | Cannot be changed after the field is created |
 | `options` | Values of `select` and `multiselect`, up to 1000; archive an option instead of removing it |
-| `required` | A value is needed before a case leaves `draft` |
+| `required` | A value is needed before a case leaves `draft`; [imported](importing-test-cases.md#required-fields-and-the-status-of-imported-cases) cases without it stay `draft` |
 | `sourceLabel` | An Allure label whose value fills the field from code (see [Code sync](#code-sync)) |
 
 `DELETE $api/case-fields/{id}` archives a field: the values on cases are kept, and `PATCH {"archived": false}`
@@ -169,9 +185,12 @@ curl -fsS -X POST "$api/cases" -H "$auth" -H 'Content-Type: application/json' -d
 }'
 ```
 
-The answer is `201` with the case, its rendered HTML (`html`) and an `ETag` header. `PUT $api/cases/12`
-replaces the content (fields, tags and status left out of the body keep their values); `PATCH` merges
-`folderId`, `status`, `fields` (`null` removes a value) and `tags`.
+`name` and `body` are required; `body` needs all four parts (`description`, `preconditions`, `steps`,
+`links`), which may be empty. The answer is `201` with the case, its rendered HTML (`html`) and an `ETag`
+header. `GET` returns the case with `folderId` (and `folder` with its path). `PUT $api/cases/12` replaces the content; `folderId`, fields, tags and status left out of the body keep
+their values (send `"folderId": null` to move the case to the top level), so a case read with `GET` and sent
+back changed stays in its folder. `PATCH` merges `folderId`, `status`, `fields` (`null` removes a value) and
+`tags`.
 
 ### Finding cases
 
@@ -225,9 +244,14 @@ curl -fsS -X PATCH "$api/cases/12" -H "$auth" -H "If-Match: \"r$rev\"" -H 'Conte
 ```
 
 For a person in the UI a 412 means: someone else saved first. The editor shows the current version next to
-your changes and lets you keep yours, take theirs or go on editing; nothing you typed is lost. When `source`
-is `code`, the change came from [code sync](#code-sync). An open case also shows a banner as soon as another
-change arrives (live event `case.updated`). The same `ETag`/`If-Match` rule applies to plans and run items.
+the result of saving yours and lets you save your changes, take the current version or go on editing; nothing
+you typed is lost. **Save my changes** applies only what you changed (each top-level part such as the name,
+status, folder, description or tags, each custom field by its key, and each step by its id) on top of the
+current version, so the other writer's changes to other parts are kept. The dialog names who saved the
+current version and how; when it was you in another tab or through the API, it says "you (another tab)".
+When `source` is `code`, the change came from [code sync](#code-sync). An open case also shows a banner as
+soon as another change arrives (live event `case.updated`), naming who made it the same way. The same
+`ETag`/`If-Match` rule applies to plans and run items.
 
 ## Code sync
 
@@ -243,7 +267,15 @@ A launch is trusted when all of these hold:
 - its branch matches one of `branches`, or equals the CI default branch when `useCiDefaultBranch` is on (the
   CLI reports it as `vcs.defaultBranch` from `CI_DEFAULT_BRANCH` in GitLab or the event payload in GitHub
   Actions; Jenkins does not provide it);
-- the token that created the launch had the `cases:sync` permission.
+- the caller that created the launch had the `cases:sync` permission;
+- every upload and results batch in it also came from callers with `cases:sync`.
+
+When a caller without `cases:sync` (for example a merge-request token with the `mr-uploader` role below)
+uploads or posts results into a launch, the launch is reported as usual but becomes untrusted for good: its
+tests stay unlinked and it changes no case, even if a syncing token adds to it later. A finished launch
+accepts uploads, results and a second finish only from the caller that created it or a caller with
+`cases:sync`; anyone else gets `409 launch_finished`. Joining a launch by `externalId` still works for every
+caller with `launches:write`.
 
 An untrusted launch changes nothing in cases: its new tests stay **unlinked** and appear on the
 **Unlinked tests** tab with the branches they were seen on (`GET $api/test-identities?unlinked=true`), where
@@ -252,7 +284,9 @@ never flood the repository.
 
 !!! tip "Merge request pipelines"
     `cases:sync` is part of the `uploader` and `editor` roles. Give pipelines of merge requests and forks a
-    token without it, so their results are reported as usual but never change cases. No built-in role
+    token without it, so their results are reported as usual but never change cases. If such a token posts
+    into a launch that a trusted pipeline is still running, that launch is reported as usual but no longer
+    syncs: its new tests stay unlinked until the next clean pipeline. No built-in role
     uploads without `cases:sync`; define one in the [access file](../operations/security.md#access-file):
 
     ```yaml
@@ -290,9 +324,10 @@ Code sync is configured in the `caseSync` area of the project settings (`PUT $ap
 | `matchTmsLinks` | Link tests to cases by the TestRail or Qase keys of their `tms` labels and TMS links (useful after an import) |
 | `fields` | Who owns each value on automated cases: `code` or `case` (see below) |
 
-Like every settings area, `caseSync` is replaced as a whole: send every setting you want to keep, or read the
-document first and send it back changed. Branch globs here differ from [quality gate](quality-gates.md)
-branches, where `*` also matches `/`.
+Unlike other settings areas, `caseSync` is merged key by key: a `PUT $api/settings` with
+`{"caseSync": {"branches": [...]}}` changes only `branches` and keeps the other settings (`fields` is merged
+by field name too). `null` for a key returns it to its default, and `"caseSync": null` resets the whole area.
+Branch globs here differ from [quality gate](quality-gates.md) branches, where `*` also matches `/`.
 
 ### Who owns a value: code or case
 
@@ -371,8 +406,8 @@ with `cases:sync`, since the permission did not exist yet; they carry no CI defa
 runs on the scheduler replicas and continues after a restart; 100 000 tests take less than ten minutes.
 
 When a project's main branch is not called `main` or `master`, set `caseSync.branches` and start the backfill
-again (needs `settings:write`). It only adds cases for tests that are still unlinked, so running it again is
-safe:
+again (needs `settings:write`). Only `branches` changes; the other `caseSync` settings keep their values. The
+backfill only adds cases for tests that are still unlinked, so running it again is safe:
 
 ```sh
 curl -fsS -X PUT "$api/settings" -H "$auth" -H 'Content-Type: application/json' \
@@ -389,7 +424,15 @@ created can be moved to the trash with a bulk `archive`.
 
 Agents connected through [MCP](mcp-copilot.md#test-case-tools) can create cases only as drafts
 (`origin = ai`, marked **AI draft** until reviewed) and can change an active case only by a suggestion that a
-person accepts or rejects:
+person accepts or rejects.
+
+Drafts and suggestions of an agent need a second principal, on REST and MCP alike. A case with `origin: ai`
+that is still `aiUnreviewed` can be marked reviewed or set to `active` (PUT, PATCH, bulk `setStatus`,
+accepting a suggestion, restoring a version) only by a principal other than the one that created it; that
+principal gets `403 ai_self_review` (a bulk change skips the case with that code). Activating it by someone
+else counts as the review and clears `aiUnreviewed`. A suggestion is never accepted by the principal that
+made it (`403 ai_self_review`). The principal is the user name or the token name, so give the agent its own
+token.
 
 | Call | Does |
 |---|---|
@@ -397,6 +440,9 @@ person accepts or rejects:
 | `GET $api/cases/12/suggestions?status=pending` | Suggestions for the case |
 | `POST $api/case-suggestions/{id}/accept` | Applies it as a version with `source = ai`; needs the case's `If-Match`; a case that changed since answers `409 suggestion_stale` |
 | `POST $api/case-suggestions/{id}/reject` | Rejects it; it stays in the history |
+
+A case holds at most 20 pending suggestions; a further one answers `409 limit_reached`
+(`maxPendingSuggestions`) until some are accepted or rejected.
 
 ## Permissions
 

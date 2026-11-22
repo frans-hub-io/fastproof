@@ -17,6 +17,8 @@ export interface TreeRow {
   extra?: ReactNode;
   icon?: ReactNode;
   testId?: string;
+  /** The row can be dragged (with `onDragStartRow`). */
+  draggable?: boolean;
 }
 
 export interface TreeViewProps {
@@ -30,6 +32,7 @@ export interface TreeViewProps {
   /** With checkboxes: Space toggles the row's check state. */
   onCheck?: (id: string) => void;
   onDropOn?: (id: string, e: DragEvent<HTMLDivElement>) => void;
+  onDragStartRow?: (id: string, e: DragEvent<HTMLDivElement>) => void;
   acceptsDrop?: (e: DragEvent<HTMLDivElement>) => boolean;
   testId?: string;
   empty?: ReactNode;
@@ -40,7 +43,7 @@ export interface TreeViewProps {
  * roving tabindex: one row is in the tab order, arrow keys move it, Right/Left expand and collapse, Home/End jump,
  * typing a letter finds the next row starting with it, Enter activates and Space checks.
  */
-export function TreeView({ label, rows, activeId, selectedId, onActiveChange, onToggle, onActivate, onCheck, onDropOn, acceptsDrop, testId, empty }: TreeViewProps) {
+export function TreeView({ label, rows, activeId, selectedId, onActiveChange, onToggle, onActivate, onCheck, onDropOn, onDragStartRow, acceptsDrop, testId, empty }: TreeViewProps) {
   const ref = useRef<HTMLDivElement>(null);
   const focusWanted = useRef(false);
   const current = rows.find((r) => r.id === activeId) ?? rows[0];
@@ -150,6 +153,8 @@ export function TreeView({ label, rows, activeId, selectedId, onActiveChange, on
             onFocus={() => {
               if (!active) onActiveChange(r.id);
             }}
+            draggable={r.draggable && !!onDragStartRow ? true : undefined}
+            onDragStart={r.draggable && onDragStartRow ? (e) => onDragStartRow(r.id, e) : undefined}
             onDragOver={(e) => {
               if (onDropOn && (!acceptsDrop || acceptsDrop(e))) {
                 e.preventDefault();

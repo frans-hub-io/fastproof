@@ -14,10 +14,18 @@ in order of the stages, without dates:
 
 ## Test management
 
-Test cases, suites and test plans next to the results they produce: manual and automated tests in one place,
-test runs from plans, and coverage of requirements by tests. Also more dashboard widgets with cloning between
-projects, and creating issues in Jira, GitLab, GitHub and Azure DevOps directly from triage, with their status
-kept in sync.
+**In the next release:** [test cases](guide/test-management.md) next to the results they produce, manual and
+automated tests in one case kept in sync with the code, [test plans and manual runs](guide/manual-runs.md)
+combined with CI in one launch, and [imports](guide/importing-test-cases.md) from TestRail, Qase and Allure
+TestOps.
+
+After that:
+
+- shared steps with versions, parameters, configurable workflows and reviews of cases;
+- requirements and the coverage of requirements by tests, a query language for filters and plans, and
+  starting CI pipelines from a plan;
+- more dashboard widgets with cloning between projects, and creating issues in Jira, GitLab, GitHub and Azure
+  DevOps directly from triage, with their status kept in sync.
 
 ## ReportPortal compatibility
 

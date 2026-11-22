@@ -2,7 +2,7 @@
 
 FastProof serves the [Model Context Protocol](https://modelcontextprotocol.io/) at `/mcp`, so a coding agent
 in your editor (GitHub Copilot in VS Code, or any MCP client) can read launches, failures, logs and history,
-and, when allowed, triage failures and draft rules. The agent runs on your machine with your token; FastProof
+and, when allowed, triage failures, draft rules and draft test cases. The agent runs on your machine with your token; FastProof
 itself calls no AI service.
 
 ## Connect VS Code
@@ -45,6 +45,7 @@ folders start with a dot, so they are not part of this site):
 |---|---|
 | [`.vscode/mcp.json`](https://github.com/frans-hub-io/fastproof/blob/main/docs/examples/copilot/.vscode/mcp.json) | The server entry above |
 | [`.github/agents/fastproof-triage.agent.md`](https://github.com/frans-hub-io/fastproof/blob/main/docs/examples/copilot/.github/agents/fastproof-triage.agent.md) | A triage agent: finds the launch, works through the failure clusters, investigates one sample per cluster, proposes decisions and waits for your confirmation before it writes anything |
+| [`.github/agents/fastproof-cases.agent.md`](https://github.com/frans-hub-io/fastproof/blob/main/docs/examples/copilot/.github/agents/fastproof-cases.agent.md) | A test case agent: turns a failure or a Playwright trace into a draft manual regression case, fills steps from the trace, and proposes changes to existing cases for people to accept |
 | [`.github/prompts/fastproof-triage.prompt.md`](https://github.com/frans-hub-io/fastproof/blob/main/docs/examples/copilot/.github/prompts/fastproof-triage.prompt.md) | `/fastproof-triage project=<key> branch=<branch>`: triage the newest launch of a branch with that agent |
 | [`.github/prompts/fastproof-explain-failure.prompt.md`](https://github.com/frans-hub-io/fastproof/blob/main/docs/examples/copilot/.github/prompts/fastproof-explain-failure.prompt.md) | Explain why one result failed, using the logs, history, similar failures and the code in the workspace, without changing triage |
 
@@ -75,6 +76,37 @@ the audit log with `via: mcp`. Tool answers are bounded (256 KiB per answer, 64 
 Tools never return project secrets or notification targets; `fastmock_interactions` queries the project's
 FastMock with its token only when the token's secret is bound to the origin of `fastmock.url` (see
 [Project secrets](notifications.md#project-secrets)).
+
+### Test case tools
+
+<!-- TODO(T3): parameters, answers and limits of each tool as implemented; check the names and permissions. -->
+
+The [test case](test-management.md) tools follow one rule: an agent writes only drafts and suggestions, and
+people decide.
+
+| Tool | Does | Needs |
+|---|---|---|
+| `search_cases` | Cases matching the filters of the case list, at most 100 | `cases:read` |
+| `get_case` | A case with its steps (Markdown), fields, code identities and latest results | `cases:read` |
+| `case_history` | Manual and automated results of a case | `cases:read` |
+| `list_test_plans`, `get_test_plan` | Test plans and their cases | `cases:read` |
+| `manual_run_progress` | Progress of the manual run of a launch, with failed steps and their actual results | `launches:read` |
+| `trace_actions` | The actions of an attempt's Playwright trace (`apiName`, selector, URL, status, error, duration), at most 500 | `launches:read` |
+| `draft_case_from_result` | A draft case built from a result: name, preconditions from fixtures, steps from the step tree, the error in the description | `cases:write` |
+| `create_case_draft` | A draft case from the agent's text | `cases:write` |
+| `propose_case_update` | A suggestion to change an existing case, against the revision the agent read; nothing is applied | `cases:write` |
+| `add_cases_to_plan` | Add cases to a test plan | `plans:write` |
+
+The server enforces the rules, whatever the agent asks for:
+
+- cases an agent creates are always `draft`, with `origin = ai`, and marked **AI draft** in the UI until a
+  person reviews them;
+- an agent cannot activate a case, change an active case directly, accept a suggestion or execute manual
+  steps; changes to existing cases arrive as suggestions on the case page, to accept or reject (a rejected
+  one stays in the history);
+- `trace_actions` never returns the values typed with `fill`, `type` or `press`, which can be passwords, nor
+  masked test parameters;
+- every write is in the audit log with `source: ai` and the agent's name.
 
 ## Good practice
 

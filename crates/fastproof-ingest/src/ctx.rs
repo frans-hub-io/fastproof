@@ -132,6 +132,20 @@ impl<'a> Ctx<'a> {
         s
     }
 
+    /// Cuts label names and values to [`MAX_LABEL_NAME_BYTES`] and [`MAX_LABEL_VALUE_BYTES`];
+    /// one warning per result that had any cut.
+    pub(crate) fn clamp_labels(&mut self, labels: &mut [Label], file: &str) {
+        let cut = clamp_labels(labels);
+        if cut > 0 {
+            self.warn(
+                Some(file),
+                format!(
+                    "{cut} label names or values truncated to {MAX_LABEL_NAME_BYTES} and {MAX_LABEL_VALUE_BYTES} bytes"
+                ),
+            );
+        }
+    }
+
     /// Stores an inline attachment body and returns a reference to it.
     pub(crate) fn add_inline(
         &mut self,
@@ -184,6 +198,28 @@ impl<'a> Ctx<'a> {
             result.redact_secret_parameters();
         }
     }
+}
+
+/// Longest kept label name.
+pub const MAX_LABEL_NAME_BYTES: usize = 256;
+/// Longest kept label value.
+pub const MAX_LABEL_VALUE_BYTES: usize = 1024;
+
+/// Cuts every label name and value to its limit on a char boundary, with an ellipsis;
+/// returns how many strings were cut.
+pub(crate) fn clamp_labels(labels: &mut [Label]) -> usize {
+    let mut cut = 0;
+    for l in labels {
+        if l.name.len() > MAX_LABEL_NAME_BYTES {
+            truncate_with_ellipsis(&mut l.name, MAX_LABEL_NAME_BYTES);
+            cut += 1;
+        }
+        if l.value.len() > MAX_LABEL_VALUE_BYTES {
+            truncate_with_ellipsis(&mut l.value, MAX_LABEL_VALUE_BYTES);
+            cut += 1;
+        }
+    }
+    cut
 }
 
 /// Cuts `s` to at most `max` bytes on a char boundary, ending with an ellipsis.
@@ -329,4 +365,63 @@ pub(crate) fn result_bytes(r: &ParsedResult) -> u64 {
         + labels_bytes(&r.labels)
         + links_bytes(&r.links)
         + steps
+}
+
+#[cfg(test)]
+mod label_tests {
+    use super::*;
+
+    #[test]
+    fn short_labels_are_kept() {
+        let mut l = vec![Label::new("tag", "smoke")];
+        assert_eq!(clamp_labels(&mut l), 0);
+        assert_eq!(l, vec![Label::new("tag", "smoke")]);
+    }
+
+    #[test]
+    fn long_name_and_value_are_cut_with_an_ellipsis() {
+        let mut l = vec![Label::new(
+            "n".repeat(MAX_LABEL_NAME_BYTES + 10),
+            "v".repeat(MAX_LABEL_VALUE_BYTES * 3),
+        )];
+        assert_eq!(clamp_labels(&mut l), 2);
+        assert_eq!(l[0].name.len(), MAX_LABEL_NAME_BYTES);
+        assert_eq!(l[0].value.len(), MAX_LABEL_VALUE_BYTES);
+        assert!(l[0].name.ends_with('\u{2026}'));
+        assert!(l[0].value.ends_with('\u{2026}'));
+    }
+
+    #[test]
+    fn exact_limit_is_not_cut() {
+        let mut l = vec![Label::new(
+            "n".repeat(MAX_LABEL_NAME_BYTES),
+            "v".repeat(MAX_LABEL_VALUE_BYTES),
+        )];
+        assert_eq!(clamp_labels(&mut l), 0);
+    }
+
+    #[test]
+    fn cut_lands_on_a_char_boundary() {
+        for pad in 0..4 {
+            let value = format!("{}{}", "a".repeat(pad), "\u{1F600}".repeat(400));
+            let mut l = vec![Label::new("k", value)];
+            assert_eq!(clamp_labels(&mut l), 1);
+            assert!(l[0].value.len() <= MAX_LABEL_VALUE_BYTES);
+            assert!(l[0].value.ends_with('\u{2026}'));
+            assert!(l[0].value.is_char_boundary(l[0].value.len()));
+        }
+    }
+
+    #[test]
+    fn ctx_warns_once_per_result() {
+        let options = crate::IngestOptions::default();
+        let mut ctx = Ctx::new(&options, Budget::new(1 << 20));
+        let mut l = vec![
+            Label::new("k", "x".repeat(MAX_LABEL_VALUE_BYTES + 1)),
+            Label::new("k2", "y".repeat(MAX_LABEL_VALUE_BYTES + 1)),
+        ];
+        ctx.clamp_labels(&mut l, "a.json");
+        assert_eq!(ctx.warnings.len(), 1);
+        assert!(ctx.warnings[0].message.contains("2 label"));
+    }
 }

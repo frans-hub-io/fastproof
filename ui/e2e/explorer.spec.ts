@@ -254,3 +254,34 @@ test('an environment switcher scopes the summary, the tree and the results', asy
   await expect(page).not.toHaveURL(/env=/);
 });
 
+
+test('a group page the server refuses as busy loads by itself after a short wait', async ({ page }) => {
+  await page.addInitScript(() => window.localStorage.setItem('fastproof.mock.treeBudget', '30'));
+  await page.addInitScript(() => {
+    const w = window as unknown as { __busy: number; __treeTests: number };
+    w.__busy = 0;
+    w.__treeTests = 0;
+    const real = window.fetch.bind(window);
+    window.fetch = (input, init) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      if (url.includes('/tree/tests')) {
+        w.__treeTests++;
+        if (w.__busy === 0) {
+          w.__busy++;
+          return Promise.resolve(new Response(JSON.stringify({ error: { code: 'too_many_requests', message: 'too many concurrent queries for this caller' } }), { status: 429, headers: { 'Content-Type': 'application/json', 'Retry-After': '1' } }));
+        }
+      }
+      return real(input, init);
+    };
+  });
+  await openRichLaunch(page);
+  await page.getByTestId('explorer-expand-all').click();
+  await expect.poll(() => tree(page).getByTestId('explorer-test').count()).toBeGreaterThan(15);
+  const seen = await page.evaluate(() => {
+    const w = window as unknown as { __busy: number; __treeTests: number };
+    return { busy: w.__busy, calls: w.__treeTests };
+  });
+  expect(seen.busy, 'one page was refused').toBe(1);
+  expect(seen.calls, 'and asked for again').toBeGreaterThan(1);
+  await expect(tree(page).getByText(/too many|failed to load|retry/i)).toHaveCount(0);
+});

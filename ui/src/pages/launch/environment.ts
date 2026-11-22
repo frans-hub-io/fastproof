@@ -1,16 +1,18 @@
 import { useSearchParams } from 'react-router';
 import { useLaunchEnvironments } from '../../api/hooks';
+import { decodeValue, encodeValue, NONE_VALUE } from '../../lib/explorer';
 import type { Counts, EnvironmentCounts, Launch } from '../../api/types';
 
-/** The `env` value of results whose series has no environment key. */
-export const NONE_ENV = '(none)';
+/** The `env` value of results whose series has no environment key (`%00`). */
+export const NONE_ENV = encodeValue(NONE_VALUE);
 
+/** The `env` URL value of an environment: its key escaped like a list item, or the marker. */
 export function envKey(e: EnvironmentCounts): string {
-  return e.key ?? NONE_ENV;
+  return typeof e.key === 'string' ? encodeValue(e.key) : NONE_ENV;
 }
 
 export function envName(key: string): string {
-  return key === NONE_ENV ? 'No environment' : key;
+  return key === NONE_ENV ? 'No environment' : decodeValue(key);
 }
 
 const ZERO: Counts = { total: 0, passed: 0, failed: 0, broken: 0, skipped: 0, unknown: 0, flaky: 0, muted: 0 };

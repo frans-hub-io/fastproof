@@ -43,7 +43,7 @@ with the number of results of the launch (in the chosen environment) that have i
 | Defect type | Results triaged with any of the checked types; **No defect** keeps the others |
 | Attachments | Results with a trace, a video or a screenshot (an image or an image diff), in any attempt, step or fixture |
 | Duration | Results that took at least and at most the given seconds |
-| Error message | Results whose error message contains the text |
+| Error message | Results whose error message contains all the words of the text (whole words, not parts of words) |
 
 Values of one filter are alternatives; different filters must all match. The filters that are set show as
 chips under the toolbar, each with a remove button, and **Clear** removes them all. They are in the page
@@ -86,7 +86,10 @@ in a full-screen drawer.
 
 The tree, its pages and the list take the filters as query parameters: `status`, `q`, `flaky`, `source`,
 `retried=true`, `muted=true|false`, `newFailures=true`, `severity`, `owner`, `tag` (comma-separated values,
-`(none)` for results without the label), `minDurationMs`, `maxDurationMs`, `defect` (defect type ids or
-`none`), `attachment` (`trace`, `video`, `screenshot`), `message`, and `env` (an environment key, or `(none)`).
+`%00` for results without the label), `minDurationMs`, `maxDurationMs`, `defect` (defect type ids or
+`none`), `attachment` (`trace`, `video`, `screenshot`), `message`, and `env` (an environment key, or `%00` for results without one; the same `%2C` and `%25` escapes apply).
+In a list, a comma inside a value is written `%2C` and a percent sign `%25` (on top of the URL
+encoding, so `a,b` is `a%252Cb` in a raw query string); a value that reads `(none)` is an ordinary value. Plain
+comma-separated lists work as before. `message` matches whole words (all of them, any order), not parts of words.
 A filter takes at most 20 values of at most 256 bytes; a label name has at most 64 letters, digits and
 `_ - . : @ /`.

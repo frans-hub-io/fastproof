@@ -7977,12 +7977,28 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
         };
     };
     results_facets: {
         parameters: {
             query?: {
-                /** @description An environment key; `(none)` for results without one. */
+                /** @description An environment key (`%2C` for a comma, `%25` for a percent sign); `%00` for results without one. */
                 env?: string;
             };
             header?: never;
@@ -8019,6 +8035,22 @@ export interface operations {
                 };
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8129,7 +8161,7 @@ export interface operations {
     results_labels: {
         parameters: {
             query?: {
-                /** @description An environment key; `(none)` for results without one. */
+                /** @description An environment key (`%2C` for a comma, `%25` for a percent sign); `%00` for results without one. */
                 env?: string;
             };
             header?: never;
@@ -8166,6 +8198,22 @@ export interface operations {
                 };
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8574,7 +8622,7 @@ export interface operations {
                 source?: components["schemas"]["ResultSource"];
                 before?: string;
                 limit?: number;
-                /** @description Substring of the error message. */
+                /** @description Words of the error message (whole words, case-insensitive). */
                 message?: string;
                 /** @description `true`: only results with more than one attempt. */
                 retried?: string;
@@ -8585,11 +8633,11 @@ export interface operations {
                  *     finished launch on the same branch and environment.
                  */
                 newFailures?: string;
-                /** @description Severity label values; `(none)` matches results without the label. */
+                /** @description Severity label values; `%00` matches results without the label. */
                 severity?: string;
-                /** @description Owner label values; `(none)` matches results without the label. */
+                /** @description Owner label values; `%00` matches results without the label. */
                 owner?: string;
-                /** @description Tag label values; `(none)` matches results without the label. */
+                /** @description Tag label values; `%00` matches results without the label. */
                 tag?: string;
                 minDurationMs?: string;
                 maxDurationMs?: string;
@@ -8597,7 +8645,7 @@ export interface operations {
                 defect?: string;
                 /** @description `trace`, `video` or `screenshot`. */
                 attachment?: string;
-                /** @description An environment key of the results' series; `(none)` matches results without one. */
+                /** @description An environment key of the results' series (`%2C` for a comma, `%25` for a percent sign); `%00` matches results without one. */
                 env?: string;
             };
             header?: never;
@@ -8903,7 +8951,7 @@ export interface operations {
                 source?: components["schemas"]["ResultSource"];
                 /** @description A result whose group is inlined first (to reveal a deep-linked result). */
                 reveal?: string;
-                /** @description Substring of the error message. */
+                /** @description Words of the error message (whole words, case-insensitive). */
                 message?: string;
                 /** @description `true`: only results with more than one attempt. */
                 retried?: string;
@@ -8914,11 +8962,11 @@ export interface operations {
                  *     finished launch on the same branch and environment.
                  */
                 newFailures?: string;
-                /** @description Severity label values; `(none)` matches results without the label. */
+                /** @description Severity label values; `%00` matches results without the label. */
                 severity?: string;
-                /** @description Owner label values; `(none)` matches results without the label. */
+                /** @description Owner label values; `%00` matches results without the label. */
                 owner?: string;
-                /** @description Tag label values; `(none)` matches results without the label. */
+                /** @description Tag label values; `%00` matches results without the label. */
                 tag?: string;
                 minDurationMs?: string;
                 maxDurationMs?: string;
@@ -8926,7 +8974,7 @@ export interface operations {
                 defect?: string;
                 /** @description `trace`, `video` or `screenshot`. */
                 attachment?: string;
-                /** @description An environment key of the results' series; `(none)` matches results without one. */
+                /** @description An environment key of the results' series (`%2C` for a comma, `%25` for a percent sign); `%00` matches results without one. */
                 env?: string;
             };
             header?: never;
@@ -8970,6 +9018,22 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
         };
     };
     results_tree_tests: {
@@ -8986,7 +9050,7 @@ export interface operations {
                 source?: components["schemas"]["ResultSource"];
                 before?: string;
                 limit?: number;
-                /** @description Substring of the error message. */
+                /** @description Words of the error message (whole words, case-insensitive). */
                 message?: string;
                 /** @description `true`: only results with more than one attempt. */
                 retried?: string;
@@ -8997,11 +9061,11 @@ export interface operations {
                  *     finished launch on the same branch and environment.
                  */
                 newFailures?: string;
-                /** @description Severity label values; `(none)` matches results without the label. */
+                /** @description Severity label values; `%00` matches results without the label. */
                 severity?: string;
-                /** @description Owner label values; `(none)` matches results without the label. */
+                /** @description Owner label values; `%00` matches results without the label. */
                 owner?: string;
-                /** @description Tag label values; `(none)` matches results without the label. */
+                /** @description Tag label values; `%00` matches results without the label. */
                 tag?: string;
                 minDurationMs?: string;
                 maxDurationMs?: string;
@@ -9009,7 +9073,7 @@ export interface operations {
                 defect?: string;
                 /** @description `trace`, `video` or `screenshot`. */
                 attachment?: string;
-                /** @description An environment key of the results' series; `(none)` matches results without one. */
+                /** @description An environment key of the results' series (`%2C` for a comma, `%25` for a percent sign); `%00` matches results without one. */
                 env?: string;
             };
             header?: never;
@@ -9046,6 +9110,22 @@ export interface operations {
                 };
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

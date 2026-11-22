@@ -1,5 +1,6 @@
 import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteData } from '@tanstack/react-query';
 import { API, projectPath, request, withQuery } from './client';
+import { limiter, withBusyRetry } from './retry';
 import type {
   AuditEvent,
   AuditFilters,
@@ -187,14 +188,20 @@ export function useLaunchLabels(key: string, id: string, env: string | undefined
   });
 }
 
-/** How many results each explorer filter value keeps. */
-export function useLaunchFacets(key: string, id: string, env: string | undefined, running: boolean, enabled = true) {
+/** Facets are refreshed this often while the launch runs and the filter menu is open. */
+export const FACETS_POLL_MS = 30_000;
+/** Environments are refreshed this often while the launch runs. */
+export const ENVIRONMENTS_POLL_MS = 60_000;
+
+/** How many results each explorer filter value keeps; polled only while `menuOpen`. */
+export function useLaunchFacets(key: string, id: string, env: string | undefined, running: boolean, enabled = true, menuOpen = false) {
   return useQuery({
     queryKey: [...qk.tree(key, id), 'facets', env ?? ''] as const,
     queryFn: () => request<LaunchFacets>(withQuery(`${projectPath(key)}/launches/${encodeURIComponent(id)}/facets`, { env })),
     enabled: !!id && enabled,
     placeholderData: keepPreviousData,
-    refetchInterval: running ? 30_000 : false,
+    refetchInterval: running && menuOpen ? FACETS_POLL_MS : false,
+    refetchIntervalInBackground: false,
   });
 }
 
@@ -204,7 +211,8 @@ export function useLaunchEnvironments(key: string, id: string, running: boolean)
     queryKey: [...qk.tree(key, id), 'environments'] as const,
     queryFn: () => request<ItemList<EnvironmentCounts>>(`${projectPath(key)}/launches/${encodeURIComponent(id)}/environments`).then((r) => r.items),
     enabled: !!id,
-    refetchInterval: running ? 15_000 : false,
+    refetchInterval: running ? ENVIRONMENTS_POLL_MS : false,
+    refetchIntervalInBackground: false,
   });
 }
 
@@ -224,10 +232,17 @@ export const TREE_TESTS_PAGE = 500;
 
 /** A page of the tests directly in one group of the launch tree. */
 export function fetchTreeTests(key: string, id: string, f: TreeFilters, path: readonly string[], before: string | null): Promise<Page<TreeTest>> {
-  return request<Page<TreeTest>>(
-    withQuery(`${projectPath(key)}/launches/${encodeURIComponent(id)}/tree/tests`, { ...treeFilterQuery(f), path: JSON.stringify(path), before: before ?? undefined, limit: TREE_TESTS_PAGE }),
+  return treeTestsSlot(() =>
+    withBusyRetry(() =>
+      request<Page<TreeTest>>(
+        withQuery(`${projectPath(key)}/launches/${encodeURIComponent(id)}/tree/tests`, { ...treeFilterQuery(f), path: JSON.stringify(path), before: before ?? undefined, limit: TREE_TESTS_PAGE }),
+      ),
+    ),
   );
 }
+
+/** Group pages load two at a time, so the groups opened with the page do not use up the caller's heavy slots. */
+const treeTestsSlot = limiter(2);
 
 export function treeRoots(body: TreeNode | TreeNode[] | ItemList<TreeNode>): TreeNode[] {
   if (Array.isArray(body)) return body;

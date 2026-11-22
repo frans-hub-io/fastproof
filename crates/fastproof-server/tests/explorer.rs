@@ -351,7 +351,7 @@ async fn filters_apply_to_tree_list_and_counts() {
         vec!["new-fail", "retried"]
     );
     assert_eq!(
-        ids(&s, &base, "&severity=critical,(none)").await,
+        ids(&s, &base, "&severity=critical,%2500").await,
         vec!["new-fail", "retried", "skip", "slow"]
     );
     assert_eq!(ids(&s, &base, "&tag=api").await, vec!["slow"]);
@@ -551,7 +551,7 @@ async fn environments_split_a_launch_and_attachment_kinds_filter() {
         listed.len() as i64,
         staging["counts"]["total"].as_i64().unwrap()
     );
-    let (_, none) = s.get(&format!("{base}/tree?env=(none)"), ADMIN_TOKEN).await;
+    let (_, none) = s.get(&format!("{base}/tree?env=%2500"), ADMIN_TOKEN).await;
     assert_eq!(none["counts"]["total"], 0);
     let (_, labels) = s
         .get(&format!("{base}/labels?env=production"), ADMIN_TOKEN)
@@ -624,4 +624,153 @@ async fn explorer_routes_check_access() {
             "another project's launch: {route}"
         );
     }
+}
+
+/// The message filter matches whole words through the full-text index, not parts of words.
+#[tokio::test]
+async fn message_filter_matches_words_and_uses_the_index() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = Server::start(&db).await;
+    s.project("shop").await;
+    let lid = launch_on(&s, "shop", "main").await;
+    let base = format!("/api/v1/projects/shop/launches/{lid}");
+    let mut a = result("refused", "failed", json!([]));
+    a["error"] = json!({"message": "Connection refused by the database"});
+    let mut b = result("timeout", "failed", json!([]));
+    b["error"] = json!({"message": "Read timeout after 30 s"});
+    post_results(&s, "shop", &lid, &[a, b, result("ok", "passed", json!([]))]).await;
+
+    assert_eq!(ids(&s, &base, "&message=refused").await, vec!["refused"]);
+    assert_eq!(ids(&s, &base, "&message=REFUSED").await, vec!["refused"]);
+    assert_eq!(
+        ids(&s, &base, "&message=database%20refused").await,
+        vec!["refused"]
+    );
+    assert!(ids(&s, &base, "&message=refus").await.is_empty());
+    assert!(ids(&s, &base, "&message=onnection").await.is_empty());
+    assert_eq!(
+        tree_names(&s, &base, "&message=timeout").await,
+        vec!["timeout"]
+    );
+    assert!(tree_names(&s, &base, "&message=time").await.is_empty());
+
+    let bulk: Vec<Value> = (0..20_000)
+        .map(|i| {
+            let mut r = result(&format!("bulk-{i}"), "failed", json!([]));
+            r["error"] = json!({"message": format!("assertion {i} failed in module m{}", i % 50)});
+            r
+        })
+        .collect();
+    for chunk in bulk.chunks(5000) {
+        post_results(&s, "shop", &lid, chunk).await;
+    }
+    sqlx::query("analyze results")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let plan: Vec<String> = sqlx::query_scalar(
+        "explain select id from results where launch_id = $1 \
+         and to_tsvector('simple', coalesce(message, '')) @@ plainto_tsquery('simple', 'refused')",
+    )
+    .bind(uuid::Uuid::parse_str(&lid).unwrap())
+    .fetch_all(&db.pool)
+    .await
+    .unwrap();
+    let plan = plan.join("\n");
+    assert!(plan.contains("Bitmap Index Scan"), "{plan}");
+    assert!(plan.contains("to_tsvector"), "{plan}");
+}
+
+/// A comma inside a filter value is written `%2C` in the list, and the missing-label marker
+/// is `%00`, so a label whose value is `(none)` is a value like any other.
+#[tokio::test]
+async fn filter_values_with_commas_and_a_literal_none() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = Server::start(&db).await;
+    s.project("shop").await;
+    let lid = launch_on(&s, "shop", "main").await;
+    let base = format!("/api/v1/projects/shop/launches/{lid}");
+    post_results(
+        &s,
+        "shop",
+        &lid,
+        &[
+            result("comma", "passed", json!([{"name": "tag", "value": "a,b"}])),
+            result("a", "passed", json!([{"name": "tag", "value": "a"}])),
+            result("b", "passed", json!([{"name": "tag", "value": "b"}])),
+            result(
+                "literal",
+                "passed",
+                json!([{"name": "tag", "value": "(none)"}]),
+            ),
+            result(
+                "percent",
+                "passed",
+                json!([{"name": "tag", "value": "100%"}]),
+            ),
+            result("missing", "passed", json!([])),
+        ],
+    )
+    .await;
+
+    assert_eq!(ids(&s, &base, "&tag=a%252Cb").await, vec!["comma"]);
+    assert_eq!(ids(&s, &base, "&tag=a,b").await, vec!["a", "b"]);
+    assert_eq!(ids(&s, &base, "&tag=a%252Cb,b").await, vec!["b", "comma"]);
+    assert_eq!(ids(&s, &base, "&tag=(none)").await, vec!["literal"]);
+    assert_eq!(ids(&s, &base, "&tag=%2500").await, vec!["missing"]);
+    assert_eq!(
+        ids(&s, &base, "&tag=%2500,(none)").await,
+        vec!["literal", "missing"]
+    );
+    assert_eq!(ids(&s, &base, "&tag=100%2525").await, vec!["percent"]);
+    assert_eq!(ids(&s, &base, "&tag=100%25").await, vec!["percent"]);
+    assert_eq!(tree_names(&s, &base, "&tag=a%252Cb").await, vec!["comma"]);
+}
+
+/// `env=%00` means no environment; a real environment named `(none)` or with a comma is a key.
+#[tokio::test]
+async fn env_filter_marker_is_apart_from_real_keys() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = Server::start(&db).await;
+    s.project("shop").await;
+    let mut totals = Vec::new();
+    for (i, key) in [Some("(none)"), Some("a,b"), None].into_iter().enumerate() {
+        let mut body = json!({"name": "nightly"});
+        if let Some(k) = key {
+            body["environment"] = json!({"key": k});
+        }
+        let (st, l) = s
+            .post("/api/v1/projects/shop/launches", ADMIN_TOKEN, body)
+            .await;
+        assert!(st.is_success(), "{st} {l}");
+        let lid = l["id"].as_str().unwrap().to_string();
+        post_results(
+            &s,
+            "shop",
+            &lid,
+            &[result(&format!("r{i}"), "passed", json!([]))],
+        )
+        .await;
+        let base = format!("/api/v1/projects/shop/launches/{lid}");
+        let mut row = Vec::new();
+        for env in ["(none)", "a%252Cb", "%2500", "a,b"] {
+            let (st, t) = s.get(&format!("{base}/tree?env={env}"), ADMIN_TOKEN).await;
+            assert_eq!(st, StatusCode::OK, "{env}: {t}");
+            row.push(t["counts"]["total"].as_i64().unwrap());
+        }
+        totals.push(row);
+    }
+    assert_eq!(totals[0], vec![1, 0, 0, 0], "a key that reads (none)");
+    assert_eq!(
+        totals[1],
+        vec![0, 1, 0, 1],
+        "a key with a comma, escaped or raw (env is one value)"
+    );
+    assert_eq!(totals[2], vec![0, 0, 1, 0], "no environment");
 }

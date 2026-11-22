@@ -118,7 +118,15 @@ function filterLaunches(list: Launch[], url: URL): Launch[] {
   });
 }
 
-const NONE = '(none)';
+const NO_LABEL = '\u0000';
+
+function listItems(v: string | null): string[] {
+  return (v ?? '')
+    .split(',')
+    .map((x) => x.trim())
+    .filter(Boolean)
+    .map((x) => x.replace(/%(2C|25|00)/gi, (_, h: string) => (h === '00' ? NO_LABEL : h === '25' ? '%' : ',')));
+}
 const LABEL_NAME = /^[\p{L}\p{N}_\-.:@/]{1,64}$/u;
 
 /** A `groupBy` the server accepts, or null. */
@@ -139,7 +147,7 @@ function isNewFailure(r: ResultSummary): boolean {
 /** The explorer filters shared by the tree and the result list, as the server applies them. */
 function explorerFilter(r: ResultSummary, url: URL): boolean {
   const sp = url.searchParams;
-  const list = (k: string) => (sp.get(k) ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+  const list = (k: string) => listItems(sp.get(k));
   const message = sp.get('message')?.trim().toLowerCase();
   if (message && !(r.message ?? '').toLowerCase().includes(message)) return false;
   if (sp.get('retried') === 'true' && r.attemptCount <= 1) return false;
@@ -148,7 +156,7 @@ function explorerFilter(r: ResultSummary, url: URL): boolean {
   if (sp.get('newFailures') === 'true' && !isNewFailure(r)) return false;
   for (const k of ['severity', 'owner', 'tag']) {
     const want = list(k);
-    if (want.length && !want.some((v) => (v === NONE ? !labelValue(r, k) : r.labels.some((l) => l.name === k && l.value === v)))) return false;
+    if (want.length && !want.some((v) => (v === NO_LABEL ? !labelValue(r, k) : r.labels.some((l) => l.name === k && l.value === v)))) return false;
   }
   const min = sp.get('minDurationMs');
   const max = sp.get('maxDurationMs');
@@ -159,7 +167,7 @@ function explorerFilter(r: ResultSummary, url: URL): boolean {
   const kinds = list('attachment');
   if (kinds.length && !kinds.some((k) => resultKinds(r).includes(k))) return false;
   const env = sp.get('env');
-  if (env && (resultEnv(r) ?? NONE) !== env) return false;
+  if (env && (resultEnv(r) ?? NO_LABEL) !== listItems(env)[0]) return false;
   return true;
 }
 
@@ -302,7 +310,7 @@ export const handlers = [
     if (!def || def.project !== params.key) return error(404, 'not_found', 'launch not found');
     const url = new URL(request.url);
     const env = url.searchParams.get('env');
-    const results = launchResults(def.launch.id).filter((r) => !env || (resultEnv(r) ?? NONE) === env);
+    const results = launchResults(def.launch.id).filter((r) => !env || (resultEnv(r) ?? NO_LABEL) === listItems(env)[0]);
     const by = new Map<string, { count: number; values: Set<string> }>();
     for (const r of results) {
       const seen = new Set<string>();
@@ -325,7 +333,7 @@ export const handlers = [
     const env = url.searchParams.get('env');
     const results = launchResults(def.launch.id)
       .map((r) => analyze(def.project, r))
-      .filter((r) => !env || (resultEnv(r) ?? NONE) === env);
+      .filter((r) => !env || (resultEnv(r) ?? NO_LABEL) === listItems(env)[0]);
     const labels = ['severity', 'owner', 'tag'].map((name) => ({
       name,
       values: valueCounts(results.flatMap((r) => [...new Set(r.labels.filter((l) => l.name === name).map((l) => l.value))])),

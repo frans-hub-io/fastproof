@@ -4,7 +4,7 @@ import type { ReactNode } from 'react';
 import { describe, expect, it } from 'vitest';
 import { RICH_LAUNCH_ID } from '../mocks/fixtures';
 import { testClient } from '../test/render';
-import { auditChunk, flatItems, treeRoots, useLaunches, useResult, useResults, useTree } from './hooks';
+import { auditChunk, ENVIRONMENTS_POLL_MS, FACETS_POLL_MS, flatItems, treeRoots, useLaunches, useLaunchEnvironments, useLaunchFacets, useResult, useResults, useTree } from './hooks';
 
 function wrapper({ children }: { children: ReactNode }) {
   return <QueryClientProvider client={testClient()}>{children}</QueryClientProvider>;
@@ -58,5 +58,40 @@ describe('query hooks', () => {
     expect(treeRoots([node])).toEqual([node]);
     expect(auditChunk({ items: [], next: '5' })).toEqual({ items: [], next: '5' });
     expect(auditChunk({ items: [], next: null })).toEqual({ items: [], next: null });
+  });
+
+  describe('polling of the launch aggregates', () => {
+    function options(running: boolean, menuOpen: boolean) {
+      const client = testClient();
+      const wrap = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+      const facets = renderHook(() => useLaunchFacets('web-shop', RICH_LAUNCH_ID, undefined, running, true, menuOpen), { wrapper: wrap });
+      const envs = renderHook(() => useLaunchEnvironments('web-shop', RICH_LAUNCH_ID, running), { wrapper: wrap });
+      const of = (key: string) => client.getQueryCache().getAll().find((q) => q.queryKey.includes(key))?.observers[0]?.options;
+      return { facets: of('facets'), envs: of('environments'), done: () => [facets, envs].forEach((h) => h.unmount()) };
+    }
+
+    it('polls facets only while the launch runs and the filter menu is open', () => {
+      const closed = options(true, false);
+      expect(closed.facets?.refetchInterval).toBe(false);
+      closed.done();
+      const finished = options(false, true);
+      expect(finished.facets?.refetchInterval).toBe(false);
+      finished.done();
+      const open = options(true, true);
+      expect(open.facets?.refetchInterval).toBe(FACETS_POLL_MS);
+      expect(open.facets?.refetchIntervalInBackground).toBe(false);
+      open.done();
+    });
+
+    it('polls environments at most once a minute, only while the launch runs and the tab is visible', () => {
+      const running = options(true, false);
+      expect(running.envs?.refetchInterval).toBe(ENVIRONMENTS_POLL_MS);
+      expect(ENVIRONMENTS_POLL_MS).toBeGreaterThanOrEqual(60_000);
+      expect(running.envs?.refetchIntervalInBackground).toBe(false);
+      running.done();
+      const finished = options(false, false);
+      expect(finished.envs?.refetchInterval).toBe(false);
+      finished.done();
+    });
   });
 });

@@ -496,6 +496,7 @@ impl<'c, 'a> Parser<'c, 'a> {
             labels.push(Label::new("host", h.clone()));
         }
         self.ctx.check_labels(labels.len(), &self.file)?;
+        self.ctx.clamp_labels(&mut labels, &self.file);
         let file = case.file.clone().or(suite.file.clone()).or_else(|| {
             (playwright || looks_like_file(&case.classname)).then(|| case.classname.clone())
         });

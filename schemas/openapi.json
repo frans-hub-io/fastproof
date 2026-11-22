@@ -4671,6 +4671,24 @@
                 }
               }
             }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         }
       }
@@ -4703,7 +4721,7 @@
           {
             "name": "env",
             "in": "query",
-            "description": "An environment key; `(none)` for results without one.",
+            "description": "An environment key (`%2C` for a comma, `%25` for a percent sign); `%00` for results without one.",
             "required": false,
             "schema": {
               "type": "string"
@@ -4739,6 +4757,24 @@
             }
           },
           "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
             "content": {
               "application/json": {
                 "schema": {
@@ -4922,7 +4958,7 @@
           {
             "name": "env",
             "in": "query",
-            "description": "An environment key; `(none)` for results without one.",
+            "description": "An environment key (`%2C` for a comma, `%25` for a percent sign); `%00` for results without one.",
             "required": false,
             "schema": {
               "type": "string"
@@ -4958,6 +4994,24 @@
             }
           },
           "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
             "content": {
               "application/json": {
                 "schema": {
@@ -5661,7 +5715,7 @@
           {
             "name": "message",
             "in": "query",
-            "description": "Substring of the error message.",
+            "description": "Words of the error message (whole words, case-insensitive).",
             "required": false,
             "schema": {
               "type": "string"
@@ -5697,7 +5751,7 @@
           {
             "name": "severity",
             "in": "query",
-            "description": "Severity label values; `(none)` matches results without the label.",
+            "description": "Severity label values; `%00` matches results without the label.",
             "required": false,
             "schema": {
               "type": "string"
@@ -5706,7 +5760,7 @@
           {
             "name": "owner",
             "in": "query",
-            "description": "Owner label values; `(none)` matches results without the label.",
+            "description": "Owner label values; `%00` matches results without the label.",
             "required": false,
             "schema": {
               "type": "string"
@@ -5715,7 +5769,7 @@
           {
             "name": "tag",
             "in": "query",
-            "description": "Tag label values; `(none)` matches results without the label.",
+            "description": "Tag label values; `%00` matches results without the label.",
             "required": false,
             "schema": {
               "type": "string"
@@ -5758,7 +5812,7 @@
           {
             "name": "env",
             "in": "query",
-            "description": "An environment key of the results' series; `(none)` matches results without one.",
+            "description": "An environment key of the results' series (`%2C` for a comma, `%25` for a percent sign); `%00` matches results without one.",
             "required": false,
             "schema": {
               "type": "string"
@@ -6260,7 +6314,7 @@
           {
             "name": "message",
             "in": "query",
-            "description": "Substring of the error message.",
+            "description": "Words of the error message (whole words, case-insensitive).",
             "required": false,
             "schema": {
               "type": "string"
@@ -6296,7 +6350,7 @@
           {
             "name": "severity",
             "in": "query",
-            "description": "Severity label values; `(none)` matches results without the label.",
+            "description": "Severity label values; `%00` matches results without the label.",
             "required": false,
             "schema": {
               "type": "string"
@@ -6305,7 +6359,7 @@
           {
             "name": "owner",
             "in": "query",
-            "description": "Owner label values; `(none)` matches results without the label.",
+            "description": "Owner label values; `%00` matches results without the label.",
             "required": false,
             "schema": {
               "type": "string"
@@ -6314,7 +6368,7 @@
           {
             "name": "tag",
             "in": "query",
-            "description": "Tag label values; `(none)` matches results without the label.",
+            "description": "Tag label values; `%00` matches results without the label.",
             "required": false,
             "schema": {
               "type": "string"
@@ -6357,7 +6411,7 @@
           {
             "name": "env",
             "in": "query",
-            "description": "An environment key of the results' series; `(none)` matches results without one.",
+            "description": "An environment key of the results' series (`%2C` for a comma, `%25` for a percent sign); `%00` matches results without one.",
             "required": false,
             "schema": {
               "type": "string"
@@ -6393,6 +6447,24 @@
             }
           },
           "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
             "content": {
               "application/json": {
                 "schema": {
@@ -6499,7 +6571,7 @@
           {
             "name": "message",
             "in": "query",
-            "description": "Substring of the error message.",
+            "description": "Words of the error message (whole words, case-insensitive).",
             "required": false,
             "schema": {
               "type": "string"
@@ -6535,7 +6607,7 @@
           {
             "name": "severity",
             "in": "query",
-            "description": "Severity label values; `(none)` matches results without the label.",
+            "description": "Severity label values; `%00` matches results without the label.",
             "required": false,
             "schema": {
               "type": "string"
@@ -6544,7 +6616,7 @@
           {
             "name": "owner",
             "in": "query",
-            "description": "Owner label values; `(none)` matches results without the label.",
+            "description": "Owner label values; `%00` matches results without the label.",
             "required": false,
             "schema": {
               "type": "string"
@@ -6553,7 +6625,7 @@
           {
             "name": "tag",
             "in": "query",
-            "description": "Tag label values; `(none)` matches results without the label.",
+            "description": "Tag label values; `%00` matches results without the label.",
             "required": false,
             "schema": {
               "type": "string"
@@ -6596,7 +6668,7 @@
           {
             "name": "env",
             "in": "query",
-            "description": "An environment key of the results' series; `(none)` matches results without one.",
+            "description": "An environment key of the results' series (`%2C` for a comma, `%25` for a percent sign); `%00` matches results without one.",
             "required": false,
             "schema": {
               "type": "string"
@@ -6632,6 +6704,24 @@
             }
           },
           "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
             "content": {
               "application/json": {
                 "schema": {

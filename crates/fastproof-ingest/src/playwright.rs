@@ -275,6 +275,7 @@ fn visit_spec(
         }
         // The worker label is added per result.
         ctx.check_labels(labels.len() + 1, walk.file)?;
+        ctx.clamp_labels(&mut labels, walk.file);
         let identity = TestIdentity::build(IdentityInput {
             format: Some(SourceFormat::PlaywrightJson),
             allure_id: allure_id.as_deref(),

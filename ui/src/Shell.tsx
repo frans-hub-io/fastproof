@@ -23,13 +23,10 @@ function useRecent(): RecentLaunch[] {
 
 function Logo() {
   return (
-    <svg viewBox="0 0 64 64" width="28" height="28" aria-hidden focusable="false">
-      <rect width="64" height="64" rx="14" fill="#7C2ACB" />
-      <g transform="skewX(-10) translate(6 0)">
-        <path d="M18 46V18h22v7H26v5h12v7H26v9z" fill="#FFFFFF" />
-      </g>
-      <circle cx="48" cy="44" r="6" fill="#FFD028" />
-    </svg>
+    <>
+      <img src="/brand/monogram-light.svg" alt="" width={46} height={26} className="fp-on-light" />
+      <img src="/brand/monogram-dark.svg" alt="" width={46} height={26} className="fp-on-dark" />
+    </>
   );
 }
 

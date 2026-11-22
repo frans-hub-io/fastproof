@@ -64,6 +64,11 @@ export default function SignInPage() {
       <Card withBorder radius="md" padding="lg" w="100%" maw={420} data-testid="sign-in">
         <Stack gap="md">
           <div>
+            <div className="fp-brand">
+              <img src="/brand/monogram-light.svg" alt="" width={53} height={30} className="fp-on-light" />
+              <img src="/brand/monogram-dark.svg" alt="" width={53} height={30} className="fp-on-dark" />
+              <span className="fp-wordmark">FastProof</span>
+            </div>
             <Title order={2} size="h3">
               Sign in to FastProof
             </Title>

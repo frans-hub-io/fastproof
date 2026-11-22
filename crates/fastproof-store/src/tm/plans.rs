@@ -99,13 +99,23 @@ pub async fn filter_case_ids(
     f: &CaseFilter,
     cap: usize,
 ) -> sqlx::Result<Vec<Uuid>> {
+    let f = plan_filter(f.clone());
     let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(
         "select c.id from cases c where c.archived_at is null and c.project_id = ",
     );
     qb.push_bind(project_id);
-    super::cases::push_filter(&mut qb, project_id, f);
+    super::cases::push_filter(&mut qb, project_id, &f);
     qb.push(" order by c.number limit ").push_bind(cap as i64);
     qb.build_query_scalar().fetch_all(&mut *conn).await
+}
+
+/// A plan filter with its defaults: folders include their subfolders unless `recursive: false`
+/// (the case list's filter defaults to `false`; a plan's folder means "this folder and below").
+pub fn plan_filter(mut f: CaseFilter) -> CaseFilter {
+    if f.folder_ids.as_ref().is_some_and(|v| !v.is_empty()) && f.recursive.is_none() {
+        f.recursive = Some(true);
+    }
+    f
 }
 
 /// Resolves case numbers of the project (not archived); unknown or archived numbers are a 400
@@ -384,6 +394,43 @@ pub fn shell_quote(s: &str) -> String {
 }
 
 impl Store {
+    /// Launches started from a plan of the project, newest first: numbers below `before`, at
+    /// most `limit`. 404 when the plan is not in the project.
+    pub async fn plan_launches(
+        &self,
+        project_id: Uuid,
+        plan_id: Uuid,
+        before: Option<i64>,
+        limit: i64,
+    ) -> TmResult<crate::Page<crate::Launch>> {
+        let mut conn = self.pool.acquire().await?;
+        plan_in(&mut conn, project_id, plan_id, false)
+            .await?
+            .ok_or(TmError::NotFound("test plan"))?;
+        let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "{} where l.project_id = $1 and l.test_plan_id = $2 and ($3::bigint is null or l.number < $3) \
+             order by l.number desc limit $4",
+            crate::launches::LAUNCH_SELECT
+        )))
+        .bind(project_id)
+        .bind(plan_id)
+        .bind(before)
+        .bind(limit + 1)
+        .fetch_all(&mut *conn)
+        .await?;
+        let mut items: Vec<crate::Launch> = rows
+            .iter()
+            .map(crate::launches::launch_row)
+            .collect::<Result<_, _>>()?;
+        let next = if items.len() as i64 > limit {
+            items.truncate(limit as usize);
+            items.last().map(|l| l.number.to_string())
+        } else {
+            None
+        };
+        Ok(crate::Page { items, next })
+    }
+
     /// Creates a managed plan: explicit cases (`caseNumbers`), then the cases of its filter.
     pub async fn create_managed_plan(
         &self,
@@ -406,7 +453,7 @@ impl Store {
                 ),
             });
         }
-        let filter = w.filter.clone().flatten();
+        let filter = w.filter.clone().flatten().map(plan_filter);
         if let Some(f) = &filter {
             super::cases::check_filter(f)?;
         }
@@ -541,7 +588,7 @@ impl Store {
             super::cases::check_filter_folders(&mut tx, project_id, f).await?;
         }
         let filter_json = match &p.filter {
-            Some(Some(f)) => Some(json_no_nul(serde_json::to_value(f)?)),
+            Some(Some(f)) => Some(json_no_nul(serde_json::to_value(plan_filter(f.clone()))?)),
             _ => None,
         };
         sqlx::query(

@@ -186,6 +186,12 @@ pub struct IssueTracker {
     pub url_template: String,
     /// Keys this tracker owns, e.g. `[A-Z][A-Z0-9]+-[0-9]+` (matched in full).
     pub key_regex: String,
+    /// Jira only: the numeric id of the project new issues go to (`pid`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    /// Jira only: the numeric id of the issue type of new issues (`issuetype`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue_type_id: Option<String>,
 }
 
 /// The FastMock instance whose journal is correlated with results.
@@ -467,6 +473,16 @@ impl IntegrationSettings {
                 &t.url_template.replace("{key}", "KEY-1"),
             )?;
             key_regex(&t.key_regex)?;
+            for (what, v) in [
+                ("issueTrackers.projectId", &t.project_id),
+                ("issueTrackers.issueTypeId", &t.issue_type_id),
+            ] {
+                if let Some(v) = v
+                    && (v.is_empty() || v.len() > 20 || !v.bytes().all(|b| b.is_ascii_digit()))
+                {
+                    return Err(format!("{what} is a numeric Jira id of 1 to 20 digits"));
+                }
+            }
         }
         if let Some(f) = &self.fastmock {
             http_url("fastmock.url", &f.url)?;

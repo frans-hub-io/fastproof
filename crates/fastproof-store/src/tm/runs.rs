@@ -21,8 +21,9 @@ use super::identity::manual_hash;
 use super::lookup::case_version_snapshot;
 use super::{
     AttachmentRef, CaseSnapshot, CaseStep, LaunchManual, ManualState, ManualUntestedTo, RunItem,
-    RunItemPatch, RunItemSummary, RunItemsAdd, RunItemsAdded, RunStatus, RunStepAck, RunStepResult,
-    RunStepWrite, StepStatus, TmError, TmLimits, TmResult, UntestedStepsTo,
+    RunItemExecution, RunItemPatch, RunItemSkip, RunItemSkipCode, RunItemSummary, RunItemsAdd,
+    RunItemsAdded, RunStatus, RunStepAck, RunStepResult, RunStepWrite, StepStatus, TmError,
+    TmLimits, TmResult, UntestedStepsTo,
 };
 use crate::ingest::LaunchRef;
 use crate::{Page, Project, Store, no_nul};
@@ -72,6 +73,8 @@ pub struct RunItemChange {
     pub new_status: RunStatus,
     pub assignee_changed: bool,
     pub revision: i64,
+    /// The execution the change applied to (for a rerun: the one kept as history).
+    pub execution_no: i32,
 }
 
 /// What closing a manual run did.
@@ -221,6 +224,60 @@ pub fn suggested_status(paths: &[StepPath], results: &HashMap<String, StepStatus
     }
 }
 
+/// Severity of a step status for "the worst child": failed > blocked > skipped > passed;
+/// `untested` counts only when every child is untested.
+fn severity(s: StepStatus) -> u8 {
+    match s {
+        StepStatus::Untested => 0,
+        StepStatus::Passed => 1,
+        StepStatus::Skipped => 2,
+        StepStatus::Blocked => 3,
+        StepStatus::Failed => 4,
+    }
+}
+
+/// The effective status of every step: a recorded status wins (a parent can be set by hand);
+/// a parent without one takes the worst status of its children, ignoring untested children
+/// while others have a status. The same rule as the runner's.
+pub fn effective_statuses(
+    steps: &[CaseStep],
+    results: &HashMap<String, StepStatus>,
+) -> HashMap<String, StepStatus> {
+    fn walk(
+        steps: &[CaseStep],
+        prefix: &str,
+        results: &HashMap<String, StepStatus>,
+        out: &mut HashMap<String, StepStatus>,
+    ) -> Vec<StepStatus> {
+        let mut level = Vec::with_capacity(steps.len());
+        for (i, s) in steps.iter().enumerate() {
+            let path = if prefix.is_empty() {
+                format!("{}", i + 1)
+            } else {
+                format!("{prefix}.{}", i + 1)
+            };
+            let children = walk(&s.steps, &path, results, out);
+            let own = results
+                .get(&path)
+                .copied()
+                .filter(|s| *s != StepStatus::Untested);
+            let st = own.unwrap_or_else(|| {
+                children
+                    .iter()
+                    .copied()
+                    .max_by_key(|c| severity(*c))
+                    .unwrap_or(StepStatus::Untested)
+            });
+            out.insert(path, st);
+            level.push(st);
+        }
+        level
+    }
+    let mut out = HashMap::new();
+    walk(steps, "", results, &mut out);
+    out
+}
+
 /// Gets or creates the manual identities (test case and series) of many cases at once, in
 /// hash order (the order ingest locks test cases in): case id → `(test_case_id, series_id)`.
 /// Same rows as [`super::identity::manual_identity`].
@@ -346,10 +403,12 @@ pub async fn insert_run_items(
         .iter()
         .map(|i| i.assignee.as_deref().map(no_nul))
         .collect();
+    let names: Vec<String> = items.iter().map(|i| no_nul(&i.name)).collect();
     Ok(sqlx::query(
-        "insert into run_items (id, project_id, launch_id, launch_created_at, case_id, case_version, series_id, assignee) \
-         select i, $1, $2, $3, c, v, s, a from unnest($4::uuid[], $5::uuid[], $6::int[], $7::uuid[], $8::text[]) \
-           as t(i, c, v, s, a) \
+        "insert into run_items (id, project_id, launch_id, launch_created_at, case_id, case_version, series_id, assignee, \
+           case_name) \
+         select i, $1, $2, $3, c, v, s, a, n \
+         from unnest($4::uuid[], $5::uuid[], $6::int[], $7::uuid[], $8::text[], $9::text[]) as t(i, c, v, s, a, n) \
          on conflict (launch_id, case_id) do nothing",
     )
     .bind(project_id)
@@ -360,6 +419,7 @@ pub async fn insert_run_items(
     .bind(&versions)
     .bind(&series)
     .bind(&assignees)
+    .bind(&names)
     .execute(&mut *conn)
     .await?
     .rows_affected())
@@ -378,7 +438,7 @@ pub async fn launch_manual(
     let Some(state) = state.flatten().as_deref().and_then(ManualState::parse) else {
         return Ok(None);
     };
-    let (total, untested, in_progress, passed, failed, blocked, skipped): (
+    type Counts = (
         i64,
         i64,
         i64,
@@ -386,15 +446,20 @@ pub async fn launch_manual(
         i64,
         i64,
         i64,
-    ) = sqlx::query_as(
-        "select count(*), count(*) filter (where status = 'untested'), \
-           count(*) filter (where status = 'in_progress'), count(*) filter (where status = 'passed'), \
-           count(*) filter (where status = 'failed'), count(*) filter (where status = 'blocked'), \
-           count(*) filter (where status = 'skipped') from run_items where launch_id = $1",
-    )
-    .bind(launch_id)
-    .fetch_one(&mut *conn)
-    .await?;
+        Option<DateTime<Utc>>,
+        Option<DateTime<Utc>>,
+    );
+    let (total, untested, in_progress, passed, failed, blocked, skipped, started_at, finished_at): Counts =
+        sqlx::query_as(
+            "select count(*), count(*) filter (where status = 'untested'), \
+               count(*) filter (where status = 'in_progress'), count(*) filter (where status = 'passed'), \
+               count(*) filter (where status = 'failed'), count(*) filter (where status = 'blocked'), \
+               count(*) filter (where status = 'skipped'), min(started_at), max(finished_at) \
+             from run_items where launch_id = $1",
+        )
+        .bind(launch_id)
+        .fetch_one(&mut *conn)
+        .await?;
     Ok(Some(LaunchManual {
         state,
         total,
@@ -404,6 +469,8 @@ pub async fn launch_manual(
         failed,
         blocked,
         skipped,
+        started_at,
+        finished_at,
     }))
 }
 
@@ -463,8 +530,8 @@ pub(crate) const FOLDER_PATH_SQL: &str = "coalesce((select array_agg(f2.name ord
 
 fn summary_select() -> String {
     format!(
-        "select ri.id, c.number, c.name, ri.status, ri.assignee, ri.execution_no, ri.updated_at, \
-         {FOLDER_PATH_SQL} as folder_path"
+        "select ri.id, c.number, coalesce(ri.case_name, c.name) as name, ri.status, ri.assignee, ri.execution_no, \
+         ri.updated_at, {FOLDER_PATH_SQL} as folder_path"
     )
 }
 
@@ -484,6 +551,11 @@ fn summary_row(r: &PgRow) -> sqlx::Result<RunItemSummary> {
 
 fn encode_cursor(s: &str) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(s)
+}
+
+/// The execution number of a `GET /run-items/{id}/executions` cursor.
+pub fn decode_execution_cursor(c: &str) -> Option<i32> {
+    decode_cursor(c).ok()?.parse().ok()
 }
 
 fn decode_cursor(c: &str) -> TmResult<String> {
@@ -563,15 +635,50 @@ type StepRow = (
     DateTime<Utc>,
 );
 
+/// A step row with its execution number.
+type ExecStepRow = (
+    i32,
+    String,
+    String,
+    String,
+    String,
+    Vec<Uuid>,
+    String,
+    DateTime<Utc>,
+);
+
+/// Step results of the current execution of an item.
 async fn step_rows(conn: &mut PgConnection, item_id: Uuid) -> sqlx::Result<Vec<StepRow>> {
     sqlx::query_as(
-        "select step_path, status, actual, comment, attachment_ids, updated_by, updated_at \
-         from run_step_results where run_item_id = $1",
+        "select s.step_path, s.status, s.actual, s.comment, s.attachment_ids, s.updated_by, s.updated_at \
+         from run_step_results s join run_items ri on ri.id = s.run_item_id and ri.execution_no = s.execution_no \
+         where s.run_item_id = $1",
     )
     .bind(item_id)
     .fetch_all(&mut *conn)
     .await
 }
+
+fn step_result_of(
+    (path, status, actual, comment, ids, updated_by, updated_at): StepRow,
+    atts: &HashMap<Uuid, AttachmentRef>,
+) -> RunStepResult {
+    RunStepResult {
+        path,
+        status: StepStatus::parse(&status).unwrap_or(StepStatus::Untested),
+        actual,
+        comment,
+        attachments: ids.iter().filter_map(|i| atts.get(i).cloned()).collect(),
+        updated_by,
+        updated_at,
+    }
+}
+
+/// Skipped cases listed in the answer of `add_run_items`, at most.
+pub const MAX_SKIPS_LISTED: usize = 1000;
+
+/// Earlier executions of a run item kept at most per read.
+pub const MAX_EXECUTIONS_PAGE: i64 = 100;
 
 fn path_key(p: &str) -> Vec<u32> {
     p.split('.').filter_map(|x| x.parse().ok()).collect()
@@ -584,8 +691,8 @@ pub async fn item_brief(
     item_id: Uuid,
 ) -> sqlx::Result<Option<RunItemBrief>> {
     let r = sqlx::query(
-        "select ri.id, ri.launch_id, ri.case_id, c.number, c.name, ri.case_version, ri.status, ri.assignee, \
-           ri.executed_by, ri.result_id, l.manual_state \
+        "select ri.id, ri.launch_id, ri.case_id, c.number, coalesce(ri.case_name, c.name) as name, ri.case_version, \
+           ri.status, ri.assignee, ri.executed_by, ri.result_id, l.manual_state \
          from run_items ri join cases c on c.id = ri.case_id join launches l on l.id = ri.launch_id \
          where ri.project_id = $1 and ri.id = $2",
     )
@@ -659,11 +766,17 @@ struct LockedItem {
     executed_by: Option<String>,
     number: i64,
     assignee: Option<String>,
+    execution_no: i32,
+    comment: String,
+    started_at: Option<DateTime<Utc>>,
+    finished_at: Option<DateTime<Utc>>,
+    defect: Option<serde_json::Value>,
 }
 
 async fn lock_item(conn: &mut PgConnection, item_id: Uuid) -> TmResult<LockedItem> {
     let r = sqlx::query(
-        "select ri.case_id, ri.case_version, ri.status, ri.revision, ri.executed_by, ri.assignee, c.number \
+        "select ri.case_id, ri.case_version, ri.status, ri.revision, ri.executed_by, ri.assignee, c.number, \
+           ri.execution_no, ri.comment, ri.started_at, ri.finished_at, ri.defect \
          from run_items ri join cases c on c.id = ri.case_id where ri.id = $1 for update of ri",
     )
     .bind(item_id)
@@ -679,6 +792,11 @@ async fn lock_item(conn: &mut PgConnection, item_id: Uuid) -> TmResult<LockedIte
         executed_by: r.try_get("executed_by")?,
         number: r.try_get("number")?,
         assignee: r.try_get("assignee")?,
+        execution_no: r.try_get("execution_no")?,
+        comment: r.try_get("comment")?,
+        started_at: r.try_get("started_at")?,
+        finished_at: r.try_get("finished_at")?,
+        defect: r.try_get("defect")?,
     })
 }
 
@@ -686,11 +804,14 @@ async fn step_statuses(
     conn: &mut PgConnection,
     item_id: Uuid,
 ) -> sqlx::Result<HashMap<String, StepStatus>> {
-    let rows: Vec<(String, String)> =
-        sqlx::query_as("select step_path, status from run_step_results where run_item_id = $1")
-            .bind(item_id)
-            .fetch_all(&mut *conn)
-            .await?;
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "select s.step_path, s.status from run_step_results s \
+         join run_items ri on ri.id = s.run_item_id and ri.execution_no = s.execution_no \
+         where s.run_item_id = $1",
+    )
+    .bind(item_id)
+    .fetch_all(&mut *conn)
+    .await?;
     Ok(rows
         .into_iter()
         .filter_map(|(p, s)| StepStatus::parse(&s).map(|s| (p, s)))
@@ -734,8 +855,32 @@ impl Store {
         let mut tx = self.pool.begin().await?;
         let launch = lock_open_launch(&mut tx, project, launch_id, true).await?;
         let mut wanted: BTreeMap<Uuid, Option<String>> = BTreeMap::new();
-        for c in super::plans::resolve_numbers(&mut tx, project.id, &numbers).await? {
-            wanted.insert(c, assignee.clone());
+        let mut skips: Vec<RunItemSkip> = Vec::new();
+        let mut skipped_automated = 0i64;
+        let named = super::plans::resolve_numbers(&mut tx, project.id, &numbers).await?;
+        let automated: BTreeMap<Uuid, i64> = sqlx::query_as::<_, (Uuid, i64)>(
+            "select id, number from cases where id = any($1) and automated order by number",
+        )
+        .bind(&named)
+        .fetch_all(&mut *tx)
+        .await?
+        .into_iter()
+        .collect();
+        for c in named {
+            match automated.get(&c) {
+                Some(n) => {
+                    skipped_automated += 1;
+                    if skips.len() < MAX_SKIPS_LISTED {
+                        skips.push(RunItemSkip {
+                            case_number: *n,
+                            code: RunItemSkipCode::Automated,
+                        });
+                    }
+                }
+                None => {
+                    wanted.insert(c, assignee.clone());
+                }
+            }
         }
         if let Some(plan_id) = add.plan_id {
             let kind: Option<String> =
@@ -778,15 +923,23 @@ impl Store {
                 .fetch_one(&mut *tx)
                 .await?;
         let ids: Vec<Uuid> = wanted.keys().copied().collect();
-        let present: BTreeSet<Uuid> = sqlx::query_scalar(
-            "select case_id from run_items where launch_id = $1 and case_id = any($2)",
+        let present_rows: Vec<(Uuid, i64)> = sqlx::query_as(
+            "select ri.case_id, c.number from run_items ri join cases c on c.id = ri.case_id \
+             where ri.launch_id = $1 and ri.case_id = any($2) order by c.number",
         )
         .bind(launch_id)
         .bind(&ids)
         .fetch_all(&mut *tx)
-        .await?
-        .into_iter()
-        .collect();
+        .await?;
+        for (_, n) in &present_rows {
+            if skips.len() < MAX_SKIPS_LISTED {
+                skips.push(RunItemSkip {
+                    case_number: *n,
+                    code: RunItemSkipCode::InLaunch,
+                });
+            }
+        }
+        let present: BTreeSet<Uuid> = present_rows.into_iter().map(|r| r.0).collect();
         let fresh: Vec<Uuid> = ids
             .iter()
             .filter(|c| !present.contains(c))
@@ -824,7 +977,8 @@ impl Store {
         tx.commit().await?;
         Ok(RunItemsAdded {
             added: added as i64,
-            skipped: ids.len() as i64 - added as i64,
+            skipped: ids.len() as i64 - added as i64 + skipped_automated,
+            skips,
         })
     }
 
@@ -969,17 +1123,7 @@ impl Store {
         let atts = attachment_refs(&mut conn, project_id, &att_ids).await?;
         let step_results = steps
             .into_iter()
-            .map(
-                |(path, status, actual, comment, ids, updated_by, updated_at)| RunStepResult {
-                    path,
-                    status: StepStatus::parse(&status).unwrap_or(StepStatus::Untested),
-                    actual,
-                    comment,
-                    attachments: ids.iter().filter_map(|i| atts.get(i).cloned()).collect(),
-                    updated_by,
-                    updated_at,
-                },
-            )
+            .map(|s| step_result_of(s, &atts))
             .collect();
         Ok(RunItem {
             summary,
@@ -1072,10 +1216,10 @@ impl Store {
                 }
             }
             sqlx::query(
-                "insert into run_step_results (run_item_id, step_path, status, actual, comment, attachment_ids, \
-                   updated_by, updated_at) \
-                 values ($1, $2, $3, coalesce($4, ''), coalesce($5, ''), coalesce($6, '{}'::uuid[]), $7, now()) \
-                 on conflict (run_item_id, step_path) do update set status = excluded.status, \
+                "insert into run_step_results (run_item_id, execution_no, step_path, status, actual, comment, \
+                   attachment_ids, updated_by, updated_at) \
+                 values ($1, $8, $2, $3, coalesce($4, ''), coalesce($5, ''), coalesce($6, '{}'::uuid[]), $7, now()) \
+                 on conflict (run_item_id, execution_no, step_path) do update set status = excluded.status, \
                    actual = coalesce($4, run_step_results.actual), comment = coalesce($5, run_step_results.comment), \
                    attachment_ids = coalesce($6, run_step_results.attachment_ids), \
                    updated_by = excluded.updated_by, updated_at = now()",
@@ -1087,6 +1231,7 @@ impl Store {
             .bind(w.comment.as_deref().map(no_nul))
             .bind(attachments.as_deref())
             .bind(no_nul(by))
+            .bind(item.execution_no)
             .execute(&mut *tx)
             .await?;
             let starts = item.status == RunStatus::Untested;
@@ -1171,19 +1316,21 @@ impl Store {
                 executed_snapshot(&mut tx, project.id, item.case_id, item.case_version).await?;
             let paths: Vec<String> = step_paths(&snapshot.body.steps)
                 .into_iter()
+                .filter(|p| p.leaf)
                 .map(|p| p.path)
                 .collect();
             if !paths.is_empty() {
                 sqlx::query(
-                    "insert into run_step_results (run_item_id, step_path, status, updated_by) \
-                     select $1, p, 'skipped', $3 from unnest($2::text[]) as p \
-                     on conflict (run_item_id, step_path) do update set status = 'skipped', \
+                    "insert into run_step_results (run_item_id, execution_no, step_path, status, updated_by) \
+                     select $1, $4, p, 'skipped', $3 from unnest($2::text[]) as p \
+                     on conflict (run_item_id, execution_no, step_path) do update set status = 'skipped', \
                        updated_by = excluded.updated_by, updated_at = now() \
                      where run_step_results.status = 'untested'",
                 )
                 .bind(item_id)
                 .bind(&paths)
                 .bind(no_nul(by))
+                .bind(item.execution_no)
                 .execute(&mut *tx)
                 .await?;
             }
@@ -1237,16 +1384,21 @@ impl Store {
             new_status,
             assignee_changed: assignee.is_some() && assignee_now != item.assignee,
             revision,
+            execution_no: item.execution_no,
         })
     }
 
-    /// Starts a new execution of an item: `executionNo + 1`, status `untested`, step results
-    /// cleared. The earlier attempt stays in `attempts` (and its result until the new execution
-    /// gets a final status).
+    /// Starts a new execution of an item at `revision`: `executionNo + 1`, status `untested`,
+    /// no step results. The earlier execution (status, comment, executor, times, defect and its
+    /// step results) is kept in `run_item_executions` and `run_step_results` outside the
+    /// partitions, so it survives retention; its attempt stays in `attempts` (and its result
+    /// until the new execution gets a final status).
     pub async fn rerun_run_item(
         &self,
         project: &Project,
         item_id: Uuid,
+        revision: i64,
+        by: &str,
     ) -> TmResult<RunItemChange> {
         let mut conn = self.pool.acquire().await?;
         let brief = item_brief(&mut conn, project.id, item_id)
@@ -1256,10 +1408,30 @@ impl Store {
         let mut tx = self.pool.begin().await?;
         let launch = lock_open_launch(&mut tx, project, brief.launch_id, true).await?;
         let item = lock_item(&mut tx, item_id).await?;
-        sqlx::query("delete from run_step_results where run_item_id = $1")
-            .bind(item_id)
-            .execute(&mut *tx)
-            .await?;
+        if item.revision != revision {
+            return Err(TmError::Stale {
+                current_revision: item.revision,
+                changed_by: item.executed_by.clone(),
+                source: Some("ui".into()),
+            });
+        }
+        sqlx::query(
+            "insert into run_item_executions (run_item_id, execution_no, status, case_version, comment, executed_by, \
+               started_at, finished_at, defect, rerun_by) \
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) on conflict (run_item_id, execution_no) do nothing",
+        )
+        .bind(item_id)
+        .bind(item.execution_no)
+        .bind(item.status.as_str())
+        .bind(item.case_version)
+        .bind(&item.comment)
+        .bind(item.executed_by.as_deref())
+        .bind(item.started_at)
+        .bind(item.finished_at)
+        .bind(item.defect.as_ref())
+        .bind(no_nul(by))
+        .execute(&mut *tx)
+        .await?;
         let revision: i64 = sqlx::query_scalar(
             "update run_items set execution_no = execution_no + 1, status = 'untested', started_at = null, \
                finished_at = null, executed_by = null, comment = '', revision = revision + 1, updated_at = now() \
@@ -1287,7 +1459,110 @@ impl Store {
             new_status: RunStatus::Untested,
             assignee_changed: false,
             revision,
+            execution_no: item.execution_no,
         })
+    }
+
+    /// Earlier executions of a run item of the project, newest first: executions before
+    /// `before` (an execution number), at most `limit`.
+    pub async fn run_item_executions(
+        &self,
+        project_id: Uuid,
+        item_id: Uuid,
+        before: Option<i32>,
+        limit: i64,
+    ) -> TmResult<Page<RunItemExecution>> {
+        let mut conn = self.pool.acquire().await?;
+        item_brief(&mut conn, project_id, item_id)
+            .await?
+            .ok_or(TmError::NotFound("run item"))?;
+        let limit = limit.clamp(1, MAX_EXECUTIONS_PAGE);
+        let rows = sqlx::query(
+            "select execution_no, status, case_version, comment, executed_by, started_at, finished_at, defect, \
+               rerun_by, rerun_at from run_item_executions \
+             where run_item_id = $1 and ($2::int is null or execution_no < $2) \
+             order by execution_no desc limit $3",
+        )
+        .bind(item_id)
+        .bind(before)
+        .bind(limit + 1)
+        .fetch_all(&mut *conn)
+        .await?;
+        let mut execs: Vec<(i32, PgRow)> = Vec::with_capacity(rows.len());
+        for r in rows {
+            execs.push((r.try_get("execution_no")?, r));
+        }
+        let next = if execs.len() as i64 > limit {
+            execs.truncate(limit as usize);
+            execs.last().map(|e| encode_cursor(&e.0.to_string()))
+        } else {
+            None
+        };
+        let nos: Vec<i32> = execs.iter().map(|e| e.0).collect();
+        let srows: Vec<ExecStepRow> =
+            sqlx::query_as(
+                "select execution_no, step_path, status, actual, comment, attachment_ids, updated_by, updated_at \
+                 from run_step_results where run_item_id = $1 and execution_no = any($2)",
+            )
+            .bind(item_id)
+            .bind(&nos)
+            .fetch_all(&mut *conn)
+            .await?;
+        let att_ids: Vec<Uuid> = srows.iter().flat_map(|s| s.5.iter().copied()).collect();
+        let atts = attachment_refs(&mut conn, project_id, &att_ids).await?;
+        let mut by_exec: HashMap<i32, Vec<StepRow>> = HashMap::new();
+        for (no, p, st, a, c, ids, ub, ua) in srows {
+            by_exec
+                .entry(no)
+                .or_default()
+                .push((p, st, a, c, ids, ub, ua));
+        }
+        let mut items = Vec::with_capacity(execs.len());
+        for (no, r) in execs {
+            let mut steps = by_exec.remove(&no).unwrap_or_default();
+            steps.sort_by_key(|s| path_key(&s.0));
+            let status: String = r.try_get("status")?;
+            items.push(RunItemExecution {
+                execution_no: no,
+                status: RunStatus::parse(&status).unwrap_or(RunStatus::Untested),
+                case_version: r.try_get("case_version")?,
+                comment: r.try_get("comment")?,
+                executed_by: r.try_get("executed_by")?,
+                started_at: r.try_get("started_at")?,
+                finished_at: r.try_get("finished_at")?,
+                defect: r.try_get("defect")?,
+                step_results: steps
+                    .into_iter()
+                    .map(|s| step_result_of(s, &atts))
+                    .collect(),
+                rerun_by: r.try_get("rerun_by")?,
+                rerun_at: r.try_get("rerun_at")?,
+            });
+        }
+        Ok(Page { items, next })
+    }
+
+    /// Names seen as assignees or executors of run items and as plan assignees of the
+    /// project, by name; with `q`, only names containing it (case-insensitive); at most `limit`.
+    pub async fn seen_principals(
+        &self,
+        project_id: Uuid,
+        q: Option<&str>,
+        limit: i64,
+    ) -> anyhow::Result<Vec<String>> {
+        Ok(sqlx::query_scalar(
+            "select n from (\
+               select assignee as n from run_items where project_id = $1 and assignee is not null \
+               union select executed_by from run_items where project_id = $1 and executed_by is not null \
+               union select i.assignee from test_plan_items i join test_plans p on p.id = i.plan_id \
+                 where p.project_id = $1 and i.assignee is not null) t \
+             where $2::text is null or strpos(lower(n), lower($2)) > 0 order by n limit $3",
+        )
+        .bind(project_id)
+        .bind(q.map(no_nul))
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?)
     }
 
     /// Copies the defect of an item's projected result (set by triage) onto the item.
@@ -1464,8 +1739,8 @@ impl Store {
     ) -> anyhow::Result<Vec<ManualReportItem>> {
         let mut conn = self.pool.acquire().await?;
         let rows = sqlx::query(
-            "select ri.id, ri.case_id, c.number, c.name, ri.case_version, ri.status, ri.execution_no, ri.assignee, \
-               ri.executed_by, ri.started_at, ri.finished_at, ri.comment, ri.defect \
+            "select ri.id, ri.case_id, c.number, coalesce(ri.case_name, c.name) as name, ri.case_version, ri.status, \
+               ri.execution_no, ri.assignee, ri.executed_by, ri.started_at, ri.finished_at, ri.comment, ri.defect \
              from run_items ri join cases c on c.id = ri.case_id \
              where ri.project_id = $1 and ri.launch_id = $2 and c.number > $3 order by c.number limit $4",
         )
@@ -1481,7 +1756,9 @@ impl Store {
             .collect::<Result<_, _>>()?;
         let mut steps: HashMap<Uuid, Vec<(String, String, String, String)>> = HashMap::new();
         let srows: Vec<(Uuid, String, String, String, String)> = sqlx::query_as(
-            "select run_item_id, step_path, status, actual, comment from run_step_results where run_item_id = any($1)",
+            "select s.run_item_id, s.step_path, s.status, s.actual, s.comment from run_step_results s \
+             join run_items ri on ri.id = s.run_item_id and ri.execution_no = s.execution_no \
+             where s.run_item_id = any($1)",
         )
         .bind(&ids)
         .fetch_all(&mut *conn)
@@ -1507,15 +1784,23 @@ impl Store {
                 .into_iter()
                 .map(|(p, s, a, c)| (p, (s, a, c)))
                 .collect();
+            let recorded: HashMap<String, StepStatus> = results
+                .iter()
+                .filter_map(|(p, (s, _, _))| StepStatus::parse(s).map(|s| (p.clone(), s)))
+                .collect();
+            let effective = effective_statuses(&snap.body.steps, &recorded);
             let report_steps = step_paths(&snap.body.steps)
                 .into_iter()
                 .map(|sp| {
                     let step = step_at(&snap.body.steps, &sp.path);
-                    let (st, actual, comment) = results.get(&sp.path).cloned().unwrap_or_default();
+                    let (_, actual, comment) = results.get(&sp.path).cloned().unwrap_or_default();
                     ManualReportStep {
                         action: step.map(|s| s.action.clone()).unwrap_or_default(),
                         expected: step.map(|s| s.expected.clone()).unwrap_or_default(),
-                        status: StepStatus::parse(&st).unwrap_or(StepStatus::Untested),
+                        status: effective
+                            .get(&sp.path)
+                            .copied()
+                            .unwrap_or(StepStatus::Untested),
                         actual,
                         comment,
                         path: sp.path,
@@ -1584,6 +1869,37 @@ mod tests {
         ] {
             assert!(!valid_step_path(bad), "{bad}");
         }
+    }
+
+    #[test]
+    fn parents_follow_the_worst_child() {
+        let steps = vec![
+            step("a", vec![step("a1", vec![]), step("a2", vec![])]),
+            step("b", vec![]),
+        ];
+        let m = |v: &[(&str, StepStatus)]| -> HashMap<String, StepStatus> {
+            v.iter().map(|(p, s)| (p.to_string(), *s)).collect()
+        };
+        let e = effective_statuses(
+            &steps,
+            &m(&[("1.1", StepStatus::Blocked), ("1.2", StepStatus::Skipped)]),
+        );
+        assert_eq!(
+            e["1"],
+            StepStatus::Blocked,
+            "a blocked child wins over skipped"
+        );
+        let e = effective_statuses(
+            &steps,
+            &m(&[("1.1", StepStatus::Passed), ("1", StepStatus::Untested)]),
+        );
+        assert_eq!(e["1"], StepStatus::Passed, "untested children are ignored");
+        assert_eq!(e["2"], StepStatus::Untested);
+        let e = effective_statuses(
+            &steps,
+            &m(&[("1.1", StepStatus::Failed), ("1", StepStatus::Passed)]),
+        );
+        assert_eq!(e["1"], StepStatus::Passed, "a parent set by hand wins");
     }
 
     #[test]

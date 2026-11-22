@@ -540,6 +540,203 @@ impl Store {
     }
 }
 
+/// Distinct values of an import column, at most, for it to become a `select` field; a column
+/// with more values (or a value longer than [`MAX_OPTION_BYTES`]) becomes a `text` field.
+pub const MAX_IMPORT_SELECT_OPTIONS: usize = 50;
+/// Unknown import columns that become fields, at most per import.
+pub const MAX_IMPORT_COLUMNS: usize = 50;
+
+/// An import column that matches no field definition, with what the import saw in it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportColumn {
+    /// The column name as in the file (the new field's name).
+    pub name: String,
+    /// Distinct non-empty values (at most [`MAX_IMPORT_SELECT_OPTIONS`]); cleared once `text`.
+    #[serde(default)]
+    pub values: std::collections::BTreeSet<String>,
+    /// Too many or too long values for a `select`.
+    #[serde(default)]
+    pub text: bool,
+    /// A cell held a list (a `multiselect` unless `text`).
+    #[serde(default)]
+    pub many: bool,
+    /// A cell held a number and every value parses as one.
+    #[serde(default)]
+    pub number: bool,
+}
+
+impl ImportColumn {
+    /// Records the values of one cell (`many`: the cell was a list).
+    pub fn observe(&mut self, values: &[String], many: bool, number: bool) {
+        self.many |= many;
+        if number && self.values.is_empty() && !self.text {
+            self.number = true;
+        }
+        if !number {
+            self.number = false;
+        }
+        if self.text {
+            return;
+        }
+        for v in values {
+            let v = v.trim();
+            if v.is_empty() {
+                continue;
+            }
+            if v.len() > MAX_OPTION_BYTES || v.chars().any(char::is_control) {
+                self.text = true;
+                self.values.clear();
+                return;
+            }
+            if !self.values.iter().any(|x| x.eq_ignore_ascii_case(v)) {
+                if self.values.len() >= MAX_IMPORT_SELECT_OPTIONS {
+                    self.text = true;
+                    self.values.clear();
+                    return;
+                }
+                self.values.insert(v.to_string());
+            }
+        }
+    }
+
+    /// The type of the field the column becomes: `number` when every value was a number,
+    /// `select`/`multiselect` with the seen values as options, else `text`.
+    pub fn field_type(&self) -> FieldType {
+        if self.number && !self.many {
+            FieldType::Number
+        } else if self.text || self.values.is_empty() {
+            FieldType::Text
+        } else if self.many {
+            FieldType::Multiselect
+        } else {
+            FieldType::Select
+        }
+    }
+}
+
+/// A field key from a column name: lowercase ASCII letters, digits and `_`, starting with a
+/// letter (`f_` is put in front otherwise), unique among `taken` (`_2`, `_3`, … appended).
+pub fn import_field_key(name: &str, taken: &HashSet<String>) -> String {
+    let mut k = String::new();
+    for c in name.trim().chars().flat_map(char::to_lowercase) {
+        if c.is_ascii_lowercase() || c.is_ascii_digit() {
+            k.push(c);
+        } else if !k.ends_with('_') {
+            k.push('_');
+        }
+    }
+    let mut k = k.trim_matches('_').to_string();
+    if !k.starts_with(|c: char| c.is_ascii_lowercase()) {
+        k = format!("f_{k}").trim_end_matches('_').to_string();
+    }
+    k.truncate(56);
+    let k = k.trim_end_matches('_').to_string();
+    if !taken.contains(&k) {
+        return k;
+    }
+    (2..)
+        .map(|i| format!("{k}_{i}"))
+        .find(|c| !taken.contains(c))
+        .unwrap_or(k)
+}
+
+/// The name of the field an import column becomes: the column name, or for a column the parser
+/// gave as a key (`automation_type`) a readable one (`Automation type`).
+pub fn import_field_name(column: &str) -> String {
+    let c: String = column.trim().chars().take(200).collect();
+    if c.is_empty() || c.contains(char::is_whitespace) || c != c.to_lowercase() {
+        return c;
+    }
+    let spaced = c.replace('_', " ");
+    let mut chars = spaced.chars();
+    match chars.next() {
+        Some(f) => f.to_uppercase().chain(chars).collect(),
+        None => c,
+    }
+}
+
+/// The definition an unknown import column becomes (see [`ImportColumn::field_type`]).
+pub fn import_field_write(col: &ImportColumn, key: String, limits: &TmLimits) -> CaseFieldWrite {
+    let t = col.field_type();
+    let name = import_field_name(&col.name);
+    let options = matches!(t, FieldType::Select | FieldType::Multiselect).then(|| {
+        col.values
+            .iter()
+            .take(limits.max_field_options)
+            .map(|v| FieldOption {
+                value: v.clone(),
+                color: None,
+                archived: false,
+            })
+            .collect()
+    });
+    CaseFieldWrite {
+        key,
+        name: if name.is_empty() {
+            "Field".into()
+        } else {
+            name
+        },
+        field_type: t,
+        options,
+        required: None,
+        default_value: None,
+        source_label: None,
+        position: None,
+    }
+}
+
+impl Store {
+    /// Creates a field definition for each unknown import column (`unknownFieldValues:
+    /// create`): the column name becomes the field name (so the import maps the column to
+    /// it), the key comes from the name, the type from the values (see
+    /// [`ImportColumn::field_type`]). At most [`MAX_IMPORT_COLUMNS`]; columns past `maxFields`
+    /// or with a name an active field already has are left out. Returns the created fields.
+    pub async fn create_import_fields(
+        &self,
+        project_id: Uuid,
+        columns: &[ImportColumn],
+        limits: &TmLimits,
+    ) -> TmResult<Vec<CaseFieldDef>> {
+        let mut conn = self.pool.acquire().await?;
+        ensure_built_in(&mut conn, project_id).await?;
+        let existing = field_defs(&mut conn, project_id, true).await?;
+        drop(conn);
+        let mut taken: HashSet<String> = existing.iter().map(|d| d.key.clone()).collect();
+        let names: HashSet<String> = existing
+            .iter()
+            .filter(|d| !d.archived)
+            .flat_map(|d| [d.key.to_lowercase(), d.name.trim().to_lowercase()])
+            .collect();
+        let mut out = Vec::new();
+        for col in columns.iter().take(MAX_IMPORT_COLUMNS) {
+            let name = col.name.trim().to_lowercase();
+            if name.is_empty()
+                || names.contains(&name)
+                || names.contains(&import_field_name(&col.name).to_lowercase())
+            {
+                continue;
+            }
+            let key = import_field_key(&col.name, &taken);
+            let w = import_field_write(col, key.clone(), limits);
+            match self.create_case_field(project_id, &w, limits).await {
+                Ok(d) => {
+                    taken.insert(key);
+                    out.push(d);
+                }
+                Err(TmError::Conflict {
+                    code: "limit_reached",
+                    ..
+                }) => break,
+                Err(TmError::Invalid { .. }) | Err(TmError::Conflict { .. }) => continue,
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(out)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -565,6 +762,43 @@ mod tests {
             position: 0,
             archived: false,
         }
+    }
+
+    #[test]
+    fn import_columns_become_fields() {
+        let taken: HashSet<String> = ["type".to_string()].into_iter().collect();
+        assert_eq!(
+            import_field_key("Automation Type", &taken),
+            "automation_type"
+        );
+        assert_eq!(import_field_key("Type", &taken), "type_2");
+        assert_eq!(import_field_key("2nd owner", &taken), "f_2nd_owner");
+        assert_eq!(import_field_key("Ünïcode!", &taken), "n_code");
+        assert_eq!(import_field_key("", &taken), "f");
+        assert_eq!(import_field_name("automation_type"), "Automation type");
+        assert_eq!(import_field_name("Automation Type"), "Automation Type");
+        assert!(valid_key(&import_field_key(&"x".repeat(300), &taken)));
+        let mut c = ImportColumn::default();
+        c.observe(&["Functional".into()], false, false);
+        c.observe(&["functional".into(), "Regression".into()], false, false);
+        assert_eq!(c.field_type(), FieldType::Select);
+        assert_eq!(c.values.len(), 2, "values compare without case");
+        for i in 0..MAX_IMPORT_SELECT_OPTIONS {
+            c.observe(&[format!("v{i}")], false, false);
+        }
+        assert_eq!(c.field_type(), FieldType::Text, "too many values");
+        assert!(c.values.is_empty());
+        let mut m = ImportColumn::default();
+        m.observe(&["a".into(), "b".into()], true, false);
+        assert_eq!(m.field_type(), FieldType::Multiselect);
+        let mut n = ImportColumn::default();
+        n.observe(&["600".into()], false, true);
+        assert_eq!(n.field_type(), FieldType::Number);
+        n.observe(&["10m".into()], false, false);
+        assert_eq!(n.field_type(), FieldType::Select);
+        let mut long = ImportColumn::default();
+        long.observe(&["x".repeat(MAX_OPTION_BYTES + 1)], false, false);
+        assert_eq!(long.field_type(), FieldType::Text);
     }
 
     #[test]

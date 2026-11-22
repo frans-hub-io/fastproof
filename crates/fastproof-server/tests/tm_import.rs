@@ -189,12 +189,12 @@ async fn testrail_dry_run_apply_and_repeated_upsert() {
         "Accounts, Login, Passwords, Reset: {dry}"
     );
     assert!(
-        dry["unknownFields"]
+        dry["createdFields"]
             .as_array()
             .unwrap()
             .iter()
             .any(|f| f == "Browser"),
-        "{dry}"
+        "unknownFieldValues: create makes unknown columns fields: {dry}"
     );
     assert!(
         dry["unknownValues"]["type"].is_null(),

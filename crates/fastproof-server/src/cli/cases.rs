@@ -194,7 +194,7 @@ fn print_report(label: &str, j: &Value) {
         r["folders"],
         r["errors"].as_array().map(Vec::len).unwrap_or(0)
     );
-    if let Some(f) = r["newFields"].as_array().filter(|f| !f.is_empty()) {
+    if let Some(f) = r["createdFields"].as_array().filter(|f| !f.is_empty()) {
         eprintln!(
             "new fields (created): {}",
             f.iter()

@@ -325,9 +325,29 @@ fn audit_change(before: &CaseRow, after: &CaseRow) -> Vec<(&'static str, serde_j
     out
 }
 
+/// Body of `PUT /cases/{n}`: a [`CaseWrite`] and whether it named `folderId` (absent keeps the
+/// folder, `null` moves the case to the root).
+pub struct CasePut {
+    pub write: CaseWrite,
+    pub folder_given: bool,
+}
+
+impl<'de> Deserialize<'de> for CasePut {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let v = serde_json::Value::deserialize(d)?;
+        let folder_given = v.get("folderId").is_some();
+        let write = CaseWrite::deserialize(v).map_err(serde::de::Error::custom)?;
+        Ok(Self {
+            write,
+            folder_given,
+        })
+    }
+}
+
 #[utoipa::path(put, path = "/api/v1/projects/{key}/cases/{n}", tag = "cases", operation_id = "update_case",
-    description = "Replaces the content of a case. Fields and tags absent from the body keep their values; an \
-        absent `folderId` is the root. Values that code owns on an automated case cannot change (409 `field_from_code`).",
+    description = "Replaces the content of a case. Fields, tags, status and `folderId` absent from the body keep their \
+        values (`folderId: null` moves the case to the root). Values that code owns on an automated case cannot change \
+        (409 `field_from_code`).",
     request_body = CaseWrite,
     params(("key" = String, Path), ("n" = i64, Path), ("If-Match" = String, Header, description = "\"r<revision>\"")),
     responses((status = 200, body = Case, headers(("ETag" = String))), (status = 400, body = ErrorBody),
@@ -340,14 +360,20 @@ pub async fn update_case(
     auth: Auth,
     headers: HeaderMap,
     P((key, n)): P<(String, String)>,
-    ApiJson(body): ApiJson<CaseWrite>,
+    ApiJson(body): ApiJson<CasePut>,
 ) -> ApiResult<CaseReply> {
     let p = s.project_for(&auth, &key, &s.perms.cases_write).await?;
     let n = case_number(&n)?;
     let expected = if_match(&headers)?;
     let (before, after) = s
         .store
-        .update_case(&ctx(&s, &p, &auth), n, expected, &body)
+        .update_case(
+            &ctx(&s, &p, &auth),
+            n,
+            expected,
+            &body.write,
+            !body.folder_given,
+        )
         .await
         .map_err(tm_error)?;
     for (action, detail) in audit_change(&before, &after) {

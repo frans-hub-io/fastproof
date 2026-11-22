@@ -11,8 +11,8 @@ use fastproof_store::tm::runs::{
     ManualReportItem, MyRunItem, RunItemBrief, RunItemFilter, step_at,
 };
 use fastproof_store::tm::{
-    CaseBody, ManualClose, ManualState, RunDefect, RunItem, RunItemPatch, RunItemSummary,
-    RunItemsAdd, RunItemsAdded, RunStatus, RunStepAck, RunStepWrite, StepStatus,
+    CaseBody, ManualClose, ManualState, RunDefect, RunItem, RunItemExecution, RunItemPatch,
+    RunItemSummary, RunItemsAdd, RunItemsAdded, RunStatus, RunStepAck, RunStepWrite, StepStatus,
 };
 use fastproof_store::{Launch, Page, Project};
 use franshub_auth::Auth;
@@ -49,6 +49,8 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(run_item_defect))
         .routes(routes!(run_item_new_issue_url))
         .routes(routes!(rerun_run_item))
+        .routes(routes!(run_item_executions))
+        .routes(routes!(project_people))
         .routes(routes!(close_manual_run))
         .routes(routes!(reopen_manual_run))
         .routes(routes!(manual_report))
@@ -105,8 +107,9 @@ fn item_response(item: RunItem) -> Response {
 }
 
 #[utoipa::path(post, path = "/api/v1/projects/{key}/launches/{id}/run-items", tag = "runs", operation_id = "add_run_items",
-    description = "Adds run items for cases (`caseNumbers`, at most `maxBulk`) or for the manual cases of a managed plan, \
-        and opens the manual run of the launch. Cases already in the launch are skipped.",
+    description = "Adds run items for the manual cases among `caseNumbers` (at most `maxBulk`) or of a managed plan, and \
+        opens the manual run of the launch. Automated cases (CI runs them) and cases already in the launch are skipped; \
+        `skips` names them with the codes `automated` and `in_launch`.",
     request_body = RunItemsAdd,
     params(("key" = String, Path), ("id" = Uuid, Path)),
     responses((status = 200, body = RunItemsAdded), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),
@@ -331,7 +334,8 @@ pub async fn upload_run_attachment(
 #[utoipa::path(post, path = "/api/v1/projects/{key}/run-items/{itemId}/defect", tag = "runs", operation_id = "run_item_defect",
     description = "Triages the projected result of a run item (the same triage as `/triage`, `source: user`) and keeps the \
         defect on the item. Holders of `results:triage` may set it on any item; holders of `runs:execute` only on items \
-        assigned to them or executed by them.",
+        they executed (the executor of the current execution; the assignee does not count). Otherwise 403 with \
+        `details {required: \"results:triage\", scope}`.",
     request_body = RunDefect,
     params(("key" = String, Path), ("itemId" = Uuid, Path)),
     responses((status = 200, body = RunItem), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),
@@ -351,9 +355,12 @@ pub async fn run_item_defect(
     let p = s.project_for(&auth, &key, perm).await?;
     let item = item_of(&s, &p, id).await?;
     let me = auth.principal.name.as_str();
-    if !triager && item.assignee.as_deref() != Some(me) && item.executed_by.as_deref() != Some(me) {
+    if !triager && item.executed_by.as_deref() != Some(me) {
         return Err(ApiError::forbidden(
-            "a defect can be set on your own run items only (or with results:triage)",
+            "a defect can be set only on run items you executed (or with results:triage)",
+        )
+        .with_details(
+            serde_json::json!({"required": s.perms.results_triage.as_str(), "scope": p.key}),
         ));
     }
     let Some(result_id) = item.result_id else {
@@ -402,8 +409,30 @@ pub struct NewIssueQuery {
 
 /// A prefilled "new issue" link.
 #[derive(Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct NewIssueUrl {
     pub url: String,
+    /// Whether `url` itself carries the title and description. `false` for a Jira tracker
+    /// without `projectId` and `issueTypeId`: `url` opens Jira's create page and the text is in
+    /// `prefill` to copy.
+    pub prefilled: bool,
+    /// The issue text, for trackers whose link may not carry it (Jira).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefill: Option<NewIssuePrefill>,
+}
+
+/// Title and description of a new issue.
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct NewIssuePrefill {
+    pub title: String,
+    pub description: String,
+}
+
+/// Jira ids that make `CreateIssueDetails!init.jspa` open a filled-in form.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct JiraIds<'a> {
+    pub project_id: Option<&'a str>,
+    pub issue_type_id: Option<&'a str>,
 }
 
 fn enc(s: &str) -> String {
@@ -418,15 +447,33 @@ fn cut(s: &str, n: usize) -> String {
 }
 
 /// The new-issue URL of a tracker from its `{key}` URL template: GitHub and GitLab
-/// `…/issues/new?title=&body=` (`issue[title]`, `issue[description]` on GitLab), Jira
-/// `…/secure/CreateIssueDetails!init.jspa?summary=&description=`. The description is cut so
-/// the URL stays within [`MAX_ISSUE_URL_BYTES`].
+/// `…/issues/new?title=&body=` (`issue[title]`, `issue[description]` on GitLab); Jira with a
+/// project and issue type id `…/secure/CreateIssueDetails!init.jspa?pid=&issuetype=&summary=&description=`,
+/// without them only Jira's create page `…/secure/CreateIssue!default.jspa` (the second value
+/// is `false`: the text is not in the URL). The description is cut so the URL stays within
+/// [`MAX_ISSUE_URL_BYTES`].
 pub fn new_issue_url(
     tracker: &str,
     url_template: &str,
     title: &str,
     description: &str,
-) -> Option<String> {
+    jira: JiraIds<'_>,
+) -> Option<(String, bool)> {
+    if tracker == "jira" {
+        let i = url_template.find("/browse/{key}")?;
+        let root = &url_template[..i];
+        let (Some(pid), Some(it)) = (jira.project_id, jira.issue_type_id) else {
+            let url = format!("{root}/secure/CreateIssue!default.jspa");
+            let parsed = url::Url::parse(&url).ok()?;
+            return matches!(parsed.scheme(), "https" | "http").then_some((url, false));
+        };
+        let base = format!(
+            "{root}/secure/CreateIssueDetails!init.jspa?pid={}&issuetype={}&",
+            enc(pid),
+            enc(it)
+        );
+        return fill(&base, "summary", "description", title, description).map(|u| (u, true));
+    }
     let (base, t, d) = match tracker {
         "github" | "gitlab" => {
             let i = url_template.find("/issues/{key}")?;
@@ -437,20 +484,13 @@ pub fn new_issue_url(
                 (base, "issue%5Btitle%5D", "issue%5Bdescription%5D")
             }
         }
-        "jira" => {
-            let i = url_template.find("/browse/{key}")?;
-            (
-                format!(
-                    "{}/secure/CreateIssueDetails!init.jspa?",
-                    &url_template[..i]
-                ),
-                "summary",
-                "description",
-            )
-        }
         _ => return None,
     };
-    let parsed = url::Url::parse(&base).ok()?;
+    fill(&base, t, d, title, description).map(|u| (u, true))
+}
+
+fn fill(base: &str, t: &str, d: &str, title: &str, description: &str) -> Option<String> {
+    let parsed = url::Url::parse(base).ok()?;
     if !matches!(parsed.scheme(), "https" | "http") {
         return None;
     }
@@ -467,7 +507,10 @@ pub fn new_issue_url(
 
 #[utoipa::path(get, path = "/api/v1/projects/{key}/run-items/{itemId}/new-issue-url", tag = "runs", operation_id = "run_item_new_issue_url",
     description = "A link that opens a prefilled new issue in a configured tracker (`issueTrackers` settings) with the \
-        case, the failed step, expected and actual results and a link back to the run item. Nothing is sent to the tracker.",
+        case, the failed step, expected and actual results and a link back to the run item. Nothing is sent to the tracker. \
+        Jira: with `projectId` and `issueTypeId` in the tracker settings the link opens a filled-in create form \
+        (`CreateIssueDetails!init.jspa`, which Jira 9+ may disable); without them it opens Jira's create page and \
+        `prefilled` is false. Jira answers always carry the text in `prefill` for copying.",
     params(("key" = String, Path), ("itemId" = Uuid, Path), NewIssueQuery),
     responses((status = 200, body = NewIssueUrl), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),
         (status = 404, body = ErrorBody), (status = 409, body = ErrorBody, description = "`no_issue_tracker`")))]
@@ -537,25 +580,190 @@ pub async fn run_item_new_issue_url(
     if let Some(b) = back {
         d.push_str(&format!("\nRun item: {b}\n"));
     }
-    let url = new_issue_url(&tracker.tracker, &tracker.url_template, &title, &d)
+    let jira = JiraIds {
+        project_id: tracker.project_id.as_deref(),
+        issue_type_id: tracker.issue_type_id.as_deref(),
+    };
+    let (url, prefilled) = new_issue_url(&tracker.tracker, &tracker.url_template, &title, &d, jira)
         .ok_or_else(no_tracker)?;
-    Ok(Json(NewIssueUrl { url }))
+    let prefill = (tracker.tracker == "jira").then(|| NewIssuePrefill {
+        title: cut(&title, 200),
+        description: d.clone(),
+    });
+    Ok(Json(NewIssueUrl {
+        url,
+        prefilled,
+        prefill,
+    }))
 }
 
 #[utoipa::path(post, path = "/api/v1/projects/{key}/run-items/{itemId}/rerun", tag = "runs", operation_id = "rerun_run_item",
-    description = "Starts a new execution of the item (`executionNo + 1`, `untested`, step results cleared); the previous \
-        attempt stays in the result's attempts.",
-    params(("key" = String, Path), ("itemId" = Uuid, Path)),
+    description = "Starts a new execution of the item (`executionNo + 1`, `untested`, no step results; needs the item's \
+        `If-Match`). The previous execution (status, comment, executor, times, defect, step results with their \
+        attachments) is kept outside the result partitions and listed by `GET /run-items/{itemId}/executions`; its \
+        attempt stays in the result's attempts. Audited as `runItem.rerun`.",
+    params(("key" = String, Path), ("itemId" = Uuid, Path), ("If-Match" = String, Header, description = "ETag of the item")),
     responses((status = 200, body = RunItem), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody),
-        (status = 409, body = ErrorBody, description = "`manual_run_closed`")))]
+        (status = 409, body = ErrorBody, description = "`manual_run_closed`"), (status = 412, body = ErrorBody),
+        (status = 428, body = ErrorBody)))]
 pub async fn rerun_run_item(
     State(s): State<AppState>,
     auth: Auth,
+    headers: HeaderMap,
     P((key, id)): P<(String, Uuid)>,
 ) -> ApiResult<Response> {
     let p = s.project_for(&auth, &key, &s.perms.runs_execute).await?;
-    s.store.rerun_run_item(&p, id).await.map_err(tm_error)?;
+    let revision = if_match(&headers)?;
+    let ch = s
+        .store
+        .rerun_run_item(&p, id, revision, &auth.principal.name)
+        .await
+        .map_err(tm_error)?;
+    s.audit(
+        &auth,
+        "runItem.rerun",
+        Some(&p.key),
+        serde_json::json!({"launchId": ch.launch_id, "id": id, "case": format!("TC-{}", ch.case_number),
+            "from": ch.old_status, "executionNo": ch.execution_no}),
+    )
+    .await;
     Ok(item_response(rendered(&s, &p, id).await?))
+}
+
+/// Query of `GET /run-items/{itemId}/executions`.
+#[derive(Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct ExecutionsQuery {
+    pub before: Option<String>,
+    /// At most 100 (default 50).
+    pub limit: Option<i64>,
+}
+
+#[utoipa::path(get, path = "/api/v1/projects/{key}/run-items/{itemId}/executions", tag = "runs", operation_id = "list_run_item_executions",
+    description = "Earlier executions of a run item (kept on rerun), newest first, with their step results.",
+    params(("key" = String, Path), ("itemId" = Uuid, Path), ExecutionsQuery),
+    responses((status = 200, body = Page<RunItemExecution>), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),
+        (status = 404, body = ErrorBody)))]
+pub async fn run_item_executions(
+    State(s): State<AppState>,
+    auth: Auth,
+    P((key, id)): P<(String, Uuid)>,
+    Q(q): Q<ExecutionsQuery>,
+) -> ApiResult<Json<Page<RunItemExecution>>> {
+    let p = s.project_for(&auth, &key, &s.perms.launches_read).await?;
+    let limit = match q.limit {
+        None => 50,
+        Some(n) if (1..=fastproof_store::tm::runs::MAX_EXECUTIONS_PAGE).contains(&n) => n,
+        Some(_) => return Err(ApiError::bad_request("limit must be 1..=100")),
+    };
+    let before = match q.before.as_deref() {
+        None => None,
+        Some(c) => Some(
+            fastproof_store::tm::runs::decode_execution_cursor(c)
+                .ok_or_else(|| ApiError::bad_request("invalid cursor"))?,
+        ),
+    };
+    Ok(Json(
+        s.store
+            .run_item_executions(p.id, id, before, limit)
+            .await
+            .map_err(tm_error)?,
+    ))
+}
+
+/// Query of `GET /people`.
+#[derive(Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct PeopleQuery {
+    /// Only principals whose name contains this text (case-insensitive, at most 200 bytes).
+    pub q: Option<String>,
+}
+
+/// A principal someone can assign run items to.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Person {
+    /// The principal name (`assignee` values compare with it).
+    pub principal: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display: Option<String>,
+}
+
+/// People of a project.
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+pub struct People {
+    pub items: Vec<Person>,
+}
+
+/// People listed at most.
+pub const MAX_PEOPLE: usize = 100;
+
+#[utoipa::path(get, path = "/api/v1/projects/{key}/people", tag = "runs", operation_id = "list_project_people",
+    description = "Principals to assign run items to: users and managed tokens with `runs:execute` in the project (from \
+        the role bindings; members of a bound group are not known until they sign in) and the names already used as \
+        assignees or executors in the project. Sorted by name, at most 100. Assignees are free text; names that are not \
+        in this list are allowed.",
+    params(("key" = String, Path), PeopleQuery),
+    responses((status = 200, body = People), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),
+        (status = 404, body = ErrorBody)))]
+pub async fn project_people(
+    State(s): State<AppState>,
+    auth: Auth,
+    P(key): P<String>,
+    Q(q): Q<PeopleQuery>,
+) -> ApiResult<Json<People>> {
+    let p = s.project_for(&auth, &key, &s.perms.projects_read).await?;
+    let q = q.q.filter(|q| !q.is_empty());
+    if q.as_ref().is_some_and(|q| q.len() > 200) {
+        return Err(ApiError::bad_request("q has at most 200 bytes"));
+    }
+    let _permit = s.guards.heavy(&auth).await?;
+    let wanted = |n: &str| {
+        q.as_ref()
+            .is_none_or(|q| n.to_lowercase().contains(&q.to_lowercase()))
+    };
+    let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let policy = s.platform.policy();
+    for b in policy.bindings() {
+        if let franshub_access::Subject::User(name) = &b.subject
+            && wanted(name)
+            && policy
+                .user_principal(name, &[])
+                .is_some_and(|pr| pr.allowed(&s.perms.runs_execute, Some(&p.key)))
+        {
+            names.insert(name.clone());
+        }
+    }
+    if let Some(tokens) = s.platform.tokens() {
+        let now = chrono::Utc::now();
+        for t in tokens.store().list().await? {
+            if t.status(now) == franshub_auth::TokenStatus::Active
+                && wanted(&t.name)
+                && s.platform
+                    .token_principal(&t)
+                    .is_some_and(|pr| pr.allowed(&s.perms.runs_execute, Some(&p.key)))
+            {
+                names.insert(t.name.clone());
+            }
+        }
+    }
+    for n in s
+        .store
+        .seen_principals(p.id, q.as_deref(), MAX_PEOPLE as i64)
+        .await?
+    {
+        names.insert(n);
+    }
+    Ok(Json(People {
+        items: names
+            .into_iter()
+            .take(MAX_PEOPLE)
+            .map(|principal| Person {
+                principal,
+                display: None,
+            })
+            .collect(),
+    }))
 }
 
 #[utoipa::path(post, path = "/api/v1/projects/{key}/launches/{id}/manual/close", tag = "runs", operation_id = "close_manual_run",
@@ -814,8 +1022,10 @@ mod tests {
             "https://github.com/org/app/issues/{key}",
             "TC-1 Login: step 2 failed",
             "Actual: 500 & more",
+            JiraIds::default(),
         )
-        .unwrap();
+        .unwrap()
+        .0;
         assert_eq!(
             gh,
             "https://github.com/org/app/issues/new?title=TC-1+Login%3A+step+2+failed&body=Actual%3A+500+%26+more"
@@ -825,24 +1035,61 @@ mod tests {
             "https://gitlab.example.com/g/app/-/issues/{key}",
             "t",
             "d",
+            JiraIds::default(),
+        )
+        .unwrap()
+        .0;
+        assert!(gl.starts_with("https://gitlab.example.com/g/app/-/issues/new?issue%5Btitle%5D=t&issue%5Bdescription%5D=d"));
+        let j = new_issue_url(
+            "jira",
+            "https://jira.example.com/browse/{key}",
+            "t",
+            "d",
+            JiraIds::default(),
         )
         .unwrap();
-        assert!(gl.starts_with("https://gitlab.example.com/g/app/-/issues/new?issue%5Btitle%5D=t&issue%5Bdescription%5D=d"));
-        let j = new_issue_url("jira", "https://jira.example.com/browse/{key}", "t", "d").unwrap();
         assert_eq!(
             j,
-            "https://jira.example.com/secure/CreateIssueDetails!init.jspa?summary=t&description=d"
+            (
+                "https://jira.example.com/secure/CreateIssue!default.jspa".to_string(),
+                false
+            ),
+            "without pid and issuetype only the create page, the text goes to prefill"
         );
-        assert!(new_issue_url("jira", "https://jira.example.com/x/{key}", "t", "d").is_none());
-        assert!(new_issue_url("github", "javascript:/issues/{key}", "t", "d").is_none());
+        let j = new_issue_url(
+            "jira",
+            "https://jira.example.com/browse/{key}",
+            "t",
+            "d",
+            JiraIds {
+                project_id: Some("10000"),
+                issue_type_id: Some("10004"),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            j,
+            (
+                "https://jira.example.com/secure/CreateIssueDetails!init.jspa?pid=10000&issuetype=10004&summary=t&description=d"
+                    .to_string(),
+                true
+            )
+        );
+        let none = JiraIds::default();
+        assert!(
+            new_issue_url("jira", "https://jira.example.com/x/{key}", "t", "d", none).is_none()
+        );
+        assert!(new_issue_url("github", "javascript:/issues/{key}", "t", "d", none).is_none());
         let long = "x".repeat(50_000);
         let u = new_issue_url(
             "github",
             "https://github.com/org/app/issues/{key}",
             "t",
             &long,
+            JiraIds::default(),
         )
-        .unwrap();
+        .unwrap()
+        .0;
         assert!(u.len() <= MAX_ISSUE_URL_BYTES);
     }
 }

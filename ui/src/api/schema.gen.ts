@@ -280,7 +280,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description Starts a zip export job. The answer's `downloadUrl` (shown only here) is a one-time link for the caller, valid for 24 hours once the job is `done`. */
+        /** @description Starts a zip export job. The answer's `downloadUrl` (shown only here) is a one-time link for the caller, valid for 24 hours once the job is `done`. A caller has at most 2 and a project at most 4 exports queued or running (else 409 `export_busy`). */
         post: operations["create_case_export"];
         delete?: never;
         options?: never;
@@ -329,7 +329,7 @@ export interface paths {
             cookie?: never;
         };
         get: operations["get_case"];
-        /** @description Replaces the content of a case. Fields and tags absent from the body keep their values; an absent `folderId` is the root. Values that code owns on an automated case cannot change (409 `field_from_code`). */
+        /** @description Replaces the content of a case. Fields, tags, status and `folderId` absent from the body keep their values (`folderId: null` moves the case to the root). Values that code owns on an automated case cannot change (409 `field_from_code`). */
         put: operations["update_case"];
         post?: never;
         /** @description Moves a case to the trash (archive); `purge=true` deletes it with its versions (needs `settings:write`; cases executed in manual runs answer 409 `case_has_runs`). */
@@ -744,6 +744,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /** @description Finishes a launch. A finished launch is finished again only by its creator or a caller with `cases:sync` (else 409 `launch_finished`). */
         post: operations["launches_finish"];
         delete?: never;
         options?: never;
@@ -860,6 +861,7 @@ export interface paths {
         };
         get: operations["results_list"];
         put?: never;
+        /** @description Adds results to a launch. A caller without `cases:sync` makes the launch untrusted for code sync, and may add to a finished launch only if it created it (else 409 `launch_finished`). */
         post: operations["results_ingest"];
         delete?: never;
         options?: never;
@@ -877,7 +879,7 @@ export interface paths {
         /** @description Run items of a launch by case number. */
         get: operations["list_run_items"];
         put?: never;
-        /** @description Adds run items for cases (`caseNumbers`, at most `maxBulk`) or for the manual cases of a managed plan, and opens the manual run of the launch. Cases already in the launch are skipped. */
+        /** @description Adds run items for the manual cases among `caseNumbers` (at most `maxBulk`) or of a managed plan, and opens the manual run of the launch. Automated cases (CI runs them) and cases already in the launch are skipped; `skips` names them with the codes `automated` and `in_launch`. */
         post: operations["add_run_items"];
         delete?: never;
         options?: never;
@@ -943,6 +945,7 @@ export interface paths {
         };
         get: operations["uploads_list"];
         put?: never;
+        /** @description Uploads a report archive into a launch. A caller without `cases:sync` makes the launch untrusted for code sync, and may upload into a finished launch only if it created it (else 409 `launch_finished`). */
         post: operations["uploads_create"];
         delete?: never;
         options?: never;
@@ -995,6 +998,23 @@ export interface paths {
         put?: never;
         /** @description Sends a sample message (a made-up launch with a failed gate and new failures, marked as a test) to one saved notification of the project, once and without retries, and returns how the receiver answered. Every kind can be tested. At most one test per notification every 5 seconds. */
         post: operations["integrations_test_notification"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/people": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Principals to assign run items to: users and managed tokens with `runs:execute` in the project (from the role bindings; members of a bound group are not known until they sign in) and the names already used as assignees or executors in the project. Sorted by name, at most 100. Assignees are free text; names that are not in this list are allowed. */
+        get: operations["list_project_people"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1191,8 +1211,25 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description Triages the projected result of a run item (the same triage as `/triage`, `source: user`) and keeps the defect on the item. Holders of `results:triage` may set it on any item; holders of `runs:execute` only on items assigned to them or executed by them. */
+        /** @description Triages the projected result of a run item (the same triage as `/triage`, `source: user`) and keeps the defect on the item. Holders of `results:triage` may set it on any item; holders of `runs:execute` only on items they executed (the executor of the current execution; the assignee does not count). Otherwise 403 with `details {required: "results:triage", scope}`. */
         post: operations["run_item_defect"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/run-items/{itemId}/executions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Earlier executions of a run item (kept on rerun), newest first, with their step results. */
+        get: operations["list_run_item_executions"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1206,7 +1243,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** @description A link that opens a prefilled new issue in a configured tracker (`issueTrackers` settings) with the case, the failed step, expected and actual results and a link back to the run item. Nothing is sent to the tracker. */
+        /** @description A link that opens a prefilled new issue in a configured tracker (`issueTrackers` settings) with the case, the failed step, expected and actual results and a link back to the run item. Nothing is sent to the tracker. Jira: with `projectId` and `issueTypeId` in the tracker settings the link opens a filled-in create form (`CreateIssueDetails!init.jspa`, which Jira 9+ may disable); without them it opens Jira's create page and `prefilled` is false. Jira answers always carry the text in `prefill` for copying. */
         get: operations["run_item_new_issue_url"];
         put?: never;
         post?: never;
@@ -1225,7 +1262,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description Starts a new execution of the item (`executionNo + 1`, `untested`, step results cleared); the previous attempt stays in the result's attempts. */
+        /** @description Starts a new execution of the item (`executionNo + 1`, `untested`, no step results; needs the item's `If-Match`). The previous execution (status, comment, executor, times, defect, step results with their attachments) is kept outside the result partitions and listed by `GET /run-items/{itemId}/executions`; its attempt stays in the result's attempts. Audited as `runItem.rerun`. */
         post: operations["rerun_run_item"];
         delete?: never;
         options?: never;
@@ -1428,7 +1465,8 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /** @description Launches started from a managed plan, newest first, with their `manual` progress. */
+        get: operations["list_plan_launches"];
         put?: never;
         /** @description Starts a launch from a managed plan: run items for its manual cases (assigned per `assign`), `manual.state = open`; automated cases get no run items, CI runs them from `testplanUrl` (see `ciHint`) and uploads into the same launch (`externalId`; generated when absent). An `externalId` of a launch already started from this plan returns that launch (200). */
         post: operations["start_plan_launch"];
@@ -1479,7 +1517,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** @description A test-management job of the project (import, export, backfill): status, progress and report. Export jobs are visible only to their creator. */
+        /** @description A test-management job of the project (import, export, backfill): status, progress and report. Export jobs are visible only to their creator, import jobs only with `cases:import`. */
         get: operations["get_tm_job"];
         put?: never;
         post?: never;
@@ -1669,6 +1707,12 @@ export interface components {
                 [key: string]: components["schemas"]["FieldValue"];
             };
             folder?: components["schemas"]["CaseFolderRef"] | null;
+            /**
+             * Format: uuid
+             * @description The folder id (`null` at the root); the same value a `PUT` keeps when it leaves
+             *     `folderId` out.
+             */
+            folderId?: string | null;
             html: components["schemas"]["CaseHtml"];
             /** Format: uuid */
             id: string;
@@ -2168,7 +2212,8 @@ export interface components {
             } | null;
             /**
              * Format: uuid
-             * @description The folder; absent or `null` is the root.
+             * @description The folder: `null` is the root. Absent is the root on `POST` and keeps the folder on
+             *     `PUT`.
              */
             folderId?: string | null;
             name: string;
@@ -2598,6 +2643,11 @@ export interface components {
          */
         IdentityKind: "code" | "manual";
         /**
+         * @description Status an import gives the cases it creates.
+         * @enum {string}
+         */
+        ImportCaseStatus: "draft" | "active";
+        /**
          * @description Format of an import file.
          * @enum {string}
          */
@@ -2614,6 +2664,7 @@ export interface components {
                 [key: string]: string;
             } | null;
             mode: components["schemas"]["ImportMode"];
+            status?: components["schemas"]["ImportCaseStatus"] | null;
             stepsLayout?: components["schemas"]["StepsLayout"] | null;
             /** Format: uuid */
             targetFolderId?: string | null;
@@ -2633,18 +2684,29 @@ export interface components {
         ImportReport: {
             /** Format: int64 */
             create: number;
+            /**
+             * @description Field definitions the import creates (dry run) or created for unknown columns
+             *     (`unknownFieldValues: create`).
+             */
+            createdFields?: string[];
             /** @description The first 1000 errors. */
             errors: components["schemas"]["ImportRowError"][];
             /** Format: int64 */
             folders: number;
             /** Format: int64 */
             skip: number;
+            /** @description Fields of the source the import leaves out (no such field in the project). */
             unknownFields: string[];
             unknownValues: {
                 [key: string]: string[];
             };
             /** Format: int64 */
             update: number;
+            /**
+             * @description Rows imported with a change, such as a case set to `draft` because required fields
+             *     have no value (`required_fields_missing`); the first 1000.
+             */
+            warnings?: components["schemas"]["ImportRowError"][];
         };
         /** @description One row error of an import. */
         ImportRowError: {
@@ -2668,8 +2730,12 @@ export interface components {
         };
         /** @description An issue tracker for links from issue keys. */
         IssueTracker: {
+            /** @description Jira only: the numeric id of the issue type of new issues (`issuetype`). */
+            issueTypeId?: string | null;
             /** @description Keys this tracker owns, e.g. `[A-Z][A-Z0-9]+-[0-9]+` (matched in full). */
             keyRegex: string;
+            /** @description Jira only: the numeric id of the project new issues go to (`pid`). */
+            projectId?: string | null;
             /** @description `jira`, `gitlab` or `github`. */
             type: string;
             /** @description URL with `{key}`, e.g. `https://jira.example.com/browse/{key}`. */
@@ -2786,12 +2852,23 @@ export interface components {
             blocked: number;
             /** Format: int64 */
             failed: number;
+            /**
+             * Format: date-time
+             * @description When the last run item got a final status.
+             */
+            finishedAt?: string | null;
             /** Format: int64 */
             inProgress: number;
             /** Format: int64 */
             passed: number;
             /** Format: int64 */
             skipped: number;
+            /**
+             * Format: date-time
+             * @description When the first run item was started (the manual part has its own times; the launch's
+             *     `durationMs` covers the automated results only).
+             */
+            startedAt?: string | null;
             state: components["schemas"]["ManualState"];
             /** Format: int64 */
             total: number;
@@ -3064,8 +3141,20 @@ export interface components {
             name: string;
             shortName?: string | null;
         };
+        /** @description Title and description of a new issue. */
+        NewIssuePrefill: {
+            description: string;
+            title: string;
+        };
         /** @description A prefilled "new issue" link. */
         NewIssueUrl: {
+            prefill?: components["schemas"]["NewIssuePrefill"] | null;
+            /**
+             * @description Whether `url` itself carries the title and description. `false` for a Jira tracker
+             *     without `projectId` and `issueTypeId`: `url` opens Jira's create page and the text is in
+             *     `prefill` to copy.
+             */
+            prefilled: boolean;
             url: string;
         };
         /** @description Body of `POST /api/v1/projects`. */
@@ -3352,6 +3441,30 @@ export interface components {
             next?: string | null;
         };
         /** @description A page of a list. */
+        Page_RunItemExecution: {
+            items: {
+                /** Format: int32 */
+                caseVersion: number;
+                comment: string;
+                defect?: unknown;
+                executedBy?: string | null;
+                /** Format: int32 */
+                executionNo: number;
+                /** Format: date-time */
+                finishedAt?: string | null;
+                /** Format: date-time */
+                rerunAt: string;
+                /** @description Who started the next execution, and when. */
+                rerunBy: string;
+                /** Format: date-time */
+                startedAt?: string | null;
+                status: components["schemas"]["RunStatus"];
+                stepResults: components["schemas"]["RunStepResult"][];
+            }[];
+            /** @description Opaque cursor for the next page (`before=`), `null` on the last page. */
+            next?: string | null;
+        };
+        /** @description A page of a list. */
         Page_RunItemSummary: {
             items: {
                 assignee?: string | null;
@@ -3471,6 +3584,16 @@ export interface components {
         PatchProject: {
             description?: string | null;
             name?: string | null;
+        };
+        /** @description People of a project. */
+        People: {
+            items: components["schemas"]["Person"][];
+        };
+        /** @description A principal someone can assign run items to. */
+        Person: {
+            display?: string | null;
+            /** @description The principal name (`assignee` values compare with it). */
+            principal: string;
         };
         /**
          * @description Who the items of a launch started from a plan are assigned to.
@@ -3938,6 +4061,26 @@ export interface components {
             steps: components["schemas"]["CaseStep"][];
             stepsHtml: components["schemas"]["CaseStepHtml"][];
         };
+        /** @description An earlier execution of a run item, kept when the item is rerun. */
+        RunItemExecution: {
+            /** Format: int32 */
+            caseVersion: number;
+            comment: string;
+            defect?: unknown;
+            executedBy?: string | null;
+            /** Format: int32 */
+            executionNo: number;
+            /** Format: date-time */
+            finishedAt?: string | null;
+            /** Format: date-time */
+            rerunAt: string;
+            /** @description Who started the next execution, and when. */
+            rerunBy: string;
+            /** Format: date-time */
+            startedAt?: string | null;
+            status: components["schemas"]["RunStatus"];
+            stepResults: components["schemas"]["RunStepResult"][];
+        };
         /** @description Body of `PATCH /run-items/{itemId}`. */
         RunItemPatch: {
             assignee?: string | null;
@@ -3945,6 +4088,18 @@ export interface components {
             status?: components["schemas"]["RunStatus"] | null;
             untestedStepsTo?: components["schemas"]["UntestedStepsTo"] | null;
         };
+        /** @description A case left out when adding run items. */
+        RunItemSkip: {
+            /** Format: int64 */
+            caseNumber: number;
+            code: components["schemas"]["RunItemSkipCode"];
+        };
+        /**
+         * @description Why a case was not added to a launch as a run item: `automated` (CI runs it; only manual
+         *     cases become run items) or `in_launch` (it has a run item already).
+         * @enum {string}
+         */
+        RunItemSkipCode: "automated" | "in_launch";
         /** @description A run item in lists. */
         RunItemSummary: {
             assignee?: string | null;
@@ -3971,8 +4126,13 @@ export interface components {
         RunItemsAdded: {
             /** Format: int64 */
             added: number;
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description Cases left out: already in the launch or automated.
+             */
             skipped: number;
+            /** @description Why named cases were left out (the first 1000). */
+            skips?: components["schemas"]["RunItemSkip"][];
         };
         /**
          * @description Status of a run item.
@@ -7666,6 +7826,14 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
         };
     };
     integrations_gate: {
@@ -8207,6 +8375,14 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             413: {
                 headers: {
                     [name: string]: unknown;
@@ -8600,6 +8776,14 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             413: {
                 headers: {
                     [name: string]: unknown;
@@ -8768,6 +8952,54 @@ export interface operations {
             };
             /** @description a test of this notification was sent less than 5 seconds ago */
             429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    list_project_people: {
+        parameters: {
+            query?: {
+                /** @description Only principals whose name contains this text (case-insensitive, at most 200 bytes). */
+                q?: string;
+            };
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["People"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -9568,6 +9800,56 @@ export interface operations {
             };
         };
     };
+    list_run_item_executions: {
+        parameters: {
+            query?: {
+                before?: string;
+                /** @description At most 100 (default 50). */
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                key: string;
+                itemId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_RunItemExecution"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     run_item_new_issue_url: {
         parameters: {
             query?: {
@@ -9629,7 +9911,10 @@ export interface operations {
     rerun_run_item: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                /** @description ETag of the item */
+                "If-Match": string;
+            };
             path: {
                 key: string;
                 itemId: string;
@@ -9664,6 +9949,22 @@ export interface operations {
             };
             /** @description `manual_run_closed` */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            428: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -9990,7 +10291,7 @@ export interface operations {
             };
             cookie?: never;
         };
-        /** @description The areas to change. Each top-level area present in the body (`flaky`, `retention`, `rollup`, `caseSync`, `gates`, `notifications`, `issueTrackers`, `fastmock`, `vcs`) replaces the stored one as a whole; areas left out are kept; `null` resets an area to its default (removes it). The answer is the whole stored document. */
+        /** @description The areas to change. Each top-level area present in the body (`flaky`, `retention`, `rollup`, `gates`, `notifications`, `issueTrackers`, `fastmock`, `vcs`) replaces the stored one as a whole; areas left out are kept; `null` resets an area to its default (removes it). `caseSync` is merged by key instead (and its `fields` by field): keys left out keep their values, a `null` key returns to its default. The answer is the whole stored document. */
         requestBody: {
             content: {
                 "application/json": components["schemas"]["ProjectSettings"];
@@ -10548,6 +10849,56 @@ export interface operations {
             };
             /** @description `limit_reached`, `plan_archived` */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    list_plan_launches: {
+        parameters: {
+            query?: {
+                /** @description Launch number to continue below (the `next` of the previous page). */
+                before?: string;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_Launch"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

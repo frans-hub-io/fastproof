@@ -1968,7 +1968,7 @@
         "tags": [
           "cases"
         ],
-        "description": "Replaces the content of a case. Fields and tags absent from the body keep their values; an absent `folderId` is the root. Values that code owns on an automated case cannot change (409 `field_from_code`).",
+        "description": "Replaces the content of a case. Fields, tags, status and `folderId` absent from the body keep their values (`folderId: null` moves the case to the root). Values that code owns on an automated case cannot change (409 `field_from_code`).",
         "operationId": "update_case",
         "parameters": [
           {
@@ -5708,7 +5708,7 @@
         "tags": [
           "runs"
         ],
-        "description": "Adds run items for cases (`caseNumbers`, at most `maxBulk`) or for the manual cases of a managed plan, and opens the manual run of the launch. Cases already in the launch are skipped.",
+        "description": "Adds run items for the manual cases among `caseNumbers` (at most `maxBulk`) or of a managed plan, and opens the manual run of the launch. Automated cases (CI runs them) and cases already in the launch are skipped; `skips` names them with the codes `automated` and `in_launch`.",
         "operationId": "add_run_items",
         "parameters": [
           {
@@ -6527,6 +6527,72 @@
           },
           "429": {
             "description": "a test of this notification was sent less than 5 seconds ago",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/people": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "description": "Principals to assign run items to: users and managed tokens with `runs:execute` in the project (from the role bindings; members of a bound group are not known until they sign in) and the names already used as assignees or executors in the project. Sorted by name, at most 100. Assignees are free text; names that are not in this list are allowed.",
+        "operationId": "list_project_people",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Only principals whose name contains this text (case-insensitive, at most 200 bytes).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/People"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
             "content": {
               "application/json": {
                 "schema": {
@@ -7599,7 +7665,7 @@
         "tags": [
           "runs"
         ],
-        "description": "Triages the projected result of a run item (the same triage as `/triage`, `source: user`) and keeps the defect on the item. Holders of `results:triage` may set it on any item; holders of `runs:execute` only on items assigned to them or executed by them.",
+        "description": "Triages the projected result of a run item (the same triage as `/triage`, `source: user`) and keeps the defect on the item. Holders of `results:triage` may set it on any item; holders of `runs:execute` only on items they executed (the executor of the current execution; the assignee does not count). Otherwise 403 with `details {required: \"results:triage\", scope}`.",
         "operationId": "run_item_defect",
         "parameters": [
           {
@@ -7680,12 +7746,96 @@
         }
       }
     },
+    "/api/v1/projects/{key}/run-items/{itemId}/executions": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "description": "Earlier executions of a run item (kept on rerun), newest first, with their step results.",
+        "operationId": "list_run_item_executions",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "itemId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "At most 100 (default 50).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_RunItemExecution"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{key}/run-items/{itemId}/new-issue-url": {
       "get": {
         "tags": [
           "runs"
         ],
-        "description": "A link that opens a prefilled new issue in a configured tracker (`issueTrackers` settings) with the case, the failed step, expected and actual results and a link back to the run item. Nothing is sent to the tracker.",
+        "description": "A link that opens a prefilled new issue in a configured tracker (`issueTrackers` settings) with the case, the failed step, expected and actual results and a link back to the run item. Nothing is sent to the tracker. Jira: with `projectId` and `issueTypeId` in the tracker settings the link opens a filled-in create form (`CreateIssueDetails!init.jspa`, which Jira 9+ may disable); without them it opens Jira's create page and `prefilled` is false. Jira answers always carry the text in `prefill` for copying.",
         "operationId": "run_item_new_issue_url",
         "parameters": [
           {
@@ -7770,7 +7920,7 @@
         "tags": [
           "runs"
         ],
-        "description": "Starts a new execution of the item (`executionNo + 1`, `untested`, step results cleared); the previous attempt stays in the result's attempts.",
+        "description": "Starts a new execution of the item (`executionNo + 1`, `untested`, no step results; needs the item's `If-Match`). The previous execution (status, comment, executor, times, defect, step results with their attachments) is kept outside the result partitions and listed by `GET /run-items/{itemId}/executions`; its attempt stays in the result's attempts. Audited as `runItem.rerun`.",
         "operationId": "rerun_run_item",
         "parameters": [
           {
@@ -7788,6 +7938,15 @@
             "schema": {
               "type": "string",
               "format": "uuid"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "description": "ETag of the item",
+            "required": true,
+            "schema": {
+              "type": "string"
             }
           }
         ],
@@ -7821,6 +7980,24 @@
           },
           "409": {
             "description": "`manual_run_closed`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "428": {
             "content": {
               "application/json": {
                 "schema": {
@@ -8293,7 +8470,7 @@
           }
         ],
         "requestBody": {
-          "description": "The areas to change. Each top-level area present in the body (`flaky`, `retention`, `rollup`, `caseSync`, `gates`, `notifications`, `issueTrackers`, `fastmock`, `vcs`) replaces the stored one as a whole; areas left out are kept; `null` resets an area to its default (removes it). The answer is the whole stored document.",
+          "description": "The areas to change. Each top-level area present in the body (`flaky`, `retention`, `rollup`, `gates`, `notifications`, `issueTrackers`, `fastmock`, `vcs`) replaces the stored one as a whole; areas left out are kept; `null` resets an area to its default (removes it). `caseSync` is merged by key instead (and its `fields` by field): keys left out keep their values, a `null` key returns to its default. The answer is the whole stored document.",
           "content": {
             "application/json": {
               "schema": {
@@ -9177,6 +9354,88 @@
       }
     },
     "/api/v1/projects/{key}/test-plans/{id}/launches": {
+      "get": {
+        "tags": [
+          "plans"
+        ],
+        "description": "Launches started from a managed plan, newest first, with their `manual` progress.",
+        "operationId": "list_plan_launches",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "description": "Launch number to continue below (the `next` of the previous page).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_Launch"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
       "post": {
         "tags": [
           "plans"
@@ -10176,6 +10435,14 @@
                 "type": "null"
               }
             ]
+          },
+          "folderId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "The folder id (`null` at the root); the same value a `PUT` keeps when it leaves\n`folderId` out."
           },
           "html": {
             "$ref": "#/components/schemas/CaseHtml"
@@ -11728,7 +11995,7 @@
               "null"
             ],
             "format": "uuid",
-            "description": "The folder; absent or `null` is the root."
+            "description": "The folder: `null` is the root. Absent is the root on `POST` and keeps the folder on\n`PUT`."
           },
           "name": {
             "type": "string"
@@ -13004,6 +13271,14 @@
           "manual"
         ]
       },
+      "ImportCaseStatus": {
+        "type": "string",
+        "description": "Status an import gives the cases it creates.",
+        "enum": [
+          "draft",
+          "active"
+        ]
+      },
       "ImportFormat": {
         "type": "string",
         "description": "Format of an import file.",
@@ -13050,6 +13325,17 @@
           },
           "mode": {
             "$ref": "#/components/schemas/ImportMode"
+          },
+          "status": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ImportCaseStatus",
+                "description": "Status of imported cases (`draft` or `active`); absent: the status the source maps, else\n`active`. A case whose required fields have no value is imported as `draft`."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "stepsLayout": {
             "oneOf": [
@@ -13134,6 +13420,13 @@
             "type": "integer",
             "format": "int64"
           },
+          "createdFields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Field definitions the import creates (dry run) or created for unknown columns\n(`unknownFieldValues: create`)."
+          },
           "errors": {
             "type": "array",
             "items": {
@@ -13144,13 +13437,6 @@
           "folders": {
             "type": "integer",
             "format": "int64"
-          },
-          "newFields": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "Field definitions the import creates (`unknownFieldValues: create`); a dry run lists\nthe ones its apply will create."
           },
           "skip": {
             "type": "integer",
@@ -13178,6 +13464,13 @@
           "update": {
             "type": "integer",
             "format": "int64"
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ImportRowError"
+            },
+            "description": "Rows imported with a change, such as a case set to `draft` because required fields\nhave no value (`required_fields_missing`); the first 1000."
           }
         }
       },
@@ -13257,9 +13550,23 @@
           "keyRegex"
         ],
         "properties": {
+          "issueTypeId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Jira only: the numeric id of the issue type of new issues (`issuetype`)."
+          },
           "keyRegex": {
             "type": "string",
             "description": "Keys this tracker owns, e.g. `[A-Z][A-Z0-9]+-[0-9]+` (matched in full)."
+          },
+          "projectId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Jira only: the numeric id of the project new issues go to (`pid`)."
           },
           "type": {
             "type": "string",
@@ -13622,6 +13929,14 @@
             "type": "integer",
             "format": "int64"
           },
+          "finishedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the last run item got a final status."
+          },
           "inProgress": {
             "type": "integer",
             "format": "int64"
@@ -13633,6 +13948,14 @@
           "skipped": {
             "type": "integer",
             "format": "int64"
+          },
+          "startedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the first run item was started (the manual part has its own times; the launch's\n`durationMs` covers the automated results only)."
           },
           "state": {
             "$ref": "#/components/schemas/ManualState"
@@ -14451,13 +14774,45 @@
         },
         "additionalProperties": false
       },
+      "NewIssuePrefill": {
+        "type": "object",
+        "description": "Title and description of a new issue.",
+        "required": [
+          "title",
+          "description"
+        ],
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        }
+      },
       "NewIssueUrl": {
         "type": "object",
         "description": "A prefilled \"new issue\" link.",
         "required": [
-          "url"
+          "url",
+          "prefilled"
         ],
         "properties": {
+          "prefill": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/NewIssuePrefill",
+                "description": "The issue text, for trackers whose link may not carry it (Jira)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "prefilled": {
+            "type": "boolean",
+            "description": "Whether `url` itself carries the title and description. `false` for a Jira tracker\nwithout `projectId` and `issueTypeId`: `url` opens Jira's create page and the text is in\n`prefill` to copy."
+          },
           "url": {
             "type": "string"
           }
@@ -15330,6 +15685,89 @@
           }
         }
       },
+      "Page_RunItemExecution": {
+        "type": "object",
+        "description": "A page of a list.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "An earlier execution of a run item, kept when the item is rerun.",
+              "required": [
+                "executionNo",
+                "status",
+                "caseVersion",
+                "comment",
+                "stepResults",
+                "rerunBy",
+                "rerunAt"
+              ],
+              "properties": {
+                "caseVersion": {
+                  "type": "integer",
+                  "format": "int32"
+                },
+                "comment": {
+                  "type": "string"
+                },
+                "defect": {},
+                "executedBy": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "executionNo": {
+                  "type": "integer",
+                  "format": "int32"
+                },
+                "finishedAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "rerunAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "rerunBy": {
+                  "type": "string",
+                  "description": "Who started the next execution, and when."
+                },
+                "startedAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "status": {
+                  "$ref": "#/components/schemas/RunStatus"
+                },
+                "stepResults": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/RunStepResult"
+                  }
+                }
+              }
+            }
+          },
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Opaque cursor for the next page (`before=`), `null` on the last page."
+          }
+        }
+      },
       "Page_RunItemSummary": {
         "type": "object",
         "description": "A page of a list.",
@@ -15720,6 +16158,40 @@
           }
         },
         "additionalProperties": false
+      },
+      "People": {
+        "type": "object",
+        "description": "People of a project.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Person"
+            }
+          }
+        }
+      },
+      "Person": {
+        "type": "object",
+        "description": "A principal someone can assign run items to.",
+        "required": [
+          "principal"
+        ],
+        "properties": {
+          "display": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "principal": {
+            "type": "string",
+            "description": "The principal name (`assignee` values compare with it)."
+          }
+        }
       },
       "PlanAssign": {
         "type": "string",
@@ -17015,6 +17487,70 @@
         ],
         "description": "A run item with the executed version of its case."
       },
+      "RunItemExecution": {
+        "type": "object",
+        "description": "An earlier execution of a run item, kept when the item is rerun.",
+        "required": [
+          "executionNo",
+          "status",
+          "caseVersion",
+          "comment",
+          "stepResults",
+          "rerunBy",
+          "rerunAt"
+        ],
+        "properties": {
+          "caseVersion": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "comment": {
+            "type": "string"
+          },
+          "defect": {},
+          "executedBy": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "executionNo": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "finishedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "rerunAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "rerunBy": {
+            "type": "string",
+            "description": "Who started the next execution, and when."
+          },
+          "startedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RunStatus"
+          },
+          "stepResults": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RunStepResult"
+            }
+          }
+        }
+      },
       "RunItemPatch": {
         "type": "object",
         "description": "Body of `PATCH /run-items/{itemId}`.",
@@ -17053,6 +17589,31 @@
           }
         },
         "additionalProperties": false
+      },
+      "RunItemSkip": {
+        "type": "object",
+        "description": "A case left out when adding run items.",
+        "required": [
+          "caseNumber",
+          "code"
+        ],
+        "properties": {
+          "caseNumber": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "code": {
+            "$ref": "#/components/schemas/RunItemSkipCode"
+          }
+        }
+      },
+      "RunItemSkipCode": {
+        "type": "string",
+        "description": "Why a case was not added to a launch as a run item: `automated` (CI runs it; only manual\ncases become run items) or `in_launch` (it has a run item already).",
+        "enum": [
+          "automated",
+          "in_launch"
+        ]
       },
       "RunItemSummary": {
         "type": "object",
@@ -17147,7 +17708,15 @@
           },
           "skipped": {
             "type": "integer",
-            "format": "int64"
+            "format": "int64",
+            "description": "Cases left out: already in the launch or automated."
+          },
+          "skips": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RunItemSkip"
+            },
+            "description": "Why named cases were left out (the first 1000)."
           }
         }
       },

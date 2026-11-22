@@ -843,7 +843,11 @@ async fn ndjson_report_lists_created_fields() {
     let id = j["id"].as_str().unwrap().to_string();
     let ready = wait_job(&s, "nd", &id, "ready").await;
     assert_eq!(ready["report"]["unknownFields"], json!([]), "{ready}");
-    assert_eq!(ready["report"]["newFields"], json!(["platform"]), "{ready}");
+    assert_eq!(
+        ready["report"]["createdFields"],
+        json!(["Platform"]),
+        "{ready}"
+    );
     let (st, b) = s
         .post(
             &format!("/api/v1/projects/nd/imports/{id}/apply"),
@@ -854,7 +858,11 @@ async fn ndjson_report_lists_created_fields() {
     assert_eq!(st, StatusCode::ACCEPTED, "{b}");
     let done = wait_job(&s, "nd", &id, "done").await;
     assert_eq!(done["report"]["unknownFields"], json!([]), "{done}");
-    assert_eq!(done["report"]["newFields"], json!(["platform"]), "{done}");
+    assert_eq!(
+        done["report"]["createdFields"],
+        json!(["Platform"]),
+        "{done}"
+    );
     let (_, c) = s.get("/api/v1/projects/nd/cases/1", ADMIN_TOKEN).await;
     assert_eq!(c["fields"]["platform"], "web", "{c}");
 }

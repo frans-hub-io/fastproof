@@ -11,6 +11,8 @@ The `fastproof` binary is the server and the CLI. In CI it needs three settings,
 
 The CLI detects CI metadata (pipeline, job, URL, branch, commit) from the standard variables of GitLab CI,
 GitHub Actions and Jenkins, so launches link back to the pipeline and history is filtered per branch.
+`--no-ci` (or `FASTPROOF_NO_CI=true`) ignores those variables, for example when a job reports into a launch of
+its own rather than the pipeline's.
 
 Two ways to report:
 

@@ -26,6 +26,9 @@ pub struct GateArgs {
     /// Poll interval while waiting.
     #[arg(long, default_value = "5s", value_parser = parse_duration)]
     pub poll: Duration,
+    /// Ignore the CI environment: the launch is not looked up by the CI pipeline's id.
+    #[arg(long, env = "FASTPROOF_NO_CI", value_parser = clap::builder::BoolishValueParser::new())]
+    pub no_ci: bool,
 }
 
 /// `90`, `90s`, `10m`, `1h`, `500ms`.
@@ -101,7 +104,12 @@ async fn check(a: &GateArgs) -> anyhow::Result<i32> {
             let ext = a
                 .launch
                 .clone()
-                .or_else(|| ci::detect(&|k| std::env::var(k).ok()).and_then(|c| c.external_id))
+                .or_else(|| {
+                    (!a.no_ci)
+                        .then(|| ci::detect(&|k| std::env::var(k).ok()))
+                        .flatten()
+                        .and_then(|c| c.external_id)
+                })
                 .ok_or_else(|| anyhow!("give --launch (FASTPROOF_LAUNCH), --id, or run in CI"))?;
             let l = client
                 .launch_by_external(project, &ext)

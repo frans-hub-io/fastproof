@@ -312,6 +312,7 @@ The CLI reads:
 | `FASTPROOF_LAUNCH` | External launch id; uploads with the same id join one launch |
 | `FASTPROOF_LAUNCH_NAME` | Launch name |
 | `FASTPROOF_ENVIRONMENT` | Environment key, part of the test identity |
+| `FASTPROOF_NO_CI` | `true` ignores the CI variables, like `--no-ci`: no launch id, name, CI or VCS metadata derived from them |
 | `FASTPROOF_LOG_FORMAT` | `json` or `text` for the CLI's own messages |
 
 `fastproof bench --kafka` also reads the `FASTPROOF_KAFKA_*` variables.

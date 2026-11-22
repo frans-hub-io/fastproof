@@ -498,27 +498,13 @@ async fn start_inner(cfg: Config, pool: PgPool, boot: Boot) -> anyhow::Result<Ru
         Some(t) => Some(franshub_http::server_config(t).context("FASTPROOF_TLS_*")?),
         None => None,
     };
-    let app = router(state.clone());
-    if state.cfg.roles.api {
-        let stop = stop.clone();
-        tasks.push(tokio::spawn(async move {
-            franshub_http::serve(
-                listener,
-                app,
-                tls,
-                stop.cancelled_owned(),
-                ServeOptions::default(),
-            )
-            .await;
-        }));
-    } else {
-        drop(listener);
-    }
+    let first = crate::live::first_subscription(&pool, crate::live::CHANNELS).await;
     tasks.push(tokio::spawn(crate::live::listen(
         pool.clone(),
         state.live.clone(),
         state.wake.clone(),
         stop.clone(),
+        first,
     )));
     if state.cfg.roles.ingest && state.kafka.is_none() {
         for n in 0..state.cfg.ingest_workers {
@@ -543,6 +529,24 @@ async fn start_inner(cfg: Config, pool: PgPool, boot: Boot) -> anyhow::Result<Ru
         tasks.push(tokio::spawn(
             async move { local_maintenance(s, stop).await },
         ));
+    }
+    // The API serves once the listeners are subscribed, so that a client never misses the
+    // notifications of what it writes.
+    let app = router(state.clone());
+    if state.cfg.roles.api {
+        let stop = stop.clone();
+        tasks.push(tokio::spawn(async move {
+            franshub_http::serve(
+                listener,
+                app,
+                tls,
+                stop.cancelled_owned(),
+                ServeOptions::default(),
+            )
+            .await;
+        }));
+    } else {
+        drop(listener);
     }
     let _ = boot.started.set(state.clone());
     tracing::info!(%addr, %ops_addr, ui = crate::ui::embedded(), blobs = state.blobs.backend(), workers = state.cfg.ingest_workers,

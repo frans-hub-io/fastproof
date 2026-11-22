@@ -456,6 +456,7 @@ async fn rules_on_ingest_dry_run_retroactive_and_mute_expiry() {
         return;
     };
     let s = Server::start(&db).await;
+    db.hold_jobs(&["mutes.expire"]).await;
     let store = Store::new(db.pool.clone());
     s.project("ru").await;
     let editor = s.token("ed", "editor", &["ru"]).await;
@@ -903,23 +904,10 @@ async fn dashboard_rollup_partitions_and_retention() {
     };
     let s = Server::start(&db).await;
     let store = Store::new(db.pool.clone());
-    // Let the first runs of the scheduler's jobs (at start) finish: they drop empty old
-    // partitions, and this test moves launches into the past.
-    let deadline = std::time::Instant::now() + Duration::from_secs(60);
-    loop {
-        let done: i64 = sqlx::query_scalar(
-            "select count(*) from scheduled_jobs where name in ('history.rollup', 'retention.apply', 'analysis.indexes') \
-             and last_finished_at is not null",
-        )
-        .fetch_one(&db.pool)
-        .await
-        .unwrap();
-        if done == 3 {
-            break;
-        }
-        assert!(std::time::Instant::now() < deadline);
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+    // The first runs of the scheduler's jobs drop empty old partitions, and this test moves
+    // launches into the past.
+    db.hold_jobs(&["history.rollup", "retention.apply", "analysis.indexes"])
+        .await;
     store.ensure_partitions(6, 1).await.unwrap();
     let valid: bool = sqlx::query_scalar(
         "select indisvalid from pg_index where indexrelid = 'results_fingerprint'::regclass",
@@ -1216,6 +1204,7 @@ async fn retention_by_count_queues_unreferenced_blobs() {
         return;
     };
     let s = Server::start(&db).await;
+    db.hold_jobs(&["retention.apply", "attachments.gc"]).await;
     let store = Store::new(db.pool.clone());
     s.project("keep").await;
     s.call(

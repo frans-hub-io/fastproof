@@ -239,29 +239,41 @@ impl LogHub {
     }
 }
 
+/// Buffered notices [`listen_pg`] handles together, at most (their chunks are read at once).
+const NOTICES_PER_READ: usize = 16;
+
 /// Direct mode: `LISTEN` on the logs channel; notices without inline lines are read back.
-pub async fn listen_pg(pool: PgPool, store: Store, hub: LogHub, stop: CancellationToken) {
+/// `first` is a subscription made at start ([`crate::live::first_subscription`]). The notices
+/// already received (up to [`NOTICES_PER_READ`]) are handled together: their chunks are read in
+/// one query and published without yielding in between, so a burst reaches subscribers as one.
+pub async fn listen_pg(
+    pool: PgPool,
+    store: Store,
+    hub: LogHub,
+    stop: CancellationToken,
+    first: Option<PgListener>,
+) {
+    let mut first = first;
     let mut backoff = Duration::from_millis(250);
     loop {
         if stop.is_cancelled() {
             return;
         }
-        let mut listener = match PgListener::connect_with(&pool).await {
-            Ok(l) => l,
-            Err(e) => {
-                tracing::warn!(error = %e, "connecting the log listener failed; retrying");
-                tokio::select! {
-                    _ = stop.cancelled() => return,
-                    _ = tokio::time::sleep(backoff) => {}
+        let mut listener = match first.take() {
+            Some(l) => l,
+            None => match crate::live::subscribe(&pool, &[LOGS_CHANNEL]).await {
+                Ok(l) => l,
+                Err(e) => {
+                    tracing::warn!(error = %e, "subscribing the log listener failed; retrying");
+                    tokio::select! {
+                        _ = stop.cancelled() => return,
+                        _ = tokio::time::sleep(backoff) => {}
+                    }
+                    backoff = (backoff * 2).min(Duration::from_secs(10));
+                    continue;
                 }
-                backoff = (backoff * 2).min(Duration::from_secs(10));
-                continue;
-            }
+            },
         };
-        if let Err(e) = listener.listen(LOGS_CHANNEL).await {
-            tracing::warn!(error = %e, "LISTEN on the log channel failed; retrying");
-            continue;
-        }
         backoff = Duration::from_millis(250);
         loop {
             let n = tokio::select! {
@@ -270,24 +282,18 @@ pub async fn listen_pg(pool: PgPool, store: Store, hub: LogHub, stop: Cancellati
             };
             match n {
                 Ok(Some(n)) => {
-                    let Ok(notice) = serde_json::from_str::<LogNotice>(n.payload()) else {
-                        continue;
-                    };
-                    let lines = match notice.lines {
-                        Some(l) => l,
-                        None => match store.log_chunks(&[notice.chunk_id]).await {
-                            Ok(mut c) => c.pop().map(|c| c.lines).unwrap_or_default(),
-                            Err(e) => {
-                                tracing::warn!(error = %format!("{e:#}"), "reading a log chunk failed");
-                                continue;
-                            }
-                        },
-                    };
-                    hub.publish(LogBatch {
-                        project: notice.project,
-                        launch_id: notice.launch_id,
-                        lines,
-                    });
+                    let mut notices: Vec<LogNotice> = Vec::new();
+                    let mut next = Some(n);
+                    while let Some(n) = next {
+                        if let Ok(notice) = serde_json::from_str::<LogNotice>(n.payload()) {
+                            notices.push(notice);
+                        }
+                        if notices.len() >= NOTICES_PER_READ {
+                            break;
+                        }
+                        next = listener.next_buffered();
+                    }
+                    publish_notices(&store, &hub, notices).await;
                 }
                 Ok(None) => break,
                 Err(e) => {
@@ -296,6 +302,36 @@ pub async fn listen_pg(pool: PgPool, store: Store, hub: LogHub, stop: Cancellati
                 }
             }
         }
+    }
+}
+
+/// Publishes notices in order; the chunks of notices without inline lines are read in one query.
+async fn publish_notices(store: &Store, hub: &LogHub, notices: Vec<LogNotice>) {
+    let ids: Vec<i64> = notices
+        .iter()
+        .filter(|n| n.lines.is_none())
+        .map(|n| n.chunk_id)
+        .collect();
+    let mut chunks: HashMap<i64, Vec<LogLine>> = match store.log_chunks(&ids).await {
+        Ok(c) => c.into_iter().map(|c| (c.id, c.lines)).collect(),
+        Err(e) => {
+            tracing::warn!(error = %format!("{e:#}"), chunks = ids.len(), "reading log chunks failed");
+            HashMap::new()
+        }
+    };
+    for notice in notices {
+        let lines = match notice.lines {
+            Some(l) => l,
+            None => match chunks.remove(&notice.chunk_id) {
+                Some(l) => l,
+                None => continue,
+            },
+        };
+        hub.publish(LogBatch {
+            project: notice.project,
+            launch_id: notice.launch_id,
+            lines,
+        });
     }
 }
 

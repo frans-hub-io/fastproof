@@ -232,12 +232,19 @@ pub async fn start(s: &AppState, stop: &CancellationToken) -> anyhow::Result<Vec
                 s.logs.clone(),
                 stop.clone(),
             ))),
-            None => tasks.push(tokio::spawn(live::listen_pg(
-                s.store.pool().clone(),
-                s.store.clone(),
-                s.logs.clone(),
-                stop.clone(),
-            ))),
+            None => {
+                let pool = s.store.pool().clone();
+                let first =
+                    crate::live::first_subscription(&pool, &[fastproof_store::logs::LOGS_CHANNEL])
+                        .await;
+                tasks.push(tokio::spawn(live::listen_pg(
+                    pool,
+                    s.store.clone(),
+                    s.logs.clone(),
+                    stop.clone(),
+                    first,
+                )))
+            }
         }
     }
     if let Some(kafka) = &s.kafka {

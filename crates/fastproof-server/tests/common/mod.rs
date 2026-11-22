@@ -55,6 +55,33 @@ impl TestDb {
         })
     }
 
+    /// Lets the first runs of the scheduler's `jobs` finish (every job is due when a server
+    /// starts, and that run may begin only after the test wrote its data), then postpones their
+    /// next runs by a day. Tests that do the work of a job themselves call this right after
+    /// starting the server, so the scheduler does not do it first.
+    pub async fn hold_jobs(&self, jobs: &[&str]) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            let held: Vec<String> = sqlx::query_scalar(
+                "update scheduled_jobs set next_run_at = now() + interval '1 day' \
+                 where name = any($1) and last_finished_at is not null and lease_owner is null \
+                 returning name",
+            )
+            .bind(jobs)
+            .fetch_all(&self.pool)
+            .await
+            .unwrap();
+            if jobs.iter().all(|j| held.iter().any(|h| h == j)) {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the first runs of {jobs:?} did not finish (held {held:?})"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
     /// Drops the database while servers are connected (readiness tests).
     pub async fn drop_now(&self) {
         let mut c = self.admin.connect().await.unwrap();

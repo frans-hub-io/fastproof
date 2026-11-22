@@ -389,6 +389,7 @@ async fn test_plans_are_capped_and_expire() {
         return;
     };
     let s = Server::start(&db).await;
+    db.hold_jobs(&["retention.apply"]).await;
     s.project("plans").await;
     let pid: uuid::Uuid = sqlx::query_scalar("select id from projects where key = 'plans'")
         .fetch_one(&db.pool)
@@ -662,6 +663,7 @@ async fn attachment_gc_keeps_reuploaded_content() {
         return;
     };
     let s = Server::start(&db).await;
+    db.hold_jobs(&["attachments.gc", "retention.apply"]).await;
     s.project("gc").await;
     let l1 = launch_id(&s, "gc").await;
     upload_attachment(&s, "gc", &l1, "text/plain", "a.txt", "same bytes").await;

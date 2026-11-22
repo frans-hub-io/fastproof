@@ -132,12 +132,24 @@ pub struct LaunchArgs {
     /// Mark the launch as a debug run (hidden from lists by default).
     #[arg(long)]
     pub debug: bool,
+    /// Ignore the CI environment: no external id, name, CI or VCS metadata derived from the
+    /// variables of GitLab CI, GitHub Actions or Jenkins.
+    #[arg(long, env = "FASTPROOF_NO_CI", value_parser = clap::builder::BoolishValueParser::new())]
+    pub no_ci: bool,
 }
 
 impl LaunchArgs {
+    /// CI metadata from the environment, unless `--no-ci`.
+    pub fn ci(&self) -> Option<ci::CiMeta> {
+        if self.no_ci {
+            return None;
+        }
+        ci::detect(&|k| std::env::var(k).ok())
+    }
+
     /// The launch start request, with CI metadata.
     pub fn start(&self) -> anyhow::Result<LaunchStart> {
-        let ci = ci::detect(&|k| std::env::var(k).ok());
+        let ci = self.ci();
         let external_id = self
             .launch
             .clone()
@@ -311,8 +323,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<i32> {
             let id = match f.id {
                 Some(id) => id,
                 None => {
-                    if f.launch.launch.is_none() && ci::detect(&|k| std::env::var(k).ok()).is_none()
-                    {
+                    if f.launch.launch.is_none() && f.launch.ci().is_none() {
                         bail!("give --id, --launch (FASTPROOF_LAUNCH) or run in CI");
                     }
                     f.launch.resolve(&client).await?.id
@@ -495,4 +506,38 @@ async fn testplan(t: TestplanArgs) -> anyhow::Result<i32> {
         json["tests"].as_array().map(|a| a.len()).unwrap_or(0)
     );
     Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::*;
+
+    #[test]
+    fn no_ci_ignores_the_ci_environment() {
+        let cli = Cli::try_parse_from([
+            "fastproof",
+            "launch",
+            "start",
+            "--url",
+            "http://localhost:8080",
+            "-p",
+            "web",
+            "--no-ci",
+        ])
+        .unwrap();
+        let Command::Launch {
+            command: LaunchCommand::Start(a),
+        } = cli.command
+        else {
+            panic!("launch start expected");
+        };
+        assert!(a.no_ci);
+        assert!(a.ci().is_none());
+        let s = a.start().unwrap();
+        assert_eq!(s.external_id, None);
+        assert!(s.ci.is_none() && s.vcs.is_none());
+        assert!(s.name.starts_with("web "), "{}", s.name);
+    }
 }

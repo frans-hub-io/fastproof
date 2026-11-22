@@ -512,6 +512,8 @@ async fn cli_upload_finishes_its_own_launch_and_finish_waits_for_uploads() {
             tf.to_string_lossy().into(),
             "-p".into(),
             "cli2".into(),
+            // The test expects a launch without an external id, also when the suite runs in CI.
+            "--no-ci".into(),
         ]);
         v
     };

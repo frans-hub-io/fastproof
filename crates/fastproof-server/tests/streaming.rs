@@ -329,6 +329,51 @@ async fn direct_mode_live_logs_running_results_and_search() {
     assert!(items[1]["score"].as_f64().unwrap() < 1.0);
 }
 
+/// The listeners subscribe before `start` returns: a notification sent right after it reaches
+/// the live hubs (it used to be lost while the listeners were still connecting, which is slow
+/// with SCRAM authentication).
+#[tokio::test]
+async fn listeners_are_subscribed_when_start_returns() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = Server::start(&db).await;
+    let state = &s.running.as_ref().unwrap().state;
+    let launch = uuid::Uuid::now_v7();
+    let logs = state.logs.subscribe("early", launch, |_| true);
+    let mut live = state.live.subscribe();
+    let notice = json!({"project": "early", "launchId": launch, "chunkId": 1,
+        "lines": [line("r", 0, 7, "info", "first line")]});
+    let event = json!({"project": "early", "type": "launch.updated", "data": {"id": launch}});
+    for (channel, payload) in [
+        (fastproof_store::logs::LOGS_CHANNEL, notice),
+        (fastproof_store::LIVE_CHANNEL, event),
+    ] {
+        sqlx::query("select pg_notify($1, $2)")
+            .bind(channel)
+            .bind(payload.to_string())
+            .execute(&db.pool)
+            .await
+            .unwrap();
+    }
+    let ev = tokio::time::timeout(Duration::from_secs(10), live.recv())
+        .await
+        .expect("the live event arrives")
+        .unwrap();
+    assert_eq!(ev.project, "early");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let (dropped, lines) = logs.sub.take(10, 1 << 20);
+        assert_eq!(dropped, 0);
+        if let Some(l) = lines.first() {
+            assert_eq!((l.seq, l.message.as_str()), (7, "first line"));
+            break;
+        }
+        assert!(Instant::now() < deadline, "the log line arrives");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
 #[tokio::test]
 async fn sse_drops_oldest_lines_with_a_gap_event() {
     let Some(db) = TestDb::new().await else {
@@ -352,8 +397,9 @@ async fn sse_drops_oldest_lines_with_a_gap_event() {
         .unwrap();
     let mut body = r.bytes_stream();
     let _ready = body.next().await;
-    // 9000 lines commit at once, faster than 20 events of 500 lines per second drain them:
-    // the subscriber keeps the newest 2000 and reports the rest as a gap.
+    // 9000 lines commit at once and reach the hub as one burst, faster than 20 events of 500
+    // lines per second drain them: the subscriber keeps the newest 2000 and reports the rest
+    // as a gap.
     let lines: Vec<Value> = (0..9000).map(|i| line("r", 0, i, "info", "x")).collect();
     let (st, b) = post_ndjson(&s, &format!("{base}/logs"), &lines).await;
     assert_eq!(st, StatusCode::ACCEPTED, "{b}");

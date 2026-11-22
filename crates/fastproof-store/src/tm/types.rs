@@ -399,7 +399,8 @@ pub struct CaseHtml {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CaseWrite {
     pub name: String,
-    /// The folder; absent or `null` is the root.
+    /// The folder: `null` is the root. Absent is the root on `POST` and keeps the folder on
+    /// `PUT`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folder_id: Option<Uuid>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -505,6 +506,9 @@ pub struct Case {
     pub automated: bool,
     pub origin: CaseOrigin,
     pub ai_unreviewed: bool,
+    /// The folder id (`null` at the root); the same value a `PUT` keeps when it leaves
+    /// `folderId` out.
+    pub folder_id: Option<Uuid>,
     pub folder: Option<CaseFolderRef>,
     pub body: CaseBody,
     pub html: CaseHtml,
@@ -984,6 +988,13 @@ pub struct LaunchManual {
     pub failed: i64,
     pub blocked: i64,
     pub skipped: i64,
+    /// When the first run item was started (the manual part has its own times; the launch's
+    /// `durationMs` covers the automated results only).
+    #[serde(default)]
+    pub started_at: Option<DateTime<Utc>>,
+    /// When the last run item got a final status.
+    #[serde(default)]
+    pub finished_at: Option<DateTime<Utc>>,
 }
 
 /// A run item in lists.
@@ -1095,11 +1106,47 @@ pub struct RunItemsAdd {
 }
 
 /// Outcome of adding run items.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct RunItemsAdded {
     pub added: i64,
+    /// Cases left out: already in the launch or automated.
     pub skipped: i64,
+    /// Why named cases were left out (the first 1000).
+    #[serde(default)]
+    pub skips: Vec<RunItemSkip>,
+}
+
+str_enum!(
+    /// Why a case was not added to a launch as a run item: `automated` (CI runs it; only manual
+    /// cases become run items) or `in_launch` (it has a run item already).
+    RunItemSkipCode { Automated = "automated", InLaunch = "in_launch" }
+);
+
+/// A case left out when adding run items.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RunItemSkip {
+    pub case_number: i64,
+    pub code: RunItemSkipCode,
+}
+
+/// An earlier execution of a run item, kept when the item is rerun.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RunItemExecution {
+    pub execution_no: i32,
+    pub status: RunStatus,
+    pub case_version: i32,
+    pub comment: String,
+    pub executed_by: Option<String>,
+    pub started_at: Option<DateTime<Utc>>,
+    pub finished_at: Option<DateTime<Utc>>,
+    pub defect: Option<serde_json::Value>,
+    pub step_results: Vec<RunStepResult>,
+    /// Who started the next execution, and when.
+    pub rerun_by: String,
+    pub rerun_at: DateTime<Utc>,
 }
 
 /// An issue linked to a run item.
@@ -1159,6 +1206,14 @@ pub struct ImportReport {
     pub unknown_values: BTreeMap<String, Vec<String>>,
     /// The first 1000 errors.
     pub errors: Vec<ImportRowError>,
+    /// Field definitions the import creates (dry run) or created for unknown columns
+    /// (`unknownFieldValues: create`).
+    #[serde(default)]
+    pub created_fields: Vec<String>,
+    /// Rows imported with a change, such as a case set to `draft` because required fields
+    /// have no value (`required_fields_missing`); the first 1000.
+    #[serde(default)]
+    pub warnings: Vec<ImportRowError>,
 }
 
 /// A background job (import, export, backfill).
@@ -1201,7 +1256,16 @@ pub struct ImportOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_folder_id: Option<Uuid>,
     pub unknown_field_values: UnknownFieldValues,
+    /// Status of imported cases (`draft` or `active`); absent: the status the source maps, else
+    /// `active`. A case whose required fields have no value is imported as `draft`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<ImportCaseStatus>,
 }
+
+str_enum!(
+    /// Status an import gives the cases it creates.
+    ImportCaseStatus { Draft = "draft", Active = "active" }
+);
 
 /// An import from the Allure TestOps API. The token is stored as a project secret at once and
 /// never returned, logged or audited.

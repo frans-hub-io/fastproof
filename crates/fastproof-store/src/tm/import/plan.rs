@@ -14,11 +14,14 @@ use serde_json::json;
 use sqlx::{Acquire, PgConnection};
 use uuid::Uuid;
 
+use super::super::cases::draft_when_required_missing;
 use super::super::cases::{
     CaseCtx, NewCaseMeta, create_case_in, lock_case_by_number, prepare_write, reserve_numbers,
     update_case_in, valid_link_url, valid_step_id,
 };
-use super::super::fields::{field_defs, valid_date};
+use super::super::fields::{
+    ImportColumn, MAX_IMPORT_COLUMNS, field_defs, import_field_name, valid_date,
+};
 use super::super::folders::ensure_folder_path;
 use super::super::keys::{case_by_key, set_case_key};
 use super::super::versions::{changed_keys, snapshot_of};
@@ -41,6 +44,8 @@ pub struct PlanOptions {
     pub numbered_source: bool,
     /// Code identities from full names (TestOps).
     pub identities: bool,
+    /// Status of created cases (`draft`/`active`); `None`: the source's, else `active`.
+    pub status: Option<super::super::ImportCaseStatus>,
 }
 
 /// One import run (dry or applying): field mapping, folder cache, report.
@@ -54,6 +59,8 @@ pub struct Planner {
     pub(crate) used_numbers: HashSet<i64>,
     unknown_fields: BTreeSet<String>,
     unknown_values: BTreeMap<String, BTreeSet<String>>,
+    /// Unknown columns with their values (by normalized name), for `unknownFieldValues: create`.
+    pub unknown_columns: BTreeMap<String, ImportColumn>,
     pub report: ImportReport,
     /// Errors beyond the kept ones.
     pub errors_total: u64,
@@ -185,6 +192,7 @@ impl Planner {
             used_numbers: HashSet::new(),
             unknown_fields: BTreeSet::new(),
             unknown_values: BTreeMap::new(),
+            unknown_columns: BTreeMap::new(),
             report: ImportReport::default(),
             errors_total: 0,
             max_number: None,
@@ -227,10 +235,33 @@ impl Planner {
         }
     }
 
-    /// The report with the unknown fields and values.
+    /// Records a row warning (the first [`MAX_REPORT_ERRORS`] are kept).
+    pub fn warn(&mut self, row: u64, code: &str, message: String) {
+        if self.report.warnings.len() < MAX_REPORT_ERRORS {
+            self.report.warnings.push(ImportRowError {
+                row: row as i64,
+                code: code.to_string(),
+                message: message.chars().take(500).collect(),
+            });
+        }
+    }
+
+    /// The report with the unknown fields and values. With `unknownFieldValues: create` the
+    /// unknown columns are listed as fields the import creates, not as unknown fields.
     pub fn finish_report(&mut self) -> ImportReport {
         let mut r = self.report.clone();
         r.unknown_fields = self.unknown_fields.iter().cloned().collect();
+        if self.opts.unknown_values == UnknownFieldValues::Create {
+            for c in self.unknown_columns.values() {
+                r.unknown_fields.retain(|f| f.trim() != c.name.trim());
+                let name = import_field_name(&c.name);
+                if r.created_fields.len() < MAX_IMPORT_COLUMNS
+                    && !r.created_fields.iter().any(|f| f == &name)
+                {
+                    r.created_fields.push(name);
+                }
+            }
+        }
         r.unknown_values = self
             .unknown_values
             .iter()
@@ -265,6 +296,25 @@ impl Planner {
             let Some(&i) = self.by_name.get(&norm(name)) else {
                 if self.unknown_fields.len() < 1000 {
                     self.unknown_fields.insert(name.chars().take(200).collect());
+                }
+                if self.opts.unknown_values == UnknownFieldValues::Create {
+                    let n = norm(name);
+                    if self.unknown_columns.contains_key(&n)
+                        || self.unknown_columns.len() < MAX_IMPORT_COLUMNS
+                    {
+                        let (texts, many, number) = match v {
+                            ImportedValue::Text(s) => (vec![s.clone()], false, false),
+                            ImportedValue::Many(m) => (m.clone(), true, false),
+                            ImportedValue::Number(x) => (vec![x.to_string()], false, true),
+                        };
+                        self.unknown_columns
+                            .entry(n)
+                            .or_insert_with(|| ImportColumn {
+                                name: name.chars().take(200).collect(),
+                                ..Default::default()
+                            })
+                            .observe(&texts, many, number);
+                    }
                 }
                 continue;
             };
@@ -489,10 +539,14 @@ impl Planner {
             .map(|t| t.trim().to_string())
             .filter(|t| !t.is_empty())
             .collect();
+        let status = match (self.opts.status, cur) {
+            (Some(s), None) => CaseStatus::parse(s.as_str()),
+            _ => c.status.as_deref().and_then(CaseStatus::parse),
+        };
         CaseWrite {
             name: c.name.clone(),
             folder_id: folder,
-            status: c.status.as_deref().and_then(CaseStatus::parse),
+            status,
             body: CaseBody {
                 description: rewrite(&c.description, c, attachments),
                 preconditions: rewrite(&c.preconditions, c, attachments),
@@ -505,6 +559,23 @@ impl Planner {
             } else {
                 Some(tags)
             },
+        }
+    }
+
+    /// A case whose required fields have no value is imported as `draft` with a warning.
+    fn draft_if_required_missing(
+        &mut self,
+        c: &ImportedCase,
+        w: &mut CaseWrite,
+        cur: Option<&CaseRow>,
+    ) {
+        let missing = draft_when_required_missing(w, cur, &self.defs);
+        if !missing.is_empty() {
+            self.warn(
+                c.row,
+                "required_fields_missing",
+                format!("imported as draft: no value for {}", missing.join(", ")),
+            );
         }
     }
 
@@ -542,7 +613,8 @@ impl Planner {
             Some(id) => case_by_id(conn, ctx.project_id, id).await?,
             None => None,
         };
-        let w = self.write_of(c, folder, fields, &HashMap::new(), cur.as_ref());
+        let mut w = self.write_of(c, folder, fields, &HashMap::new(), cur.as_ref());
+        self.draft_if_required_missing(c, &mut w, cur.as_ref());
         let snap = match prepare_write(conn, ctx, &w, cur.as_ref(), &self.defs).await {
             Ok(s) => s,
             Err(e) => {
@@ -668,7 +740,8 @@ impl Planner {
                     .fetch_one(&mut *conn)
                     .await?;
                 let cur = lock_case_by_number(conn, ctx.project_id, number, None).await?;
-                let w = self.write_of(c, folder, fields, attachments, Some(&cur));
+                let mut w = self.write_of(c, folder, fields, attachments, Some(&cur));
+                self.draft_if_required_missing(c, &mut w, Some(&cur));
                 let after = update_case_in(conn, ctx, &cur, &w, VersionSource::Import).await?;
                 if after.revision == cur.revision {
                     self.report.skip += 1;
@@ -678,7 +751,8 @@ impl Planner {
                 after
             }
             None => {
-                let w = self.write_of(c, folder, fields, attachments, None);
+                let mut w = self.write_of(c, folder, fields, attachments, None);
+                self.draft_if_required_missing(c, &mut w, None);
                 let snap = prepare_write(conn, ctx, &w, None, &self.defs).await?;
                 let number = match c.number {
                     Some(n) if self.keep_numbers && n > 0 && self.used_numbers.insert(n) => {
@@ -1058,7 +1132,8 @@ impl Store {
                 continue;
             }
             let folder = planner.apply_folder(tx, ctx, c).await?;
-            let w = planner.write_of(c, folder, fields, attachments, None);
+            let mut w = planner.write_of(c, folder, fields, attachments, None);
+            planner.draft_if_required_missing(c, &mut w, None);
             match prepare_write(tx, ctx, &w, None, &planner.defs).await {
                 Ok(snap) => {
                     pending_keys.extend(ks);

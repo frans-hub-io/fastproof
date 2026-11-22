@@ -52,6 +52,9 @@ pub struct ImportParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_folder_id: Option<Uuid>,
     pub unknown_field_values: Option<UnknownFieldValues>,
+    /// Status of created cases (`ImportOptions.status`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<super::ImportCaseStatus>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file_name: Option<String>,
     /// Blob of the uploaded file (or of the cases fetched from TestOps, as NDJSON).

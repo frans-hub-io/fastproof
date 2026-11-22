@@ -477,8 +477,9 @@ async fn refresh_vacated(
 /// As [`Store::persist_attempts`], inside the caller's transaction (the Kafka writer commits its
 /// consumer offset in the same transaction). Nothing is written when no attempt is new; the
 /// caller decides whether to commit.
-/// Recomputes the counters of a launch: the automated ones (and the first and last result
-/// times) from its results, the manual ones from its run items; sets `attempt_seq` when given.
+/// Recomputes the counters of a launch: the automated ones from its results (the first and
+/// last result times from automated results only, so manual work does not stretch the launch
+/// duration), the manual ones from its run items; sets `attempt_seq` when given.
 pub(crate) async fn recount(
     conn: &mut sqlx::PgConnection,
     launch_id: Uuid,
@@ -497,7 +498,8 @@ pub(crate) async fn recount(
            count(*) filter (where status = 'skipped')::int as skipped, \
            count(*) filter (where status = 'unknown')::int as unknown, \
            count(*) filter (where flaky_in_run)::int as flaky, count(*) filter (where muted)::int as muted, \
-           min(started_at) as mn, max(coalesce(stopped_at, started_at)) as mx \
+           min(started_at) filter (where run_item_id is null) as mn, \
+           max(coalesce(stopped_at, started_at)) filter (where run_item_id is null) as mx \
            from results where launch_id = $1 and launch_created_at = $3) c, \
          (select count(*) filter (where status = 'untested')::int as untested, \
            count(*) filter (where status = 'in_progress')::int as in_progress \

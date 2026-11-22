@@ -55,11 +55,15 @@ mod tests {
                 tracker: "jira".into(),
                 url_template: "https://jira.example.com/browse/{key}".into(),
                 key_regex: "[A-Z][A-Z0-9]+-[0-9]+".into(),
+                project_id: None,
+                issue_type_id: None,
             },
             IssueTracker {
                 tracker: "github".into(),
                 url_template: "https://github.com/org/app/issues/{key}".into(),
                 key_regex: "#?[0-9]+".into(),
+                project_id: None,
+                issue_type_id: None,
             },
         ]
     }

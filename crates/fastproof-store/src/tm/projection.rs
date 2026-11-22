@@ -95,6 +95,7 @@ fn build_steps(
     steps: &[CaseStep],
     prefix: &str,
     results: &HashMap<String, StepRes>,
+    effective: &HashMap<String, StepStatus>,
     atts: &HashMap<Uuid, AttachmentRef>,
 ) -> Vec<Step> {
     steps
@@ -109,7 +110,13 @@ fn build_steps(
             let r = results.get(&path).cloned().unwrap_or_default();
             Step {
                 name: cut(s.action.trim(), STEP_NAME_CHARS),
-                status: step_status(r.status.unwrap_or(StepStatus::Untested)),
+                status: step_status(
+                    effective
+                        .get(&path)
+                        .copied()
+                        .or(r.status)
+                        .unwrap_or(StepStatus::Untested),
+                ),
                 status_details: StatusDetails {
                     message: non_empty(&r.comment),
                     actual: non_empty(&r.actual),
@@ -131,7 +138,7 @@ fn build_steps(
                         missing: false,
                     })
                     .collect(),
-                steps: build_steps(&s.steps, &path, results, atts),
+                steps: build_steps(&s.steps, &path, results, effective, atts),
                 kind: StepKind::Step,
                 ..Default::default()
             }
@@ -270,8 +277,9 @@ pub async fn project_run_items(
     if !finals.is_empty() {
         let ids: Vec<Uuid> = finals.iter().map(|i| i.id).collect();
         let step_rows: Vec<(Uuid, String, String, String, String, Vec<Uuid>)> = sqlx::query_as(
-            "select run_item_id, step_path, status, actual, comment, attachment_ids from run_step_results \
-             where run_item_id = any($1)",
+            "select s.run_item_id, s.step_path, s.status, s.actual, s.comment, s.attachment_ids \
+             from run_step_results s join run_items ri on ri.id = s.run_item_id and ri.execution_no = s.execution_no \
+             where s.run_item_id = any($1)",
         )
         .bind(&ids)
         .fetch_all(&mut *conn)
@@ -351,7 +359,12 @@ pub async fn project_run_items(
                 .get(&i.series_id)
                 .copied()
                 .unwrap_or_else(Uuid::now_v7);
-            let built = build_steps(&snap.body.steps, "", st, &atts);
+            let recorded: HashMap<String, StepStatus> = st
+                .iter()
+                .filter_map(|(p, r)| r.status.map(|s| (p.clone(), s)))
+                .collect();
+            let effective = super::runs::effective_statuses(&snap.body.steps, &recorded);
+            let built = build_steps(&snap.body.steps, "", st, &effective, &atts);
             let duration = match (i.started_at, i.finished_at) {
                 (Some(a), Some(b)) if b >= a => Some((b - a).num_milliseconds()),
                 _ => None,

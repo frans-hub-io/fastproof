@@ -802,7 +802,10 @@ async fn plan_launch_run_items_and_projection() {
         (tree[0]["name"].as_str(), tree[0]["status"].as_str()),
         (Some("Open the cart"), Some("passed"))
     );
-    assert_eq!(tree[1]["status"], "unknown");
+    assert_eq!(
+        tree[1]["status"], "failed",
+        "a parent without its own status takes the worst child's"
+    );
     let confirm = &tree[1]["steps"][1];
     assert_eq!(
         (confirm["name"].as_str(), confirm["status"].as_str()),
@@ -850,13 +853,16 @@ async fn plan_launch_run_items_and_projection() {
     assert_eq!(l["counts"]["total"], 1);
     assert_eq!(l["manual"]["untested"], 2);
 
-    let (st, rerun) = s
-        .post(
-            &format!("/api/v1/projects/run/run-items/{i1}/rerun"),
-            &tester,
-            json!({}),
-        )
-        .await;
+    let (_, i1_etag) = item(&s, "run", &i1).await;
+    let (st, rerun, _) = send(
+        &s,
+        Method::POST,
+        &format!("/api/v1/projects/run/run-items/{i1}/rerun"),
+        Some(&tester),
+        Some(&i1_etag),
+        None,
+    )
+    .await;
     assert_eq!(st, StatusCode::OK, "{rerun}");
     assert_eq!(
         (rerun["executionNo"].as_i64(), rerun["status"].as_str()),
@@ -945,7 +951,7 @@ async fn manual_series_are_never_flaky() {
             )
             .await;
         assert_eq!(st, StatusCode::OK, "{b}");
-        assert_eq!(b, json!({"added": 1, "skipped": 0}));
+        assert_eq!(b, json!({"added": 1, "skipped": 0, "skips": []}));
         let list = items(&s, "fl", lid).await;
         set_status(&s, "fl", ADMIN_TOKEN, &item_of(&list, n), status).await;
     }
@@ -1100,7 +1106,15 @@ async fn close_reopen_gate_and_finish() {
             json!({"untestedTo": "leave"}),
         ),
     ] {
-        let (st, e) = s.post(&path, &tester, body).await;
+        let (st, e, _) = send(
+            &s,
+            Method::POST,
+            &path,
+            Some(&tester),
+            Some("\"r1\""),
+            Some(body),
+        )
+        .await;
         assert_eq!(
             (st, e["code"].as_str()),
             (StatusCode::CONFLICT, Some("manual_run_closed")),
@@ -2239,11 +2253,18 @@ async fn report_issue_link_and_cli() {
         .await;
     assert_eq!(st, StatusCode::OK, "{u}");
     let url = u["url"].as_str().unwrap();
-    assert!(
-        url.starts_with("https://jira.example.com/secure/CreateIssueDetails!init.jspa?summary=TC-"),
-        "{url}"
+    assert_eq!(
+        url, "https://jira.example.com/secure/CreateIssue!default.jspa",
+        "Jira without projectId and issueTypeId: the create page"
     );
-    assert!(url.contains("Actual%3A+-1+%26+broken"), "{url}");
+    assert_eq!(u["prefilled"], false);
+    assert!(
+        u["prefill"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("Actual: -1 & broken"),
+        "{u}"
+    );
     let (_, u) = s
         .get(
             &format!("/api/v1/projects/rep/run-items/{iid}/new-issue-url?tracker=github"),

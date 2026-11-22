@@ -563,9 +563,10 @@ pub async fn get_settings(
 
 #[utoipa::path(put, path = "/api/v1/projects/{key}/settings", tag = "analysis", operation_id = "analysis_put_settings",
     request_body(content = ProjectSettings, description = "The areas to change. Each top-level area present in the body \
-        (`flaky`, `retention`, `rollup`, `caseSync`, `gates`, `notifications`, `issueTrackers`, `fastmock`, `vcs`) replaces the stored \
-        one as a whole; areas left out are kept; `null` resets an area to its default (removes it). The answer is the \
-        whole stored document."),
+        (`flaky`, `retention`, `rollup`, `gates`, `notifications`, `issueTrackers`, `fastmock`, `vcs`) replaces the stored \
+        one as a whole; areas left out are kept; `null` resets an area to its default (removes it). `caseSync` is merged \
+        by key instead (and its `fields` by field): keys left out keep their values, a `null` key returns to its default. \
+        The answer is the whole stored document."),
     params(("key" = String, Path)),
     responses((status = 200, body = ProjectSettings), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),
         (status = 404, body = ErrorBody)))]
@@ -636,12 +637,49 @@ fn merge_settings(
     for (k, v) in patch {
         if v.is_null() {
             doc.remove(&k);
+        } else if k == "caseSync" {
+            let merged = merge_case_sync(doc.remove(&k), v);
+            doc.insert(k, merged);
         } else {
             doc.insert(k, v);
         }
     }
     serde_json::from_value(serde_json::Value::Object(doc))
         .map_err(|e| ApiError::bad_request(format!("invalid settings: {e}")))
+}
+
+/// `caseSync` of a `PUT` merged into the stored one by key (and `fields` by field): keys left
+/// out keep their values, a `null` key goes back to its default.
+fn merge_case_sync(
+    current: Option<serde_json::Value>,
+    patch: serde_json::Value,
+) -> serde_json::Value {
+    let (Some(serde_json::Value::Object(mut cur)), serde_json::Value::Object(patch)) =
+        (current, patch.clone())
+    else {
+        return patch;
+    };
+    for (k, v) in patch {
+        if v.is_null() {
+            cur.remove(&k);
+            continue;
+        }
+        if k == "fields"
+            && let (serde_json::Value::Object(f), Some(serde_json::Value::Object(cf))) =
+                (&v, cur.get_mut(&k))
+        {
+            for (fk, fv) in f {
+                if fv.is_null() {
+                    cf.remove(fk);
+                } else {
+                    cf.insert(fk.clone(), fv.clone());
+                }
+            }
+            continue;
+        }
+        cur.insert(k, v);
+    }
+    serde_json::Value::Object(cur)
 }
 
 /// Validation of the integration parts of a settings document (gates, notifications, vcs,

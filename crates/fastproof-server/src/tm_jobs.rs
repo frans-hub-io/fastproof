@@ -204,6 +204,7 @@ fn plan_options(p: &ImportParams) -> PlanOptions {
         target_folder: p.target_folder_id,
         numbered_source: testops || p.format == Some(ImportFormat::FastproofNdjson),
         identities: testops,
+        status: p.status,
     }
 }
 
@@ -299,6 +300,9 @@ async fn dry_run(s: &AppState, job: &ClaimedJob, owner: &str) -> anyhow::Result<
     patch["keepNumbers"] = json!(planner.keep_numbers);
     patch["maxNumber"] = json!(planner.max_number);
     patch["unknownValues"] = json!(report.unknown_values);
+    if params.unknown_field_values == Some(UnknownFieldValues::Create) {
+        patch["unknownColumns"] = json!(planner.unknown_columns.values().collect::<Vec<_>>());
+    }
     s.store
         .finish_tm_job(
             job.id,
@@ -617,6 +621,21 @@ async fn apply(s: &AppState, job: &ClaimedJob, owner: &str) -> anyhow::Result<()
     } else {
         planner.raise_seq(&s.store, job.project_id).await?;
         if params.unknown_field_values == Some(UnknownFieldValues::Create) {
+            let columns: Vec<fastproof_store::tm::fields::ImportColumn> = job
+                .params
+                .get("unknownColumns")
+                .cloned()
+                .and_then(|v| serde_json::from_value(v).ok())
+                .unwrap_or_default();
+            if !columns.is_empty() {
+                let created = s
+                    .store
+                    .create_import_fields(job.project_id, &columns, &s.cfg.tm)
+                    .await?;
+                planner.report.created_fields = created.iter().map(|d| d.name.clone()).collect();
+                let mut conn = s.store.pool().acquire().await?;
+                planner.reload_defs(&mut conn, job.project_id).await?;
+            }
             let unknown: BTreeMap<String, Vec<String>> = job
                 .params
                 .get("unknownValues")
@@ -838,6 +857,7 @@ pub fn file_params(
         mode: Some(opts.mode),
         target_folder_id: opts.target_folder_id,
         unknown_field_values: Some(opts.unknown_field_values),
+        status: opts.status,
         file_name,
         blob: Some(blob),
         zip,

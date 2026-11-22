@@ -49,14 +49,15 @@ pub(crate) const LAUNCH_SELECT: &str = "select l.id, l.project_id, l.number, l.n
     coalesce(u.failed, 0) as uploads_failed, l.test_plan_id, l.manual_state, \
     m.total as manual_total, m.untested as manual_untested, m.in_progress as manual_in_progress, \
     m.passed as manual_passed, m.failed as manual_failed, m.blocked as manual_blocked, \
-    m.skipped as manual_skipped \
+    m.skipped as manual_skipped, m.started_at as manual_started_at, m.finished_at as manual_finished_at \
     from launches l left join lateral (select count(*) filter (where status = 'queued') as queued, \
     count(*) filter (where status = 'processing') as processing, \
     count(*) filter (where status = 'failed') as failed from uploads where launch_id = l.id) u on true \
     left join lateral (select count(*) as total, count(*) filter (where status = 'untested') as untested, \
     count(*) filter (where status = 'in_progress') as in_progress, \
     count(*) filter (where status = 'passed') as passed, count(*) filter (where status = 'failed') as failed, \
-    count(*) filter (where status = 'blocked') as blocked, count(*) filter (where status = 'skipped') as skipped \
+    count(*) filter (where status = 'blocked') as blocked, count(*) filter (where status = 'skipped') as skipped, \
+    min(started_at) as started_at, max(finished_at) as finished_at \
     from run_items where launch_id = l.id and l.manual_state is not null) m on true ";
 
 fn json_opt<T: serde::de::DeserializeOwned>(
@@ -135,6 +136,8 @@ fn manual_row(r: &PgRow) -> Result<Option<crate::tm::LaunchManual>, sqlx::Error>
         failed: n("manual_failed")?,
         blocked: n("manual_blocked")?,
         skipped: n("manual_skipped")?,
+        started_at: r.try_get("manual_started_at")?,
+        finished_at: r.try_get("manual_finished_at")?,
     }))
 }
 

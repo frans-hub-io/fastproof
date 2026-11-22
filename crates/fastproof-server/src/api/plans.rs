@@ -13,7 +13,7 @@ use fastproof_store::tm::{
     PlanLaunch, PlanSyncDiff, StartPlanLaunch, TestPlan, TestPlanItem, TestPlanItemsChange,
     TestPlanWrite,
 };
-use fastproof_store::{Attribute, LaunchEnvironment, Page, Project};
+use fastproof_store::{Attribute, Launch, LaunchEnvironment, Page, Project};
 use franshub_auth::Auth;
 use franshub_http::{ApiError, ApiJson, ApiResult};
 use serde::Deserialize;
@@ -35,7 +35,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(get_test_plan, update_test_plan, archive_test_plan))
         .routes(routes!(list_test_plan_items, change_test_plan_items))
         .routes(routes!(sync_test_plan))
-        .routes(routes!(start_plan_launch))
+        .routes(routes!(start_plan_launch, list_plan_launches))
         .routes(routes!(launch_testplan_json))
 }
 
@@ -320,6 +320,42 @@ pub fn ci_hint(project: &str, external_id: &str) -> String {
          export ALLURE_TESTPLAN_PATH=\"$PWD/testplan.json\"",
         shell_quote(project)
     )
+}
+
+/// Query of `GET /test-plans/{id}/launches`.
+#[derive(Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct PlanLaunchesQuery {
+    /// Launch number to continue below (the `next` of the previous page).
+    pub before: Option<String>,
+    pub limit: Option<i64>,
+}
+
+#[utoipa::path(get, path = "/api/v1/projects/{key}/test-plans/{id}/launches", tag = "plans", operation_id = "list_plan_launches",
+    description = "Launches started from a managed plan, newest first, with their `manual` progress.",
+    params(("key" = String, Path), ("id" = Uuid, Path), PlanLaunchesQuery),
+    responses((status = 200, body = Page<Launch>), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),
+        (status = 404, body = ErrorBody)))]
+pub async fn list_plan_launches(
+    State(s): State<AppState>,
+    auth: Auth,
+    P((key, id)): P<(String, Uuid)>,
+    Q(q): Q<PlanLaunchesQuery>,
+) -> ApiResult<Json<Page<Launch>>> {
+    let p = s.project_for(&auth, &key, &s.perms.launches_read).await?;
+    let before = match q.before.as_deref() {
+        None => None,
+        Some(b) => Some(
+            b.parse::<i64>()
+                .map_err(|_| ApiError::bad_request("invalid cursor"))?,
+        ),
+    };
+    Ok(Json(
+        s.store
+            .plan_launches(p.id, id, before, page_limit(q.limit)?)
+            .await
+            .map_err(tm_error)?,
+    ))
 }
 
 #[utoipa::path(post, path = "/api/v1/projects/{key}/test-plans/{id}/launches", tag = "plans", operation_id = "start_plan_launch",

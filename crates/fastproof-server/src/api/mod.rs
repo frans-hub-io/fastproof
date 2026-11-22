@@ -109,7 +109,8 @@ pub fn type_project_settings(doc: &mut utoipa::openapi::OpenApi) {
         tm::TestPlanItem, tm::TestPlanItemsChange, tm::PlanSyncDiff, tm::StartPlanLaunch, tm::PlanLaunch,
         tm::LaunchManual, tm::RunItemSummary, tm::RunStepResult, tm::RunItem, tm::RunStepWrite, tm::RunStepAck,
         tm::RunItemPatch, tm::RunItemsAdd, tm::RunItemsAdded, tm::RunDefect, tm::ManualClose, tm::TmJob,
-        tm::ImportPreview, tm::ImportOptions, tm::TestOpsImport, tm::ImportReport, tm::FolderDeleteMode)),
+        tm::ImportPreview, tm::ImportOptions, tm::TestOpsImport, tm::ImportReport, tm::FolderDeleteMode,
+        tm::RunItemExecution, tm::RunItemSkip, tm::RunItemSkipCode, tm::ImportCaseStatus)),
     tags(
         (name = "projects"), (name = "launches"), (name = "uploads"), (name = "results"),
         (name = "attachments"), (name = "events"), (name = "admin"), (name = "integrations"),

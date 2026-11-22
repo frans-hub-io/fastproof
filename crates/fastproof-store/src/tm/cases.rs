@@ -454,6 +454,48 @@ fn check_fields(
     *fields = out;
 }
 
+/// The keys of required fields (active definitions) a write leaves without a value: a value in
+/// the write (or on the current case when the write has no `fields`), or the default of a new
+/// case, counts. Empty for a draft.
+pub fn missing_required(
+    w: &CaseWrite,
+    current: Option<&CaseRow>,
+    defs: &[CaseFieldDef],
+) -> Vec<String> {
+    let status = w
+        .status
+        .or(current.map(|c| c.status))
+        .unwrap_or(CaseStatus::Active);
+    if status == CaseStatus::Draft {
+        return Vec::new();
+    }
+    let fields = w.fields.as_ref().or(current.map(|c| &c.fields));
+    defs.iter()
+        .filter(|d| d.required && !d.archived)
+        .filter(|d| {
+            let has = fields
+                .and_then(|f| f.get(&d.key))
+                .is_some_and(|v| !v.is_null());
+            !has && !(current.is_none() && !d.default_value.is_null())
+        })
+        .map(|d| d.key.clone())
+        .collect()
+}
+
+/// For imports: a case whose required fields have no value becomes a `draft` instead of
+/// failing the row. Returns the keys that were missing (empty: unchanged).
+pub fn draft_when_required_missing(
+    w: &mut CaseWrite,
+    current: Option<&CaseRow>,
+    defs: &[CaseFieldDef],
+) -> Vec<String> {
+    let missing = missing_required(w, current, defs);
+    if !missing.is_empty() {
+        w.status = Some(CaseStatus::Draft);
+    }
+    missing
+}
+
 /// Resolves attachment ids (or attachment reference ids) of the project to attachment ids.
 async fn resolve_attachments(
     conn: &mut PgConnection,
@@ -1352,6 +1394,7 @@ pub async fn case_view(conn: &mut PgConnection, project_id: Uuid, row: &CaseRow)
         automated: row.automated,
         origin: row.origin,
         ai_unreviewed: row.ai_unreviewed,
+        folder_id: row.folder_id,
         folder,
         body: row.body.clone(),
         html: CaseHtml::default(),
@@ -1578,7 +1621,8 @@ impl Store {
         case_view(&mut conn, project_id, row).await
     }
 
-    /// Replaces the content of the case (`PUT`) when its revision is `expected`. Returns the
+    /// Replaces the content of the case (`PUT`) when its revision is `expected`; with
+    /// `keep_folder` (the body left `folderId` out) the case stays in its folder. Returns the
     /// case before and after.
     pub async fn update_case(
         &self,
@@ -1586,9 +1630,20 @@ impl Store {
         n: i64,
         expected: i64,
         w: &CaseWrite,
+        keep_folder: bool,
     ) -> TmResult<(CaseRow, CaseRow)> {
         let mut tx = self.pool.begin().await?;
         let cur = lock_case_by_number(&mut tx, ctx.project_id, n, Some(expected)).await?;
+        let kept;
+        let w = if keep_folder {
+            kept = CaseWrite {
+                folder_id: cur.folder_id,
+                ..w.clone()
+            };
+            &kept
+        } else {
+            w
+        };
         let row = update_case_in(&mut tx, ctx, &cur, w, VersionSource::Ui).await?;
         tx.commit().await?;
         Ok((cur, row))

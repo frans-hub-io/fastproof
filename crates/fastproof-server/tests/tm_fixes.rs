@@ -188,6 +188,16 @@ async fn allure_id_on_a_linked_test_moves_it_to_the_named_case() {
     .await;
     assert_eq!(st, StatusCode::OK, "an edit in the UI: {b}");
     let manual_launch = s.launch("ai", Some("manual-1")).await;
+    let set_automated = |on: bool| {
+        sqlx::query(
+            "update cases set automated = $1 where number = $2 \
+             and project_id = (select id from projects where key = 'ai')",
+        )
+        .bind(on)
+        .bind(auto_wallet)
+        .execute(&db.pool)
+    };
+    set_automated(false).await.unwrap();
     let (st, b) = s
         .post(
             &format!(
@@ -199,6 +209,8 @@ async fn allure_id_on_a_linked_test_moves_it_to_the_named_case() {
         )
         .await;
     assert_eq!(st, StatusCode::OK, "a manual run of the code case: {b}");
+    assert_eq!(b["added"], 1, "{b}");
+    set_automated(true).await.unwrap();
 
     let ids = move || {
         json!([

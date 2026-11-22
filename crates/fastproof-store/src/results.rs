@@ -28,6 +28,8 @@ pub struct ResultFilter {
     pub label: Option<(String, String)>,
     pub flaky: Option<bool>,
     pub fingerprint: Option<String>,
+    /// Only manual (projected from run items) or only automated results.
+    pub source: Option<crate::tm::ResultSource>,
     pub before: Option<String>,
     pub limit: i64,
 }
@@ -48,6 +50,8 @@ pub struct TreeFilter {
     pub q: Option<String>,
     /// Only results flaky in this run.
     pub flaky: Option<bool>,
+    /// Only manual or only automated results.
+    pub source: Option<crate::tm::ResultSource>,
 }
 
 /// What the launch tree holds.
@@ -146,6 +150,15 @@ fn push_tree_filter(qb: &mut QueryBuilder<Postgres>, f: &TreeFilter) {
     }
     if let Some(fl) = f.flaky {
         qb.push(" and flaky_in_run = ").push_bind(fl);
+    }
+    match f.source {
+        Some(crate::tm::ResultSource::Manual) => {
+            qb.push(" and run_item_id is not null");
+        }
+        Some(crate::tm::ResultSource::Automated) => {
+            qb.push(" and run_item_id is null");
+        }
+        None => {}
     }
 }
 
@@ -606,6 +619,15 @@ impl Store {
         }
         if let Some(fp) = &f.fingerprint {
             qb.push(" and r.fingerprint = ").push_bind(no_nul(fp));
+        }
+        match f.source {
+            Some(crate::tm::ResultSource::Manual) => {
+                qb.push(" and r.run_item_id is not null");
+            }
+            Some(crate::tm::ResultSource::Automated) => {
+                qb.push(" and r.run_item_id is null");
+            }
+            None => {}
         }
         if let Some((name, id)) = f.before.as_deref().and_then(decode_cursor) {
             qb.push(" and (r.full_name, r.id) > (")

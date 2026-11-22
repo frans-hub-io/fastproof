@@ -86,6 +86,25 @@ pub async fn upload(
 ) -> ApiResult<(StatusCode, Json<AttachmentCreated>)> {
     let project = s.project_for(&auth, &key, &s.perms.launches_write).await?;
     let launch = s.launch_of(&project, id).await?;
+    let (limit, max) = if s.limits.max_entry_bytes < s.cfg.max_upload_bytes {
+        ("max_entry_bytes", s.limits.max_entry_bytes)
+    } else {
+        ("max_upload_bytes", s.cfg.max_upload_bytes)
+    };
+    let created = store_attachment(&s, &project, launch.id, req, limit, max).await?;
+    Ok((StatusCode::CREATED, Json(created)))
+}
+
+/// Spools a raw request body (at most `max` bytes, `limit` names the limit in the 413), stores
+/// it content-addressed and links it to the launch.
+pub async fn store_attachment(
+    s: &AppState,
+    project: &fastproof_store::Project,
+    launch_id: Uuid,
+    req: Request,
+    limit: &str,
+    max: u64,
+) -> ApiResult<AttachmentCreated> {
     identity_encoding(&req)?;
     let ct = clean_content_type(
         req.headers()
@@ -103,11 +122,6 @@ pub async fn upload(
         .await
         .map_err(anyhow::Error::from)?;
     let path = dir.join(Uuid::now_v7().to_string());
-    let (limit, max) = if s.limits.max_entry_bytes < s.cfg.max_upload_bytes {
-        ("max_entry_bytes", s.limits.max_entry_bytes)
-    } else {
-        ("max_upload_bytes", s.cfg.max_upload_bytes)
-    };
     let spooled = spool_stream(&path, req.into_body().into_data_stream().boxed(), max)
         .await
         .map_err(|e| spool_error(e, limit))?;
@@ -127,7 +141,7 @@ pub async fn upload(
             .store
             .insert_attachments(
                 project.id,
-                launch.id,
+                launch_id,
                 &[NewAttachment {
                     sha256: spooled.sha256.clone(),
                     size: spooled.size as i64,
@@ -144,14 +158,11 @@ pub async fn upload(
     .await;
     spooled.remove();
     let id = result?;
-    Ok((
-        StatusCode::CREATED,
-        Json(AttachmentCreated {
-            id,
-            sha256: spooled.sha256,
-            size: spooled.size,
-        }),
-    ))
+    Ok(AttachmentCreated {
+        id,
+        sha256: spooled.sha256,
+        size: spooled.size,
+    })
 }
 
 /// Query of the content route.

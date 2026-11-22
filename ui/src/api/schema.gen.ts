@@ -395,6 +395,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{key}/launches/{id}/manual-report": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Report of the manual run: case, version, status, steps, executor, times and defects, as CSV (cells that could start a formula are prefixed with `'`) or JSON. */
+        get: operations["manual_report"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/launches/{id}/manual/close": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Closes the manual run: untested items become `skipped` unless `untestedTo: leave`; a purely manual launch becomes `finished`, and the gate of a finished launch is evaluated again. Writes to the items then answer 409 `manual_run_closed` until the run is reopened. */
+        post: operations["close_manual_run"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/launches/{id}/manual/reopen": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Reopens a closed manual run. */
+        post: operations["reopen_manual_run"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{key}/launches/{id}/results": {
         parameters: {
             query?: never;
@@ -405,6 +456,41 @@ export interface paths {
         get: operations["results_list"];
         put?: never;
         post: operations["results_ingest"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/launches/{id}/run-items": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Run items of a launch by case number. */
+        get: operations["list_run_items"];
+        put?: never;
+        /** @description Adds run items for cases (`caseNumbers`, at most `maxBulk`) or for the manual cases of a managed plan, and opens the manual run of the launch. Cases already in the launch are skipped. */
+        post: operations["add_run_items"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/launches/{id}/testplan.json": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Allure `testplan.json` of a launch started from a managed plan, computed live from the plan's automated cases (`id` = ALLURE_ID when the code has one, `selector` = full name; muted ones also in `mutedTests`). */
+        get: operations["launch_testplan_json"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -622,6 +708,126 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{key}/run-items": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description My queue: run items assigned to the caller in open manual runs of the project. */
+        get: operations["my_run_items"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/run-items/{itemId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description A run item with the executed version of its case (Markdown and sanitized HTML), its step results and `ETag: "r<revision>"`. */
+        get: operations["get_run_item"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** @description Changes the status, comment or assignee of a run item (needs `If-Match`). A final status (`passed`, `failed`, `blocked`, `skipped`) is projected into the launch results (`blocked` as `broken`); back to `untested` or `in_progress` removes the projected attempt. `untestedStepsTo: skipped` marks the untested steps skipped. */
+        patch: operations["patch_run_item"];
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/run-items/{itemId}/attachments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Stores a file for a step result (raw body, at most `maxAttachmentBytes`; name in `X-FastProof-Attachment-Name`), content-addressed like launch attachments. Reference it in `attachmentIds` of a step write. */
+        post: operations["upload_run_attachment"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/run-items/{itemId}/defect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Triages the projected result of a run item (the same triage as `/triage`, `source: user`) and keeps the defect on the item. Holders of `results:triage` may set it on any item; holders of `runs:execute` only on items assigned to them or executed by them. */
+        post: operations["run_item_defect"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/run-items/{itemId}/new-issue-url": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description A link that opens a prefilled new issue in a configured tracker (`issueTrackers` settings) with the case, the failed step, expected and actual results and a link back to the run item. Nothing is sent to the tracker. */
+        get: operations["run_item_new_issue_url"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/run-items/{itemId}/rerun": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Starts a new execution of the item (`executionNo + 1`, `untested`, step results cleared); the previous attempt stays in the result's attempts. */
+        post: operations["rerun_run_item"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/run-items/{itemId}/steps/{path}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** @description Writes the result of one step (`path` = `1`, `1.2`, `1.2.3` over the executed version). No `If-Match`: the last writer wins, and writing the same value again is harmless. Absent `actual`, `comment` and `attachmentIds` keep their values. An untested item becomes `in_progress`. `suggestedStatus` is the item status the step results suggest. */
+        put: operations["put_run_step"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{key}/search/logs": {
         parameters: {
             query?: never;
@@ -728,9 +934,82 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /** @description Managed plans, newest first, with their case counts. */
+        get: operations["list_managed_plans"];
+        put?: never;
+        /** @description Creates an adhoc plan (`launches:write`; expires after 90 days) or, with `kind: managed`, a managed plan (`plans:write`; answers the `TestPlan`). */
+        post: operations["analysis_create_test_plan"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/test-plans/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description A plan (adhoc or managed) with `ETag: "r<revision>"`. */
+        get: operations["get_test_plan"];
+        put?: never;
+        post?: never;
+        /** @description Archives a managed plan (it stays readable; launches keep their link). */
+        delete: operations["archive_test_plan"];
+        options?: never;
+        head?: never;
+        /** @description Changes the name, description or filter of a managed plan. Needs `If-Match`. */
+        patch: operations["update_test_plan"];
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/test-plans/{id}/items": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description The cases of a plan by position. */
+        get: operations["list_test_plan_items"];
+        put?: never;
+        /** @description Adds, removes and assigns cases of a managed plan (at most `maxBulk` numbers in all). */
+        post: operations["change_test_plan_items"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/test-plans/{id}/launches": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
         get?: never;
         put?: never;
-        post: operations["analysis_create_test_plan"];
+        /** @description Starts a launch from a managed plan: run items for its manual cases (assigned per `assign`), `manual.state = open`; automated cases get no run items, CI runs them from `testplanUrl` (see `ciHint`) and uploads into the same launch (`externalId`; generated when absent). An `externalId` of a launch already started from this plan returns that launch (200). */
+        post: operations["start_plan_launch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/test-plans/{id}/sync": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Brings the filter-added cases of a plan in line with its filter: `added` are cases the filter matches that the plan lacks, `removed` cases the filter added earlier and no longer matches. `dryRun=true` only shows the diff. */
+        post: operations["sync_test_plan"];
         delete?: never;
         options?: never;
         head?: never;
@@ -744,6 +1023,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /** @description Allure `testplan.json`: the stored tests of an adhoc plan, or the live automated cases of a managed plan (409 `plan_has_no_automated_cases` when it has none: an empty file would run every test). */
         get: operations["analysis_testplan_json"];
         put?: never;
         post?: never;
@@ -1462,6 +1742,8 @@ export interface components {
             /** Format: int64 */
             unknown: number;
         };
+        /** @description What `POST /test-plans` answers: the managed plan, or the id and test count of an adhoc one. */
+        CreatedTestPlan: components["schemas"]["TestPlan"] | components["schemas"]["TestPlanCreated"];
         /** @description Answer of `POST /api/v1/tokens`: the token metadata and its value, shown only here. */
         CreatedToken: components["schemas"]["Token"] & {
             /** @description The value (`fp_…`): store it now. */
@@ -2133,6 +2415,44 @@ export interface components {
         ManualClose: {
             untestedTo: components["schemas"]["ManualUntestedTo"];
         };
+        /** @description The JSON manual report. */
+        ManualReport: {
+            items: components["schemas"]["ManualReportItem"][];
+            /** Format: uuid */
+            launchId: string;
+            launchName: string;
+            /** Format: int64 */
+            launchNumber: number;
+        };
+        /** @description One run item of the manual report. */
+        ManualReportItem: {
+            assignee?: string | null;
+            /** Format: int64 */
+            caseNumber: number;
+            /** Format: int32 */
+            caseVersion: number;
+            comment: string;
+            defect?: unknown;
+            executedBy?: string | null;
+            /** Format: int32 */
+            executionNo: number;
+            /** Format: date-time */
+            finishedAt?: string | null;
+            name: string;
+            /** Format: date-time */
+            startedAt?: string | null;
+            status: components["schemas"]["RunStatus"];
+            steps: components["schemas"]["ManualReportStep"][];
+        };
+        /** @description One step of the manual report. */
+        ManualReportStep: {
+            action: string;
+            actual: string;
+            comment: string;
+            expected: string;
+            path: string;
+            status: components["schemas"]["StepStatus"];
+        };
         /**
          * @description State of a manual run.
          * @enum {string}
@@ -2219,12 +2539,24 @@ export interface components {
              */
             until?: string | null;
         };
+        /** @description A run item in "my queue", with its launch. */
+        MyRunItem: components["schemas"]["RunItemSummary"] & {
+            /** Format: uuid */
+            launchId: string;
+            launchName: string;
+            /** Format: int64 */
+            launchNumber: number;
+        };
         /** @description Body of `POST .../defect-types`. */
         NewDefectType: {
             color?: string | null;
             group: string;
             name: string;
             shortName?: string | null;
+        };
+        /** @description A prefilled "new issue" link. */
+        NewIssueUrl: {
+            url: string;
         };
         /** @description Body of `POST /api/v1/projects`. */
         NewProject: {
@@ -2244,11 +2576,17 @@ export interface components {
         };
         /** @description Body of `POST .../test-plans`. */
         NewTestPlan: {
+            /** @description Managed plans: cases added explicitly. */
+            caseNumbers?: number[] | null;
+            /** @description Managed plans: Markdown description. */
+            description?: string | null;
+            filter?: components["schemas"]["CaseFilter"] | null;
             /**
              * Format: uuid
              * @description Take the tests of this launch with `statuses`.
              */
             fromLaunchId?: string | null;
+            kind?: components["schemas"]["TestPlanKind"] | null;
             name: string;
             /** @description Statuses picked from the launch (default `failed`, `broken`). */
             statuses?: string[] | null;
@@ -2279,7 +2617,7 @@ export interface components {
             id: string;
             /** @description `webhook`, `slack`, `teams`, `email` or `telegram`. */
             kind: string;
-            /** @description `launchFinished`, `gateFailed`, `newFailures`. */
+            /** @description `launchFinished`, `gateFailed`, `newFailures`, `manualRunClosed`. */
             on: string[];
             /**
              * @description Webhook: the HMAC signing key (purpose `webhook`); Telegram: the bot token (purpose
@@ -2429,6 +2767,18 @@ export interface components {
             next?: string | null;
         };
         /** @description A page of a list. */
+        Page_MyRunItem: {
+            items: (components["schemas"]["RunItemSummary"] & {
+                /** Format: uuid */
+                launchId: string;
+                launchName: string;
+                /** Format: int64 */
+                launchNumber: number;
+            })[];
+            /** @description Opaque cursor for the next page (`before=`), `null` on the last page. */
+            next?: string | null;
+        };
+        /** @description A page of a list. */
         Page_ResultSummary: {
             items: {
                 /** Format: int32 */
@@ -2487,6 +2837,64 @@ export interface components {
                  *     `fixed`, `regressed` or `malfunctioned`.
                  */
                 transition?: string | null;
+            }[];
+            /** @description Opaque cursor for the next page (`before=`), `null` on the last page. */
+            next?: string | null;
+        };
+        /** @description A page of a list. */
+        Page_RunItemSummary: {
+            items: {
+                assignee?: string | null;
+                /** Format: int64 */
+                caseNumber: number;
+                /** Format: int32 */
+                executionNo: number;
+                folderPath: string[];
+                /** Format: uuid */
+                id: string;
+                name: string;
+                status: components["schemas"]["RunStatus"];
+                /** Format: date-time */
+                updatedAt: string;
+            }[];
+            /** @description Opaque cursor for the next page (`before=`), `null` on the last page. */
+            next?: string | null;
+        };
+        /** @description A page of a list. */
+        Page_TestPlan: {
+            items: {
+                archived: boolean;
+                counts: components["schemas"]["FolderCounts"];
+                /** Format: date-time */
+                createdAt: string;
+                createdBy?: string | null;
+                description: string;
+                filter?: components["schemas"]["CaseFilter"] | null;
+                /** Format: uuid */
+                id: string;
+                kind: components["schemas"]["TestPlanKind"];
+                name: string;
+                /** Format: int64 */
+                revision: number;
+                /** Format: date-time */
+                updatedAt?: string | null;
+            }[];
+            /** @description Opaque cursor for the next page (`before=`), `null` on the last page. */
+            next?: string | null;
+        };
+        /** @description A page of a list. */
+        Page_TestPlanItem: {
+            items: {
+                assignee?: string | null;
+                automated: boolean;
+                /** Format: int64 */
+                caseNumber: number;
+                /** Format: uuid */
+                folderId?: string | null;
+                name: string;
+                /** Format: int32 */
+                position: number;
+                viaFilter: boolean;
             }[];
             /** @description Opaque cursor for the next page (`before=`), `null` on the last page. */
             next?: string | null;
@@ -3339,6 +3747,8 @@ export interface components {
         };
         /** @description Allure `testplan.json` (version 1.0). */
         TestPlanJson: {
+            /** @description Muted tests of a managed plan (read by allure-js; also listed in `tests`). */
+            mutedTests?: components["schemas"]["TestPlanTest"][] | null;
             tests: components["schemas"]["TestPlanTest"][];
             version: string;
         };
@@ -3347,6 +3757,15 @@ export interface components {
          * @enum {string}
          */
         TestPlanKind: "adhoc" | "managed";
+        /**
+         * @description Body of `PATCH /test-plans/{id}` (with `If-Match`): every field optional, `filter: null`
+         *     removes the filter (the items it added stay until the next sync).
+         */
+        TestPlanPatch: {
+            description?: string | null;
+            filter?: components["schemas"]["CaseFilter"] | null;
+            name?: string | null;
+        };
         /** @description One test of an Allure test plan. */
         TestPlanTest: {
             /** @description `ALLURE_ID` of the test, when it has one. */
@@ -5402,6 +5821,178 @@ export interface operations {
             };
         };
     };
+    manual_report: {
+        parameters: {
+            query?: {
+                /** @description `csv` (default) or `json`. */
+                format?: string;
+            };
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description JSON, or text/csv */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ManualReport"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    close_manual_run: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ManualClose"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Launch"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `manual_run_closed`, `no_manual_run` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    reopen_manual_run: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Launch"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `manual_run_open`, `no_manual_run` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     results_list: {
         parameters: {
             query?: {
@@ -5415,6 +6006,8 @@ export interface operations {
                 label?: string;
                 flaky?: boolean;
                 fingerprint?: string;
+                /** @description `manual` (projected from run items) or `automated`. */
+                source?: components["schemas"]["ResultSource"];
                 before?: string;
                 limit?: number;
             };
@@ -5528,6 +6121,167 @@ export interface operations {
             };
         };
     };
+    list_run_items: {
+        parameters: {
+            query?: {
+                /** @description One status or a comma-separated list. */
+                status?: string;
+                /** @description `me`, `none` (unassigned) or a name. */
+                assignee?: string;
+                /** @description Cases in this folder or its subfolders. */
+                folder?: string;
+                before?: string;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_RunItemSummary"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    add_run_items: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunItemsAdd"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunItemsAdded"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `manual_run_closed`, `limit_reached` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    launch_testplan_json: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TestPlanJson"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `plan_has_no_automated_cases` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     results_tree: {
         parameters: {
             query?: {
@@ -5544,6 +6298,8 @@ export interface operations {
                 q?: string;
                 /** @description Only results flaky in this run. */
                 flaky?: boolean;
+                /** @description `manual` or `automated`. */
+                source?: components["schemas"]["ResultSource"];
                 /** @description A result whose group is inlined first (to reveal a deep-linked result). */
                 reveal?: string;
             };
@@ -5600,6 +6356,8 @@ export interface operations {
                 status?: string;
                 q?: string;
                 flaky?: boolean;
+                /** @description `manual` or `automated`. */
+                source?: components["schemas"]["ResultSource"];
                 before?: string;
                 limit?: number;
             };
@@ -6359,6 +7117,460 @@ export interface operations {
             };
         };
     };
+    my_run_items: {
+        parameters: {
+            query?: {
+                /** @description `me` (the default and the only value). */
+                assignee?: string;
+                /** @description One status or a comma-separated list (default `untested,in_progress`). */
+                status?: string;
+                before?: string;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_MyRunItem"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    get_run_item: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                itemId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunItem"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    patch_run_item: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description ETag of the item */
+                "If-Match": string;
+            };
+            path: {
+                key: string;
+                itemId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunItemPatch"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunItem"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `manual_run_closed` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    upload_run_attachment: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description file name */
+                "X-FastProof-Attachment-Name"?: string | null;
+            };
+            path: {
+                key: string;
+                itemId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/octet-stream": number[];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AttachmentCreated"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `manual_run_closed` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    run_item_defect: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                itemId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunDefect"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunItem"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `run_item_not_final` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    run_item_new_issue_url: {
+        parameters: {
+            query?: {
+                /** @description `jira`, `gitlab` or `github` (default: the first configured issue tracker). */
+                tracker?: string;
+            };
+            header?: never;
+            path: {
+                key: string;
+                itemId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NewIssueUrl"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `no_issue_tracker` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    rerun_run_item: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                itemId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunItem"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `manual_run_closed` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    put_run_step: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                itemId: string;
+                path: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunStepWrite"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunStepAck"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `manual_run_closed`, `limit_reached` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     logs_search: {
         parameters: {
             query: {
@@ -6737,27 +7949,32 @@ export interface operations {
             };
         };
     };
-    analysis_create_test_plan: {
+    list_managed_plans: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description `managed` (the only kind listed; adhoc plans are reached by id). */
+                kind?: string;
+                /** @description Substring of the name. */
+                q?: string;
+                /** @description `true`: archived plans only. */
+                archived?: boolean;
+                before?: string;
+                limit?: number;
+            };
             header?: never;
             path: {
                 key: string;
             };
             cookie?: never;
         };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["NewTestPlan"];
-            };
-        };
+        requestBody?: never;
         responses: {
-            201: {
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["TestPlanCreated"];
+                    "application/json": components["schemas"]["Page_TestPlan"];
                 };
             };
             400: {
@@ -6784,7 +8001,461 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+        };
+    };
+    analysis_create_test_plan: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NewTestPlan"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreatedTestPlan"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    get_test_plan: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TestPlan"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    archive_test_plan: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `plan_not_managed` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    update_test_plan: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description ETag of the plan */
+                "If-Match": string;
+            };
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TestPlanPatch"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TestPlan"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `plan_not_managed` or `plan_archived` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    list_test_plan_items: {
+        parameters: {
+            query?: {
+                /** @description Cases in this folder or its subfolders. */
+                folder?: string;
+                /** @description `me`, `none` (unassigned) or a name. */
+                assignee?: string;
+                before?: string;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_TestPlanItem"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    change_test_plan_items: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TestPlanItemsChange"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TestPlan"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `limit_reached`, `plan_archived` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    start_plan_launch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StartPlanLaunch"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlanLaunch"];
+                };
+            };
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlanLaunch"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `launch_exists`, `plan_archived`, `plan_not_managed`, `limit_reached` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    sync_test_plan: {
+        parameters: {
+            query?: {
+                /** @description `true`: only show the diff. */
+                dryRun?: boolean;
+            };
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlanSyncDiff"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6823,6 +8494,14 @@ export interface operations {
                 };
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

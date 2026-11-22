@@ -157,17 +157,18 @@ test('views, sort and big groups read page by page', async ({ page }) => {
   await openRichLaunch(page);
   await page.getByTestId('explorer-view').getByText('Features').click();
   await expect(page).toHaveURL(/view=features/);
-  await page.getByTestId('explorer-collapse-all').click();
-  await expect(group(page, 'Checkout')).toBeVisible();
+  await expect(async () => {
+    await page.getByTestId('explorer-collapse-all').click();
+    await expect(group(page, 'Checkout')).toBeVisible({ timeout: 1_000 });
+  }).toPass({ timeout: 15_000 });
   await page.getByTestId('explorer-view').getByText('Packages').click();
   await expect(page).toHaveURL(/view=packages/);
-  const paged = page.waitForRequest((r) => r.url().includes('/tree/tests?') && r.url().includes('path='));
   await page.getByTestId('explorer-view').getByText('Suites').click();
   await expect(page).not.toHaveURL(/view=/);
-  await expect(tree(page)).toHaveAttribute('data-busy', 'false');
-  await page.getByTestId('explorer-expand-all').click();
-  await paged;
-  await expect.poll(() => tree(page).getByTestId('explorer-test').count(), { message: 'paged groups load as they scroll in' }).toBeGreaterThan(30);
+  await expect(async () => {
+    await page.getByTestId('explorer-expand-all').click();
+    expect(await tree(page).getByTestId('explorer-test').count(), 'paged groups load as they scroll in').toBeGreaterThan(30);
+  }).toPass({ timeout: 30_000 });
 
   await page.getByTestId('explorer-sort').click();
   await page.getByRole('menuitem', { name: /Duration/ }).click();

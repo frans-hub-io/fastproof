@@ -172,6 +172,7 @@ pub fn tm_error(e: TmError) -> ApiError {
             message,
             details,
         } => with_details(ApiError::new(StatusCode::CONFLICT, code, message), details),
+        TmError::Forbidden { code, message } => ApiError::new(StatusCode::FORBIDDEN, code, message),
         TmError::Stale {
             current_revision,
             changed_by,
@@ -262,26 +263,54 @@ impl AppState {
             .ok_or_else(|| ApiError::not_found("launch"))
     }
 
-    /// An upload or results batch into a launch started from a plan, by a caller with
-    /// `cases:sync` in the project: the launch becomes trusted for code sync
-    /// (`Store::join_plan_launch`). Nothing for other launches.
+    /// An upload or results batch into a launch. A caller with `cases:sync` makes a launch
+    /// started from a plan trusted for code sync (`Store::join_plan_launch`). A caller
+    /// without it makes the launch untrusted for good (`sync_blocked`), and a finished
+    /// launch refuses it with 409 `launch_finished` unless it created the launch.
     pub async fn note_plan_contributor(
         &self,
         auth: &Auth,
         project: &Project,
         launch: &Launch,
     ) -> ApiResult<()> {
-        if launch.test_plan_id.is_some()
-            && auth
-                .principal
-                .denial(&self.perms.cases_sync, Some(&project.key))
-                .is_none()
-        {
+        let can_sync = auth
+            .principal
+            .denial(&self.perms.cases_sync, Some(&project.key))
+            .is_none();
+        if !can_sync {
+            return self
+                .untrusted_contributor(auth, project, launch, true)
+                .await;
+        }
+        if launch.test_plan_id.is_some() {
             self.store
                 .join_plan_launch(project.id, launch.id, None)
                 .await?;
         }
         Ok(())
+    }
+
+    /// See [`AppState::note_plan_contributor`]; `mark = false` for a finish request.
+    pub async fn untrusted_contributor(
+        &self,
+        auth: &Auth,
+        project: &Project,
+        launch: &Launch,
+        mark: bool,
+    ) -> ApiResult<()> {
+        match self
+            .store
+            .untrusted_contributor(project.id, launch.id, &auth.principal.name, mark)
+            .await?
+        {
+            None => Err(ApiError::not_found("launch")),
+            Some(true) => Ok(()),
+            Some(false) => Err(ApiError::new(
+                axum::http::StatusCode::CONFLICT,
+                "launch_finished",
+                "the launch is finished: only its creator or a caller with cases:sync may add to it",
+            )),
+        }
     }
 
     pub async fn audit(

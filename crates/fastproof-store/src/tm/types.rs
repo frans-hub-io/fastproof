@@ -1155,7 +1155,12 @@ pub struct ImportReport {
     pub update: i64,
     pub skip: i64,
     pub folders: i64,
+    /// Fields of the source the import leaves out (no such field in the project).
     pub unknown_fields: Vec<String>,
+    /// Field definitions the import creates (`unknownFieldValues: create`); a dry run lists
+    /// the ones its apply will create.
+    #[serde(default)]
+    pub new_fields: Vec<String>,
     pub unknown_values: BTreeMap<String, Vec<String>>,
     /// The first 1000 errors.
     pub errors: Vec<ImportRowError>,

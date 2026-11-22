@@ -44,7 +44,8 @@ pub struct LaunchTrust {
     pub branch: Option<String>,
     /// `vcs.defaultBranch` as the CLI reported it.
     pub default_branch: Option<String>,
-    /// The creating token had `cases:sync`.
+    /// The creating token had `cases:sync`, and every caller that added results to the
+    /// launch had it too (`launches.sync_blocked` is false).
     pub can_sync: bool,
 }
 
@@ -939,8 +940,8 @@ impl Store {
         let mut conn = self.pool.acquire().await?;
         let Some(r) = sqlx::query(
             "select l.project_id, p.key, l.created_at, l.debug, l.branch, l.vcs ->> 'defaultBranch' as default_branch, \
-             l.created_by_can_sync, l.created_by from launches l join projects p on p.id = l.project_id \
-             where l.id = $1 and p.deleted_at is null",
+             l.created_by_can_sync, l.sync_blocked, l.created_by from launches l \
+             join projects p on p.id = l.project_id where l.id = $1 and p.deleted_at is null",
         )
         .bind(launch_id)
         .fetch_optional(&mut *conn)
@@ -955,7 +956,8 @@ impl Store {
             debug: r.try_get("debug")?,
             branch: r.try_get("branch")?,
             default_branch: r.try_get("default_branch")?,
-            can_sync: r.try_get("created_by_can_sync")?,
+            can_sync: r.try_get::<bool, _>("created_by_can_sync")?
+                && !r.try_get::<bool, _>("sync_blocked")?,
         };
         let settings = case_sync_settings(&mut conn, project_id).await?;
         if !launch_trusted(&settings, &trust) {
@@ -963,7 +965,8 @@ impl Store {
         }
         let ids: Vec<Uuid> = sqlx::query_scalar(
             "select distinct test_case_id from results where launch_id = $1 and launch_created_at = $2 \
-             and run_item_id is null order by test_case_id",
+             and run_item_id is null and not (select sync_blocked from launches where id = $1) \
+             order by test_case_id",
         )
         .bind(launch_id)
         .bind(created)
@@ -984,7 +987,8 @@ impl Store {
                  from test_cases t cross join lateral (select r.id, r.name, r.suite_path, r.labels, r.launch_created_at \
                    from results r where r.test_case_id = t.id and r.launch_id = $1 and r.launch_created_at = $2 \
                    and r.run_item_id is null order by r.updated_at desc limit 1) r \
-                 where t.project_id = $3 and t.id = any($4) and t.kind = 'code' order by t.id",
+                 where t.project_id = $3 and t.id = any($4) and t.kind = 'code' \
+                 and not (select sync_blocked from launches where id = $1) order by t.id",
             )
             .bind(launch_id)
             .bind(created)

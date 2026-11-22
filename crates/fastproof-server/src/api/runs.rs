@@ -118,6 +118,7 @@ pub async fn add_run_items(
     ApiJson(body): ApiJson<RunItemsAdd>,
 ) -> ApiResult<Json<RunItemsAdded>> {
     let p = s.project_for(&auth, &key, &s.perms.runs_execute).await?;
+    let _permit = s.guards.heavy(&auth).await?;
     let out = s
         .store
         .add_run_items(&p, id, &body, &s.cfg.tm)

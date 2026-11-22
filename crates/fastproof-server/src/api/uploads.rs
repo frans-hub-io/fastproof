@@ -97,11 +97,13 @@ pub fn identity_encoding(req: &Request) -> ApiResult<()> {
 }
 
 #[utoipa::path(post, path = "/api/v1/projects/{key}/launches/{id}/uploads", tag = "uploads", operation_id = "uploads_create",
+    description = "Uploads a report archive into a launch. A caller without `cases:sync` makes the launch untrusted for \
+        code sync, and may upload into a finished launch only if it created it (else 409 `launch_finished`).",
     params(("key" = String, Path), ("id" = Uuid, Path), UploadQuery),
     request_body(content = Vec<u8>, description = "zip, tar, tar.gz, a JSON or XML report, or multipart with a `file` field",
         content_type = "application/octet-stream"),
     responses((status = 202, body = Upload), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),
-        (status = 404, body = ErrorBody), (status = 413, body = ErrorBody)))]
+        (status = 404, body = ErrorBody), (status = 409, body = ErrorBody), (status = 413, body = ErrorBody)))]
 pub async fn create(
     State(s): State<AppState>,
     auth: Auth,

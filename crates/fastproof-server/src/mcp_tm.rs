@@ -2,8 +2,11 @@
 //! AI writes are enforced here, not left to the agent: cases an agent creates are always
 //! `draft`, `origin = ai`, `aiUnreviewed`; an agent never changes a case directly (only
 //! `propose_case_update`, which stores a pending suggestion a person accepts or rejects);
-//! every write is audited with `source: ai` and the agent's name. `trace_actions` never
-//! returns the values of `fill`, `type` or `press` actions, nor any parameter values.
+//! every write is audited with `source: ai` and the agent's name. Reviewing, activating and
+//! accepting are refused to the principal that created the draft or suggestion, on REST too
+//! (`Store` checks). `trace_actions` returns action names from fixed lists only, never
+//! titles, the values of `fill`, `type` or `press` actions, nor any parameter values; it
+//! takes a heavy slot and reads trace lines with a bounded buffer.
 
 use std::collections::BTreeMap;
 use std::io::Read;
@@ -491,6 +494,7 @@ async fn run_tool(s: &AppState, name: &str, a: &Value, auth: &Auth) -> ToolResul
         "trace_actions" => {
             let x: TraceArgs = args(a)?;
             let p = project(s, auth, &x.project, &s.perms.launches_read).await?;
+            let _permit = s.guards.heavy(auth).await?;
             trace_actions(s, &p, x.result_id, x.attempt).await
         }
         "draft_case_from_result" => {
@@ -735,7 +739,222 @@ fn step_of(st: &fastproof_store::StepView, depth: usize) -> CaseStep {
     }
 }
 
-/// Playwright actions whose parameters carry what was typed.
+/// Objects and protocol classes an action name may start with.
+const TRACE_OBJECTS: &[&str] = &[
+    "page",
+    "frame",
+    "locator",
+    "frameLocator",
+    "elementHandle",
+    "jsHandle",
+    "context",
+    "browserContext",
+    "browser",
+    "browserType",
+    "keyboard",
+    "mouse",
+    "touchscreen",
+    "request",
+    "route",
+    "dialog",
+    "download",
+    "worker",
+    "tracing",
+    "expect",
+    "video",
+    "webSocket",
+    "clock",
+    "Page",
+    "Frame",
+    "BrowserContext",
+    "Browser",
+    "BrowserType",
+    "ElementHandle",
+    "JSHandle",
+    "Keyboard",
+    "Mouse",
+    "Touchscreen",
+    "APIRequestContext",
+    "Route",
+    "Request",
+    "Response",
+    "Dialog",
+    "Download",
+    "Worker",
+    "Tracing",
+    "WebSocket",
+    "Artifact",
+    "CDPSession",
+    "Clock",
+    "Locator",
+    "FrameLocator",
+];
+
+/// Method names an action name may end with (Playwright API and protocol).
+const TRACE_METHODS: &[&str] = &[
+    "goto",
+    "reload",
+    "goBack",
+    "goForward",
+    "waitForURL",
+    "waitForLoadState",
+    "waitForNavigation",
+    "waitForSelector",
+    "waitForTimeout",
+    "waitForFunction",
+    "waitForEvent",
+    "waitForRequest",
+    "waitForResponse",
+    "click",
+    "dblclick",
+    "tap",
+    "hover",
+    "focus",
+    "blur",
+    "fill",
+    "clear",
+    "type",
+    "press",
+    "pressSequentially",
+    "insertText",
+    "down",
+    "up",
+    "move",
+    "wheel",
+    "check",
+    "uncheck",
+    "setChecked",
+    "selectOption",
+    "selectText",
+    "setInputFiles",
+    "dragTo",
+    "dragAndDrop",
+    "dispatchEvent",
+    "scrollIntoViewIfNeeded",
+    "screenshot",
+    "pdf",
+    "content",
+    "setContent",
+    "title",
+    "textContent",
+    "innerText",
+    "innerHTML",
+    "inputValue",
+    "getAttribute",
+    "isVisible",
+    "isHidden",
+    "isEnabled",
+    "isDisabled",
+    "isEditable",
+    "isChecked",
+    "count",
+    "evaluate",
+    "evaluateHandle",
+    "evaluateExpression",
+    "evaluateExpressionHandle",
+    "expect",
+    "newPage",
+    "newContext",
+    "close",
+    "route",
+    "unroute",
+    "routeFromHAR",
+    "setViewportSize",
+    "addInitScript",
+    "addScriptTag",
+    "addStyleTag",
+    "exposeFunction",
+    "exposeBinding",
+    "setExtraHTTPHeaders",
+    "addCookies",
+    "clearCookies",
+    "cookies",
+    "storageState",
+    "grantPermissions",
+    "clearPermissions",
+    "setGeolocation",
+    "setOffline",
+    "fetch",
+    "get",
+    "post",
+    "put",
+    "patch",
+    "delete",
+    "head",
+    "dispose",
+    "launch",
+    "connect",
+    "querySelector",
+    "querySelectorAll",
+    "boundingBox",
+    "highlight",
+    "ariaSnapshot",
+    "emulateMedia",
+    "bringToFront",
+    "keyboardDown",
+    "keyboardUp",
+    "keyboardInsertText",
+    "keyboardType",
+    "keyboardPress",
+    "mouseMove",
+    "mouseDown",
+    "mouseUp",
+    "mouseClick",
+    "mouseWheel",
+    "touchscreenTap",
+    "fulfill",
+    "abort",
+    "continue",
+    "fallback",
+    "accept",
+    "dismiss",
+    "saveAs",
+    "path",
+    "start",
+    "stop",
+    "startChunk",
+    "stopChunk",
+    "install",
+    "fastForward",
+    "runFor",
+    "pauseAt",
+    "resume",
+    "setFixedTime",
+    "setSystemTime",
+    "toBeVisible",
+    "toBeHidden",
+    "toBeEnabled",
+    "toBeDisabled",
+    "toBeChecked",
+    "toBeEditable",
+    "toBeEmpty",
+    "toBeFocused",
+    "toBeAttached",
+    "toBeInViewport",
+    "toContainText",
+    "toHaveText",
+    "toHaveValue",
+    "toHaveValues",
+    "toHaveAttribute",
+    "toHaveClass",
+    "toContainClass",
+    "toHaveCount",
+    "toHaveCSS",
+    "toHaveId",
+    "toHaveJSProperty",
+    "toHaveTitle",
+    "toHaveURL",
+    "toHaveScreenshot",
+    "toMatchAriaSnapshot",
+    "toHaveAccessibleName",
+    "toHaveAccessibleDescription",
+    "toHaveAccessibleErrorMessage",
+    "toHaveRole",
+    "toBeOK",
+    "toPass",
+];
+
+/// Methods whose parameters carry what was typed (lowercase).
 const SECRET_METHODS: &[&str] = &[
     "fill",
     "type",
@@ -745,19 +964,102 @@ const SECRET_METHODS: &[&str] = &[
     "setinputfiles",
     "selectoption",
     "check",
+    "keyboarddown",
+    "keyboardup",
+    "keyboardinserttext",
+    "keyboardtype",
+    "keyboardpress",
 ];
 
-fn is_secret(api: &str) -> bool {
-    let m = api.rsplit('.').next().unwrap_or(api).to_ascii_lowercase();
+/// Bytes of one trace line `trace_actions` reads; longer lines are skipped unread.
+pub const MAX_TRACE_LINE: usize = 1024 * 1024;
+
+fn is_secret(name: &str) -> bool {
+    let m = name.rsplit('.').next().unwrap_or(name).to_ascii_lowercase();
     SECRET_METHODS.contains(&m.as_str())
 }
 
+/// The name of an action from fixed lists only (`Frame.fill`, `page.goto`): a recorded
+/// `apiName` when both its parts are known, else `class.method` with unknown parts as
+/// `Other`/`other`. Titles are never used: the runner's titles carry typed values.
+fn action_name(class: &str, method: &str, api: Option<&str>) -> String {
+    if let Some((o, m)) = api.and_then(|a| a.split_once('.'))
+        && TRACE_OBJECTS.contains(&o)
+        && TRACE_METHODS.contains(&m)
+    {
+        return format!("{o}.{m}");
+    }
+    let c = if TRACE_OBJECTS.contains(&class) {
+        class
+    } else {
+        "Other"
+    };
+    let m = if TRACE_METHODS.contains(&method) {
+        method
+    } else {
+        "other"
+    };
+    format!("{c}.{m}")
+}
+
+fn typed_secret(class: &str, method: &str, api: Option<&str>) -> bool {
+    is_secret(method)
+        || api.is_some_and(is_secret)
+        || class.eq_ignore_ascii_case("keyboard")
+        || api.is_some_and(|a| a.to_ascii_lowercase().starts_with("keyboard."))
+}
+
+/// String values of the parameters of a typing action (what an error may repeat), except
+/// the selector.
+fn param_strings(v: Option<&Value>, out: &mut Vec<String>, depth: usize) {
+    let Some(v) = v else { return };
+    if out.len() >= 50 || depth > 4 {
+        return;
+    }
+    match v {
+        Value::String(s) if !s.is_empty() => out.push(s.clone()),
+        Value::Array(a) => a
+            .iter()
+            .take(50)
+            .for_each(|x| param_strings(Some(x), out, depth + 1)),
+        Value::Object(o) => o
+            .iter()
+            .filter(|(k, _)| k.as_str() != "selector")
+            .take(50)
+            .for_each(|(_, x)| param_strings(Some(x), out, depth + 1)),
+        _ => {}
+    }
+}
+
+/// The error of an action: for a typing action only its first line, with every parameter
+/// value replaced (call logs repeat `fill("…")`).
+fn error_text(msg: &str, secrets: &[String]) -> String {
+    if secrets.is_empty() {
+        return clip(msg, 2000);
+    }
+    let mut s = msg.lines().next().unwrap_or("").to_string();
+    for v in secrets {
+        s = s.replace(v.as_str(), "***");
+    }
+    clip(&s, 500)
+}
+
+/// An action seen in a `before` event and waiting for its `after` event.
+#[derive(Debug)]
+pub struct OpenCall {
+    index: usize,
+    start: f64,
+    secrets: Vec<String>,
+}
+
 /// Actions from the event lines of a trace: `before`/`after` pairs (Playwright 1.3x+) or
-/// `action` records (older); only the name, selector, URL, status, error and duration.
+/// `action` records (older); only a name from fixed lists, the selector, the URL (not of
+/// typing actions), status, error and duration. The test runner's events (`class: Test`)
+/// are skipped: their titles carry typed values, and the library trace has the same calls.
 pub fn actions_of(
     lines: &str,
     out: &mut Vec<Value>,
-    open: &mut std::collections::HashMap<String, (usize, f64)>,
+    open: &mut std::collections::HashMap<String, OpenCall>,
 ) {
     for line in lines.lines() {
         if out.len() >= MAX_TRACE_ACTIONS && open.is_empty() {
@@ -769,44 +1071,46 @@ pub fn actions_of(
         let t = v.get("type").and_then(Value::as_str).unwrap_or("");
         match t {
             "before" => {
-                if out.len() >= MAX_TRACE_ACTIONS {
+                let class = v.get("class").and_then(Value::as_str).unwrap_or("");
+                if out.len() >= MAX_TRACE_ACTIONS || class == "Test" {
                     continue;
                 }
-                let api = v
-                    .get("apiName")
-                    .or_else(|| v.get("title"))
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-                    .unwrap_or_else(|| {
-                        format!(
-                            "{}.{}",
-                            v.get("class").and_then(Value::as_str).unwrap_or(""),
-                            v.get("method").and_then(Value::as_str).unwrap_or("")
-                        )
-                    });
                 let method = v.get("method").and_then(Value::as_str).unwrap_or("");
+                let api = v.get("apiName").and_then(Value::as_str);
                 let params = v.get("params");
                 let selector = params
                     .and_then(|p| p.get("selector"))
                     .and_then(Value::as_str);
                 let url = params.and_then(|p| p.get("url")).and_then(Value::as_str);
-                let secret = is_secret(&api) || is_secret(method);
+                let secret = typed_secret(class, method, api);
+                let mut secrets = Vec::new();
+                if secret {
+                    param_strings(params, &mut secrets, 0);
+                }
                 let start = v.get("startTime").and_then(Value::as_f64).unwrap_or(0.0);
                 let call = v
                     .get("callId")
                     .and_then(Value::as_str)
                     .unwrap_or("")
                     .to_string();
-                out.push(json!({"apiName": clip(&api, 200), "selector": selector.map(|x| clip(x, 500)),
+                out.push(json!({"apiName": action_name(class, method, api),
+                    "selector": selector.map(|x| clip(x, 500)),
                     "url": if secret { None } else { url.map(|x| clip(x, 1000)) }, "status": "passed",
                     "error": Value::Null, "durationMs": Value::Null}));
-                open.insert(call, (out.len() - 1, start));
+                open.insert(
+                    call,
+                    OpenCall {
+                        index: out.len() - 1,
+                        start,
+                        secrets,
+                    },
+                );
             }
             "after" => {
                 let call = v.get("callId").and_then(Value::as_str).unwrap_or("");
-                if let Some((i, start)) = open.remove(call) {
-                    let end = v.get("endTime").and_then(Value::as_f64).unwrap_or(start);
-                    out[i]["durationMs"] = json!(((end - start).max(0.0)) as i64);
+                if let Some(c) = open.remove(call) {
+                    let end = v.get("endTime").and_then(Value::as_f64).unwrap_or(c.start);
+                    out[c.index]["durationMs"] = json!(((end - c.start).max(0.0)) as i64);
                     if let Some(e) = v
                         .get("error")
                         .and_then(|e| {
@@ -815,8 +1119,8 @@ pub fn actions_of(
                         })
                         .and_then(Value::as_str)
                     {
-                        out[i]["status"] = json!("failed");
-                        out[i]["error"] = json!(clip(e, 2000));
+                        out[c.index]["status"] = json!("failed");
+                        out[c.index]["error"] = json!(error_text(e, &c.secrets));
                     }
                 }
             }
@@ -825,14 +1129,18 @@ pub fn actions_of(
                     continue;
                 }
                 let m = v.get("metadata").unwrap_or(&Value::Null);
-                let api = m
-                    .get("apiName")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
+                let class = m.get("type").and_then(Value::as_str).unwrap_or("");
+                if class == "Test" {
+                    continue;
+                }
+                let api = m.get("apiName").and_then(Value::as_str);
                 let method = m.get("method").and_then(Value::as_str).unwrap_or("");
                 let params = m.get("params");
-                let secret = is_secret(&api) || is_secret(method);
+                let secret = typed_secret(class, method, api);
+                let mut secrets = Vec::new();
+                if secret {
+                    param_strings(params, &mut secrets, 0);
+                }
                 let start = m.get("startTime").and_then(Value::as_f64).unwrap_or(0.0);
                 let end = m.get("endTime").and_then(Value::as_f64).unwrap_or(start);
                 let err = m
@@ -843,13 +1151,48 @@ pub fn actions_of(
                             .or_else(|| e.get("message"))
                     })
                     .and_then(Value::as_str);
-                out.push(json!({"apiName": clip(&api, 200),
+                out.push(json!({"apiName": action_name(class, method, api),
                     "selector": params.and_then(|p| p.get("selector")).and_then(Value::as_str).map(|x| clip(x, 500)),
                     "url": if secret { None } else { params.and_then(|p| p.get("url")).and_then(Value::as_str).map(|x| clip(x, 1000)) },
-                    "status": if err.is_some() { "failed" } else { "passed" }, "error": err.map(|e| clip(e, 2000)),
+                    "status": if err.is_some() { "failed" } else { "passed" },
+                    "error": err.map(|e| error_text(e, &secrets)),
                     "durationMs": ((end - start).max(0.0)) as i64}));
             }
             _ => {}
+        }
+    }
+}
+
+/// Reads one line of at most `max` bytes into `line` (without the newline) and never holds
+/// more: `Ok(None)` at the end, `Ok(Some(false))` for a longer line, which is skipped.
+pub fn read_bounded_line(
+    r: &mut impl std::io::BufRead,
+    max: usize,
+    line: &mut Vec<u8>,
+) -> std::io::Result<Option<bool>> {
+    line.clear();
+    let mut too_long = false;
+    let mut any = false;
+    loop {
+        let chunk = r.fill_buf()?;
+        if chunk.is_empty() {
+            return Ok(any.then_some(!too_long));
+        }
+        any = true;
+        let (take, done) = match chunk.iter().position(|b| *b == b'\n') {
+            Some(i) => (i + 1, true),
+            None => (chunk.len(), false),
+        };
+        let content = &chunk[..if done { take - 1 } else { take }];
+        if too_long || line.len() + content.len() > max {
+            too_long = true;
+            line.clear();
+        } else {
+            line.extend_from_slice(content);
+        }
+        r.consume(take);
+        if done {
+            return Ok(Some(!too_long));
         }
     }
 }
@@ -910,32 +1253,34 @@ async fn trace_actions(
                 ..Default::default()
             };
             let mut out = Vec::new();
-            let mut open = std::collections::HashMap::new();
             fastproof_ingest::for_each_entry(
                 &pth,
                 Some("trace.zip"),
                 &limits,
                 &mut |name, _, r| {
-                    if !name.ends_with(".trace")
-                        || out.len() >= MAX_TRACE_ACTIONS && open.is_empty()
-                    {
+                    if !name.ends_with(".trace") || out.len() >= MAX_TRACE_ACTIONS {
                         return Ok(());
                     }
+                    let mut open = std::collections::HashMap::new();
                     let mut buf = String::new();
-                    let mut reader = std::io::BufReader::new(r);
-                    let mut chunk = String::new();
-                    loop {
-                        chunk.clear();
-                        let n = std::io::BufRead::read_line(&mut reader, &mut chunk)?;
-                        if n == 0 {
-                            break;
+                    let mut reader = std::io::BufReader::with_capacity(64 * 1024, r);
+                    let mut line = Vec::new();
+                    while let Some(fits) =
+                        read_bounded_line(&mut reader, MAX_TRACE_LINE, &mut line)?
+                    {
+                        if !fits {
+                            continue;
                         }
-                        if chunk.len() <= 1024 * 1024 {
-                            buf.push_str(&chunk);
+                        if let Ok(t) = std::str::from_utf8(&line) {
+                            buf.push_str(t);
+                            buf.push('\n');
                         }
-                        if buf.len() > 8 * 1024 * 1024 {
+                        if buf.len() > MAX_TRACE_LINE {
                             actions_of(&buf, &mut out, &mut open);
                             buf.clear();
+                            if out.len() >= MAX_TRACE_ACTIONS && open.is_empty() {
+                                break;
+                            }
                         }
                     }
                     actions_of(&buf, &mut out, &mut open);

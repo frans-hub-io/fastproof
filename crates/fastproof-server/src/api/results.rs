@@ -239,9 +239,12 @@ pub async fn prepare_reports(
 
 #[utoipa::path(post, path = "/api/v1/projects/{key}/launches/{id}/results", tag = "results", operation_id = "results_ingest",
     params(("key" = String, Path), ("id" = Uuid, Path)),
+    description = "Adds results to a launch. A caller without `cases:sync` makes the launch untrusted for code sync, \
+        and may add to a finished launch only if it created it (else 409 `launch_finished`).",
     request_body(content = ReportResult, description = "One ReportResult, a JSON array of them, or NDJSON (application/x-ndjson), see schemas/fastproof-report-v1.json"),
     responses((status = 202, body = IngestSummary), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),
-        (status = 404, body = ErrorBody), (status = 413, body = ErrorBody), (status = 415, body = ErrorBody)))]
+        (status = 404, body = ErrorBody), (status = 409, body = ErrorBody), (status = 413, body = ErrorBody),
+        (status = 415, body = ErrorBody)))]
 pub async fn ingest(
     State(s): State<AppState>,
     auth: Auth,

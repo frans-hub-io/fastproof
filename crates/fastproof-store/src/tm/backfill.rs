@@ -309,7 +309,7 @@ impl Store {
                    r.launch_id, r.launch_created_at from results r join launches l on l.id = r.launch_id \
                    where r.test_case_id = t.id and r.project_id = $1 and r.run_item_id is null \
                    and (l.branch = any($3) or ($4 and l.branch is not null and l.branch = l.vcs ->> 'defaultBranch')) \
-                   and ($5 or not l.debug) and (l.created_by_can_sync or l.created_at < $6) \
+                   and ($5 or not l.debug) and (l.created_by_can_sync or l.created_at < $6) and not l.sync_blocked \
                    order by r.launch_created_at desc limit 1) r \
                  where t.project_id = $1 and t.id = any($2)",
             )

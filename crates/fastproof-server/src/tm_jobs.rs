@@ -33,21 +33,35 @@ use crate::testops::{TestOps, check_base_url};
 
 /// Cases applied per transaction.
 pub const BATCH: usize = 500;
-/// Workers per replica.
-const WORKERS: usize = 2;
+/// Import workers per replica.
+const IMPORT_WORKERS: usize = 2;
+/// Export workers per replica (a separate pool: exports never hold imports back).
+const EXPORT_WORKERS: usize = 1;
 
-fn workers(instance: &str) -> Arc<Semaphore> {
-    static ALL: Mutex<Option<HashMap<String, Arc<Semaphore>>>> = Mutex::new(None);
+type Pools = HashMap<(String, &'static str), Arc<Semaphore>>;
+
+fn workers(instance: &str, kind: TmJobKind) -> Arc<Semaphore> {
+    static ALL: Mutex<Option<Pools>> = Mutex::new(None);
     let mut g = ALL.lock().unwrap_or_else(|e| e.into_inner());
+    let n = match kind {
+        TmJobKind::Export => EXPORT_WORKERS,
+        _ => IMPORT_WORKERS,
+    };
     g.get_or_insert_with(HashMap::new)
-        .entry(instance.to_string())
-        .or_insert_with(|| Arc::new(Semaphore::new(WORKERS)))
+        .entry((instance.to_string(), kind.as_str()))
+        .or_insert_with(|| Arc::new(Semaphore::new(n)))
         .clone()
 }
 
-/// Starts a worker on this replica when one is free (it runs jobs until none is left).
+/// Starts an import and an export worker on this replica when one is free (each runs jobs
+/// of its kind until none is left).
 pub fn kick(s: &AppState) {
-    let Ok(permit) = workers(&s.instance).try_acquire_owned() else {
+    kick_kind(s, TmJobKind::Import);
+    kick_kind(s, TmJobKind::Export);
+}
+
+fn kick_kind(s: &AppState, kind: TmJobKind) {
+    let Ok(permit) = workers(&s.instance, kind).try_acquire_owned() else {
         return;
     };
     let s = s.clone();
@@ -55,7 +69,7 @@ pub fn kick(s: &AppState) {
         let _permit = permit;
         loop {
             let owner = format!("{}-tm-{}", s.instance, Uuid::now_v7());
-            match s.store.claim_tm_job(&owner).await {
+            match s.store.claim_tm_job(&owner, kind).await {
                 Ok(Some(job)) => run(&s, job, &owner).await,
                 Ok(None) => return,
                 Err(e) => {

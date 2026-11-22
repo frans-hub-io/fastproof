@@ -53,6 +53,7 @@ pub struct Planner {
     seen: HashMap<(String, String), bool>,
     pub(crate) used_numbers: HashSet<i64>,
     unknown_fields: BTreeSet<String>,
+    new_fields: BTreeSet<String>,
     unknown_values: BTreeMap<String, BTreeSet<String>>,
     pub report: ImportReport,
     /// Errors beyond the kept ones.
@@ -72,9 +73,9 @@ fn norm(s: &str) -> String {
 
 fn err_of(row: u64, e: TmError) -> Result<RowError, TmError> {
     match e {
-        TmError::Invalid { code, message, .. } | TmError::Conflict { code, message, .. } => {
-            Ok(RowError::new(row, code, message))
-        }
+        TmError::Invalid { code, message, .. }
+        | TmError::Conflict { code, message, .. }
+        | TmError::Forbidden { code, message } => Ok(RowError::new(row, code, message)),
         TmError::NotFound(what) => Ok(RowError::new(row, "not_found", format!("{what} not found"))),
         TmError::Stale { .. } => Ok(RowError::new(
             row,
@@ -184,6 +185,7 @@ impl Planner {
             seen: HashMap::new(),
             used_numbers: HashSet::new(),
             unknown_fields: BTreeSet::new(),
+            new_fields: BTreeSet::new(),
             unknown_values: BTreeMap::new(),
             report: ImportReport::default(),
             errors_total: 0,
@@ -230,7 +232,13 @@ impl Planner {
     /// The report with the unknown fields and values.
     pub fn finish_report(&mut self) -> ImportReport {
         let mut r = self.report.clone();
-        r.unknown_fields = self.unknown_fields.iter().cloned().collect();
+        r.unknown_fields = self
+            .unknown_fields
+            .iter()
+            .filter(|f| !self.new_fields.contains(*f))
+            .cloned()
+            .collect();
+        r.new_fields = self.new_fields.iter().cloned().collect();
         r.unknown_values = self
             .unknown_values
             .iter()
@@ -800,8 +808,14 @@ impl Planner {
             let Some(t) = FieldType::parse(&d.field_type) else {
                 continue;
             };
-            if !apply || self.opts.unknown_values != UnknownFieldValues::Create {
+            if self.opts.unknown_values != UnknownFieldValues::Create {
                 self.unknown_fields.insert(d.key.clone());
+                continue;
+            }
+            if self.new_fields.len() < 1000 {
+                self.new_fields.insert(d.key.clone());
+            }
+            if !apply {
                 continue;
             }
             let w = CaseFieldWrite {

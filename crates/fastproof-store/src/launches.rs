@@ -325,6 +325,41 @@ impl Store {
         Ok(r.rows_affected() > 0)
     }
 
+    /// A caller without `cases:sync` adds results to a launch, or (`mark = false`) finishes
+    /// it. `Ok(None)`: no such launch; `Ok(Some(false))`: refused, the launch is finished and
+    /// the caller did not create it. Adding results marks the launch `sync_blocked` for good:
+    /// code sync never trusts it, whoever else contributes later.
+    pub async fn untrusted_contributor(
+        &self,
+        project_id: Uuid,
+        launch_id: Uuid,
+        by: &str,
+        mark: bool,
+    ) -> anyhow::Result<Option<bool>> {
+        let r: Option<(bool, bool)> = sqlx::query_as(
+            "select finished_at is null or created_by is not distinct from $3, sync_blocked \
+             from launches where id = $1 and project_id = $2",
+        )
+        .bind(launch_id)
+        .bind(project_id)
+        .bind(no_nul(by))
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some((allowed, blocked)) = r else {
+            return Ok(None);
+        };
+        if allowed && mark && !blocked {
+            sqlx::query(
+                "update launches set sync_blocked = true where id = $1 and project_id = $2",
+            )
+            .bind(launch_id)
+            .bind(project_id)
+            .execute(&self.pool)
+            .await?;
+        }
+        Ok(Some(allowed))
+    }
+
     pub async fn launch_by_external(
         &self,
         project_id: Uuid,

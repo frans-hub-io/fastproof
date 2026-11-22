@@ -1692,7 +1692,7 @@
         "tags": [
           "imports"
         ],
-        "description": "Starts a zip export job. The answer's `downloadUrl` (shown only here) is a one-time link for the caller, valid for 24 hours once the job is `done`.",
+        "description": "Starts a zip export job. The answer's `downloadUrl` (shown only here) is a one-time link for the caller, valid for 24 hours once the job is `done`. A caller has at most 2 and a project at most 4 exports queued or running (else 409 `export_busy`).",
         "operationId": "create_case_export",
         "parameters": [
           {
@@ -4623,6 +4623,7 @@
         "tags": [
           "launches"
         ],
+        "description": "Finishes a launch. A finished launch is finished again only by its creator or a caller with `cases:sync` (else 409 `launch_finished`).",
         "operationId": "launches_finish",
         "parameters": [
           {
@@ -4674,6 +4675,15 @@
             }
           },
           "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
             "content": {
               "application/json": {
                 "schema": {
@@ -5485,6 +5495,7 @@
         "tags": [
           "results"
         ],
+        "description": "Adds results to a launch. A caller without `cases:sync` makes the launch untrusted for code sync, and may add to a finished launch only if it created it (else 409 `launch_finished`).",
         "operationId": "results_ingest",
         "parameters": [
           {
@@ -5545,6 +5556,15 @@
             }
           },
           "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
             "content": {
               "application/json": {
                 "schema": {
@@ -6157,6 +6177,7 @@
         "tags": [
           "uploads"
         ],
+        "description": "Uploads a report archive into a launch. A caller without `cases:sync` makes the launch untrusted for code sync, and may upload into a finished launch only if it created it (else 409 `launch_finished`).",
         "operationId": "uploads_create",
         "parameters": [
           {
@@ -6240,6 +6261,15 @@
             }
           },
           "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
             "content": {
               "application/json": {
                 "schema": {
@@ -9396,7 +9426,7 @@
         "tags": [
           "imports"
         ],
-        "description": "A test-management job of the project (import, export, backfill): status, progress and report. Export jobs are visible only to their creator.",
+        "description": "A test-management job of the project (import, export, backfill): status, progress and report. Export jobs are visible only to their creator, import jobs only with `cases:import`.",
         "operationId": "get_tm_job",
         "parameters": [
           {
@@ -13115,6 +13145,13 @@
             "type": "integer",
             "format": "int64"
           },
+          "newFields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Field definitions the import creates (`unknownFieldValues: create`); a dry run lists\nthe ones its apply will create."
+          },
           "skip": {
             "type": "integer",
             "format": "int64"
@@ -13123,7 +13160,8 @@
             "type": "array",
             "items": {
               "type": "string"
-            }
+            },
+            "description": "Fields of the source the import leaves out (no such field in the project)."
           },
           "unknownValues": {
             "type": "object",

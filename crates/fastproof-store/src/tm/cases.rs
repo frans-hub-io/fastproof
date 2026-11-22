@@ -1012,6 +1012,10 @@ pub async fn update_case_in(
 ) -> TmResult<CaseRow> {
     let defs = field_defs(conn, ctx.project_id, true).await?;
     let snap = prepare_write(conn, ctx, w, Some(cur), &defs).await?;
+    let activates = snap.status == CaseStatus::Active && cur.ai_unreviewed;
+    if activates {
+        super::ai::check_ai_review(cur, ctx.by)?;
+    }
     if cur.automated {
         let s = case_sync_settings(conn, ctx.project_id).await?;
         let conflicts = code_conflicts(cur, &snap, &owned_keys(&s, &defs));
@@ -1019,7 +1023,7 @@ pub async fn update_case_in(
             return Err(field_from_code(conflicts));
         }
     }
-    commit(
+    let mut row = commit(
         conn,
         ctx,
         cur,
@@ -1030,7 +1034,15 @@ pub async fn update_case_in(
             force_revision: false,
         },
     )
-    .await
+    .await?;
+    if activates && row.ai_unreviewed && matches!(source, VersionSource::Ui | VersionSource::Ai) {
+        sqlx::query("update cases set ai_unreviewed = false where id = $1")
+            .bind(row.id)
+            .execute(&mut *conn)
+            .await?;
+        row.ai_unreviewed = false;
+    }
+    Ok(row)
 }
 
 fn decode_cursor(c: &str) -> Option<String> {
@@ -1627,6 +1639,7 @@ impl Store {
         if !cur.ai_unreviewed {
             return Ok((cur.clone(), cur));
         }
+        super::ai::check_ai_review(&cur, ctx.by)?;
         let r = sqlx::query(sqlx::AssertSqlSafe(format!(
             "update cases set ai_unreviewed = false, revision = revision + 1, updated_by = $3, \
              updated_at = now() where id = $1 and project_id = $2 returning {CASE_COLS}"
@@ -2003,6 +2016,10 @@ impl Store {
                 skip(&mut out, *n, "limit_reached");
                 continue;
             }
+            if snap.status == CaseStatus::Active && super::ai::ai_self_review(cur, ctx.by) {
+                skip(&mut out, *n, super::ai::AI_SELF_REVIEW);
+                continue;
+            }
             if snap.status != CaseStatus::Draft
                 && defs.iter().any(|d| {
                     !d.archived
@@ -2048,7 +2065,8 @@ impl Store {
             let updated: Vec<(i64, i64)> = sqlx::query_as(
                 "update cases c set folder_id = t.f, status = t.s, fields = t.fl, \
                    tags = array(select jsonb_array_elements_text(t.tg)), revision = c.revision + 1, \
-                   version = t.v, updated_by = $2, updated_at = now() \
+                   version = t.v, updated_by = $2, updated_at = now(), \
+                   ai_unreviewed = c.ai_unreviewed and t.s <> 'active' \
                  from unnest($3::uuid[], $4::uuid[], $5::text[], $6::jsonb[], $7::jsonb[], $8::int[]) \
                    as t(id, f, s, fl, tg, v) \
                  where c.project_id = $1 and c.id = t.id returning c.number, c.revision",
@@ -2619,15 +2637,16 @@ impl Store {
         expected: i64,
     ) -> TmResult<(CaseSuggestion, CaseRow)> {
         let mut tx = self.pool.begin().await?;
-        let s: Option<(Uuid, i64, Value, String)> = sqlx::query_as(
-            "select case_id, base_revision, proposal, status from case_suggestions \
+        let s: Option<(Uuid, i64, Value, String, Option<String>)> = sqlx::query_as(
+            "select case_id, base_revision, proposal, status, created_by from case_suggestions \
              where id = $1 and project_id = $2 for update",
         )
         .bind(id)
         .bind(ctx.project_id)
         .fetch_optional(&mut *tx)
         .await?;
-        let (case_id, base, proposal, status) = s.ok_or(TmError::NotFound("suggestion"))?;
+        let (case_id, base, proposal, status, author) = s.ok_or(TmError::NotFound("suggestion"))?;
+        super::ai::check_suggestion_accept(author.as_deref(), ctx.by)?;
         let cur = case_by_id(&mut tx, ctx.project_id, case_id)
             .await?
             .ok_or(TmError::NotFound("suggestion"))?;

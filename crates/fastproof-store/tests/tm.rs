@@ -185,7 +185,9 @@ async fn run_item(
 fn code(e: &TmError) -> &str {
     match e {
         TmError::NotFound(_) => "not_found",
-        TmError::Invalid { code, .. } | TmError::Conflict { code, .. } => code,
+        TmError::Invalid { code, .. }
+        | TmError::Conflict { code, .. }
+        | TmError::Forbidden { code, .. } => code,
         TmError::Stale { .. } => "precondition_failed",
         TmError::Other(_) => "other",
     }
@@ -259,7 +261,7 @@ async fn upgrade_from_stage_one_keeps_data_and_queries() {
 
     let mut applied = fastproof_store::migrate(&db.pool).await.unwrap();
     applied.sort();
-    assert_eq!(applied, vec![500, 501, 502, 503, 504]);
+    assert_eq!(applied, vec![500, 501, 502, 503, 504, 506]);
     fastproof_store::check_schema(&db.pool).await.unwrap();
     let (kind, case_id): (String, Option<Uuid>) =
         sqlx::query_as("select kind, case_id from test_cases where id = $1")

@@ -59,6 +59,10 @@ pub async fn create_managed(
     p: &Project,
     w: &TestPlanWrite,
 ) -> ApiResult<TestPlan> {
+    let _permit = match &w.filter {
+        Some(Some(_)) => Some(s.guards.heavy(auth).await?),
+        _ => None,
+    };
     let plan = s
         .store
         .create_managed_plan(p.id, w, &auth.principal.name, &s.cfg.tm)
@@ -255,6 +259,7 @@ pub async fn change_test_plan_items(
     ApiJson(body): ApiJson<TestPlanItemsChange>,
 ) -> ApiResult<Response> {
     let p = s.project_for(&auth, &key, &s.perms.plans_write).await?;
+    let _permit = s.guards.heavy(&auth).await?;
     let plan = s
         .store
         .change_plan_items(p.id, id, &body, &auth.principal.name, &s.cfg.tm)
@@ -293,6 +298,7 @@ pub async fn sync_test_plan(
     Q(q): Q<SyncQuery>,
 ) -> ApiResult<Json<PlanSyncDiff>> {
     let p = s.project_for(&auth, &key, &s.perms.plans_write).await?;
+    let _permit = s.guards.heavy(&auth).await?;
     let dry = q.dry_run.unwrap_or(false);
     let diff = s
         .store
@@ -339,6 +345,7 @@ pub async fn start_plan_launch(
     ApiJson(body): ApiJson<StartPlanLaunch>,
 ) -> ApiResult<(StatusCode, Json<PlanLaunch>)> {
     let p = s.project_for(&auth, &key, &s.perms.runs_execute).await?;
+    let _permit = s.guards.heavy(&auth).await?;
     if let Some(env) = &body.environment
         && (env.len() > MAX_ENVIRONMENT_VALUES
             || env

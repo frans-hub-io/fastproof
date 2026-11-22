@@ -1,14 +1,54 @@
 //! Writes of AI agents (MCP, T3): draft cases and suggestions. An agent never writes a case
 //! directly: it creates drafts (`origin = ai`, `aiUnreviewed`) and proposes changes that a
-//! person accepts or rejects.
+//! person accepts or rejects. These rules hold on every path (REST and MCP): the principal
+//! that created an unreviewed AI draft can neither review nor activate it, and the principal
+//! that made a suggestion cannot accept it ([`check_ai_review`], 403 `ai_self_review`).
+//! A case has at most [`MAX_PENDING_SUGGESTIONS`] pending suggestions.
 
 use uuid::Uuid;
 
 use super::cases::{CaseCtx, NewCaseMeta, apply_patch, create_case_in, prepare_write};
 use super::fields::field_defs;
 use super::versions::snapshot_of;
-use super::{CaseOrigin, CaseProposal, CaseRow, CaseStatus, CaseWrite, TmResult, VersionSource};
-use crate::Store;
+use super::{
+    CaseOrigin, CaseProposal, CaseRow, CaseStatus, CaseWrite, TmError, TmResult, VersionSource,
+};
+use crate::{Store, no_nul};
+
+/// Pending suggestions of one case, at most (409 `limit_reached`, `maxPendingSuggestions`).
+pub const MAX_PENDING_SUGGESTIONS: i64 = 20;
+
+/// Code of the 403 answered to a principal reviewing its own AI work.
+pub const AI_SELF_REVIEW: &str = "ai_self_review";
+
+/// Whether `by` created this unreviewed AI draft.
+pub fn ai_self_review(cur: &CaseRow, by: &str) -> bool {
+    cur.origin == CaseOrigin::Ai && cur.ai_unreviewed && cur.created_by.as_deref() == Some(by)
+}
+
+/// Refuses `by` reviewing or activating an unreviewed AI draft it created.
+pub fn check_ai_review(cur: &CaseRow, by: &str) -> TmResult<()> {
+    if ai_self_review(cur, by) {
+        return Err(TmError::Forbidden {
+            code: AI_SELF_REVIEW,
+            message: "an AI draft is reviewed or activated by someone other than the principal that created it"
+                .into(),
+        });
+    }
+    Ok(())
+}
+
+/// Refuses `by` accepting a suggestion it made.
+pub fn check_suggestion_accept(author: Option<&str>, by: &str) -> TmResult<()> {
+    if author == Some(by) {
+        return Err(TmError::Forbidden {
+            code: AI_SELF_REVIEW,
+            message: "a suggestion is accepted by someone other than the principal that made it"
+                .into(),
+        });
+    }
+    Ok(())
+}
 
 impl Store {
     /// Creates a case for an agent: always `draft`, origin and version source `ai`,
@@ -43,7 +83,24 @@ impl Store {
         rationale: &str,
         agent: &str,
     ) -> TmResult<Uuid> {
-        let mut conn = self.pool.acquire().await?;
+        let mut conn = self.pool.begin().await?;
+        sqlx::query("select 1 from cases where id = $1 and project_id = $2 for update")
+            .bind(cur.id)
+            .bind(ctx.project_id)
+            .execute(&mut *conn)
+            .await?;
+        let pending: i64 = sqlx::query_scalar(
+            "select count(*) from case_suggestions where case_id = $1 and status = 'pending'",
+        )
+        .bind(cur.id)
+        .fetch_one(&mut *conn)
+        .await?;
+        if pending >= MAX_PENDING_SUGGESTIONS {
+            return Err(TmError::limit(
+                "maxPendingSuggestions",
+                MAX_PENDING_SUGGESTIONS as u64,
+            ));
+        }
         let mut snap = snapshot_of(cur);
         apply_patch(&mut snap, &proposal.patch);
         if let Some(n) = &proposal.name {
@@ -64,18 +121,20 @@ impl Store {
         prepare_write(&mut conn, ctx, &w, Some(cur), &defs).await?;
         let id = Uuid::now_v7();
         sqlx::query(
-            "insert into case_suggestions (id, project_id, case_id, base_revision, proposal, rationale, agent) \
-             values ($1, $2, $3, $4, $5, $6, $7)",
+            "insert into case_suggestions (id, project_id, case_id, base_revision, proposal, rationale, agent, \
+             created_by) values ($1, $2, $3, $4, $5, $6, $7, $8)",
         )
         .bind(id)
         .bind(ctx.project_id)
         .bind(cur.id)
         .bind(cur.revision)
         .bind(crate::json_no_nul(serde_json::to_value(proposal)?))
-        .bind(crate::no_nul(rationale))
-        .bind(crate::no_nul(agent))
+        .bind(no_nul(rationale))
+        .bind(no_nul(agent))
+        .bind(no_nul(ctx.by))
         .execute(&mut *conn)
         .await?;
+        conn.commit().await?;
         Ok(id)
     }
 }

@@ -216,9 +216,12 @@ pub async fn get(
 }
 
 #[utoipa::path(post, path = "/api/v1/projects/{key}/launches/{id}/finish", tag = "launches", operation_id = "launches_finish",
+    description = "Finishes a launch. A finished launch is finished again only by its creator or a caller with `cases:sync` \
+        (else 409 `launch_finished`).",
     request_body(content = FinishLaunch, description = "optional"),
     params(("key" = String, Path), ("id" = Uuid, Path)),
-    responses((status = 200, body = Launch), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
+    responses((status = 200, body = Launch), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody),
+        (status = 409, body = ErrorBody)))]
 pub async fn finish(
     State(s): State<AppState>,
     auth: Auth,
@@ -237,6 +240,15 @@ pub async fn finish(
         return Err(ApiError::bad_request(
             "status must be finished or interrupted",
         ));
+    }
+    if auth
+        .principal
+        .denial(&s.perms.cases_sync, Some(&project.key))
+        .is_some()
+    {
+        let current = s.launch_of(&project, id).await?;
+        s.untrusted_contributor(&auth, &project, &current, false)
+            .await?;
     }
     let launch = s
         .store

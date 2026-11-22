@@ -172,7 +172,8 @@ fn token_hash(t: &str) -> String {
 
 #[utoipa::path(post, path = "/api/v1/projects/{key}/cases/exports", tag = "imports", operation_id = "create_case_export",
     description = "Starts a zip export job. The answer's `downloadUrl` (shown only here) is a one-time link for the caller, \
-        valid for 24 hours once the job is `done`.",
+        valid for 24 hours once the job is `done`. A caller has at most 2 and a project at most 4 exports queued or running \
+        (else 409 `export_busy`).",
     request_body = CaseExportRequest,
     params(("key" = String, Path)),
     responses((status = 202, body = TmJob), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),
@@ -184,6 +185,7 @@ pub async fn create_case_export(
     ApiJson(body): ApiJson<CaseExportRequest>,
 ) -> ApiResult<(StatusCode, Json<TmJob>)> {
     let p = s.project_for(&auth, &key, &s.perms.cases_read).await?;
+    let _permit = s.guards.heavy(&auth).await?;
     if body.format != "zip" {
         return Err(ApiError::bad_request("format must be zip"));
     }
@@ -297,7 +299,7 @@ pub async fn download_case_export(
 }
 
 #[utoipa::path(get, path = "/api/v1/projects/{key}/tm-jobs/{id}", tag = "imports", operation_id = "get_tm_job",
-    description = "A test-management job of the project (import, export, backfill): status, progress and report. Export jobs are visible only to their creator.",
+    description = "A test-management job of the project (import, export, backfill): status, progress and report. Export jobs are visible only to their creator, import jobs only with `cases:import`.",
     params(("key" = String, Path), ("id" = Uuid, Path)),
     responses((status = 200, body = TmJob), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
 pub async fn get_tm_job(
@@ -313,6 +315,14 @@ pub async fn get_tm_job(
         .ok_or_else(|| ApiError::not_found("job"))?;
     if job.kind == TmJobKind::Export
         && job.created_by.as_deref() != Some(auth.principal.name.as_str())
+    {
+        return Err(ApiError::not_found("job"));
+    }
+    if job.kind == TmJobKind::Import
+        && auth
+            .principal
+            .denial(&s.perms.cases_import, Some(&p.key))
+            .is_some()
     {
         return Err(ApiError::not_found("job"));
     }

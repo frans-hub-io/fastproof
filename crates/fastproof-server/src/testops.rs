@@ -25,6 +25,11 @@ use crate::integrations::egress::{Egress, OutResponse, OutboundError};
 
 /// Largest response.
 pub const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+/// Bytes of expanded expected-result text of one scenario, at most (each step's text is also
+/// capped at [`MAX_EXPECTED_BYTES`]).
+pub const MAX_SCENARIO_TEXT_BYTES: usize = MAX_RESPONSE_BYTES;
+/// Bytes of one step's expected result built from scenario nodes, at most.
+pub const MAX_EXPECTED_BYTES: usize = 64 * 1024;
 /// Search pages read, at most.
 pub const MAX_PAGES: usize = 10_000;
 /// Timeout of one request.
@@ -418,7 +423,10 @@ pub fn scenario_steps(s: &Value, attachments: &mut Vec<ImportedAttachment>) -> V
         s.get("scenarioSteps").and_then(Value::as_object),
     ) {
         let names = s.get("attachments").and_then(Value::as_object);
-        let mut budget = 10_000usize;
+        let mut budget = Budget {
+            nodes: 10_000,
+            text: MAX_SCENARIO_TEXT_BYTES,
+        };
         let mut loose = Vec::new();
         return normalised(root, all, names, 1, &mut budget, attachments, &mut loose);
     }
@@ -440,18 +448,58 @@ fn child_ids(v: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn body_text(all: &serde_json::Map<String, Value>, id: &str, depth: usize) -> String {
-    let Some(v) = all.get(id) else {
-        return String::new();
-    };
-    let mut parts = vec![text(v, "body")];
-    if depth < 8 {
-        for c in child_ids(v) {
-            parts.push(body_text(all, &c, depth + 1));
+/// What one scenario may still expand: nodes visited (steps and expected-result nodes
+/// together) and bytes of expected-result text.
+struct Budget {
+    nodes: usize,
+    text: usize,
+}
+
+/// The text of an expected-result node and its descendants, each node once, within the
+/// scenario's budget and at most [`MAX_EXPECTED_BYTES`].
+fn body_text(all: &serde_json::Map<String, Value>, id: &str, budget: &mut Budget) -> String {
+    fn walk(
+        all: &serde_json::Map<String, Value>,
+        id: &str,
+        depth: usize,
+        seen: &mut std::collections::HashSet<String>,
+        budget: &mut Budget,
+        out: &mut String,
+    ) {
+        if budget.nodes == 0 || out.len() >= MAX_EXPECTED_BYTES || !seen.insert(id.to_string()) {
+            return;
+        }
+        let Some(v) = all.get(id) else {
+            return;
+        };
+        budget.nodes -= 1;
+        let body = text(v, "body");
+        if !body.is_empty() {
+            let room = MAX_EXPECTED_BYTES
+                .saturating_sub(out.len())
+                .min(budget.text);
+            let mut take = body.len().min(room.saturating_sub(1));
+            while !body.is_char_boundary(take) {
+                take -= 1;
+            }
+            if take > 0 {
+                if !out.is_empty() {
+                    out.push('\n');
+                }
+                out.push_str(&body[..take]);
+                budget.text -= take + 1;
+            }
+        }
+        if depth < 8 {
+            for c in child_ids(v) {
+                walk(all, &c, depth + 1, seen, budget, out);
+            }
         }
     }
-    parts.retain(|p| !p.is_empty());
-    parts.join("\n")
+    let mut out = String::new();
+    let mut seen = std::collections::HashSet::new();
+    walk(all, id, 0, &mut seen, budget, &mut out);
+    out
 }
 
 fn normalised(
@@ -459,16 +507,16 @@ fn normalised(
     all: &serde_json::Map<String, Value>,
     names: Option<&serde_json::Map<String, Value>>,
     depth: usize,
-    budget: &mut usize,
+    budget: &mut Budget,
     attachments: &mut Vec<ImportedAttachment>,
     loose: &mut Vec<String>,
 ) -> Vec<ImportedStep> {
     let mut out: Vec<ImportedStep> = Vec::new();
     for id in child_ids(node) {
-        if *budget == 0 || depth > 16 {
+        if budget.nodes == 0 || depth > 16 {
             break;
         }
-        *budget -= 1;
+        budget.nodes -= 1;
         let Some(v) = all.get(&id) else { continue };
         if let Some(a) = v.get("attachmentId").filter(|a| !a.is_null()) {
             let aid = match a {
@@ -501,7 +549,7 @@ fn normalised(
                 Value::String(s) => s.clone(),
                 _ => String::new(),
             };
-            expected = body_text(all, &eid, 0);
+            expected = body_text(all, &eid, budget);
         }
         let mut step = ImportedStep {
             action: rich(&text(v, "body")),
@@ -597,5 +645,49 @@ mod tests {
         let old: Value = serde_json::json!({"steps": [{"name": "A", "steps": [{"name": "B", "expectedResult": "ok"}]}]});
         let s = scenario_steps(&old, &mut a);
         assert_eq!(s[0].steps[0].expected, "ok");
+    }
+
+    /// M3: an expected result whose node lists itself many times expands once per node, within
+    /// the node budget and a byte cap, however many times the ids repeat.
+    #[test]
+    fn expected_results_do_not_multiply() {
+        let k: usize = std::env::var("SEC_TESTOPS_K")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(32);
+        let n: Value = serde_json::json!({"root": {"children": [1]}, "scenarioSteps": {
+            "1": {"body": "Open", "expectedResultId": 2},
+            "2": {"body": "AAAAAAAA", "children": vec![2; k]}}});
+        let mut a = Vec::new();
+        let t = std::time::Instant::now();
+        let s = scenario_steps(&n, &mut a);
+        assert!(
+            t.elapsed() < std::time::Duration::from_secs(2),
+            "{:?}",
+            t.elapsed()
+        );
+        assert_eq!(s[0].expected, "AAAAAAAA");
+
+        let big = "B".repeat(60_000);
+        let mut all = serde_json::Map::new();
+        let mut children = Vec::new();
+        all.insert("0".into(), serde_json::json!({"body": big}));
+        for i in 1..=10_000 {
+            all.insert(
+                i.to_string(),
+                serde_json::json!({"body": "Step", "expectedResultId": 0}),
+            );
+            children.push(i);
+        }
+        let n = serde_json::json!({"root": {"children": children}, "scenarioSteps": all});
+        let t = std::time::Instant::now();
+        let s = scenario_steps(&n, &mut a);
+        let total: usize = s.iter().map(|x| x.expected.len()).sum();
+        assert!(total <= MAX_SCENARIO_TEXT_BYTES, "{total} bytes");
+        assert!(
+            t.elapsed() < std::time::Duration::from_secs(10),
+            "{:?}",
+            t.elapsed()
+        );
     }
 }

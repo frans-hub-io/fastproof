@@ -1,0 +1,31 @@
+{"version":10,"type":"context-options","origin":"testRunner","browserName":"","playwrightVersion":"1.65.0","options":{},"platform":"linux","wallTime":1795350948739,"monotonicTime":882.111,"sdkLanguage":"javascript","testTimeout":30000,"annotations":[]}
+{"type":"before","callId":"lxyz@1","startTime":905.045,"class":"Test","method":"hook","title":"Before Hooks","params":{},"stack":[]}
+{"type":"before","callId":"lxyz@37","parentId":"lxyz@1","startTime":919.82,"class":"Test","method":"fixture","title":"Fixture \"browser\"","params":{},"stack":[]}
+{"type":"before","callId":"lxyz@38","parentId":"lxyz@37","startTime":921.322,"class":"Test","method":"pw:api","title":"Launch browser","params":{},"stack":[]}
+{"type":"after","callId":"lxyz@38","endTime":1021.449,"annotations":[]}
+{"type":"after","callId":"lxyz@37","endTime":1021.657,"annotations":[]}
+{"type":"before","callId":"lxyz@41","parentId":"lxyz@1","startTime":1025.678,"class":"Test","method":"fixture","title":"Fixture \"context\"","params":{},"stack":[]}
+{"type":"before","callId":"lxyz@42","parentId":"lxyz@41","startTime":1030.282,"class":"Test","method":"pw:api","title":"Create context","params":{},"stack":[]}
+{"type":"after","callId":"lxyz@42","endTime":1041.823,"annotations":[]}
+{"type":"after","callId":"lxyz@41","endTime":1049.058,"annotations":[]}
+{"type":"before","callId":"lxyz@49","parentId":"lxyz@1","startTime":1049.415,"class":"Test","method":"fixture","title":"Fixture \"page\"","params":{},"stack":[]}
+{"type":"before","callId":"lxyz@50","parentId":"lxyz@49","startTime":1049.943,"class":"Test","method":"pw:api","title":"Create page","params":{},"stack":[]}
+{"type":"after","callId":"lxyz@50","endTime":1100.359,"annotations":[]}
+{"type":"after","callId":"lxyz@49","endTime":1100.457,"annotations":[]}
+{"type":"after","callId":"lxyz@1","endTime":1100.539,"annotations":[]}
+{"type":"before","callId":"lxyz@52","startTime":1102.009,"class":"Test","method":"pw:api","title":"Set content","params":{},"stack":[{"file":"/builds/example/fastproof-samples/tests/login.spec.ts","line":3,"column":14}]}
+{"type":"after","callId":"lxyz@52","endTime":1127.571,"annotations":[]}
+{"type":"before","callId":"lxyz@54","startTime":1129.574,"class":"Test","method":"pw:api","title":"Fill \"hunter2-SECRET\"","subtitle":"getByLabel('Password')","params":{"locator":"getByLabel('Password')","value":"hunter2-SECRET"},"stack":[{"file":"/builds/example/fastproof-samples/tests/login.spec.ts","line":4,"column":37}]}
+{"type":"after","callId":"lxyz@54","endTime":1171.468,"annotations":[]}
+{"type":"before","callId":"lxyz@56","startTime":1173.402,"class":"Test","method":"pw:api","title":"Type \"typed-SECRET2\"","subtitle":"locator('#u')","params":{"locator":"locator('#u')","text":"typed-SECRET2"},"stack":[{"file":"/builds/example/fastproof-samples/tests/login.spec.ts","line":5,"column":28}]}
+{"type":"after","callId":"lxyz@56","endTime":1217.785,"annotations":[]}
+{"type":"before","callId":"lxyz@58","startTime":1220.35,"class":"Test","method":"pw:api","title":"Press \"Enter\"","subtitle":"locator('#u')","params":{"locator":"locator('#u')","key":"Enter"},"stack":[{"file":"/builds/example/fastproof-samples/tests/login.spec.ts","line":6,"column":28}]}
+{"type":"after","callId":"lxyz@58","endTime":1238.759,"annotations":[]}
+{"type":"before","callId":"lxyz@60","startTime":1239.428,"class":"Test","method":"hook","title":"After Hooks","params":{},"stack":[]}
+{"type":"before","callId":"lxyz@61","parentId":"lxyz@60","startTime":1240.805,"class":"Test","method":"fixture","title":"Fixture \"page\"","params":{},"stack":[]}
+{"type":"after","callId":"lxyz@61","endTime":1241.01,"annotations":[]}
+{"type":"before","callId":"lxyz@62","parentId":"lxyz@60","startTime":1241.215,"class":"Test","method":"fixture","title":"Fixture \"context\"","params":{},"stack":[]}
+{"type":"before","callId":"lxyz@68","parentId":"lxyz@62","startTime":1270.545,"class":"Test","method":"pw:api","title":"Close context","params":{},"stack":[]}
+{"type":"after","callId":"lxyz@68","endTime":1276.114,"annotations":[]}
+{"type":"after","callId":"lxyz@62","endTime":1276.149,"annotations":[]}
+{"type":"after","callId":"lxyz@60","endTime":1283.965,"annotations":[]}

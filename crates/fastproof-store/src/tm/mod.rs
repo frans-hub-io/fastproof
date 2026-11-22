@@ -48,6 +48,8 @@ pub enum TmError {
         message: String,
         details: Option<Value>,
     },
+    /// 403 with a code such as `ai_self_review`: the caller may not do this to this object.
+    Forbidden { code: &'static str, message: String },
     /// 412 `precondition_failed`: the revision moved.
     Stale {
         current_revision: i64,
@@ -105,9 +107,9 @@ impl fmt::Display for TmError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NotFound(what) => write!(f, "{what} not found"),
-            Self::Invalid { code, message, .. } | Self::Conflict { code, message, .. } => {
-                write!(f, "{code}: {message}")
-            }
+            Self::Invalid { code, message, .. }
+            | Self::Conflict { code, message, .. }
+            | Self::Forbidden { code, message } => write!(f, "{code}: {message}"),
             Self::Stale {
                 current_revision, ..
             } => write!(f, "precondition failed (revision {current_revision})"),

@@ -13,8 +13,9 @@
 use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, Read};
 
-use fastproof_ingest::{JsonBounds, parse_json_bounded};
+use fastproof_ingest::{JsonBounds, scan_json};
 use serde_json::Value;
+use serde_json::value::RawValue;
 
 use crate::csv::{Table, cell};
 use crate::generic::Target;
@@ -413,8 +414,109 @@ struct Walk<'v, 'a> {
     suite_titles: HashMap<i64, (String, Option<i64>)>,
 }
 
+/// Bytes of one case of a Qase JSON file, at most (a larger one is a row error).
+pub const MAX_CASE_JSON_BYTES: usize = 8 * 1024 * 1024;
+
+/// The keys of a Qase JSON root, borrowed from the file.
+#[derive(Default, serde::Deserialize)]
+struct RawRoot<'a> {
+    #[serde(borrow, default)]
+    code: Option<&'a RawValue>,
+    #[serde(borrow, default)]
+    project_code: Option<&'a RawValue>,
+    #[serde(borrow, default, rename = "projectCode")]
+    project_code_camel: Option<&'a RawValue>,
+    #[serde(borrow, default)]
+    suites_flat: Option<&'a RawValue>,
+    #[serde(borrow, default, rename = "suiteList")]
+    suite_list: Option<&'a RawValue>,
+    #[serde(borrow, default)]
+    suites: Option<&'a RawValue>,
+    #[serde(borrow, default)]
+    cases: Option<&'a RawValue>,
+    #[serde(borrow, default)]
+    result: Option<&'a RawValue>,
+}
+
+#[derive(Default, serde::Deserialize)]
+struct RawResult<'a> {
+    #[serde(borrow, default)]
+    entities: Option<&'a RawValue>,
+}
+
+#[derive(Default, serde::Deserialize)]
+struct RawSuite<'a> {
+    #[serde(borrow, default)]
+    title: Option<&'a RawValue>,
+    #[serde(borrow, default)]
+    cases: Option<&'a RawValue>,
+    #[serde(borrow, default)]
+    suites: Option<&'a RawValue>,
+}
+
+fn is_array(raw: &RawValue) -> bool {
+    raw.get().trim_start().starts_with('[')
+}
+
+fn raw_text(raw: Option<&RawValue>) -> String {
+    match raw.map(|r| serde_json::from_str::<Value>(r.get())) {
+        Some(Ok(Value::String(s))) => s,
+        Some(Ok(Value::Number(n))) => n.to_string(),
+        _ => String::new(),
+    }
+}
+
+fn json_error(e: serde_json::Error) -> ImportError {
+    ImportError::invalid(format!("qase json: invalid JSON: {e}"))
+}
+
+/// Hands every element of a JSON array to `f`, one at a time, without building the array.
+fn each<'a>(
+    raw: &'a RawValue,
+    mut f: impl FnMut(&'a RawValue) -> Result<(), ImportError>,
+) -> Result<(), ImportError> {
+    struct Each<'f, 'a, F> {
+        f: &'f mut F,
+        err: &'f mut Option<ImportError>,
+        _p: std::marker::PhantomData<&'a ()>,
+    }
+    impl<'a, F: FnMut(&'a RawValue) -> Result<(), ImportError>> serde::de::Visitor<'a>
+        for Each<'_, 'a, F>
+    {
+        type Value = ();
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("an array")
+        }
+
+        fn visit_seq<A: serde::de::SeqAccess<'a>>(self, mut seq: A) -> Result<(), A::Error> {
+            while let Some(el) = seq.next_element::<&'a RawValue>()? {
+                if let Err(e) = (self.f)(el) {
+                    *self.err = Some(e);
+                    return Err(serde::de::Error::custom("stopped"));
+                }
+            }
+            Ok(())
+        }
+    }
+    let mut err = None;
+    let mut de = serde_json::Deserializer::from_str(raw.get());
+    let r = serde::Deserializer::deserialize_seq(
+        &mut de,
+        Each {
+            f: &mut f,
+            err: &mut err,
+            _p: std::marker::PhantomData,
+        },
+    );
+    if let Some(e) = err {
+        return Err(e);
+    }
+    r.map_err(json_error)
+}
+
 impl Walk<'_, '_> {
-    fn case(&mut self, v: &Value, folder: &[String]) -> Result<(), ImportError> {
+    fn case(&mut self, raw: &RawValue, folder: &[String]) -> Result<(), ImportError> {
         self.count += 1;
         if self.count > self.opts.limits.max_rows {
             return Err(ImportError::limit(
@@ -422,6 +524,17 @@ impl Walk<'_, '_> {
                 self.opts.limits.max_rows,
             ));
         }
+        if raw.get().len() > MAX_CASE_JSON_BYTES {
+            return emit_error(
+                RowError::new(
+                    self.count as u64,
+                    "limit_reached",
+                    format!("the case has more than {MAX_CASE_JSON_BYTES} bytes of JSON"),
+                ),
+                self.visit,
+            );
+        }
+        let v: Value = serde_json::from_str(raw.get()).map_err(json_error)?;
         let folder = if folder.is_empty() {
             v.get("suite_id")
                 .and_then(Value::as_i64)
@@ -430,7 +543,7 @@ impl Walk<'_, '_> {
         } else {
             folder.to_vec()
         };
-        let c = json_case(v, self.count as u64, &folder, self.code.as_deref());
+        let c = json_case(&v, self.count as u64, &folder, self.code.as_deref());
         emit(c, &self.opts.limits, self.visit)
     }
 
@@ -452,35 +565,34 @@ impl Walk<'_, '_> {
 
     fn suites(
         &mut self,
-        v: &Value,
+        raw: &RawValue,
         path: &mut Vec<String>,
         depth: usize,
     ) -> Result<(), ImportError> {
-        let Some(arr) = v.as_array() else {
+        if !is_array(raw) {
             return Ok(());
-        };
-        for s in arr {
-            let title = text(s, "title");
-            path.push(title);
-            if let Some(cases) = s.get("cases").and_then(Value::as_array) {
-                for c in cases {
-                    self.case(c, path)?;
-                }
+        }
+        each(raw, |el| {
+            let s: RawSuite<'_> = serde_json::from_str(el.get()).unwrap_or_default();
+            path.push(raw_text(s.title));
+            if let Some(cases) = s.cases.filter(|c| is_array(c)) {
+                each(cases, |c| self.case(c, path))?;
             }
             if depth < 64
-                && let Some(sub) = s.get("suites")
+                && let Some(sub) = s.suites
             {
                 self.suites(sub, path, depth + 1)?;
             }
             path.pop();
-        }
-        Ok(())
+            Ok(())
+        })
     }
 }
 
 /// Parses Qase JSON: `{suites: [{title, cases, suites}]}` (export), `{result: {entities}}`
 /// (API), `{cases: […]}` or an array of cases; a root `code`/`project_code` prefixes keys
-/// (`PROJ-45`).
+/// (`PROJ-45`). The file is read once and walked in place: only one case at a time is
+/// built, so memory stays about the size of the file.
 pub fn parse_json(
     mut r: Box<dyn BufRead + '_>,
     opts: &ParseOptions,
@@ -493,34 +605,44 @@ pub fn parse_json(
         max_values: 50_000_000,
         max_string_bytes: (opts.limits.max_cell_bytes as u64).saturating_mul(6),
     };
-    let doc: Value =
-        parse_json_bounded(&bytes, &bounds, "qase json").map_err(|e| match e.limit_name() {
-            Some("max_json_depth") => ImportError::limit("maxJsonDepth", MAX_JSON_DEPTH),
-            Some("max_string_bytes") => {
-                ImportError::limit("maxImportCellBytes", opts.limits.max_cell_bytes)
-            }
-            Some(_) => ImportError::invalid(e.to_string()),
-            None => ImportError::invalid(e.to_string()),
-        })?;
-    drop(bytes);
-    let code = ["code", "project_code", "projectCode"]
-        .iter()
-        .find_map(|k| doc.get(*k).and_then(Value::as_str))
-        .map(str::to_string);
+    scan_json(&bytes, &bounds, "qase json").map_err(|e| match e.limit_name() {
+        Some("max_json_depth") => ImportError::limit("maxJsonDepth", MAX_JSON_DEPTH),
+        Some("max_string_bytes") => {
+            ImportError::limit("maxImportCellBytes", opts.limits.max_cell_bytes)
+        }
+        _ => ImportError::invalid(e.to_string()),
+    })?;
+    let body = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes);
+    let doc = std::str::from_utf8(body)
+        .map_err(|_| ImportError::invalid("qase json: invalid JSON: not UTF-8"))?;
+    let root_raw: &RawValue = serde_json::from_str(doc).map_err(json_error)?;
+    let root: RawRoot<'_> = if root_raw.get().trim_start().starts_with('{') {
+        serde_json::from_str(doc).map_err(json_error)?
+    } else {
+        RawRoot::default()
+    };
+    let code = [root.code, root.project_code, root.project_code_camel]
+        .into_iter()
+        .flatten()
+        .find_map(|r| match serde_json::from_str::<Value>(r.get()) {
+            Ok(Value::String(s)) => Some(s),
+            _ => None,
+        });
     let mut suite_titles = HashMap::new();
-    if let Some(s) = doc
-        .get("suites_flat")
-        .or_else(|| doc.get("suiteList"))
-        .and_then(Value::as_array)
-    {
-        for x in s {
+    if let Some(flat) = root.suites_flat.or(root.suite_list).filter(|r| is_array(r)) {
+        each(flat, |x| {
+            let x: Value = serde_json::from_str(x.get()).map_err(json_error)?;
             if let Some(id) = x.get("id").and_then(Value::as_i64) {
                 suite_titles.insert(
                     id,
-                    (text(x, "title"), x.get("parent_id").and_then(Value::as_i64)),
+                    (
+                        text(&x, "title"),
+                        x.get("parent_id").and_then(Value::as_i64),
+                    ),
                 );
             }
-        }
+            Ok(())
+        })?;
     }
     let mut w = Walk {
         opts,
@@ -529,20 +651,24 @@ pub fn parse_json(
         count: 0,
         suite_titles,
     };
-    let cases = doc
-        .get("result")
-        .and_then(|r| r.get("entities"))
-        .or_else(|| doc.get("cases"))
-        .or_else(|| doc.as_array().map(|_| &doc));
-    if let Some(s) = doc.get("suites").filter(|s| s.is_array()) {
+    let entities = root
+        .result
+        .and_then(|r| serde_json::from_str::<RawResult<'_>>(r.get()).ok())
+        .and_then(|r| r.entities);
+    let cases = entities.or(root.cases).or_else(|| {
+        root_raw
+            .get()
+            .trim_start()
+            .starts_with('[')
+            .then_some(root_raw)
+    });
+    if let Some(s) = root.suites.filter(|s| is_array(s)) {
         let mut path = Vec::new();
         w.suites(s, &mut path, 1)?;
     }
-    if let Some(arr) = cases.and_then(Value::as_array) {
-        for c in arr {
-            w.case(c, &[])?;
-        }
-    } else if doc.get("suites").is_none() {
+    if let Some(arr) = cases.filter(|c| is_array(c)) {
+        each(arr, |c| w.case(c, &[]))?;
+    } else if root.suites.is_none() {
         return Err(ImportError::invalid(
             "not a Qase JSON export: no suites or cases",
         ));

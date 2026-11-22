@@ -3,7 +3,14 @@
 //! (the content of `script`, `style`, `template` and comments is dropped). Links keep only
 //! `http`, `https` and `mailto` URLs; images keep their source (the importer resolves file
 //! names of the attachment zip and the renderer shows only `attachment:` images). Text is
-//! escaped so it cannot become Markdown syntax. Linear in the input.
+//! escaped so it cannot become Markdown syntax. Linear in the input: lists nest at most
+//! [`MAX_LIST_DEPTH`] levels (deeper ones continue at that level), table rows are not padded,
+//! and the output stops at [`MAX_OUTPUT_FACTOR`] times the input plus 4 KiB.
+
+/// Nesting of lists kept in the Markdown.
+pub const MAX_LIST_DEPTH: usize = 8;
+/// Output bytes per input byte, at most (plus 4 KiB).
+pub const MAX_OUTPUT_FACTOR: usize = 8;
 
 const ALLOWED: &[&str] = &[
     "b", "strong", "i", "em", "code", "pre", "ul", "ol", "li", "a", "img", "table", "tr", "td",
@@ -247,11 +254,13 @@ fn parse_tag(s: &str) -> Result<(Tag, usize), bool> {
 struct Table {
     rows: Vec<Vec<String>>,
     cell: Option<String>,
+    bytes: usize,
 }
 
 struct Conv {
     out: String,
     lists: Vec<(bool, usize)>,
+    deeper_lists: usize,
     pre: usize,
     code: usize,
     link: Option<(String, usize)>,
@@ -260,6 +269,16 @@ struct Conv {
 }
 
 impl Conv {
+    /// Bytes written so far (the output, the table being read and its open cell).
+    fn size(&self) -> usize {
+        self.out.len()
+            + self
+                .table
+                .as_ref()
+                .map(|t| t.bytes + t.cell.as_ref().map_or(0, String::len))
+                .unwrap_or(0)
+    }
+
     fn sink(&mut self) -> &mut String {
         if let Some(t) = &mut self.table
             && let Some(c) = &mut t.cell
@@ -398,11 +417,19 @@ impl Conv {
             }
             ("p", _) => self.newline(2),
             ("ul" | "ol", false) => {
+                if self.lists.len() >= MAX_LIST_DEPTH {
+                    self.deeper_lists += 1;
+                    return;
+                }
                 let start = t.attr("start").and_then(|v| v.parse().ok()).unwrap_or(1);
                 self.newline(if self.lists.is_empty() { 2 } else { 1 });
                 self.lists.push((name == "ol", start));
             }
             ("ul" | "ol", true) => {
+                if self.deeper_lists > 0 {
+                    self.deeper_lists -= 1;
+                    return;
+                }
                 self.lists.pop();
                 self.newline(if self.lists.is_empty() { 2 } else { 1 });
             }
@@ -481,7 +508,9 @@ impl Conv {
                     && let Some(c) = t.cell.take()
                     && let Some(r) = t.rows.last_mut()
                 {
-                    r.push(c.trim().to_string());
+                    let c = c.trim().to_string();
+                    t.bytes += c.len() + 9;
+                    r.push(c);
                 }
             }
             (n, _) if BLOCK.contains(&n) => self.newline(2),
@@ -499,7 +528,8 @@ fn render_table(t: Table) -> String {
     let mut out = String::new();
     for (i, r) in rows.iter().enumerate() {
         out.push('|');
-        for c in 0..cols {
+        let n = if i == 0 { cols } else { r.len() };
+        for c in 0..n {
             out.push(' ');
             out.push_str(r.get(c).map(String::as_str).unwrap_or(""));
             out.push_str(" |");
@@ -518,9 +548,20 @@ fn render_table(t: Table) -> String {
 
 /// Converts HTML to Markdown (see the module documentation).
 pub fn to_markdown(html: &str) -> String {
+    to_markdown_max(
+        html,
+        html.len()
+            .saturating_mul(MAX_OUTPUT_FACTOR)
+            .saturating_add(4096),
+    )
+}
+
+/// [`to_markdown`] with at most `max` bytes of output: the conversion stops there.
+pub fn to_markdown_max(html: &str, max: usize) -> String {
     let mut c = Conv {
-        out: String::with_capacity(html.len()),
+        out: String::with_capacity(html.len().min(max)),
         lists: Vec::new(),
+        deeper_lists: 0,
         pre: 0,
         code: 0,
         link: None,
@@ -529,6 +570,9 @@ pub fn to_markdown(html: &str) -> String {
     };
     let mut rest = html;
     while !rest.is_empty() {
+        if c.size() > max {
+            break;
+        }
         let Some(i) = rest.find('<') else {
             if c.drop.is_none() {
                 c.text(rest);
@@ -578,6 +622,13 @@ pub fn to_markdown(html: &str) -> String {
     }
     if c.pre > 0 {
         c.out.push_str("\n```");
+    }
+    if c.out.len() > max {
+        let mut i = max;
+        while !c.out.is_char_boundary(i) {
+            i -= 1;
+        }
+        c.out.truncate(i);
     }
     let lines: Vec<&str> = c.out.lines().map(|l| l.trim_end_matches(' ')).collect();
     let mut s = String::new();

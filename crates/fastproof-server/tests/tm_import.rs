@@ -821,8 +821,11 @@ async fn permissions_busy_limits_and_idor() {
     let (st, b) = s
         .get(&format!("/api/v1/projects/pa/tm-jobs/{id}"), &viewer)
         .await;
-    assert_eq!(st, StatusCode::OK, "jobs need cases:read: {b}");
-    assert_eq!(b["kind"], "import");
+    assert_eq!(
+        st,
+        StatusCode::NOT_FOUND,
+        "import jobs need cases:import, like /imports: {b}"
+    );
     let (st, _) = s
         .get(&format!("/api/v1/projects/pa/tm-jobs/{id}"), &editor_b)
         .await;

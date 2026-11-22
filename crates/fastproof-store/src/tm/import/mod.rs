@@ -5,7 +5,10 @@
 //! …/apply` → `running` → `done` | `failed`; `cancelled` from any state before `done`.
 //! Workers hold a lease; at most one import per project is queued, in its dry run or running,
 //! and at most [`MAX_RUNNING_IMPORTS`] run at once in the installation. Export jobs (`kind =
-//! export`) go `queued` → `running` → `done` with a blob for 24 hours.
+//! export`) go `queued` → `running` → `done` with a blob for 24 hours; a caller has at most
+//! [`MAX_EXPORTS_PER_CALLER`] and a project [`MAX_EXPORTS_PER_PROJECT`] queued or running
+//! (409 `export_busy`), and at most [`MAX_RUNNING_EXPORTS`] run at once in the installation.
+//! Imports and exports are claimed by separate workers, so exports never hold imports back.
 
 pub mod plan;
 
@@ -28,6 +31,12 @@ pub use plan::*;
 
 /// Imports in their dry run or running at once in the installation.
 pub const MAX_RUNNING_IMPORTS: i64 = 4;
+/// Exports running at once in the installation.
+pub const MAX_RUNNING_EXPORTS: i64 = 4;
+/// Queued or running exports of one caller in a project.
+pub const MAX_EXPORTS_PER_CALLER: i64 = 2;
+/// Queued or running exports of one project.
+pub const MAX_EXPORTS_PER_PROJECT: i64 = 4;
 /// Lease of a worker on a job; renewed while it works.
 pub const LEASE_SECONDS: i64 = 120;
 /// Errors kept in a report.
@@ -145,7 +154,8 @@ async fn job_event(conn: &mut sqlx::PgConnection, key: &str, job: &TmJob) -> any
 
 impl Store {
     /// Creates a queued job. An import fails with 409 `import_busy` while another import of
-    /// the project is queued, in its dry run or running.
+    /// the project is queued, in its dry run or running; an export fails with 409
+    /// `export_busy` when the caller or the project has its most exports queued or running.
     pub async fn create_tm_job(
         &self,
         id: Uuid,
@@ -157,8 +167,10 @@ impl Store {
     ) -> TmResult<TmJob> {
         let mut tx = self.pool.begin().await?;
         super::lock_project(&mut tx, project_id, "imports").await?;
-        if kind == TmJobKind::Import {
-            busy(&mut tx, project_id, None).await?;
+        match kind {
+            TmJobKind::Import => busy(&mut tx, project_id, None).await?,
+            TmJobKind::Export => exports_busy(&mut tx, project_id, by).await?,
+            TmJobKind::Backfill => {}
         }
         let r = sqlx::query(sqlx::AssertSqlSafe(format!(
             "insert into tm_jobs (id, project_id, kind, params, status, progress, created_by) \
@@ -279,31 +291,47 @@ impl Store {
         Ok((job, params))
     }
 
-    /// Claims the oldest job a worker can run: a queued import (→ `dry_run`) while fewer than
-    /// [`MAX_RUNNING_IMPORTS`] imports run, an import asked to apply (`running` without a
-    /// lease), a queued export (→ `running`), or a job whose worker's lease expired.
-    pub async fn claim_tm_job(&self, owner: &str) -> anyhow::Result<Option<ClaimedJob>> {
+    /// Claims the oldest job of `kind` a worker can run. Imports: a queued import (→
+    /// `dry_run`) while fewer than [`MAX_RUNNING_IMPORTS`] imports run, an import asked to
+    /// apply (`running` without a lease), or one whose worker's lease expired. Exports: a
+    /// queued export (→ `running`) or an expired one while fewer than [`MAX_RUNNING_EXPORTS`]
+    /// run. Imports and exports have their own workers.
+    pub async fn claim_tm_job(
+        &self,
+        owner: &str,
+        kind: TmJobKind,
+    ) -> anyhow::Result<Option<ClaimedJob>> {
+        if kind == TmJobKind::Backfill {
+            return Ok(None);
+        }
         let mut tx = self.pool.begin().await?;
         sqlx::query("select pg_advisory_xact_lock(hashtextextended('fastproof:tm:jobs', 0))")
             .execute(&mut *tx)
             .await?;
         let running: i64 = sqlx::query_scalar(
-            "select count(*) from tm_jobs where kind = 'import' and status in ('dry_run', 'running') \
+            "select count(*) from tm_jobs where kind = $1 and status in ('dry_run', 'running') \
              and lease_until > now()",
         )
+        .bind(kind.as_str())
         .fetch_one(&mut *tx)
         .await?;
-        let imports_ok = running < MAX_RUNNING_IMPORTS;
+        let max = match kind {
+            TmJobKind::Export => MAX_RUNNING_EXPORTS,
+            _ => MAX_RUNNING_IMPORTS,
+        };
+        if running >= max {
+            return Ok(None);
+        }
         let r = sqlx::query(
             "select j.id, j.project_id, p.key, j.kind, j.status, j.params, j.progress, j.created_by, j.report \
              from tm_jobs j join projects p on p.id = j.project_id \
-             where j.kind in ('import', 'export') and p.deleted_at is null and ( \
+             where j.kind = $1 and p.deleted_at is null and ( \
                (j.kind = 'export' and (j.status = 'queued' or (j.status = 'running' and j.lease_until < now()))) \
-               or ($1 and j.kind = 'import' and (j.status = 'queued' \
+               or (j.kind = 'import' and (j.status = 'queued' \
                  or (j.status in ('dry_run', 'running') and (j.lease_until is null or j.lease_until < now()))))) \
              order by j.created_at limit 1 for update of j skip locked",
         )
-        .bind(imports_ok)
+        .bind(kind.as_str())
         .fetch_optional(&mut *tx)
         .await?;
         let Some(r) = r else {
@@ -522,6 +550,34 @@ async fn busy(
             code: "import_busy",
             message: "another import of the project is running".into(),
             details: Some(json!({"jobId": o})),
+        });
+    }
+    Ok(())
+}
+
+async fn exports_busy(conn: &mut sqlx::PgConnection, project_id: Uuid, by: &str) -> TmResult<()> {
+    let (mine, all): (i64, i64) = sqlx::query_as(
+        "select count(*) filter (where created_by = $2), count(*) from tm_jobs \
+         where project_id = $1 and kind = 'export' and status in ('queued', 'running')",
+    )
+    .bind(project_id)
+    .bind(no_nul(by))
+    .fetch_one(&mut *conn)
+    .await?;
+    let over = if mine >= MAX_EXPORTS_PER_CALLER {
+        Some(("exportsPerCaller", MAX_EXPORTS_PER_CALLER))
+    } else if all >= MAX_EXPORTS_PER_PROJECT {
+        Some(("exportsPerProject", MAX_EXPORTS_PER_PROJECT))
+    } else {
+        None
+    };
+    if let Some((limit, max)) = over {
+        return Err(TmError::Conflict {
+            code: "export_busy",
+            message: format!(
+                "{limit} ({max}) exports are queued or running; retry when one is done"
+            ),
+            details: Some(json!({"limit": limit, "max": max})),
         });
     }
     Ok(())

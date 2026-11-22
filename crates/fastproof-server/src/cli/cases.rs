@@ -194,6 +194,15 @@ fn print_report(label: &str, j: &Value) {
         r["folders"],
         r["errors"].as_array().map(Vec::len).unwrap_or(0)
     );
+    if let Some(f) = r["newFields"].as_array().filter(|f| !f.is_empty()) {
+        eprintln!(
+            "new fields (created): {}",
+            f.iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
     if let Some(f) = r["unknownFields"].as_array().filter(|f| !f.is_empty()) {
         eprintln!(
             "unknown fields (left out): {}",

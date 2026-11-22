@@ -47,7 +47,8 @@ runs again after a short pause (counted in `fastproof_db_tx_retries_total`).
 
 Topics (after `FASTPROOF_KAFKA_TOPIC_PREFIX`, default `fastproof.`): `ingest.results`, `ingest.logs`,
 `ingest.uploads` and `events`. Create them yourself with the partition count you want, or let FastProof create
-them (`kafka.topics.create`, on for the bundled Kafka).
+them (`kafka.topics.create`, always on for the bundled Kafka of `kafka.enabled`, whose broker does not create
+topics by itself).
 
 ## Roles
 
@@ -111,7 +112,7 @@ Start from these and measure with `fastproof bench`:
 | Small team, direct | 1 replica, 1 CPU, 1 GiB | 1 CPU, 1 GiB | none | none | none |
 | CI farm, direct | 2-4 replicas, 2 CPU, 1 GiB each | 2-4 CPU, 4-8 GiB | none | none | none |
 | Lab big data (`ci/bigdata-values.yaml`) | api, ingest, writer, sink at 0.5-1 CPU, 384-768 MiB | 1 CPU, 768 MiB | 1 broker, 768 MiB (384 MiB heap) | 1 node, 2 GiB | none |
-| Large, Kafka | api 2+, ingest 2+, writer 2+, sink 1-2 | HA cluster | 3 brokers | 2+ replicas | 3+ nodes |
+| Large, Kafka | api 2+, ingest 2+, writer 2+, sink 1-2 | HA cluster | 3 brokers over TLS (managed, or `kafka.replicaCount: 3`) | 2+ replicas | 3+ nodes |
 
 - Kafka partitions bound writer parallelism: run at most as many writer replicas as partitions of
   `ingest.results`.

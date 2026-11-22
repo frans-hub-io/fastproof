@@ -91,21 +91,19 @@ kafka:
     partitions: 6
   consumer:
     maxInflightBytes: 33554432
-  bundled:
-    enabled: true
-    mode: simple
-    simple:
-      heapOpts: -Xms384m -Xmx384m
-      logRetentionHours: 24
-      persistence:
-        size: 5Gi
-      resources:
-        requests:
-          cpu: 100m
-          memory: 640Mi
-        limits:
-          cpu: "1"
-          memory: 768Mi
+  enabled: true
+  heapOpts: -Xms384m -Xmx384m
+  kafkaConfig:
+    logRetentionHours: 24
+  persistence:
+    size: 5Gi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 640Mi
+    limits:
+      cpu: "1"
+      memory: 768Mi
 
 sinks:
   clickhouse:

@@ -2,7 +2,7 @@ suite: image overrides
 templates:
   - templates/deployment.yaml
   - templates/migrate-job.yaml
-  - templates/kafka.yaml
+  - charts/kafka/templates/statefulset.yaml
   - templates/clickhouse.yaml
   - templates/garage.yaml
   - templates/configmap.yaml
@@ -38,10 +38,11 @@ tests:
       - matchRegex:
           path: spec.template.spec.containers[0].image
           pattern: '^registry\.example\.com/mirror/apache/kafka:4\.4\.0@sha256:'
-        template: templates/kafka.yaml
-        documentSelector:
-          path: kind
-          value: StatefulSet
+        template: charts/kafka/templates/statefulset.yaml
+      - equal:
+          path: spec.template.spec.imagePullSecrets[0].name
+          value: mirror-pull
+        template: charts/kafka/templates/statefulset.yaml
       - matchRegex:
           path: spec.template.spec.containers[0].image
           pattern: '^registry\.example\.com/mirror/clickhouse/clickhouse-server:26\.8\.36\.3-distroless@sha256:'
@@ -58,13 +59,13 @@ tests:
           value: StatefulSet
 
   - it: accepts a digest without a tag
-    template: templates/kafka.yaml
+    template: templates/clickhouse.yaml
     set:
-      kafka.bundled.simple.image.tag: ""
+      sinks.clickhouse.bundled.image.tag: ""
     documentSelector:
       path: kind
       value: StatefulSet
     asserts:
       - equal:
           path: spec.template.spec.containers[0].image
-          value: registry.example.com/mirror/apache/kafka@sha256:833b867a9585a141da455dc2b57431c65cbccb27f11c91f694444cca9f777e0f
+          value: registry.example.com/mirror/clickhouse/clickhouse-server@sha256:d149c739994af7d3687b05ce3111b6a748e0f17702c80b52a93c0161a439a091

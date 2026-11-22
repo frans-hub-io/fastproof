@@ -10,57 +10,46 @@
 {{- end -}}
 
 {{- define "fastproof.kafkaBundled" -}}
-{{- if .Values.kafka.bundled.enabled -}}{{- .Values.kafka.bundled.mode -}}{{- end -}}
+{{- if .Values.kafka.enabled -}}true{{- end -}}
 {{- end -}}
 
 {{- define "fastproof.kafkaName" -}}
-{{- include "fastproof.dependencyFullname" (dict "root" . "name" "kafka") -}}
-{{- end -}}
-
-{{- define "fastproof.kafkaSimpleSecretName" -}}
-{{- if .Values.kafka.bundled.simple.credentials.existingSecret -}}
-{{- .Values.kafka.bundled.simple.credentials.existingSecret -}}
+{{- $k := .Values.kafka -}}
+{{- if $k.fullnameOverride -}}
+{{- $k.fullnameOverride | trunc 63 | trimSuffix "-" -}}
 {{- else -}}
-{{- printf "%s-credentials" (include "fastproof.kafkaName" .) -}}
+{{- include "fastproof.dependencyFullname" (dict "root" . "name" (default "kafka" $k.nameOverride)) -}}
 {{- end -}}
 {{- end -}}
 
-{{- define "fastproof.kafkaClusterId" -}}
-{{- if .Values.kafka.bundled.simple.clusterId -}}
-{{- .Values.kafka.bundled.simple.clusterId -}}
-{{- else -}}
-{{- printf "%s/%s" .Release.Namespace .Release.Name | sha256sum | trunc 16 | b64enc | trimSuffix "==" | replace "+" "-" | replace "/" "_" -}}
-{{- end -}}
+{{- define "fastproof.kafkaClientPort" -}}
+{{- dig "service" "ports" "client" 9092 .Values.kafka -}}
 {{- end -}}
 
 {{- define "fastproof.kafkaBrokers" -}}
 {{- if include "fastproof.kafkaBundled" . -}}
-{{- printf "%s:9092" (include "fastproof.kafkaName" .) -}}
+{{- printf "%s:%v" (include "fastproof.kafkaName" .) (include "fastproof.kafkaClientPort" .) -}}
 {{- else -}}
 {{- join "," .Values.kafka.external.brokers -}}
 {{- end -}}
 {{- end -}}
 
 {{- define "fastproof.kafkaTls" -}}
-{{- $mode := include "fastproof.kafkaBundled" . -}}
-{{- if eq $mode "simple" -}}
-{{- if .Values.kafka.bundled.simple.tls.existingSecret -}}true{{- end -}}
-{{- else if eq $mode "chart" -}}
-{{- if .Values.kafka.tls.enabled -}}true{{- end -}}
+{{- if include "fastproof.kafkaBundled" . -}}
+{{- if dig "tls" "enabled" false .Values.kafka -}}true{{- end -}}
 {{- else if .Values.kafka.external.tls.enabled -}}true
 {{- end -}}
 {{- end -}}
 
 {{- define "fastproof.kafkaCa" -}}
-{{- $mode := include "fastproof.kafkaBundled" . -}}
-{{- if eq $mode "simple" -}}
-{{- with .Values.kafka.bundled.simple.tls.existingSecret -}}
-{{- toJson (dict "secret" . "configMap" "" "key" "ca.crt") -}}
+{{- if include "fastproof.kafkaBundled" . -}}
+{{- if include "fastproof.kafkaTls" . -}}
+{{- $t := .Values.kafka.tls -}}
+{{- $secret := printf "%s-tls" (include "fastproof.kafkaName" .) -}}
+{{- if eq (default "self-signed" $t.source) "existing-secret" -}}
+{{- $secret = required "kafka.tls.existingSecret is required with kafka.tls.source=existing-secret" $t.existingSecret -}}
 {{- end -}}
-{{- else if eq $mode "chart" -}}
-{{- if .Values.kafka.tls.enabled -}}
-{{- $secret := ternary .Values.kafka.tls.existingSecret (printf "%s-tls" (include "fastproof.kafkaName" .)) (eq .Values.kafka.tls.source "existing-secret") -}}
-{{- toJson (dict "secret" $secret "configMap" "" "key" (default "ca.crt" .Values.kafka.tls.caFilename)) -}}
+{{- toJson (dict "secret" $secret "configMap" "" "key" (default "ca.crt" $t.caFilename)) -}}
 {{- end -}}
 {{- else if .Values.kafka.external.tls.enabled -}}
 {{- $c := .Values.kafka.external.tls.ca -}}
@@ -71,13 +60,10 @@
 {{- end -}}
 
 {{- define "fastproof.kafkaSasl" -}}
-{{- $mode := include "fastproof.kafkaBundled" . -}}
-{{- if eq $mode "simple" -}}
-{{- $s := .Values.kafka.bundled.simple -}}
-{{- toJson (dict "mechanism" $s.saslMechanism "username" $s.username "secret" (include "fastproof.kafkaSimpleSecretName" .) "key" $s.credentials.key) -}}
-{{- else if eq $mode "chart" -}}
-{{- if .Values.kafka.auth.client.enabled -}}
-{{- toJson (dict "mechanism" "plain" "username" .Values.kafka.auth.clientUser "secret" (default (include "fastproof.kafkaName" .) .Values.kafka.auth.existingSecret) "key" "client-password") -}}
+{{- if include "fastproof.kafkaBundled" . -}}
+{{- $a := .Values.kafka.auth | default dict -}}
+{{- if dig "client" "enabled" true $a -}}
+{{- toJson (dict "mechanism" "plain" "username" (default "user" $a.clientUser) "secret" (default (include "fastproof.kafkaName" .) $a.existingSecret) "key" "client-password") -}}
 {{- end -}}
 {{- else if .Values.kafka.external.sasl.mechanism -}}
 {{- $s := .Values.kafka.external.sasl -}}
@@ -88,7 +74,7 @@
 {{- end -}}
 
 {{- define "fastproof.createTopics" -}}
-{{- if or .Values.kafka.topics.create .Values.kafka.bundled.enabled -}}true{{- else -}}false{{- end -}}
+{{- if or .Values.kafka.topics.create .Values.kafka.enabled -}}true{{- else -}}false{{- end -}}
 {{- end -}}
 
 {{- define "fastproof.sinks" -}}
@@ -191,24 +177,18 @@ fastproof.franshub.io/role: {{ . }}
 {{- fail "search.backend must be postgres, clickhouse or opensearch" -}}
 {{- end -}}
 {{- $k := .Values.kafka -}}
-{{- if not (has $k.bundled.mode (list "simple" "chart")) -}}
-{{- fail "kafka.bundled.mode must be simple or chart" -}}
+{{- if hasKey $k "bundled" -}}
+{{- fail "kafka.bundled.* was removed: the bundled Kafka is the CloudPirates kafka chart, switched on with kafka.enabled=true and configured under kafka.* (see the Helm chart docs)" -}}
 {{- end -}}
-{{- if and $k.bundled.enabled (eq $k.bundled.mode "chart") (not $k.enabled) -}}
-{{- fail "kafka.bundled.mode=chart deploys the CloudPirates kafka chart: also set kafka.enabled=true" -}}
-{{- end -}}
-{{- if and $k.enabled (not (and $k.bundled.enabled (eq $k.bundled.mode "chart"))) -}}
-{{- fail "kafka.enabled switches on the CloudPirates kafka chart: set kafka.bundled.enabled=true and kafka.bundled.mode=chart with it" -}}
+{{- if and $k.enabled $k.external.brokers -}}
+{{- fail "set either kafka.enabled (the bundled Kafka) or kafka.external.brokers, not both" -}}
 {{- end -}}
 {{- if include "fastproof.kafkaMode" . -}}
-{{- if and $k.bundled.enabled $k.external.brokers -}}
-{{- fail "set either kafka.bundled.enabled or kafka.external.brokers, not both" -}}
+{{- if not (or $k.enabled $k.external.brokers) -}}
+{{- fail "ingest.mode=kafka needs Kafka: set kafka.enabled=true for the bundled broker or kafka.external.brokers" -}}
 {{- end -}}
-{{- if not (or $k.bundled.enabled $k.external.brokers) -}}
-{{- fail "ingest.mode=kafka needs Kafka: set kafka.external.brokers or kafka.bundled.enabled" -}}
-{{- end -}}
-{{- else if or $k.bundled.enabled $k.external.brokers -}}
-{{- fail "Kafka is only used with ingest.mode=kafka: set it or remove kafka.bundled.enabled and kafka.external.brokers" -}}
+{{- else if or $k.enabled $k.external.brokers -}}
+{{- fail "Kafka is only used with ingest.mode=kafka: set it or remove kafka.enabled and kafka.external.brokers" -}}
 {{- end -}}
 {{- if not (has $k.external.sasl.mechanism (list "" "plain" "scram-sha-256" "scram-sha-512")) -}}
 {{- fail "kafka.external.sasl.mechanism must be empty, plain, scram-sha-256 or scram-sha-512" -}}
@@ -220,9 +200,6 @@ fastproof.franshub.io/role: {{ . }}
 {{- if not (or $k.external.sasl.password.existingSecret $k.external.sasl.password.value) -}}
 {{- fail "kafka.external.sasl.password.existingSecret (or value) is required with kafka.external.sasl.mechanism" -}}
 {{- end -}}
-{{- end -}}
-{{- if not (has $k.bundled.simple.saslMechanism (list "plain" "scram-sha-256" "scram-sha-512")) -}}
-{{- fail "kafka.bundled.simple.saslMechanism must be plain, scram-sha-256 or scram-sha-512" -}}
 {{- end -}}
 {{- $ch := .Values.sinks.clickhouse -}}
 {{- if $ch.enabled -}}
@@ -279,7 +256,7 @@ fastproof.franshub.io/role: {{ . }}
 {{- end -}}
 {{- if and .Values.networkPolicy.enabled .Values.networkPolicy.egress.enabled -}}
 {{- $e := .Values.networkPolicy.egress -}}
-{{- if and (include "fastproof.kafkaMode" .) (not $k.bundled.enabled) (not $e.kafka.to) -}}
+{{- if and (include "fastproof.kafkaMode" .) (not $k.enabled) (not $e.kafka.to) -}}
 {{- fail "networkPolicy.egress.kafka.to is required for external Kafka while the egress policy is enabled" -}}
 {{- end -}}
 {{- if and $ch.enabled (not $ch.bundled.enabled) (not $e.clickhouse.to) -}}

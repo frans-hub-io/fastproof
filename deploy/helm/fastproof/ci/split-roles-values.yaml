@@ -22,9 +22,7 @@ ingest:
   mode: kafka
 
 kafka:
-  bundled:
-    enabled: true
-    mode: simple
+  enabled: true
 
 sinks:
   clickhouse:

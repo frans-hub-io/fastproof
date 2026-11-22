@@ -4,12 +4,12 @@
 {{- if .Values.postgresql.enabled }}{{ $bundled = append $bundled "postgresql" }}{{ end -}}
 {{- if .Values.valkey.enabled }}{{ $bundled = append $bundled "valkey" }}{{ end -}}
 {{- if .Values.garage.enabled }}{{ $bundled = append $bundled "garage" }}{{ end -}}
-{{- $kafkaBundled := and (include "fastproof.kafkaMode" .) .Values.kafka.bundled.enabled -}}
+{{- $kafkaBundled := and (include "fastproof.kafkaMode" .) .Values.kafka.enabled -}}
 {{- $chBundled := and .Values.sinks.clickhouse.enabled .Values.sinks.clickhouse.bundled.enabled -}}
 {{- $chPort := ternary 8443 8123 (not (empty .Values.sinks.clickhouse.bundled.tls.existingSecret)) -}}
 {{- $osBundled := and .Values.sinks.opensearch.enabled .Values.opensearch.enabled -}}
 {{- $streaming := list -}}
-{{- if $kafkaBundled }}{{ $streaming = append $streaming (dict "name" "kafka" "port" 9092 "self" true) }}{{ end -}}
+{{- if $kafkaBundled }}{{ $streaming = append $streaming (dict "name" (default "kafka" .Values.kafka.nameOverride) "port" (include "fastproof.kafkaClientPort" . | int) "self" true) }}{{ end -}}
 {{- if $chBundled }}{{ $streaming = append $streaming (dict "name" "clickhouse" "port" $chPort "self" false) }}{{ end -}}
 {{- if $osBundled }}{{ $streaming = append $streaming (dict "name" "opensearch" "port" 9200 "self" true) }}{{ end -}}
 {{- if $np.enabled }}
@@ -119,7 +119,7 @@ spec:
     {{- if .Values.oidc.issuer }}{{ $external = append $external $np.egress.oidc }}{{ end -}}
     {{- if .Values.externalValkey.existingSecret }}{{ $external = append $external $np.egress.valkey }}{{ end -}}
     {{- if .Values.otel.endpoint }}{{ $external = append $external $np.egress.otlp }}{{ end -}}
-    {{- if and (include "fastproof.kafkaMode" .) (not .Values.kafka.bundled.enabled) }}{{ $external = append $external $np.egress.kafka }}{{ end -}}
+    {{- if and (include "fastproof.kafkaMode" .) (not .Values.kafka.enabled) }}{{ $external = append $external $np.egress.kafka }}{{ end -}}
     {{- if and .Values.sinks.clickhouse.enabled (not .Values.sinks.clickhouse.bundled.enabled) }}{{ $external = append $external $np.egress.clickhouse }}{{ end -}}
     {{- if and .Values.sinks.opensearch.enabled (not .Values.opensearch.enabled) }}{{ $external = append $external $np.egress.opensearch }}{{ end -}}
     {{- range $external }}

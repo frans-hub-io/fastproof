@@ -21,9 +21,8 @@ search:
 
 kafka:
   enabled: true
-  bundled:
+  tls:
     enabled: true
-    mode: chart
 
 sinks:
   clickhouse:

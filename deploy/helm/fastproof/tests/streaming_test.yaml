@@ -2,8 +2,11 @@ suite: streaming
 templates:
   - templates/configmap.yaml
   - templates/deployment.yaml
-  - templates/kafka.yaml
   - templates/secrets.yaml
+  - charts/kafka/templates/statefulset.yaml
+  - charts/kafka/templates/serviceaccount.yaml
+  - charts/kafka/templates/configmap.yaml
+  - charts/kafka/templates/poddisruptionbudget.yaml
 release:
   name: fp
   namespace: qa
@@ -116,132 +119,12 @@ tests:
           path: stringData.password
           value: s3cret
 
-  - it: runs the simple bundled Kafka as a hardened KRaft node with SCRAM
-    template: templates/kafka.yaml
-    set:
-      ingest.mode: kafka
-      kafka.bundled.enabled: true
-    documentSelector:
-      path: kind
-      value: StatefulSet
-    asserts:
-      - equal:
-          path: metadata.name
-          value: fp-kafka
-      - equal:
-          path: spec.template.spec.containers[0].image
-          value: docker.io/apache/kafka:4.4.0@sha256:833b867a9585a141da455dc2b57431c65cbccb27f11c91f694444cca9f777e0f
-      - equal:
-          path: spec.template.spec.securityContext.runAsNonRoot
-          value: true
-      - equal:
-          path: spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem
-          value: true
-      - equal:
-          path: spec.template.spec.serviceAccountName
-          value: fp-kafka
-      - equal:
-          path: spec.template.spec.automountServiceAccountToken
-          value: false
-      - matchRegex:
-          path: spec.template.spec.containers[0].args[0]
-          pattern: '--add-scram "SCRAM-SHA-512=\[name=\$\{SASL_USERNAME\},password=\$\{SASL_PASSWORD\}\]"'
-      - equal:
-          path: spec.template.spec.containers[0].livenessProbe.tcpSocket.port
-          value: client
-      - matchRegex:
-          path: spec.template.spec.containers[0].env[0].value
-          pattern: '^[A-Za-z0-9_-]{22}$'
-
-  - it: keeps the bundled broker private and authenticated
-    template: templates/kafka.yaml
-    set:
-      ingest.mode: kafka
-      kafka.bundled.enabled: true
-    documentSelector:
-      path: kind
-      value: ConfigMap
-    asserts:
-      - matchRegex:
-          path: data["server.properties"]
-          pattern: 'listener.security.protocol.map=CLIENT:SASL_PLAINTEXT,INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT'
-      - matchRegex:
-          path: data["server.properties"]
-          pattern: 'listeners=CLIENT://0.0.0.0:9092,INTERNAL://127.0.0.1:9094,CONTROLLER://127.0.0.1:9093'
-      - matchRegex:
-          path: data["server.properties"]
-          pattern: 'advertised.listeners=CLIENT://fp-kafka.qa.svc:9092'
-      - matchRegex:
-          path: data["server.properties"]
-          pattern: 'auto.create.topics.enable=false'
-
-  - it: switches the simple broker to SASL_SSL with a TLS secret and PLAIN
-    template: templates/kafka.yaml
-    set:
-      ingest.mode: kafka
-      kafka.bundled.enabled: true
-      kafka.bundled.simple.tls.existingSecret: kafka-tls
-      kafka.bundled.simple.saslMechanism: plain
-    documentSelector:
-      path: kind
-      value: ConfigMap
-    asserts:
-      - matchRegex:
-          path: data["server.properties"]
-          pattern: 'CLIENT:SASL_SSL'
-      - matchRegex:
-          path: data["server.properties"]
-          pattern: 'ssl.keystore.type=PEM'
-      - notMatchRegex:
-          path: data["server.properties"]
-          pattern: 'ScramLoginModule'
-
-  - it: points the server at the bundled broker and creates topics
-    template: templates/configmap.yaml
-    documentIndex: 0
-    set:
-      ingest.mode: kafka
-      kafka.bundled.enabled: true
-    asserts:
-      - equal:
-          path: data.FASTPROOF_KAFKA_BROKERS
-          value: fp-kafka:9092
-      - equal:
-          path: data.FASTPROOF_KAFKA_SASL_MECHANISM
-          value: scram-sha-512
-      - equal:
-          path: data.FASTPROOF_KAFKA_USERNAME
-          value: fastproof
-      - equal:
-          path: data.FASTPROOF_KAFKA_CREATE_TOPICS
-          value: "true"
-      - equal:
-          path: data.FASTPROOF_KAFKA_TLS
-          value: "false"
-
-  - it: generates the bundled broker password once
-    template: templates/kafka.yaml
-    set:
-      ingest.mode: kafka
-      kafka.bundled.enabled: true
-    documentSelector:
-      path: kind
-      value: Secret
-    asserts:
-      - equal:
-          path: metadata.name
-          value: fp-kafka-credentials
-      - isNotEmpty:
-          path: data.password
-
-  - it: uses the CloudPirates chart credentials in chart mode
+  - it: points the server at the bundled broker with SASL PLAIN and creates topics
     template: templates/configmap.yaml
     documentIndex: 0
     set:
       ingest.mode: kafka
       kafka.enabled: true
-      kafka.bundled.enabled: true
-      kafka.bundled.mode: chart
     asserts:
       - equal:
           path: data.FASTPROOF_KAFKA_BROKERS
@@ -252,3 +135,195 @@ tests:
       - equal:
           path: data.FASTPROOF_KAFKA_USERNAME
           value: fastproof
+      - equal:
+          path: data.FASTPROOF_KAFKA_CREATE_TOPICS
+          value: "true"
+      - equal:
+          path: data.FASTPROOF_KAFKA_PARTITIONS
+          value: "12"
+      - equal:
+          path: data.FASTPROOF_KAFKA_TLS
+          value: "false"
+      - notExists:
+          path: data.FASTPROOF_KAFKA_CA_FILE
+
+  - it: reads the client password from the Secret the kafka chart generates
+    template: templates/deployment.yaml
+    documentIndex: 0
+    set:
+      ingest.mode: kafka
+      kafka.enabled: true
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes[1].projected.sources
+          content:
+            secret:
+              name: fp-kafka
+              items:
+                - key: client-password
+                  path: kafka-password
+
+  - it: reads the client password from an existing Secret
+    template: templates/deployment.yaml
+    documentIndex: 0
+    set:
+      ingest.mode: kafka
+      kafka.enabled: true
+      kafka.auth.existingSecret: kafka-sasl
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes[1].projected.sources
+          content:
+            secret:
+              name: kafka-sasl
+              items:
+                - key: client-password
+                  path: kafka-password
+
+  - it: trusts the CA of the self-signed broker certificate
+    template: templates/deployment.yaml
+    documentIndex: 0
+    set:
+      ingest.mode: kafka
+      kafka.enabled: true
+      kafka.tls.enabled: true
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes[2].projected.sources
+          content:
+            secret:
+              name: fp-kafka-tls
+              items:
+                - key: ca.crt
+                  path: kafka.crt
+
+  - it: switches the client to TLS with the bundled broker
+    template: templates/configmap.yaml
+    documentIndex: 0
+    set:
+      ingest.mode: kafka
+      kafka.enabled: true
+      kafka.tls.enabled: true
+      kafka.tls.source: cert-manager
+      kafka.tls.certManager.issuerRef.name: internal-ca
+    asserts:
+      - equal:
+          path: data.FASTPROOF_KAFKA_TLS
+          value: "true"
+      - equal:
+          path: data.FASTPROOF_KAFKA_CA_FILE
+          value: /etc/fastproof/ca/kafka.crt
+
+  - it: trusts the CA of an existing broker certificate Secret
+    template: templates/deployment.yaml
+    documentIndex: 0
+    set:
+      ingest.mode: kafka
+      kafka.enabled: true
+      kafka.tls.enabled: true
+      kafka.tls.source: existing-secret
+      kafka.tls.existingSecret: kafka-broker-tls
+      kafka.tls.caFilename: chain.pem
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes[2].projected.sources
+          content:
+            secret:
+              name: kafka-broker-tls
+              items:
+                - key: chain.pem
+                  path: kafka.crt
+
+  - it: runs the bundled broker under its own ServiceAccount, non-root and read-only
+    template: charts/kafka/templates/statefulset.yaml
+    set:
+      ingest.mode: kafka
+      kafka.enabled: true
+    asserts:
+      - equal:
+          path: metadata.name
+          value: fp-kafka
+      - equal:
+          path: spec.replicas
+          value: 1
+      - equal:
+          path: spec.template.spec.serviceAccountName
+          value: fp-kafka
+      - equal:
+          path: spec.template.spec.automountServiceAccountToken
+          value: false
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.runAsNonRoot
+          value: true
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem
+          value: true
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.allowPrivilegeEscalation
+          value: false
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.seccompProfile.type
+          value: RuntimeDefault
+      - equal:
+          path: spec.template.spec.containers[0].resources.limits.memory
+          value: 1Gi
+      - exists:
+          path: spec.template.spec.containers[0].livenessProbe
+      - exists:
+          path: spec.template.spec.containers[0].readinessProbe
+      - equal:
+          path: spec.volumeClaimTemplates[0].spec.resources.requests.storage
+          value: 10Gi
+      - matchRegex:
+          path: spec.template.spec.containers[0].image
+          pattern: '^docker\.io/apache/kafka:4\.4\.0@sha256:[a-f0-9]{64}$'
+
+  - it: creates the broker ServiceAccount without a token
+    template: charts/kafka/templates/serviceaccount.yaml
+    set:
+      ingest.mode: kafka
+      kafka.enabled: true
+    asserts:
+      - isKind:
+          of: ServiceAccount
+      - equal:
+          path: metadata.name
+          value: fp-kafka
+      - equal:
+          path: automountServiceAccountToken
+          value: false
+
+  - it: keeps topic creation with FastProof and authenticates the client listener
+    template: charts/kafka/templates/configmap.yaml
+    set:
+      ingest.mode: kafka
+      kafka.enabled: true
+    asserts:
+      - matchRegex:
+          path: data["server.properties"]
+          pattern: 'auto\.create\.topics\.enable=false'
+      - matchRegex:
+          path: data["server.properties"]
+          pattern: 'listener\.security\.protocol\.map=CLIENT:SASL_PLAINTEXT,'
+      - matchRegex:
+          path: data["server.properties"]
+          pattern: 'sasl\.enabled\.mechanisms=PLAIN'
+
+  - it: adds no PodDisruptionBudget for a single broker
+    template: charts/kafka/templates/poddisruptionbudget.yaml
+    set:
+      ingest.mode: kafka
+      kafka.enabled: true
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: adds a PodDisruptionBudget for three brokers
+    template: charts/kafka/templates/poddisruptionbudget.yaml
+    set:
+      ingest.mode: kafka
+      kafka.enabled: true
+      kafka.replicaCount: 3
+    asserts:
+      - hasDocuments:
+          count: 1

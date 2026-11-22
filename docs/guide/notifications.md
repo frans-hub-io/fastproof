@@ -15,6 +15,11 @@ default; email needs `FASTPROOF_SMTP_URL`. See [Configuration](../operations/con
 | `launchFinished` | Every finished launch (debug launches excluded) |
 | `gateFailed` | The [quality gate](quality-gates.md) of the launch failed |
 | `newFailures` | The launch has failures that the previous launch of the branch did not have |
+| `manualRunClosed` | The [manual run](manual-runs.md#combined-launches-and-closing-a-run) of the launch was closed and the gate evaluated again with its results |
+
+Closing the manual run of a launch that CI has already finished evaluates its gate again and sends a second
+round of messages: `launchFinished` and, when they apply, `gateFailed` and `newFailures`, now with
+`manualRunClosed`. Subscribe a channel to `manualRunClosed` alone to hear only about closed manual runs.
 
 Messages are sent once the gate is evaluated, so they always carry the gate result, the counts and the new
 failures.

@@ -309,7 +309,7 @@ instead of crashing: `/healthz` answers, `/readyz` reports `starting`, and every
 `database.connectTimeoutSeconds` (or `kafka.connectTimeoutSeconds`, default 300 each) without success the
 pod exits with an error that names the setting.
 
-Upgrade one minor version at a time and read the release notes. Downgrades are not supported once a newer
+Upgrade one minor version at a time and read the release notes and [Upgrading](upgrading.md). Downgrades are not supported once a newer
 version has migrated the schema; restore a backup instead.
 
 Releases that used the removed `kafka.bundled` values switch to `kafka.enabled: true`. The broker keeps the

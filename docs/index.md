@@ -83,6 +83,24 @@ S3-compatible bucket or a directory.
 
 </div>
 
+## Test management
+
+<div class="grid cards fp-cards" markdown>
+
+-   :material-clipboard-check-outline:{ .fp-card__icon } **[Test cases](guide/test-management.md)**
+
+    Manual and automated cases in one repository, kept in sync with the tests in code.
+
+-   :material-playlist-check:{ .fp-card__icon } **[Test plans and manual runs](guide/manual-runs.md)**
+
+    Plans, manual runs with the keyboard, and combined launches with CI.
+
+-   :material-database-import-outline:{ .fp-card__icon } **[Importing test cases](guide/importing-test-cases.md)**
+
+    From TestRail, Qase, Allure TestOps or any CSV, and exports back out.
+
+</div>
+
 ## Triage and integrations
 
 <div class="grid cards fp-cards" markdown>
@@ -129,9 +147,13 @@ S3-compatible bucket or a directory.
 
     Size, depth and count limits applied to every upload.
 
+-   :material-update:{ .fp-card__icon } **[Upgrading](operations/upgrading.md)**
+
+    What to check before moving to a new release.
+
 -   :material-map-outline:{ .fp-card__icon } **[Roadmap](roadmap.md)**
 
-    Test management, ReportPortal agent compatibility, more reporters, FastProof Analysis.
+    ReportPortal agent compatibility, more reporters, requirements coverage, FastProof Analysis.
 
 </div>
 

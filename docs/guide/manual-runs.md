@@ -1,0 +1,297 @@
+# Test plans and manual runs
+
+A **test plan** chooses the [test cases](test-management.md) to run, for example a release regression. A
+launch started from a plan runs its manual cases by hand in FastProof and its automated cases in CI, and both
+parts land in the same launch, with the same history, counts, quality gates and notifications as any other
+launch.
+
+The examples on this page use:
+
+```sh
+api=https://fastproof.example.com/api/v1/projects/web
+auth="Authorization: Bearer $FASTPROOF_TOKEN"
+```
+
+## Managed plans
+
+Plans built from cases are **managed** plans; open **Test plans** in the project navigation. (The short-lived
+plans that `fastproof testplan --from-launch` creates, for example "the failed tests of launch 42", are a
+different kind and expire after 90 days; managed plans stay until they are archived.)
+
+A plan holds cases in two ways, and can use both:
+
+- **explicitly**: cases you add by number or pick in the tree (a folder adds every case below it);
+- **by filter**: a saved filter with the same parameters as the case list: `folderIds`, `recursive`,
+  `statuses`, `automation`, `fields` (`{"key": ["value", ...]}`), `tags` (all must match) and `q`.
+
+```sh
+curl -fsS -X POST "$api/test-plans" -H "$auth" -H 'Content-Type: application/json' -d '{
+  "kind": "managed",
+  "name": "Release 2.4 regression",
+  "description": "Everything with priority high, plus the payment smoke cases.",
+  "caseNumbers": [12, 13, 14],
+  "filter": {"statuses": ["active"], "fields": {"priority": ["high", "critical"]}}
+}'
+```
+
+The filter is applied when the plan is created. A plan keeps its exact list of cases even when it has a
+filter, so a plan does not change under a running test: cases that start or stop matching the filter later
+are brought in with **Sync**, which shows the difference first:
+
+```sh
+curl -fsS -X POST "$api/test-plans/$plan/sync?dryRun=true" -H "$auth"
+```
+
+```json
+{"added": [31, 32], "removed": [7]}
+```
+
+`added` are cases the filter matches that the plan lacks; `removed` are cases the filter added earlier and no
+longer matches. Explicitly added cases are never removed by a sync. Run the same call without `dryRun` to
+apply it. After changing the filter (`PATCH $api/test-plans/$plan` with `If-Match`), sync to apply it.
+
+| Call | Does |
+|---|---|
+| `GET $api/test-plans?q=&archived=` | Managed plans with their counts (total, manual, automated) |
+| `GET $api/test-plans/{id}` | A plan, with `ETag` |
+| `PATCH $api/test-plans/{id}` | Change `name`, `description` or `filter`; needs `If-Match` |
+| `DELETE $api/test-plans/{id}` | Archive the plan; it stays readable and launches keep their link |
+| `GET $api/test-plans/{id}/items?folder=&assignee=` | The cases of the plan in order; `assignee` is `me`, `none` or a name |
+| `POST $api/test-plans/{id}/items` | `{add: [n], remove: [n], assign: [{number, assignee}]}`, up to 10 000 numbers per request |
+
+A plan holds up to 50 000 cases.
+
+### Assignees
+
+Each case of a plan can have an assignee: the tester who runs it. In the plan builder, assign a folder to a
+person at once; through the API:
+
+```sh
+curl -fsS -X POST "$api/test-plans/$plan/items" -H "$auth" -H 'Content-Type: application/json' \
+  -d '{"assign":[{"number":12,"assignee":"alice"},{"number":13,"assignee":"bob"}]}'
+```
+
+Assignees are the user names people sign in with (for OIDC, the username claim).
+
+## Starting a launch from a plan
+
+**Start launch** on a plan (or the call below, needs `runs:execute`) creates a launch with a **run item** for
+every manual case of the plan:
+
+```sh
+curl -fsS -X POST "$api/test-plans/$plan/launches" -H "$auth" -H 'Content-Type: application/json' -d '{
+  "name": "Release 2.4 regression",
+  "externalId": "release-2.4-rc1",
+  "environment": {"browser": "firefox"},
+  "assign": "plan",
+  "includeAutomated": true
+}'
+```
+
+| Field | Meaning |
+|---|---|
+| `name` | Launch name |
+| `externalId` | The launch's external id; generated when absent. Starting again with the same id returns the same launch (`200`); an id used by a launch of something else answers `409 launch_exists` |
+| `environment`, `attributes` | As for any launch |
+| `assign` | `plan` (the plan's assignees), `me` (everything to the caller) or `none` |
+| `includeAutomated` | Whether CI will run the automated cases of the plan into this launch |
+
+The answer holds the `launch`, its `testplanUrl` and a `ciHint`: the shell lines that make a CI job run the
+plan's automated cases into this launch. Each run item keeps the version of its case at the moment the run
+started, so editing a case later does not change a running test.
+
+Run items can also be added to any launch, for example a nightly CI launch:
+`POST $api/launches/{id}/run-items` with `{caseNumbers: [n]}` or `{planId}` and an optional `assignee`. Cases
+already in the launch are skipped. A launch holds up to 50 000 run items.
+
+### The automated part: testplan.json
+
+Allure adapters (and the FastProof [reporters](reporters.md)) run only the tests listed in an Allure
+`testplan.json` named by `ALLURE_TESTPLAN_PATH`. For a launch started from a plan, FastProof computes it from
+the plan's automated cases at the moment it is read: each entry has the test's `ALLURE_ID` as `id` when the
+code has one, and its full name as `selector`; muted tests are also listed in `mutedTests`. In the CI job:
+
+```sh
+export FASTPROOF_PROJECT=web FASTPROOF_LAUNCH=release-2.4-rc1
+fastproof testplan --launch "$FASTPROOF_LAUNCH" > testplan.json
+export ALLURE_TESTPLAN_PATH="$PWD/testplan.json"
+# run the tests, then:
+fastproof upload allure-results
+fastproof launch finish
+```
+
+`FASTPROOF_LAUNCH` makes the upload join the launch from the plan. `fastproof testplan --plan <id>` prints the
+same file for a plan without starting a launch. The HTTP equivalents are
+`GET $api/launches/{id}/testplan.json` and `GET $api/test-plans/{id}/testplan.json` (`launches:read`). A plan
+without automated cases answers `409 plan_has_no_automated_cases` instead of an empty file, because an empty
+`testplan.json` means "run every test" to Allure adapters.
+
+!!! note "Launches from a plan carry no branch"
+    A launch started from a plan has no VCS data, and uploads that join it do not add any. So code sync does
+    not update cases from it, and only [quality gates](quality-gates.md) without `branches` apply to it.
+
+## Executing a manual run
+
+Testers open **Continue testing** on the launch's **Manual** tab, or their queue across the project (run items
+assigned to them in open runs: `GET $api/run-items`). The runner shows the queue, then the case:
+preconditions and steps of the executed version, each step with its status, an actual result, a comment and
+attachments. Every action is saved at once.
+
+### Steps and the suggested status
+
+Step statuses are `untested`, `passed`, `failed`, `blocked` and `skipped`. Steps are addressed by their path
+in the executed version: `1`, `1.2`, `1.2.3`.
+
+```sh
+curl -fsS -X PUT "$api/run-items/$item/steps/2" -H "$auth" -H 'Content-Type: application/json' \
+  -d '{"status":"failed","actual":"The order page shows *Payment declined*"}'
+```
+
+```json
+{"itemStatus": "in_progress", "suggestedStatus": "failed", "revision": 4}
+```
+
+Step writes need no `If-Match`: the last write wins, and sending the same value again is harmless. Fields left
+out keep their values. The first step result moves the item from `untested` to `in_progress`.
+
+The **suggested status** of the case follows from its steps: `failed` when a step failed, else `blocked` when
+one is blocked; once every step has a status, `passed` (or `skipped` when nothing passed); otherwise the run is
+still `in_progress`. The status of a parent step follows from its children (the worst one; untested children
+are ignored while others have a status) and can be set by hand.
+
+### Finishing a case
+
+The item's own status is set with `PATCH`, which needs the item's `If-Match`:
+
+```sh
+curl -fsS -X PATCH "$api/run-items/$item" -H "$auth" -H "If-Match: \"r4\"" -H 'Content-Type: application/json' \
+  -d '{"status":"failed","comment":"Declined for a valid card","untestedStepsTo":"skipped"}'
+```
+
+Item statuses are `untested`, `in_progress`, `passed`, `failed`, `blocked` and `skipped`. A final status
+(`passed`, `failed`, `blocked`, `skipped`) records the result in the launch at once (see
+[Manual results in history and gates](#manual-results-in-history-and-gates)); setting the item back to
+`untested` or `in_progress` removes it again. `untestedStepsTo: "skipped"` marks steps nobody touched as
+skipped. `assignee` hands the item to someone else.
+
+### Attachments, defects and issues
+
+- **Attachments:** `POST $api/run-items/$item/attachments` (raw body, the file name in
+  `X-FastProof-Attachment-Name`, at most 50 MiB) stores a file; reference it in `attachmentIds` of a step
+  write, up to 20 per step. Phones can attach a photo or video from the camera.
+- **Quick defect:** `POST $api/run-items/$item/defect` with `{defectTypeId?, comment?, issue?: {url, key?}}`
+  triages the recorded result exactly like [triage](rules-and-triage.md) of an automated result. Testers
+  (`runs:execute`) can do this for items assigned to or executed by them; `results:triage` allows it for any
+  item. The item needs a final status first (`409 run_item_not_final`).
+- **New issue:** `GET $api/run-items/$item/new-issue-url?tracker=jira|gitlab|github` returns a link that opens a
+  new issue in the project's configured issue tracker, prefilled with the case, the failed step, expected and
+  actual results and a link back. Nothing is sent to the tracker; the tester reviews and submits it there.
+
+### Rerun
+
+`POST $api/run-items/$item/rerun` starts a new execution of a case: the item is `untested` again with empty
+step results and the same case version. Like a retry of an automated test, the new execution becomes another
+attempt of the same result; the previous one stays visible, and the result keeps its old status until the
+new execution has a final one.
+
+### Keyboard
+
+<!-- TODO(T2c): check this table against the runner (ui/src/pages/runner/keymap.ts) before release. -->
+
+The runner works without a mouse. `?` shows the keys; single-character keys can be switched off in that
+dialog.
+
+| Key | Action |
+|---|---|
+| `j` / `k`, `↓` / `↑` | Next / previous step |
+| `p` | Passed |
+| `f` | Failed (moves the focus to the actual result) |
+| `b` | Blocked |
+| `s` | Skipped |
+| `u` | Back to untested |
+| `c` | Comment |
+| `a` | Add an attachment |
+| `Shift+P` | Pass the remaining steps |
+| `Enter` | Next step |
+| `n` / `Shift+N` | Next / previous case |
+| `d` | Quick defect |
+| `Ctrl+Enter` | Finish the case with the suggested status (asks before untested steps become skipped) |
+
+## Combined launches and closing a run
+
+A launch can have an automated part from CI and a manual part at the same time. They have separate life
+cycles:
+
+- **CI** finishes the launch as usual (`fastproof launch finish`). The quality gate is evaluated on what is
+  recorded at that moment; manual cases that are not finished yet do not count.
+- **Testers** keep working after that. The manual part is `open` until someone closes it with **Close manual
+  run** (`runs:execute`):
+
+```sh
+curl -fsS -X POST "$api/launches/$launch/manual/close" -H "$auth" -H 'Content-Type: application/json' \
+  -d '{"untestedTo":"skipped"}'
+```
+
+Closing marks the untested items `skipped` (or leaves them with `"untestedTo": "leave"`) and then:
+
+- a purely manual launch (no automated results or uploads) becomes `finished`;
+- the quality gate of a finished launch is evaluated again with the manual results, and notifications go out
+  with the event `manualRunClosed` (see [Notifications](notifications.md#events)).
+
+A combined launch that CI has not finished yet stays running; CI's finish evaluates the gate. A closed run
+refuses changes to its items (`409 manual_run_closed`) until someone with `plans:write` reopens it
+(`POST $api/launches/$launch/manual/reopen`). The launch's `manual` object shows the state and the counts per
+status; the **Manual** tab shows progress by status and by assignee.
+
+`GET $api/launches/$launch/manual-report?format=csv|json` exports the run: case, version, status, steps,
+executor, times and defects. CSV cells that could start a spreadsheet formula are prefixed with `'`. The
+**Print report** button prints the same.
+
+## Manual results in history and gates
+
+A finished manual case becomes an ordinary result of the launch, so everything built on results works for it:
+launch counts, the case history, [quality gates](quality-gates.md), dashboards, compare and MCP.
+
+| Run item | Result status | Notes |
+|---|---|---|
+| `passed`, `failed`, `skipped` | the same | |
+| `blocked` | `broken` | The check could not be carried out, which is not a product failure, but gates count it like any broken result (metric `broken`); the original status stays on the run item and in the label `manualStatus` |
+
+A manual result carries the labels `manual=true`, `case=TC-12`, `executedBy` and `manualStatus`; its steps,
+actual results and attachments show in the usual step tree. Result lists and the launch tree filter by
+`source=manual` or `source=automated`, and manual results are marked with a hand icon. Manual results never
+count towards flaky tests.
+
+## Retention
+
+Manual runs are evidence for quality audits, so by default they are kept forever. The project setting
+`retention.manualDays` changes that:
+
+```sh
+curl -fsS -X PUT "$api/settings" -H "$auth" -H 'Content-Type: application/json' \
+  -d '{"retention":{"rawDays":90,"keepImportant":true,"manualDays":730}}'
+```
+
+- `manualDays: 0` (the default) keeps launches with a manual run forever. A value from 1 to 36 500 deletes
+  launches whose manual run is closed and that were created more than that many days ago.
+- `rawDays` and `launchesKeep` never delete a launch with a manual run, and an open manual run is never
+  deleted.
+- The monthly history rollup keeps launches with a manual run, their run items and step results; the
+  recorded results of that month are rolled up into the history like all others.
+
+`retention` is replaced as a whole like every settings area, so send `manualDays` together with the other
+retention values.
+
+## Permissions
+
+| Permission | Allows | Roles |
+|---|---|---|
+| `cases:read` | Read plans | `viewer`, `tester`, `uploader`, `editor` |
+| `plans:write` | Create, change, sync and archive plans; reopen a closed manual run | `editor` |
+| `runs:execute` | Start launches from plans, add run items, execute and close manual runs, quick defects on own items | `tester`, `editor` |
+| `launches:read` | Read run items, reports and `testplan.json` | every role |
+
+The `tester` role (`projects:read`, `launches:read`, `cases:read`, `runs:execute`) fits people who execute
+runs but do not edit cases or plans. Plan changes, run starts, final statuses, defects, assignee changes and
+closing or reopening a run are written to the audit log (`testPlan.*`, `run.start`, `runItem.update`,
+`manualRun.*`); clicks on single steps are not, they carry who and when on the step result.

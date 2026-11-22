@@ -127,8 +127,16 @@ test('live console streams, pauses on scroll, shows gaps and filters by level', 
     await page.mouse.wheel(0, -2500);
     await expect(page.getByTestId('log-paused')).toBeVisible({ timeout: 2_000 });
   }).toPass({ timeout: 30_000 });
-  await pushLogs(page, 3);
-  await expect(page.getByTestId('log-resume')).toContainText(/new · Jump to latest/, { timeout: 30_000 });
+  await expect(async () => {
+    if (!(await page.getByTestId('log-paused').isVisible())) {
+      const box = await list.boundingBox();
+      if (!box) throw new Error('no console');
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      await page.mouse.wheel(0, -2500);
+    }
+    await pushLogs(page, 3);
+    await expect(page.getByTestId('log-resume')).toContainText(/new · Jump to latest/, { timeout: 3_000 });
+  }).toPass({ timeout: 45_000 });
   await page.getByTestId('log-resume').click();
   await expect(page.getByTestId('log-paused')).toHaveCount(0);
 

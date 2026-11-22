@@ -91,6 +91,7 @@ export interface ResultFilters {
   label?: string;
   flaky?: boolean;
   fingerprint?: string;
+  source?: string;
 }
 
 export type TreeGroupBy = 'suite' | 'feature' | 'package';

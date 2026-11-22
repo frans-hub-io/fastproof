@@ -251,6 +251,7 @@ pub async fn ingest(
     let project = s.project_for(&auth, &key, &s.perms.launches_write).await?;
     let launch = s.launch_of(&project, id).await?;
     identity_encoding(&req)?;
+    s.note_plan_contributor(&auth, &project, &launch).await?;
     let ct = req
         .headers()
         .get(header::CONTENT_TYPE)

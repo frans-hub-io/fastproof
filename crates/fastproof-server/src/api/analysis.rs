@@ -563,7 +563,7 @@ pub async fn get_settings(
 
 #[utoipa::path(put, path = "/api/v1/projects/{key}/settings", tag = "analysis", operation_id = "analysis_put_settings",
     request_body(content = ProjectSettings, description = "The areas to change. Each top-level area present in the body \
-        (`flaky`, `retention`, `rollup`, `gates`, `notifications`, `issueTrackers`, `fastmock`, `vcs`) replaces the stored \
+        (`flaky`, `retention`, `rollup`, `caseSync`, `gates`, `notifications`, `issueTrackers`, `fastmock`, `vcs`) replaces the stored \
         one as a whole; areas left out are kept; `null` resets an area to its default (removes it). The answer is the \
         whole stored document."),
     params(("key" = String, Path)),

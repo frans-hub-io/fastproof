@@ -142,7 +142,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** @description One level of the folder tree (`parent` absent = top level), by position and name, with the counts of the cases (not archived) in each folder and its subfolders. */
+        /** @description One level of the folder tree (`parent` absent = top level), by position and name, with the counts of the cases (not archived) in each folder and its subfolders. `all=true` answers the whole tree at once, parents before children (by depth, then position and name), at most `maxFolders` folders (`truncated` when there are more). */
         get: operations["list_case_folders"];
         put?: never;
         post: operations["create_case_folder"];
@@ -418,6 +418,23 @@ export interface paths {
         put?: never;
         /** @description Takes a case out of the trash. */
         post: operations["restore_case"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/cases/{n}/review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Marks a case an AI agent created as reviewed: clears `aiUnreviewed` (no new version). Audited as `case.review`; a case that is already reviewed is returned unchanged. */
+        post: operations["review_case"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1655,7 +1672,13 @@ export interface components {
             html: components["schemas"]["CaseHtml"];
             /** Format: uuid */
             id: string;
+            /** @description The first 100 identities (manual first, then the newest seen). */
             identities: components["schemas"]["CaseIdentity"][];
+            /**
+             * Format: int64
+             * @description How many identities the case has (`identities` may hold fewer).
+             */
+            identitiesTotal: number;
             keys: components["schemas"]["CaseKey"][];
             name: string;
             /** Format: int64 */
@@ -1801,9 +1824,11 @@ export interface components {
             /** Format: int64 */
             folders: number;
         };
-        /** @description `{items}` of folders of one level. */
+        /** @description `{items}` of folders of one level, or of the whole tree with `all=true`. */
         CaseFolderList: {
             items: components["schemas"]["CaseFolder"][];
+            /** @description With `all=true`: the project has more folders than `maxFolders` and the list stops there. */
+            truncated?: boolean | null;
         };
         /** @description Body of `PATCH /case-folders/{id}`: rename, reorder, or move (`parentId`, `null` = root). */
         CaseFolderPatch: {
@@ -5055,6 +5080,8 @@ export interface operations {
             query?: {
                 /** @description The folder whose children are listed; absent lists the top level. */
                 parent?: string;
+                /** @description `true`: the whole tree in one answer (parents first, at most `maxFolders`); not with `parent`. */
+                all?: boolean;
             };
             header?: never;
             path: {
@@ -6330,6 +6357,63 @@ export interface operations {
                 };
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    review_case: {
+        parameters: {
+            query?: never;
+            header: {
+                "If-Match": string;
+            };
+            path: {
+                key: string;
+                n: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Case"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            428: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -9906,7 +9990,7 @@ export interface operations {
             };
             cookie?: never;
         };
-        /** @description The areas to change. Each top-level area present in the body (`flaky`, `retention`, `rollup`, `gates`, `notifications`, `issueTrackers`, `fastmock`, `vcs`) replaces the stored one as a whole; areas left out are kept; `null` resets an area to its default (removes it). The answer is the whole stored document. */
+        /** @description The areas to change. Each top-level area present in the body (`flaky`, `retention`, `rollup`, `caseSync`, `gates`, `notifications`, `issueTrackers`, `fastmock`, `vcs`) replaces the stored one as a whole; areas left out are kept; `null` resets an area to its default (removes it). The answer is the whole stored document. */
         requestBody: {
             content: {
                 "application/json": components["schemas"]["ProjectSettings"];

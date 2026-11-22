@@ -41,6 +41,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(start_case_backfill))
         .routes(routes!(get_case, update_case, patch_case, archive_case))
         .routes(routes!(restore_case))
+        .routes(routes!(review_case))
         .routes(routes!(list_case_versions))
         .routes(routes!(get_case_version))
         .routes(routes!(restore_case_version))
@@ -66,24 +67,7 @@ pub fn case_number(s: &str) -> ApiResult<i64> {
         .ok_or_else(|| ApiError::not_found("case"))
 }
 
-/// The revision of `If-Match: "r<revision>"`: missing is 428 `precondition_required`; a value
-/// that names no revision never matches (412).
-pub fn if_match(h: &HeaderMap) -> ApiResult<i64> {
-    let Some(v) = h.get(header::IF_MATCH) else {
-        return Err(ApiError::new(
-            StatusCode::PRECONDITION_REQUIRED,
-            "precondition_required",
-            "send If-Match with the ETag of the case",
-        ));
-    };
-    let v = v.to_str().unwrap_or("").trim();
-    let v = v.strip_prefix("W/").unwrap_or(v);
-    let v = v.trim_matches('"');
-    Ok(v.strip_prefix('r')
-        .and_then(|r| r.parse::<i64>().ok())
-        .filter(|r| *r > 0)
-        .unwrap_or(-1))
-}
+pub use super::if_match;
 
 /// `ETag: "r<revision>"`.
 pub fn etag(revision: i64) -> [(header::HeaderName, HeaderValue); 1] {
@@ -396,6 +380,38 @@ pub async fn patch_case(
         .map_err(tm_error)?;
     for (action, detail) in audit_change(&before, &after) {
         s.audit(&auth, action, Some(&p.key), detail).await;
+    }
+    reply(&s, &p, &after).await
+}
+
+#[utoipa::path(post, path = "/api/v1/projects/{key}/cases/{n}/review", tag = "cases", operation_id = "review_case",
+    description = "Marks a case an AI agent created as reviewed: clears `aiUnreviewed` (no new version). Audited as \
+        `case.review`; a case that is already reviewed is returned unchanged.",
+    params(("key" = String, Path), ("n" = i64, Path), ("If-Match" = String, Header)),
+    responses((status = 200, body = Case, headers(("ETag" = String))), (status = 403, body = ErrorBody),
+        (status = 404, body = ErrorBody), (status = 412, body = ErrorBody), (status = 428, body = ErrorBody)))]
+pub async fn review_case(
+    State(s): State<AppState>,
+    auth: Auth,
+    headers: HeaderMap,
+    P((key, n)): P<(String, String)>,
+) -> ApiResult<CaseReply> {
+    let p = s.project_for(&auth, &key, &s.perms.cases_write).await?;
+    let n = case_number(&n)?;
+    let expected = if_match(&headers)?;
+    let (before, after) = s
+        .store
+        .mark_case_reviewed(&ctx(&s, &p, &auth), n, expected)
+        .await
+        .map_err(tm_error)?;
+    if before.ai_unreviewed {
+        s.audit(
+            &auth,
+            "case.review",
+            Some(&p.key),
+            serde_json::json!({"number": after.number}),
+        )
+        .await;
     }
     reply(&s, &p, &after).await
 }

@@ -1329,6 +1329,15 @@ pub async fn case_view(conn: &mut PgConnection, project_id: Uuid, row: &CaseRow)
         None => None,
     };
     let identities = case_identities(conn, project_id, row.id).await?;
+    let identities_total = if (identities.len() as i64) < MAX_CASE_IDENTITIES {
+        identities.len() as i64
+    } else {
+        sqlx::query_scalar("select count(*) from test_cases where project_id = $1 and case_id = $2")
+            .bind(project_id)
+            .bind(row.id)
+            .fetch_one(&mut *conn)
+            .await?
+    };
     let keys = case_keys(conn, row.id).await?;
     let code_owned = if row.automated {
         code_owned_keys(conn, project_id).await?
@@ -1350,6 +1359,7 @@ pub async fn case_view(conn: &mut PgConnection, project_id: Uuid, row: &CaseRow)
         tags: row.tags.clone(),
         code_owned,
         identities,
+        identities_total,
         keys,
         revision: row.revision,
         version: row.version,
@@ -1599,6 +1609,41 @@ impl Store {
         apply_patch(&mut snap, p);
         let w = write_of(&snap);
         let row = update_case_in(&mut tx, ctx, &cur, &w, VersionSource::Ui).await?;
+        tx.commit().await?;
+        Ok((cur, row))
+    }
+
+    /// Clears `ai_unreviewed` of a case whose revision is `expected` ("Reviewed"); `revision + 1`,
+    /// no version (the content did not change). Returns the case before and after; a case that
+    /// is already reviewed is returned unchanged.
+    pub async fn mark_case_reviewed(
+        &self,
+        ctx: &CaseCtx<'_>,
+        n: i64,
+        expected: i64,
+    ) -> TmResult<(CaseRow, CaseRow)> {
+        let mut tx = self.pool.begin().await?;
+        let cur = lock_case_by_number(&mut tx, ctx.project_id, n, Some(expected)).await?;
+        if !cur.ai_unreviewed {
+            return Ok((cur.clone(), cur));
+        }
+        let r = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "update cases set ai_unreviewed = false, revision = revision + 1, updated_by = $3, \
+             updated_at = now() where id = $1 and project_id = $2 returning {CASE_COLS}"
+        )))
+        .bind(cur.id)
+        .bind(ctx.project_id)
+        .bind(no_nul(ctx.by))
+        .fetch_one(&mut *tx)
+        .await?;
+        let row = case_row(&r)?;
+        case_event(
+            &mut tx,
+            ctx.project_key,
+            "case.updated",
+            json!({"number": row.number, "revision": row.revision, "source": "ui"}),
+        )
+        .await?;
         tx.commit().await?;
         Ok((cur, row))
     }

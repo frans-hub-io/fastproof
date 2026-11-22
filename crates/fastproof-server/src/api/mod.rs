@@ -194,6 +194,26 @@ fn with_details(e: ApiError, details: Option<serde_json::Value>) -> ApiError {
     }
 }
 
+/// The revision an `If-Match: "r<revision>"` header names (also `W/"r<n>"`): missing is 428
+/// `precondition_required`; a value that names no revision (`*`, `"r0"`, garbage) is `-1`, which
+/// matches nothing, so the store answers 412. Revisions start at 1.
+pub fn if_match(h: &axum::http::HeaderMap) -> ApiResult<i64> {
+    let Some(v) = h.get(axum::http::header::IF_MATCH) else {
+        return Err(ApiError::new(
+            axum::http::StatusCode::PRECONDITION_REQUIRED,
+            "precondition_required",
+            "send If-Match with the ETag of the resource",
+        ));
+    };
+    let v = v.to_str().unwrap_or_default().trim();
+    let v = v.strip_prefix("W/").unwrap_or(v);
+    Ok(v.trim_matches('"')
+        .strip_prefix('r')
+        .and_then(|r| r.parse::<i64>().ok())
+        .filter(|r| *r > 0)
+        .unwrap_or(-1))
+}
+
 /// Page size from `limit`.
 pub fn page_limit(limit: Option<i64>) -> ApiResult<i64> {
     match limit {
@@ -242,6 +262,28 @@ impl AppState {
             .ok_or_else(|| ApiError::not_found("launch"))
     }
 
+    /// An upload or results batch into a launch started from a plan, by a caller with
+    /// `cases:sync` in the project: the launch becomes trusted for code sync
+    /// (`Store::join_plan_launch`). Nothing for other launches.
+    pub async fn note_plan_contributor(
+        &self,
+        auth: &Auth,
+        project: &Project,
+        launch: &Launch,
+    ) -> ApiResult<()> {
+        if launch.test_plan_id.is_some()
+            && auth
+                .principal
+                .denial(&self.perms.cases_sync, Some(&project.key))
+                .is_none()
+        {
+            self.store
+                .join_plan_launch(project.id, launch.id, None)
+                .await?;
+        }
+        Ok(())
+    }
+
     pub async fn audit(
         &self,
         auth: &Auth,
@@ -257,5 +299,40 @@ impl AppState {
                 detail,
             ))
             .await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+
+    use super::if_match;
+
+    #[test]
+    fn if_match_is_one_rule_for_cases_plans_and_runs() {
+        let header_of = |v: &str| {
+            let mut h = HeaderMap::new();
+            h.insert(header::IF_MATCH, HeaderValue::from_str(v).unwrap());
+            h
+        };
+        for (v, want) in [
+            ("\"r1\"", 1),
+            ("W/\"r7\"", 7),
+            ("r3", 3),
+            ("\"r0\"", -1),
+            ("\"r-2\"", -1),
+            ("*", -1),
+            ("\"x\"", -1),
+            ("\"r\"", -1),
+        ] {
+            let h = header_of(v);
+            assert_eq!(if_match(&h).unwrap(), want, "{v}");
+            assert_eq!(super::cases::if_match(&h).unwrap(), want, "cases {v}");
+            assert_eq!(super::plans::if_match(&h).unwrap(), want, "plans {v}");
+        }
+        assert_eq!(
+            if_match(&HeaderMap::new()).unwrap_err().status(),
+            StatusCode::PRECONDITION_REQUIRED
+        );
     }
 }

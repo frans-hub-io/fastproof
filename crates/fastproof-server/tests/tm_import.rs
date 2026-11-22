@@ -1418,3 +1418,82 @@ async fn cli_cases_export_and_import() {
         case(&s, "cli-a", 2).await["body"]
     );
 }
+
+fn tm_job_files(s: &Server) -> Vec<std::path::PathBuf> {
+    let root = s.dir.path().join("blobs").join("tm-jobs");
+    let mut out = Vec::new();
+    for d in std::fs::read_dir(&root).into_iter().flatten().flatten() {
+        for f in std::fs::read_dir(d.path()).into_iter().flatten().flatten() {
+            out.push(f.path());
+        }
+    }
+    out
+}
+
+#[tokio::test]
+async fn deleting_a_project_removes_its_job_files() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = Server::start(&db).await;
+    s.project("gone").await;
+    s.project("kept").await;
+    for key in ["gone", "kept"] {
+        let (st, j) = start_import(
+            &s,
+            key,
+            ADMIN_TOKEN,
+            &fixture("testrail-cells.csv"),
+            "c.csv",
+            testrail_options("createOnly"),
+            None,
+        )
+        .await;
+        assert_eq!(st, StatusCode::ACCEPTED, "{j}");
+        wait_job(&s, key, j["id"].as_str().unwrap(), &["ready"]).await;
+    }
+    s.post(
+        "/api/v1/projects/gone/cases",
+        ADMIN_TOKEN,
+        json!({"name": "x", "body": {}}),
+    )
+    .await;
+    let (_, e) = s
+        .post(
+            "/api/v1/projects/gone/cases/exports",
+            ADMIN_TOKEN,
+            json!({"format": "zip"}),
+        )
+        .await;
+    wait_job(&s, "gone", e["id"].as_str().unwrap(), &["done"]).await;
+    let before = tm_job_files(&s);
+    assert_eq!(
+        before.len(),
+        3,
+        "two import sources and one export: {before:?}"
+    );
+    let (st, _) = s
+        .call(
+            Method::DELETE,
+            "/api/v1/projects/gone",
+            Some(ADMIN_TOKEN),
+            None,
+        )
+        .await;
+    assert!(st.is_success(), "{st}");
+    sqlx::query("update scheduled_jobs set next_run_at = now() where name = 'projects.purge'")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let left = tm_job_files(&s);
+        if left.len() == 1 {
+            break;
+        }
+        assert!(Instant::now() < deadline, "job files left: {left:?}");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let (st, _) = s.get("/api/v1/projects/kept/cases", ADMIN_TOKEN).await;
+    assert_eq!(st, StatusCode::OK);
+}

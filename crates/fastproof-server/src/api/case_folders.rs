@@ -8,7 +8,7 @@ use fastproof_store::tm::{
     CaseFolder, CaseFolderList, CaseFolderPatch, CaseFolderWrite, FolderDeleteMode,
 };
 use franshub_auth::Auth;
-use franshub_http::{ApiJson, ApiResult};
+use franshub_http::{ApiError, ApiJson, ApiResult};
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 use utoipa_axum::router::OpenApiRouter;
@@ -31,6 +31,8 @@ pub fn router() -> OpenApiRouter<AppState> {
 pub struct FolderLevelQuery {
     /// The folder whose children are listed; absent lists the top level.
     pub parent: Option<Uuid>,
+    /// `true`: the whole tree in one answer (parents first, at most `maxFolders`); not with `parent`.
+    pub all: Option<bool>,
 }
 
 /// Query of `DELETE /case-folders/{id}`.
@@ -52,7 +54,8 @@ pub struct CaseFolderDeleted {
 
 #[utoipa::path(get, path = "/api/v1/projects/{key}/case-folders", tag = "cases", operation_id = "list_case_folders",
     description = "One level of the folder tree (`parent` absent = top level), by position and name, with the counts of \
-        the cases (not archived) in each folder and its subfolders.",
+        the cases (not archived) in each folder and its subfolders. `all=true` answers the whole tree at once, parents \
+        before children (by depth, then position and name), at most `maxFolders` folders (`truncated` when there are more).",
     params(("key" = String, Path), FolderLevelQuery),
     responses((status = 200, body = CaseFolderList), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),
         (status = 404, body = ErrorBody)))]
@@ -63,12 +66,32 @@ pub async fn list_case_folders(
     Q(q): Q<FolderLevelQuery>,
 ) -> ApiResult<Json<CaseFolderList>> {
     let p = s.project_for(&auth, &key, &s.perms.cases_read).await?;
+    if q.all == Some(true) {
+        if q.parent.is_some() {
+            return Err(ApiError::bad_request(
+                "all=true lists the whole tree: leave out parent",
+            ));
+        }
+        let _permit = s.guards.heavy(&auth).await?;
+        let (items, truncated) = s
+            .store
+            .case_folder_tree(p.id, s.cfg.tm.max_folders)
+            .await
+            .map_err(tm_error)?;
+        return Ok(Json(CaseFolderList {
+            items,
+            truncated: Some(truncated),
+        }));
+    }
     let items = s
         .store
         .case_folder_level(p.id, q.parent)
         .await
         .map_err(tm_error)?;
-    Ok(Json(CaseFolderList { items }))
+    Ok(Json(CaseFolderList {
+        items,
+        truncated: None,
+    }))
 }
 
 #[utoipa::path(post, path = "/api/v1/projects/{key}/case-folders", tag = "cases", operation_id = "create_case_folder",

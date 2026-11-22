@@ -1,0 +1,6 @@
+ID,Title,Section,Preconditions,Steps (Step),Steps (Expected Result),Priority,Type
+C9001,Refund a paid order,Payments > Refunds,A paid order,Open the order and press Refund,The refund is offered,High,Functional
+,,,,Confirm the refund,The order shows Refunded,,
+C9002,Partial refund of one item,Payments > Refunds,A paid order with two items,Refund one item,The other item stays paid,Urgent,Functional
+C9003,,Payments > Refunds,,Open the refunds list,The list loads,Low,Functional
+C9004,Refund to a gift card,Payments > Refunds,A gift card order,Refund the order,The gift card balance grows,Medium,Functional

@@ -183,6 +183,20 @@ Limits of `POST /api/v1/projects/{key}/launches/{id}/logs` (see [Live logs](../g
 A message over the line limit is cut at a character boundary and ends with ` …[truncated]`; the line is
 stored. A request over the line-count, request or per-launch limit gets `413` naming the limit.
 
+## Test management
+
+Limits of test cases, plans, manual runs and imports are set with `FASTPROOF_TM_<NAME>` variables, for example
+`FASTPROOF_TM_MAX_FOLDERS=50000`. Every variable, its default and its maximum are listed in
+[Limits](limits.md#test-management). Code sync and the backfill of cases run on the replicas with the
+`scheduler` role (jobs `cases.sync` and `cases.backfill`). Import and export jobs start on the replica that
+received the request and are picked up by the job `cases.jobs` (also on `scheduler` replicas) when that replica
+is busy or stopped; their files are kept in the blob store under `tm-jobs/` until the job is over (exports: 24
+hours).
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `FASTPROOF_TESTOPS_ALLOW_HTTP` | `false` | Allow `http` base URLs for imports from the Allure TestOps API; otherwise only `https`. The host must still be in `FASTPROOF_EGRESS_ALLOW`, and the import needs `FASTPROOF_SECRETS_KEY_FILE` |
+
 ## Access
 
 | Variable | Default | Meaning |
@@ -298,7 +312,8 @@ lists every option.
 | `launch start` | Start a launch, or join the one with the same external id, and print its id |
 | `launch finish` | Wait for queued and processing uploads of the launch (`--timeout`, default 600 s; `--no-wait` skips it and reports how many are pending), finish it and print its counts |
 | `gate` | Print the quality gate of a launch; exit `0` passed, `1` failed, `2` error or still pending (`--wait 10m` waits while it is pending) |
-| `testplan` | Print an Allure `testplan.json` of chosen tests, for example the failed ones of a launch (`--from-launch <id> --status failed,broken`), so Allure adapters and the FastProof reporters run only those |
+| `testplan` | Print an Allure `testplan.json` of chosen tests, so Allure adapters and the FastProof reporters run only those: the failed ones of a launch (`--from-launch <id> --status failed,broken`), the automated cases of a [test plan](../guide/manual-runs.md) (`--plan <id>`) or of a launch started from one (`--launch <externalId>`) |
+| `cases export`, `cases import` | Export test cases as CSV or NDJSON (`--format`, `--out`); import a file, as a dry run unless `--apply` is given (see [Importing test cases](../guide/importing-test-cases.md)) |
 | `bench` | Generate launches, results and log lines against a server and measure throughput and end-to-end lag (see [Scaling](scaling.md)) |
 | `version` | Print the version |
 

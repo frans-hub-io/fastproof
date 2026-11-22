@@ -62,12 +62,82 @@ See [Live logs](../guide/live-logs.md) for the log fields.
 | Dashboard days | years 1970 to 9999, window at most 3660 days | 400 |
 | Log search window | default 7 days before `to`, at most 31 days | 400 |
 | `q` and text filters of result and launch lists | 256 bytes | 400 |
-| Test plans per project | 1000; plans are deleted 90 days after creation | 429 |
+| Test plans made from launches or test ids (`fastproof testplan --from-launch`) per project | 1000; deleted 90 days after creation. [Managed plans](../guide/manual-runs.md) do not count and do not expire | 429 |
 | Stored log chunk | 1000 lines and 1 MiB | — |
 | Live log subscriber queue | 2000 lines and 1 MiB; older lines are dropped and reported as `gap` | a subscriber that reads nothing for 60 s while its queue overflows is disconnected |
 | ClickHouse search query | 30 s, 2 GiB memory | 503 |
 | OpenSearch search | 30 s | 503 |
 | SQL statement of a heavy read | `FASTPROOF_DATABASE_STATEMENT_TIMEOUT_SECONDS` | 503 `timeout` |
+
+## Test management
+
+[Test cases](../guide/test-management.md), [plans and manual runs](../guide/manual-runs.md) and
+[imports](../guide/importing-test-cases.md) have limits of their own. Each is a server setting
+`FASTPROOF_TM_<NAME>`; a value outside `1` to the maximum stops the server at start with a message naming
+the variable. Counts answer `409 limit_reached` with `details` `{"limit", "max"}` (for example
+`{"limit": "maxFolders", "max": 20000}`), sizes of uploaded files `413 payload_too_large`, Markdown fields
+over their size `400 invalid_markdown` with the field's `path`, and names `400`.
+
+| Variable | Default | Maximum | Limit |
+|---|---|---|---|
+| `FASTPROOF_TM_MAX_STEPS` | `500` | 10 000 | Steps of one case, all levels counted |
+| `FASTPROOF_TM_MAX_STEP_DEPTH` | `3` | 10 | Nesting levels of steps |
+| `FASTPROOF_TM_MAX_MARKDOWN_BYTES` | `16384` (16 KiB) | 1 MiB | One Markdown field: description, preconditions, a step's action, expected result or data, a run comment or actual result |
+| `FASTPROOF_TM_MAX_BODY_BYTES` | `1048576` (1 MiB) | 16 MiB | The whole content of a case |
+| `FASTPROOF_TM_MAX_ATTACHMENT_BYTES` | `52428800` (50 MiB) | 4 GiB | One attachment of a case or of a manual step result |
+| `FASTPROOF_TM_MAX_CASE_ATTACHMENTS` | `100` | 10 000 | Attachments a case has had, over all its versions |
+| `FASTPROOF_TM_MAX_STEP_ATTACHMENTS` | `20` | 1000 | Attachments of one step result in a manual run, and of one step of a case |
+| `FASTPROOF_TM_MAX_FIELDS` | `100` | 1000 | Custom fields per project, built-in ones included |
+| `FASTPROOF_TM_MAX_FIELD_OPTIONS` | `1000` | 10 000 | Options of one select or multiselect field |
+| `FASTPROOF_TM_MAX_FOLDERS` | `20000` | 1 000 000 | Folders per project |
+| `FASTPROOF_TM_MAX_FOLDER_DEPTH` | `10` | 100 | Folder levels (the top level is 1) |
+| `FASTPROOF_TM_MAX_CASES` | `200000` | 10 000 000 | Cases per project, the trash included |
+| `FASTPROOF_TM_MAX_PLAN_CASES` | `50000` | 1 000 000 | Cases of one test plan |
+| `FASTPROOF_TM_MAX_RUN_ITEMS` | `50000` | 1 000 000 | Run items (manual cases) of one launch |
+| `FASTPROOF_TM_MAX_BULK` | `10000` | 100 000 | Cases of one bulk change, plan change or run item request |
+| `FASTPROOF_TM_MAX_IMPORT_BYTES` | `104857600` (100 MiB) | 16 GiB | An imported CSV or JSON file |
+| `FASTPROOF_TM_MAX_IMPORT_ZIP_BYTES` | `2147483648` (2 GiB) | 64 GiB | Byte budget of the attachments zip of an import, after decompression |
+| `FASTPROOF_TM_MAX_IMPORT_ROWS` | `200000` | 10 000 000 | Rows of an imported file |
+| `FASTPROOF_TM_MAX_IMPORT_CELL_BYTES` | `65536` (64 KiB) | 16 MiB | One cell of an imported CSV file |
+| `FASTPROOF_TM_MAX_TAGS` | `50` | 1000 | Tags of one case (each at most 100 bytes) |
+| `FASTPROOF_TM_MAX_NAME_BYTES` | `500` | 4096 | Names of cases, folders, fields and plans |
+
+`FASTPROOF_TM_BACKFILL_DELAY` (default `10m`, at most `30d`; `0`, seconds, or a number with `s`, `m`, `h` or
+`d`) is how long after the upgrade the [backfill of cases](../guide/test-management.md#after-an-upgrade-cases-for-existing-tests)
+waits before it decides per project; projects with code sync off by then are skipped.
+
+How an import answers when it hits a limit:
+
+| Limit | Answer |
+|---|---|
+| `FASTPROOF_TM_MAX_IMPORT_BYTES`, `FASTPROOF_TM_MAX_IMPORT_ZIP_BYTES` (upload) | `413 payload_too_large` when the file is sent |
+| `FASTPROOF_TM_MAX_IMPORT_ROWS`, columns (500), JSON nesting (64), a file that cannot be read | the job ends `failed` with one report error at row 0: `limit_reached` (`maxImportRows`, `maxColumns`, `maxJsonDepth`, `maxImportBytes`) or `invalid_file` |
+| `FASTPROOF_TM_MAX_IMPORT_CELL_BYTES`, an unreadable row | a report error of that row, `invalid_row`; the other rows are imported |
+| steps, step depth, tags, folder depth, `FASTPROOF_TM_MAX_CASES` | a report error of the case, `limit_reached` |
+| Markdown of one field over `FASTPROOF_TM_MAX_MARKDOWN_BYTES` | a report error of the case, `invalid_markdown` |
+| attachment zip over its uncompressed budget, unsafe entry paths | the apply ends `failed` (`invalid_file`); nothing of that batch is applied |
+| another import of the project running | `409 import_busy` |
+| streamed export over 50 000 cases | `409 limit_reached` (`maxExportCases`) |
+
+Fixed limits that are not settings:
+
+| Limit | Value |
+|---|---|
+| Imports running at the same time | 1 per project, 4 per installation |
+| Columns of an imported CSV file | 500 |
+| Nesting of an imported JSON file | 64 levels |
+| TestOps API import | 16 MiB per response, 30 s per request, 10 000 pages |
+| Streamed export (`GET .../cases/export`) | 50 000 cases |
+| Markdown preview (`POST .../markdown/preview`) | 64 KiB |
+| Links of a case | 100, URLs up to 2048 bytes |
+| Identities listed with one case | 100, the most recently seen (`identitiesTotal` counts all) |
+| Folders in one `GET .../case-folders?all=true` | `FASTPROOF_TM_MAX_FOLDERS` (`truncated: true` beyond) |
+| Trusted branch patterns of code sync | 50, each up to 200 bytes |
+| Values in one case filter (plans, bulk changes) | 1000 |
+| Step path of a manual step result | 64 bytes (`1.2.3`) |
+
+Bulk changes, imports, exports, manual run reports, the whole folder tree and the Markdown preview count as heavy requests
+(`FASTPROOF_HEAVY_QUERIES_PER_CALLER`, see [Request guards](configuration.md#request-guards)).
 
 ## Other protections
 

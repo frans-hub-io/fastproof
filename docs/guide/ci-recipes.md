@@ -9,6 +9,10 @@ The `fastproof` binary is the server and the CLI. In CI it needs three settings,
 | `FASTPROOF_PROJECT` | Project key, for example `web` |
 | `FASTPROOF_LAUNCH` | Optional external launch id; jobs with the same id report into one launch |
 
+The `uploader` role also lets launches of trusted branches update [test cases](test-management.md#code-sync)
+from code. For merge request and fork pipelines, use a token whose role lacks `cases:sync` (see
+[Trusted launches](test-management.md#trusted-launches)).
+
 The CLI detects CI metadata (pipeline, job, URL, branch, commit) from the standard variables of GitLab CI,
 GitHub Actions and Jenkins, so launches link back to the pipeline and history is filtered per branch.
 `--no-ci` (or `FASTPROOF_NO_CI=true`) ignores those variables, for example when a job reports into a launch of

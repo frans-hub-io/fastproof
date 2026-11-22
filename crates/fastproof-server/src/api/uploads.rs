@@ -36,11 +36,12 @@ pub struct UploadList {
 
 /// The `payload_too_large` error naming the limit.
 pub fn too_large(limit: &str, max: u64) -> ApiError {
-    let unit = if limit.contains("bytes") {
+    let name = limit.to_ascii_lowercase();
+    let unit = if name.contains("bytes") {
         "bytes"
-    } else if limit.contains("lines") {
+    } else if name.contains("lines") {
         "lines"
-    } else if limit.contains("results") {
+    } else if name.contains("results") {
         "results"
     } else {
         "items"
@@ -112,6 +113,7 @@ pub async fn create(
     let launch = s.launch_of(&project, id).await?;
     let format = normalize_format(q.format.as_deref())?;
     identity_encoding(&req)?;
+    s.note_plan_contributor(&auth, &project, &launch).await?;
     let _spool = s.guards.spool().await?;
     let mut file_name = q.file_name.as_deref().and_then(clean_file_name);
     let upload_id = Uuid::now_v7();
@@ -261,6 +263,21 @@ pub async fn list(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn too_large_names_the_unit_of_the_limit() {
+        for (limit, unit) in [
+            ("max_upload_bytes", "bytes"),
+            ("maxAttachmentBytes", "bytes"),
+            ("maxImportZipBytes", "bytes"),
+            ("max_lines_per_request", "lines"),
+            ("maxResults", "results"),
+            ("maxRunItems", "items"),
+        ] {
+            let msg = too_large(limit, 5).body().message.clone();
+            assert!(msg.ends_with(&format!("(max 5 {unit})")), "{limit}: {msg}");
+        }
+    }
 
     #[test]
     fn file_names() {

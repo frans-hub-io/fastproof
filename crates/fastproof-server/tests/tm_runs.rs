@@ -1214,7 +1214,8 @@ async fn partition_drop_keeps_a_closed_manual_launch() {
         return;
     };
     let s = Server::start(&db).await;
-    db.hold_jobs(&["history.rollup", "retention.apply"]).await;
+    db.hold_jobs(&["history.rollup", "retention.apply", "partitions.ensure"])
+        .await;
     s.project("pd").await;
     let p = pid(&db, "pd").await;
     let store = fastproof_store::Store::new(db.pool.clone());

@@ -178,6 +178,19 @@ async fn upgrade_then_backfill_creates_cases_once() {
         pool: db.pool.clone(),
         project,
     };
+    let opted_out = Uuid::now_v7();
+    sqlx::query("insert into projects (id, key, name) values ($1, 'optout', 'Opted out')")
+        .bind(opted_out)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let other = Stage1 {
+        pool: db.pool.clone(),
+        project: opted_out,
+    };
+    let other_launch = other.launch(1, "main", false).await;
+    let other_ident = other.identity("shop.B#one", "one", 3, None).await;
+    other.result(other_launch, other_ident, "one", "shop").await;
     let main = st.launch(1, "main", false).await;
     let feature = st.launch(2, "feature/x", false).await;
     let debug = st.launch(3, "main", true).await;
@@ -208,11 +221,61 @@ async fn upgrade_then_backfill_creates_cases_once() {
     );
     let store = Store::new(db.pool.clone());
     assert!(store.tm_upgrade_at().await.unwrap().is_some());
-    assert_eq!(store.enqueue_upgrade_backfills().await.unwrap(), 1);
+    let jobs = || async {
+        sqlx::query_as::<_, (String, String, serde_json::Value)>(
+            "select p.key, j.status, j.params from tm_jobs j join projects p on p.id = j.project_id \
+             where j.kind = 'backfill' order by p.key",
+        )
+        .fetch_all(&db.pool)
+        .await
+        .unwrap()
+    };
+    let hour = Duration::from_secs(3600);
     assert_eq!(
-        store.enqueue_upgrade_backfills().await.unwrap(),
+        store.enqueue_upgrade_backfills(hour).await.unwrap(),
         0,
-        "once per project"
+        "the delay after the upgrade has not passed"
+    );
+    assert!(jobs().await.is_empty());
+    sqlx::query(
+        "update projects set settings = jsonb_set(coalesce(settings, '{}'), '{caseSync}', '{\"enabled\": false}') \
+         where id = $1",
+    )
+    .bind(opted_out)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        store
+            .enqueue_upgrade_backfills(Duration::ZERO)
+            .await
+            .unwrap(),
+        1
+    );
+    let decided = jobs().await;
+    assert_eq!(decided.len(), 2, "{decided:?}");
+    assert_eq!(
+        (decided[0].0.as_str(), decided[0].1.as_str()),
+        ("old", "queued")
+    );
+    assert_eq!(
+        (decided[1].0.as_str(), decided[1].1.as_str()),
+        ("optout", "cancelled"),
+        "caseSync off when the delay passed: skipped"
+    );
+    assert_eq!(decided[1].2["skipped"], true);
+    sqlx::query("update projects set settings = settings #- '{caseSync}' where id = $1")
+        .bind(opted_out)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .enqueue_upgrade_backfills(Duration::ZERO)
+            .await
+            .unwrap(),
+        0,
+        "once per project, also after turning caseSync back on"
     );
     let run = store
         .run_case_backfill("t", &TmLimits::default(), Duration::from_secs(60))
@@ -307,6 +370,12 @@ async fn upgrade_then_backfill_creates_cases_once() {
         .await
         .unwrap();
     assert_eq!(none.job, None);
+    let other_cases: i64 = sqlx::query_scalar("select count(*) from cases where project_id = $1")
+        .bind(opted_out)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(other_cases, 0, "the opted-out project got no cases");
 }
 
 /// Backfill throughput (run by hand: `cargo test -p fastproof-store --test tm_backfill --
@@ -370,7 +439,10 @@ async fn backfill_timing() {
     .unwrap();
     fastproof_store::migrate(&db.pool).await.unwrap();
     let store = Store::new(db.pool.clone());
-    store.enqueue_upgrade_backfills().await.unwrap();
+    store
+        .enqueue_upgrade_backfills(Duration::ZERO)
+        .await
+        .unwrap();
     let t = std::time::Instant::now();
     let mut created = 0;
     loop {

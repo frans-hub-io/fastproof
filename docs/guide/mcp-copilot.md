@@ -2,7 +2,7 @@
 
 FastProof serves the [Model Context Protocol](https://modelcontextprotocol.io/) at `/mcp`, so a coding agent
 in your editor (GitHub Copilot in VS Code, or any MCP client) can read launches, failures, logs and history,
-and, when allowed, triage failures and draft rules. The agent runs on your machine with your token; FastProof
+and, when allowed, triage failures, draft rules and draft test cases. The agent runs on your machine with your token; FastProof
 itself calls no AI service.
 
 ## Connect VS Code
@@ -45,6 +45,7 @@ folders start with a dot, so they are not part of this site):
 |---|---|
 | [`.vscode/mcp.json`](https://github.com/frans-hub-io/fastproof/blob/main/docs/examples/copilot/.vscode/mcp.json) | The server entry above |
 | [`.github/agents/fastproof-triage.agent.md`](https://github.com/frans-hub-io/fastproof/blob/main/docs/examples/copilot/.github/agents/fastproof-triage.agent.md) | A triage agent: finds the launch, works through the failure clusters, investigates one sample per cluster, proposes decisions and waits for your confirmation before it writes anything |
+| [`.github/agents/fastproof-cases.agent.md`](https://github.com/frans-hub-io/fastproof/blob/main/docs/examples/copilot/.github/agents/fastproof-cases.agent.md) | A test case agent: turns a failure or a Playwright trace into a draft manual regression case, fills steps from the trace, and proposes changes to existing cases for people to accept |
 | [`.github/prompts/fastproof-triage.prompt.md`](https://github.com/frans-hub-io/fastproof/blob/main/docs/examples/copilot/.github/prompts/fastproof-triage.prompt.md) | `/fastproof-triage project=<key> branch=<branch>`: triage the newest launch of a branch with that agent |
 | [`.github/prompts/fastproof-explain-failure.prompt.md`](https://github.com/frans-hub-io/fastproof/blob/main/docs/examples/copilot/.github/prompts/fastproof-explain-failure.prompt.md) | Explain why one result failed, using the logs, history, similar failures and the code in the workspace, without changing triage |
 
@@ -75,6 +76,41 @@ the audit log with `via: mcp`. Tool answers are bounded (256 KiB per answer, 64 
 Tools never return project secrets or notification targets; `fastmock_interactions` queries the project's
 FastMock with its token only when the token's secret is bound to the origin of `fastmock.url` (see
 [Project secrets](notifications.md#project-secrets)).
+
+### Test case tools
+The [test case](test-management.md) tools follow one rule: an agent writes only drafts and suggestions, and
+people decide.
+
+| Tool | Does | Needs |
+|---|---|---|
+| `search_cases` | Cases matching `q`, `folderId` (with subfolders), `statuses`, `automation`, `tags`, `fields`, `aiUnreviewed`; `limit` 1–100 (20); answers `{items, more}` | `cases:read` |
+| `get_case` | A case by `number`: steps (Markdown), fields, tags, keys, code identities, `revision`, `key` (`TC-n`) and the 10 latest results | `cases:read` |
+| `case_history` | Manual and automated results of a case (`branch`, `environment`, `source`, `limit` 1–100) | `cases:read` |
+| `list_test_plans`, `get_test_plan` | Managed test plans (`q`, `limit` 1–100); one plan by `planId` with its cases (`limit` 1–500) | `cases:read` |
+| `manual_run_progress` | The manual run of a launch (`launchId`): its counts and up to 50 failed or blocked items with their failed steps' actual results and comments | `launches:read` |
+| `trace_actions` | The actions of the Playwright trace of an attempt (`resultId`, `attempt`): `apiName`, `selector`, `url`, `status`, `error`, `durationMs`, at most 500 (`truncated` beyond); traces up to 256 MiB | `launches:read` |
+| `draft_case_from_result` | A draft case from a result (`resultId`, `attempt`): its name, preconditions from fixtures, steps from the step tree (3 levels), the failure message, a link to the result; the agent may give `name`, `notes`, `steps`, `folderId`, `tags` | `cases:write` |
+| `create_case_draft` | A draft case from the agent's `name`, `description`, `preconditions`, `steps`, `folderId`, `tags`, `fields` | `cases:write` |
+| `propose_case_update` | A suggestion for case `number` against `baseRevision` (`name`, `description`, `preconditions`, `steps`, `status`, `tags`, `fields`, a required `rationale`); validated like a case save, stored as pending, nothing applied; a moved revision answers `suggestion_stale` | `cases:write` |
+| `add_cases_to_plan` | Add case `numbers` (1–1000) to a managed plan (`planId`) | `plans:write` |
+
+Every write tool takes an optional `agent` (the agent's name, up to 100 bytes, recorded in the audit log).
+Errors come back as tool errors whose text starts with the API error code (`forbidden`, `not_found`,
+`invalid_case`, `suggestion_stale`, …).
+
+The server enforces the rules, whatever the agent asks for:
+
+- cases an agent creates are always `draft`, with `origin = ai`, and marked **AI draft** in the UI until a
+  person reviews them;
+- an agent cannot activate a case, change an active case directly, accept a suggestion or execute manual
+  steps; changes to existing cases arrive as suggestions on the case page, to accept or reject (a rejected
+  one stays in the history);
+- `trace_actions` never returns the values typed with `fill`, `type` or `press`, which can be passwords, nor
+  masked test parameters: it reads only the action name, selector, URL (not for typing actions), status,
+  error and duration;
+- the tool for drafts has no status argument, and there is no tool that edits or accepts;
+- every write is in the audit log with `source: ai` and the agent's name (`case.create`,
+  `caseSuggestion.create`, `testPlan.items`).
 
 ## Good practice
 

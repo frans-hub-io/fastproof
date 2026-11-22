@@ -28,6 +28,12 @@ const NotificationsPage = lazy(() => import('./pages/Notifications'));
 const SettingsPage = lazy(() => import('./pages/Settings'));
 const JobsPage = lazy(() => import('./pages/Jobs'));
 const SignInPage = lazy(() => import('./pages/SignIn'));
+const CasesPage = lazy(() => import('./pages/Cases'));
+const CasePage = lazy(() => import('./pages/Case'));
+const CaseImportPage = lazy(() => import('./pages/CaseImport'));
+const PlansPage = lazy(() => import('./pages/Plans'));
+const PlanPage = lazy(() => import('./pages/Plan'));
+const RunnerPage = lazy(() => import('./pages/Runner'));
 
 setLoginRedirect(navigateForAuth);
 
@@ -56,6 +62,13 @@ export function AppRoutes() {
         <Route path="p/:key/gates" element={<GatesPage />} />
         <Route path="p/:key/notifications" element={<NotificationsPage />} />
         <Route path="p/:key/settings" element={<SettingsPage />} />
+        <Route path="p/:key/cases" element={<CasesPage />} />
+        <Route path="p/:key/cases/import" element={<CaseImportPage />} />
+        <Route path="p/:key/cases/:n" element={<CasePage />} />
+        <Route path="p/:key/plans" element={<PlansPage />} />
+        <Route path="p/:key/plans/:id" element={<PlanPage />} />
+        <Route path="p/:key/launches/:id/run" element={<RunnerPage />} />
+        <Route path="p/:key/launches/:id/run/:itemId" element={<RunnerPage />} />
         <Route path="admin/jobs" element={<JobsPage />} />
         <Route path="settings/tokens" element={<TokensPage />} />
         <Route path="settings/audit" element={<AuditPage />} />

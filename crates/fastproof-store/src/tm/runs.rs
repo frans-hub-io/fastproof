@@ -1373,15 +1373,18 @@ impl Store {
         .bind(launch_id)
         .execute(&mut *tx)
         .await?;
+        let automated: bool = sqlx::query_scalar(
+            "select exists (select 1 from results where launch_id = $1 and launch_created_at = $2 \
+               and run_item_id is null) or exists (select 1 from uploads where launch_id = $1)",
+        )
+        .bind(launch_id)
+        .bind(created_at)
+        .fetch_one(&mut *tx)
+        .await?;
+        if automated {
+            super::sync::queue_launch(&mut tx, project.id, launch_id).await?;
+        }
         if status == "running" {
-            let automated: bool = sqlx::query_scalar(
-                "select exists (select 1 from results where launch_id = $1 and launch_created_at = $2 \
-                   and run_item_id is null) or exists (select 1 from uploads where launch_id = $1)",
-            )
-            .bind(launch_id)
-            .bind(created_at)
-            .fetch_one(&mut *tx)
-            .await?;
             if !automated {
                 sqlx::query(
                     "update launches set status = 'finished', finished_at = coalesce(finished_at, now()), \

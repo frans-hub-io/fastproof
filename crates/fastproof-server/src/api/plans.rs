@@ -44,24 +44,7 @@ pub fn etag(revision: i64) -> HeaderValue {
     HeaderValue::from_str(&format!("\"r{revision}\"")).unwrap_or(HeaderValue::from_static("\"\""))
 }
 
-/// The revision an `If-Match` header names: 428 `precondition_required` without one; a value
-/// that names no revision matches none (412 from the store).
-pub fn if_match(h: &HeaderMap) -> ApiResult<i64> {
-    let Some(v) = h.get(header::IF_MATCH) else {
-        return Err(ApiError::new(
-            StatusCode::PRECONDITION_REQUIRED,
-            "precondition_required",
-            "send If-Match with the ETag of the resource",
-        ));
-    };
-    let s = v.to_str().unwrap_or_default().trim();
-    let s = s.strip_prefix("W/").unwrap_or(s);
-    Ok(s.trim_matches('"')
-        .strip_prefix('r')
-        .and_then(|n| n.parse::<i64>().ok())
-        .filter(|n| *n >= 0)
-        .unwrap_or(-1))
-}
+pub use super::if_match;
 
 fn with_etag<T: serde::Serialize>(revision: i64, body: T) -> Response {
     let mut r = Json(body).into_response();

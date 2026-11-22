@@ -906,8 +906,13 @@ async fn dashboard_rollup_partitions_and_retention() {
     let store = Store::new(db.pool.clone());
     // The first runs of the scheduler's jobs drop empty old partitions, and this test moves
     // launches into the past.
-    db.hold_jobs(&["history.rollup", "retention.apply", "analysis.indexes"])
-        .await;
+    db.hold_jobs(&[
+        "history.rollup",
+        "retention.apply",
+        "analysis.indexes",
+        "partitions.ensure",
+    ])
+    .await;
     store.ensure_partitions(6, 1).await.unwrap();
     let valid: bool = sqlx::query_scalar(
         "select indisvalid from pg_index where indexrelid = 'results_fingerprint'::regclass",

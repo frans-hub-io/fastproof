@@ -22,6 +22,7 @@ import {
 } from './fixtures';
 import { stageCHandlers } from './handlersC';
 import { analyze, analyzeDetail, isImportant, resetStageC } from './stageC';
+import { resetTm, subscribeTmEvents, tmHandlers } from './tm';
 
 const API = '/api/v1';
 export const MOCK_ROLE_KEY = 'fastproof-mock-role';
@@ -57,6 +58,7 @@ export function resetMockState(): void {
   state.audit = initialAudit();
   roleOverride = null;
   resetStageC();
+  resetTm();
 }
 
 function error(status: number, code: string, message: string, details?: unknown) {
@@ -175,6 +177,8 @@ export const handlers = [
     return undefined;
   }),
 
+  ...tmHandlers({ role: currentRole, error, audit }),
+
   http.get(`${API}/me`, () => HttpResponse.json(meFor(currentRole()))),
   http.post('/auth/logout', () => HttpResponse.json({ loggedOut: true })),
 
@@ -282,6 +286,14 @@ export const handlers = [
       start(controller) {
         controller.enqueue(encoder.encode('retry: 5000\n\n'));
         if (params.key !== 'web-shop') return;
+        const offTm = subscribeTmEvents((event, data) => {
+          try {
+            controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+          } catch {
+            offTm();
+          }
+        });
+        request.signal.addEventListener('abort', offTm);
         let tick = 0;
         timer = setInterval(() => {
           tick++;

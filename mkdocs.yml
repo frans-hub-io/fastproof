@@ -103,6 +103,10 @@ nav:
       - guide/reporters.md
       - guide/live-logs.md
       - guide/migrating-from-allure.md
+  - Test management:
+      - guide/test-management.md
+      - guide/manual-runs.md
+      - guide/importing-test-cases.md
   - Triage and integrations:
       - guide/rules-and-triage.md
       - guide/quality-gates.md
@@ -114,6 +118,7 @@ nav:
       - operations/scaling.md
       - operations/security.md
       - operations/limits.md
+      - operations/upgrading.md
   - Reference:
       - reference/api.md
       - API reference (Swagger UI): /api/swagger/

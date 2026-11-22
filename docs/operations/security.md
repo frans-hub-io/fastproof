@@ -31,22 +31,32 @@ Permissions are `resource:action` strings:
 | `rules:write` | Manage triage rules |
 | `settings:write` | Change project and server settings |
 | `audit:read` | Read the audit log |
+| `cases:read` | See test cases, folders, fields, plans and their history |
+| `cases:write` | Create, change and archive test cases and folders |
+| `cases:import` | Import test cases from files and other tools |
+| `cases:sync` | Let launches created with this permission update test cases from code ([code sync](../guide/test-management.md#code-sync)) |
+| `plans:write` | Create, change, sync and archive test plans; reopen closed manual runs |
+| `runs:execute` | Start launches from test plans and execute manual runs |
 | `tokens:read`, `tokens:write` | List and manage API tokens |
 
 Built-in roles:
 
 | Role | Permissions |
 |---|---|
-| `viewer` | `projects:read`, `launches:read` |
-| `uploader` | `projects:read`, `launches:read`, `launches:write` |
-| `editor` | everything of `uploader`, plus `results:triage`, `rules:write` |
+| `viewer` | `projects:read`, `launches:read`, `cases:read` |
+| `tester` | `projects:read`, `launches:read`, `cases:read`, `runs:execute` |
+| `uploader` | `projects:read`, `launches:read`, `launches:write`, `cases:read`, `cases:sync` |
+| `editor` | everything of `uploader`, plus `results:triage`, `rules:write`, `cases:write`, `cases:import`, `plans:write`, `runs:execute` |
 | `admin` | `*` (every permission) |
 
 A **binding** gives a role to a user, an OIDC group or a token, scoped globally, to a list of projects, or to
 all projects (`*`, including projects created later). Project-scoped bindings never grant global-only
 permissions such as `projects:write`.
 
-CI tokens should have the `uploader` role on the projects they report to, and nothing more.
+CI tokens should have the `uploader` role on the projects they report to, and nothing more. Its `cases:sync`
+lets launches of trusted branches update test cases from code; give pipelines of merge requests and forks a
+custom role without it (see [Trusted launches](../guide/test-management.md#trusted-launches)). Custom field
+definitions, the code sync settings, purging cases and starting the backfill of cases need `settings:write`.
 
 ### Access file
 
@@ -83,6 +93,9 @@ FastProof origin:
   any attachment requested with `?download=1`.
 - HTML descriptions from reports are sanitized before they are stored.
 - Masked and hidden test parameters are used for test identity only and never returned.
+- Test case texts are stored as Markdown and rendered on the server: raw HTML becomes text, links work only for
+  `http`, `https` and `mailto`, and images only for attachments of the same project.
+- Manual run attachments and case attachments are served by the same rules as launch attachments.
 
 ## Limits
 
@@ -122,7 +135,8 @@ Every parser has size, depth and count limits, and one byte budget per upload co
 
 ## Audit
 
-Every change (projects, launches, triage, rules, settings, tokens, sign-ins) is recorded with who, what, when
+Every change (projects, launches, triage, rules, settings, tokens, sign-ins, test cases, plans, manual runs,
+imports and exports) is recorded with who, what, when
 and the project. Admins read the audit log in the UI or with `GET /api/v1/audit`.
 
 ## Container image

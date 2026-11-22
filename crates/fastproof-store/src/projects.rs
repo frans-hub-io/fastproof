@@ -176,7 +176,8 @@ impl Store {
         Ok(())
     }
 
-    /// Marks a project deleted and queues the deletion of its blobs; the rows are removed by
+    /// Marks a project deleted and queues the deletion of its blobs (its prefix and the files of
+    /// its import and export jobs under `tm-jobs/`); the rows are removed by
     /// the purge job once the blobs are gone. Remembers the key in `deleted_project_keys` and
     /// emits `project.deleted` (`{projectId, key, deletedAt}`) so that analytics sinks drop
     /// the project's rows. Returns false when there was no such project.
@@ -197,6 +198,14 @@ impl Store {
             .bind(id)
             .execute(&mut *tx)
             .await?;
+        sqlx::query(
+            "insert into blob_deletions (prefix, project_id) \
+             select b, null from tm_jobs j, lateral (values (j.params ->> 'blob'), (j.params ->> 'zip')) as v(b) \
+             where j.project_id = $1 and b like 'tm-jobs/%'",
+        )
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
         sqlx::query("update ingest_jobs set status = 'failed', last_error = 'project deleted', updated_at = now() \
              where status in ('queued', 'running') and upload_id in (select id from uploads where project_id = $1)")
             .bind(id)

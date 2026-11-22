@@ -696,7 +696,7 @@
         "tags": [
           "cases"
         ],
-        "description": "One level of the folder tree (`parent` absent = top level), by position and name, with the counts of the cases (not archived) in each folder and its subfolders.",
+        "description": "One level of the folder tree (`parent` absent = top level), by position and name, with the counts of the cases (not archived) in each folder and its subfolders. `all=true` answers the whole tree at once, parents before children (by depth, then position and name), at most `maxFolders` folders (`truncated` when there are more).",
         "operationId": "list_case_folders",
         "parameters": [
           {
@@ -715,6 +715,15 @@
             "schema": {
               "type": "string",
               "format": "uuid"
+            }
+          },
+          {
+            "name": "all",
+            "in": "query",
+            "description": "`true`: the whole tree in one answer (parents first, at most `maxFolders`); not with `parent`.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
             }
           }
         ],
@@ -2692,6 +2701,96 @@
             }
           },
           "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/cases/{n}/review": {
+      "post": {
+        "tags": [
+          "cases"
+        ],
+        "description": "Marks a case an AI agent created as reviewed: clears `aiUnreviewed` (no new version). Audited as `case.review`; a case that is already reviewed is returned unchanged.",
+        "operationId": "review_case",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "n",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Case"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "428": {
             "content": {
               "application/json": {
                 "schema": {
@@ -8164,7 +8263,7 @@
           }
         ],
         "requestBody": {
-          "description": "The areas to change. Each top-level area present in the body (`flaky`, `retention`, `rollup`, `gates`, `notifications`, `issueTrackers`, `fastmock`, `vcs`) replaces the stored one as a whole; areas left out are kept; `null` resets an area to its default (removes it). The answer is the whole stored document.",
+          "description": "The areas to change. Each top-level area present in the body (`flaky`, `retention`, `rollup`, `caseSync`, `gates`, `notifications`, `issueTrackers`, `fastmock`, `vcs`) replaces the stored one as a whole; areas left out are kept; `null` resets an area to its default (removes it). The answer is the whole stored document.",
           "content": {
             "application/json": {
               "schema": {
@@ -9988,6 +10087,7 @@
           "tags",
           "codeOwned",
           "identities",
+          "identitiesTotal",
           "keys",
           "revision",
           "version",
@@ -10058,7 +10158,13 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/CaseIdentity"
-            }
+            },
+            "description": "The first 100 identities (manual first, then the newest seen)."
+          },
+          "identitiesTotal": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many identities the case has (`identities` may hold fewer)."
           },
           "keys": {
             "type": "array",
@@ -10596,7 +10702,7 @@
       },
       "CaseFolderList": {
         "type": "object",
-        "description": "`{items}` of folders of one level.",
+        "description": "`{items}` of folders of one level, or of the whole tree with `all=true`.",
         "required": [
           "items"
         ],
@@ -10606,6 +10712,13 @@
             "items": {
               "$ref": "#/components/schemas/CaseFolder"
             }
+          },
+          "truncated": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "With `all=true`: the project has more folders than `maxFolders` and the list stops there."
           }
         }
       },

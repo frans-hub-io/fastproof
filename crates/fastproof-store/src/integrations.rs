@@ -513,14 +513,15 @@ impl Store {
         Ok(Some(queued))
     }
 
-    /// Launches waiting for their gate evaluation, oldest first.
+    /// Launches waiting for their gate evaluation, oldest first, with whether the gate was
+    /// evaluated before (a re-evaluation, e.g. after a manual run closed on a finished launch).
     pub async fn waiting_gates(
         &self,
         limit: i64,
-    ) -> anyhow::Result<Vec<(Uuid, Uuid, DateTime<Utc>)>> {
+    ) -> anyhow::Result<Vec<(Uuid, Uuid, DateTime<Utc>, bool)>> {
         Ok(sqlx::query_as(
-            "select project_id, launch_id, queued_at from launch_gates where state = 'waiting' \
-             order by queued_at limit $1",
+            "select project_id, launch_id, queued_at, evaluated_at is not null from launch_gates \
+             where state = 'waiting' order by queued_at limit $1",
         )
         .bind(limit)
         .fetch_all(&self.pool)

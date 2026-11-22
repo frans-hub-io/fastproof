@@ -38,15 +38,24 @@ signals below appears.
 In Kafka mode only the gateway produces, after token authentication, unless
 `FASTPROOF_KAFKA_TRUSTED_PRODUCERS=true`. Consumer groups are coordinated by FastProof in PostgreSQL (Kafka
 consumer groups are not used), and the writer commits its offset in the same transaction as the data, so
-retries never duplicate results. FastProof exports consumer lag on `/metrics`.
+retries never duplicate results and a writer killed in the middle of a batch loses nothing: the next owner of
+the partition starts again from the last committed offset. Records of one launch share a partition and are
+read in the order they were produced; results sent through the API are stored in that order, while results
+parsed from uploaded archives are stored together per upload, so within one batch they can land before or
+after results sent directly. FastProof exports consumer lag on `/metrics`.
 
 Launches that run the same tests are written at the same time by several writers (or ingest workers) without
-waiting on each other for long: the rows they share (test cases, series, statistics) are written in key order
-and left alone when nothing changed, and a transaction that still meets a deadlock or a serialization failure
-runs again after a short pause (counted in `fastproof_db_tx_retries_total`).
+waiting on each other for long. Test cases and series that exist and need no change are only share-locked
+(nobody can delete them meanwhile, and nobody waits for them); the series statistics, which every launch of
+those tests updates, are locked last, right before they are written, so such launches wait for each other
+only for that final step. When another launch of the same tests committed in the meantime, the history of
+those tests is read again under the lock, so transitions and flaky verdicts follow the order in which the
+launches commit. Rows are locked in key order, and a transaction that still meets a deadlock or a
+serialization failure runs again after a short pause (counted in `fastproof_db_tx_retries_total`).
 
 Topics (after `FASTPROOF_KAFKA_TOPIC_PREFIX`, default `fastproof.`): `ingest.results`, `ingest.logs`,
-`ingest.uploads` and `events`. Create them yourself with the partition count you want, or let FastProof create
+`ingest.uploads` and `events`. FastProof produces them with Snappy compression and reads any codec; a
+consumer of `events` outside FastProof needs a Kafka client with Snappy. Create them yourself with the partition count you want, or let FastProof create
 them (`kafka.topics.create`, always on for the bundled Kafka of `kafka.enabled`, whose broker does not create
 topics by itself).
 
@@ -179,13 +188,54 @@ often search for unselective substrings (common words, partial stack frames) acr
 
 ### Ingest throughput
 
-| Path | Results per second | Log lines per second | Lag |
-|---|---|---|---|
-| `direct` (HTTP, spool, PostgreSQL queue) | 1,516 | 30,000 | none beyond the request |
-| `kafka`, produced through the HTTP gateway | 492 | not measured separately | about 32 s from request to PostgreSQL |
+`fastproof bench --launches 100 --results 1000 --log-lines 20` through the HTTP API: 103,346 results (retries
+included) and 2,066,920 log lines, 100 launches running the same 1,000 tests, 4 launches sent at a time.
 
-Kafka mode is not tuned yet. Today it pays off for absorbing bursts and decoupling the API from PostgreSQL,
-not for raw throughput; use `direct` unless one of the signals above applies.
+| Path | Results per second sent | Log lines per second sent | Lag after the last request | Until everything is stored |
+|---|---|---|---|---|
+| `direct`, one process without a CPU limit | 8,100 to 8,400 | 161,000 to 169,000 | none beyond the request | 12 to 13 s |
+| `kafka`, gateway plus two writers of half a CPU each, 6 partitions | 11,500 to 12,800 | 230,000 to 256,000 | 10 to 13 s | 19 to 22 s |
+
+In Kafka mode the gateway answers once the records are in Kafka, so clients finish sooner and the writers
+catch up afterwards; the lag is what is left of the backlog when the last request returns, so faster senders
+see a longer lag for the same work. The writers were limited by their CPU here: more writers (up to the
+partition count) or more CPU per writer shorten it.
+
+### Kafka writer
+
+Where the time of the bench above went before, and what changed:
+
+- **Log lines:** three statements per result and attempt (look for stored chunks, insert the chunk, insert
+  its outbox event), about 330,000 statements in all. Now a batch takes three statements whatever the number
+  of results it holds.
+- **Launches sharing tests:** storing results upserted the shared test cases and series, and an upsert locks
+  the rows it matches until commit even when it changes nothing, so the results of all launches were written
+  one transaction at a time. Unchanged rows are now only share-locked, and the series statistics are locked
+  as the last step (re-reading the history of the tests another launch changed meanwhile).
+- **History of a series** (flaky detection, transitions): the query joined every past result to its launch,
+  which PostgreSQL ran as a probe of every launch of the branch for every series while its statistics were
+  not fresh (200 ms per batch). It now reads the latest results of each series and checks their few launches
+  afterwards.
+- **Writer CPU:** the gateway signature of every record keyed its MAC from scratch and decoded hex slowly
+  (a fifth of the writer's CPU), and LZ4 batches were parsed through a streaming decoder (an eighth). The MAC
+  state is now prepared once, and records are produced with Snappy, which rskafka parses from memory.
+- **Gateway:** the log byte budget of a launch was kept on the launch row, which every results transaction of
+  the launch locks, so log requests waited for the writers; it has a row of its own now.
+
+| Same bench, two writers of half a CPU each | Before | After |
+|---|---|---|
+| Lag after the last request | 25 to 29 s | 10 to 13 s |
+| From the first request until everything is stored | 38 to 43 s | 19 to 22 s |
+| CPU of both writers | 28 to 31 s | 20 s |
+| PostgreSQL CPU spent on the writers' statements | 47 to 61 s | 24 to 26 s |
+| Peak memory of a writer | 130 to 160 MiB | 170 to 230 MiB |
+| `direct` mode, until everything is stored | 27 s | 13 s |
+
+Every run stored every result and log line exactly once. Measured with the release build on one development
+VM shared with other work, PostgreSQL 18 on the same VM, the writers held to half a CPU each as
+`ci/bigdata-values.yaml` limits `roles.writer`. PostgreSQL needs about as much CPU time as the table shows
+for the writers' statements, so a PostgreSQL with one CPU is busy for most of such a burst: size it together
+with the writers.
 
 ## Benchmark
 

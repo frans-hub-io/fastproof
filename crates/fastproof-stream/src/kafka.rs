@@ -31,6 +31,11 @@ pub const TOPIC_EVENTS: &str = "events";
 pub const SIGNATURE_HEADER: &str = "fastproof-sig";
 /// Uncompressed bytes per produce request, at most.
 const PRODUCE_BATCH_BYTES: usize = 512 * 1024;
+/// Compression of produced batches. rskafka parses a Snappy batch from memory after one
+/// decompression, while LZ4 and zstd batches are parsed field by field through a streaming
+/// decoder, which cost the writer about an eighth of its CPU; Snappy batches are 6 to 18 %
+/// larger than LZ4. Consumers read every codec, whatever produced the records.
+const PRODUCE_COMPRESSION: Compression = Compression::Snappy;
 
 /// Kafka's murmur2 (as `org.apache.kafka.common.utils.Utils.murmur2`).
 pub fn murmur2(data: &[u8]) -> i32 {
@@ -140,7 +145,8 @@ fn builder(cfg: &KafkaConfig) -> anyhow::Result<ClientBuilder> {
 /// more than [`SIGNATURE_SKEW`] in the future) and records signed with another key fail.
 #[derive(Clone)]
 pub struct Signer {
-    key: Arc<Vec<u8>>,
+    /// The MAC state after the key: cloned per record instead of hashing the key every time.
+    keyed: Hmac<Sha256>,
     kid: String,
     max_age: Duration,
 }
@@ -157,7 +163,7 @@ impl Signer {
         sha2::Digest::update(&mut h, &key);
         let kid = hex::encode(&sha2::Digest::finalize(h)[..8]);
         Self {
-            key: Arc::new(key),
+            keyed: <Hmac<Sha256> as KeyInit>::new_from_slice(&key).expect("any key size"),
             kid,
             max_age: SIGNATURE_MAX_AGE,
         }
@@ -175,7 +181,7 @@ impl Signer {
     }
 
     fn mac(&self, topic: &str, at_ms: i64, key: &[u8], value: &[u8]) -> Hmac<Sha256> {
-        let mut m = <Hmac<Sha256> as KeyInit>::new_from_slice(&self.key).expect("any key size");
+        let mut m = self.keyed.clone();
         m.update(b"v2\0");
         m.update(topic.as_bytes());
         m.update(&[0]);
@@ -223,7 +229,7 @@ impl Signer {
         if age > self.max_age.as_millis() as i64 || -age > SIGNATURE_SKEW.as_millis() as i64 {
             return false;
         }
-        let Ok(mac) = hex::decode(mac) else {
+        let Some(mac) = decode_mac(mac) else {
             return false;
         };
         self.mac(
@@ -235,6 +241,27 @@ impl Signer {
         .verify_slice(&mac)
         .is_ok()
     }
+}
+
+/// The 32 bytes of a hex-encoded HMAC-SHA256 (either case); `None` for anything else.
+fn decode_mac(s: &str) -> Option<[u8; 32]> {
+    fn nibble(c: u8) -> Option<u8> {
+        match c {
+            b'0'..=b'9' => Some(c - b'0'),
+            b'a'..=b'f' => Some(c - b'a' + 10),
+            b'A'..=b'F' => Some(c - b'A' + 10),
+            _ => None,
+        }
+    }
+    let b = s.as_bytes();
+    if b.len() != 64 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for (i, o) in out.iter_mut().enumerate() {
+        *o = (nibble(b[2 * i])? << 4) | nibble(b[2 * i + 1])?;
+    }
+    Some(out)
 }
 
 /// A record to produce: the key picks the partition.
@@ -536,7 +563,7 @@ impl Kafka {
                 let sz = r.approximate_size();
                 if !batch.is_empty() && bytes + sz > PRODUCE_BATCH_BYTES {
                     count += batch.len();
-                    pc.produce(std::mem::take(&mut batch), Compression::Lz4)
+                    pc.produce(std::mem::take(&mut batch), PRODUCE_COMPRESSION)
                         .await
                         .with_context(|| format!("producing to {topic}/{p}"))?;
                     bytes = 0;
@@ -545,7 +572,7 @@ impl Kafka {
                 batch.push(r);
             }
             count += batch.len();
-            pc.produce(batch, Compression::Lz4)
+            pc.produce(batch, PRODUCE_COMPRESSION)
                 .await
                 .with_context(|| format!("producing to {topic}/{p}"))?;
             Ok::<_, anyhow::Error>(count)
@@ -672,6 +699,18 @@ mod tests {
         assert!(!Signer::new(vec![8; 32]).verify("t", &r));
         r.value = Some(b"{\"v\":2}".to_vec());
         assert!(!s.verify("t", &r));
+    }
+
+    #[test]
+    fn macs_decode_like_hex() {
+        let bytes: Vec<u8> = (0..32u8).map(|i| i.wrapping_mul(37) ^ 0xa5).collect();
+        let lower = hex::encode(&bytes);
+        assert_eq!(decode_mac(&lower).unwrap().to_vec(), bytes);
+        assert_eq!(decode_mac(&lower.to_uppercase()).unwrap().to_vec(), bytes);
+        assert!(decode_mac(&lower[..62]).is_none());
+        assert!(decode_mac(&format!("{lower}00")).is_none());
+        assert!(decode_mac(&format!("g{}", &lower[1..])).is_none());
+        assert!(decode_mac(&"é".repeat(32)).is_none());
     }
 
     #[test]

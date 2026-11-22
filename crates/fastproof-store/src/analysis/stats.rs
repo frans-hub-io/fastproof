@@ -16,7 +16,7 @@ use crate::ingest::LaunchRef;
 pub const STATUS_CHARS: usize = 64;
 
 /// The stored state of a series.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SeriesStatsRow {
     pub last_statuses: String,
     pub last_launch_id: Option<Uuid>,
@@ -63,18 +63,51 @@ pub fn flaky_score(statuses: &[Status], window: usize) -> Option<f32> {
 }
 
 /// Locks and reads the statistics rows of series (sorted ids, so concurrent launches lock in
-/// the same order).
+/// the same order). With `create` (the project), missing rows are inserted empty first: two
+/// launches of a new series then wait for each other here instead of both writing it as
+/// their first run.
 pub(crate) async fn lock_rows(
     conn: &mut PgConnection,
     series_sorted: &[Uuid],
+    create: Option<Uuid>,
 ) -> anyhow::Result<HashMap<Uuid, SeriesStatsRow>> {
-    let rows: Vec<(Uuid, String, Option<Uuid>, i32)> = sqlx::query_as(
+    if let Some(project) = create {
+        sqlx::query(
+            "insert into series_stats (series_id, project_id) \
+             select s, $2 from unnest($1::uuid[]) as s order by s on conflict (series_id) do nothing",
+        )
+        .bind(series_sorted)
+        .bind(project)
+        .execute(&mut *conn)
+        .await?;
+    }
+    rows(conn, series_sorted, true).await
+}
+
+/// Reads the statistics rows of series without locking them.
+pub(crate) async fn read_rows(
+    conn: &mut PgConnection,
+    series: &[Uuid],
+) -> anyhow::Result<HashMap<Uuid, SeriesStatsRow>> {
+    rows(conn, series, false).await
+}
+
+async fn rows(
+    conn: &mut PgConnection,
+    series: &[Uuid],
+    lock: bool,
+) -> anyhow::Result<HashMap<Uuid, SeriesStatsRow>> {
+    let sql = if lock {
         "select series_id, last_statuses, last_launch_id, runs_tracked from series_stats \
-         where series_id = any($1) order by series_id for update",
-    )
-    .bind(series_sorted)
-    .fetch_all(&mut *conn)
-    .await?;
+         where series_id = any($1) order by series_id for update"
+    } else {
+        "select series_id, last_statuses, last_launch_id, runs_tracked from series_stats \
+         where series_id = any($1)"
+    };
+    let rows: Vec<(Uuid, String, Option<Uuid>, i32)> = sqlx::query_as(sql)
+        .bind(series)
+        .fetch_all(&mut *conn)
+        .await?;
     Ok(rows
         .into_iter()
         .map(|(s, l, id, n)| {

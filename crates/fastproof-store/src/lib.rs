@@ -202,15 +202,30 @@ pub(crate) fn opt_no_nul(s: Option<&str>) -> Option<String> {
     s.map(no_nul)
 }
 
-/// A JSON value without NUL characters in strings (jsonb cannot hold `\u0000`).
+/// A JSON value without NUL characters in strings (jsonb cannot hold `\u0000`); a value
+/// without any is returned as it is.
 pub(crate) fn json_no_nul(v: serde_json::Value) -> serde_json::Value {
+    if has_nul(&v) { replace_nul(v) } else { v }
+}
+
+fn has_nul(v: &serde_json::Value) -> bool {
+    use serde_json::Value;
+    match v {
+        Value::String(s) => s.contains('\0'),
+        Value::Array(a) => a.iter().any(has_nul),
+        Value::Object(o) => o.iter().any(|(k, v)| k.contains('\0') || has_nul(v)),
+        _ => false,
+    }
+}
+
+fn replace_nul(v: serde_json::Value) -> serde_json::Value {
     use serde_json::Value;
     match v {
         Value::String(s) if s.contains('\0') => Value::String(no_nul(&s)),
-        Value::Array(a) => Value::Array(a.into_iter().map(json_no_nul).collect()),
+        Value::Array(a) => Value::Array(a.into_iter().map(replace_nul).collect()),
         Value::Object(o) => Value::Object(
             o.into_iter()
-                .map(|(k, v)| (no_nul(&k), json_no_nul(v)))
+                .map(|(k, v)| (no_nul(&k), replace_nul(v)))
                 .collect(),
         ),
         other => other,
@@ -224,4 +239,20 @@ pub fn ts_ms(ms: Option<i64>) -> Option<chrono::DateTime<chrono::Utc>> {
         return None;
     }
     chrono::DateTime::from_timestamp_millis(ms)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::json_no_nul;
+
+    #[test]
+    fn nul_characters_are_replaced_in_keys_and_nested_strings() {
+        let clean = serde_json::json!({"a": [1, "x", {"b": null}], "c": "d"});
+        assert_eq!(json_no_nul(clean.clone()), clean);
+        let dirty = serde_json::json!({"a\u{0}": [1, "x\u{0}y", {"b": "\u{0}"}], "c": "d"});
+        assert_eq!(
+            json_no_nul(dirty),
+            serde_json::json!({"a\u{FFFD}": [1, "x\u{FFFD}y", {"b": "\u{FFFD}"}], "c": "d"})
+        );
+    }
 }

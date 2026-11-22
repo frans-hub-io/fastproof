@@ -2,7 +2,7 @@
 //! by `(resultId, attempt, seq)`, with a `log.chunk` outbox event per chunk and a notification
 //! on [`LOGS_CHANNEL`] for the live fan-out of every replica.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
 use futures::TryStreamExt;
@@ -11,7 +11,7 @@ use sqlx::{PgConnection, Row};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-use crate::{Store, codec, no_nul, opt_no_nul, ts_ms};
+use crate::{Store, codec, no_nul, ts_ms};
 
 /// Channel of log chunk notifications (`pg_notify`), JSON payload [`LogNotice`].
 pub const LOGS_CHANNEL: &str = "fastproof_logs";
@@ -138,6 +138,25 @@ struct StoredLine {
     p: Option<String>,
 }
 
+/// [`StoredLine`] borrowed from a [`LogLine`], for writing.
+#[derive(Serialize)]
+struct StoredLineRef<'a> {
+    q: i64,
+    t: i64,
+    l: LogLevel,
+    s: LogStream,
+    m: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    p: Option<&'a str>,
+}
+
+/// Replaces NUL characters (PostgreSQL text cannot hold them) without copying clean text.
+fn strip_nul(s: &mut String) {
+    if s.contains('\0') {
+        *s = no_nul(s);
+    }
+}
+
 /// A log line with its launch, as reads and searches return it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -223,7 +242,8 @@ fn decode_lines(result_id: &str, attempt: i32, z: &[u8]) -> anyhow::Result<Vec<L
 
 /// Writes lines of one launch as chunks, skipping `(resultId, attempt, seq)` already stored,
 /// and records a `log.chunk` outbox event per chunk. Call inside a transaction; notify with
-/// [`notify_log_chunks`] in the same transaction.
+/// [`notify_log_chunks`] in the same transaction. Three statements whatever the number of
+/// results: the stored chunks that overlap, the new chunks and their events.
 pub async fn insert_log_lines(
     conn: &mut PgConnection,
     project_id: Uuid,
@@ -233,95 +253,150 @@ pub async fn insert_log_lines(
 ) -> anyhow::Result<Vec<WrittenChunk>> {
     let mut groups: BTreeMap<(String, u32), BTreeMap<u64, LogLine>> = BTreeMap::new();
     for mut l in lines {
-        l.result_id = no_nul(&l.result_id);
-        l.message = no_nul(&l.message);
-        l.step = opt_no_nul(l.step.as_deref());
+        strip_nul(&mut l.result_id);
+        strip_nul(&mut l.message);
+        if let Some(p) = &mut l.step {
+            strip_nul(p);
+        }
         groups
             .entry((l.result_id.clone(), l.attempt))
             .or_default()
             .entry(l.seq)
             .or_insert(l);
     }
-    let mut out = Vec::new();
-    for ((result_id, attempt), by_seq) in groups {
+    if groups.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut q_result = Vec::with_capacity(groups.len());
+    let mut q_attempt = Vec::with_capacity(groups.len());
+    let mut q_lo = Vec::with_capacity(groups.len());
+    let mut q_hi = Vec::with_capacity(groups.len());
+    for ((result_id, attempt), by_seq) in &groups {
         let (Some(lo), Some(hi)) = (by_seq.keys().next(), by_seq.keys().next_back()) else {
             continue;
         };
-        let existing: Vec<Vec<u8>> = sqlx::query_scalar(
-            "select lines_z from attempt_log_chunks where launch_id = $1 and result_key = $2 \
-             and attempt = $3 and first_seq <= $5 and last_seq >= $4",
-        )
-        .bind(launch_id)
-        .bind(&result_id)
-        .bind(attempt as i32)
-        .bind(*lo as i64)
-        .bind(*hi as i64)
-        .fetch_all(&mut *conn)
-        .await?;
-        let mut stored_seqs = HashSet::new();
-        for z in existing {
-            for l in decode_lines(&result_id, attempt as i32, &z)? {
-                stored_seqs.insert(l.seq);
-            }
+        q_result.push(result_id.clone());
+        q_attempt.push(*attempt as i32);
+        q_lo.push(*lo as i64);
+        q_hi.push(*hi as i64);
+    }
+    let existing: Vec<(String, i32, Vec<u8>)> = sqlx::query_as(
+        "select c.result_key, c.attempt, c.lines_z from unnest($2::text[], $3::int[], $4::bigint[], $5::bigint[]) \
+           as t(r, a, lo, hi) \
+         join attempt_log_chunks c on c.launch_id = $1 and c.result_key = t.r and c.attempt = t.a \
+           and c.first_seq <= t.hi and c.last_seq >= t.lo",
+    )
+    .bind(launch_id)
+    .bind(&q_result)
+    .bind(&q_attempt)
+    .bind(&q_lo)
+    .bind(&q_hi)
+    .fetch_all(&mut *conn)
+    .await?;
+    drop((q_result, q_attempt, q_lo, q_hi));
+    let mut stored_seqs: HashMap<(String, u32), HashSet<u64>> = HashMap::new();
+    for (result_id, attempt, z) in existing {
+        let seqs = stored_seqs
+            .entry((result_id.clone(), attempt as u32))
+            .or_default();
+        for l in decode_lines(&result_id, attempt, &z)? {
+            seqs.insert(l.seq);
         }
+    }
+    let mut out = Vec::new();
+    let mut c_result = Vec::new();
+    let mut c_attempt = Vec::new();
+    let mut c_first = Vec::new();
+    let mut c_last = Vec::new();
+    let mut c_count = Vec::new();
+    let mut c_levels = Vec::new();
+    let mut c_bytes = Vec::new();
+    let mut c_first_ts = Vec::new();
+    let mut c_last_ts = Vec::new();
+    let mut c_z = Vec::new();
+    for ((result_id, attempt), by_seq) in groups {
+        let known = stored_seqs.remove(&(result_id.clone(), attempt));
         let fresh: Vec<LogLine> = by_seq
             .into_values()
-            .filter(|l| !stored_seqs.contains(&l.seq))
+            .filter(|l| known.as_ref().is_none_or(|s| !s.contains(&l.seq)))
             .collect();
-        for part in byte_chunks(&fresh) {
-            let stored: Vec<StoredLine> = part
+        let sizes: Vec<usize> = byte_chunks(&fresh).iter().map(|p| p.len()).collect();
+        let mut rest = fresh.into_iter();
+        for size in sizes {
+            let part: Vec<LogLine> = rest.by_ref().take(size).collect();
+            let stored: Vec<StoredLineRef<'_>> = part
                 .iter()
-                .map(|l| StoredLine {
+                .map(|l| StoredLineRef {
                     q: l.seq.min(i64::MAX as u64) as i64,
                     t: l.ts,
                     l: l.level,
                     s: l.stream,
-                    m: l.message.clone(),
-                    p: l.step.clone(),
+                    m: &l.message,
+                    p: l.step.as_deref(),
                 })
                 .collect();
-            let levels = part.iter().fold(0i16, |m, l| m | l.level.bit());
             let bytes: usize = part.iter().map(line_bytes).sum();
-            let first = part.first().map(|l| l.seq as i64).unwrap_or_default();
-            let last = part.last().map(|l| l.seq as i64).unwrap_or_default();
-            let first_ts = part.iter().map(|l| l.ts).min();
-            let last_ts = part.iter().map(|l| l.ts).max();
-            let id: i64 = sqlx::query_scalar(
-                "insert into attempt_log_chunks (project_id, launch_id, result_key, attempt, first_seq, last_seq, \
-                   line_count, levels, bytes, first_ts, last_ts, lines_z) \
-                 values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) returning id",
-            )
-            .bind(project_id)
-            .bind(launch_id)
-            .bind(&result_id)
-            .bind(attempt as i32)
-            .bind(first)
-            .bind(last)
-            .bind(part.len() as i32)
-            .bind(levels)
-            .bind(bytes.min(i32::MAX as usize) as i32)
-            .bind(ts_ms(first_ts))
-            .bind(ts_ms(last_ts))
-            .bind(codec::encode(&stored)?)
-            .fetch_one(&mut *conn)
-            .await?;
-            crate::events::emit(
-                &mut *conn,
-                "log.chunk",
-                Some(project_key),
-                serde_json::json!({"id": id, "launchId": launch_id, "resultId": result_id,
-                    "attempt": attempt, "firstSeq": first, "lastSeq": last, "lines": part.len()}),
-            )
-            .await?;
+            c_result.push(result_id.clone());
+            c_attempt.push(attempt as i32);
+            c_first.push(part.first().map(|l| l.seq as i64).unwrap_or_default());
+            c_last.push(part.last().map(|l| l.seq as i64).unwrap_or_default());
+            c_count.push(part.len() as i32);
+            c_levels.push(part.iter().fold(0i16, |m, l| m | l.level.bit()));
+            c_bytes.push(bytes.min(i32::MAX as usize) as i32);
+            c_first_ts.push(ts_ms(part.iter().map(|l| l.ts).min()));
+            c_last_ts.push(ts_ms(part.iter().map(|l| l.ts).max()));
+            c_z.push(codec::encode(&stored)?);
+            drop(stored);
             out.push(WrittenChunk {
-                id,
+                id: 0,
                 result_id: result_id.clone(),
                 attempt,
-                lines: part.to_vec(),
+                lines: part,
                 bytes,
             });
         }
     }
+    if out.is_empty() {
+        return Ok(out);
+    }
+    // Chunks of one result and attempt never overlap, so (result, attempt, first seq) names
+    // a new chunk; ids follow the order of the arrays.
+    let ids: Vec<(i64, String, i32, i64)> = sqlx::query_as(
+        "insert into attempt_log_chunks (project_id, launch_id, result_key, attempt, first_seq, last_seq, \
+           line_count, levels, bytes, first_ts, last_ts, lines_z) \
+         select $1, $2, r, a, f, l, n, lv, b, ft, lt, z from unnest($3::text[], $4::int[], $5::bigint[], \
+           $6::bigint[], $7::int[], $8::smallint[], $9::int[], $10::timestamptz[], $11::timestamptz[], \
+           $12::bytea[]) with ordinality as t(r, a, f, l, n, lv, b, ft, lt, z, o) order by o \
+         returning id, result_key, attempt, first_seq",
+    )
+    .bind(project_id)
+    .bind(launch_id)
+    .bind(&c_result)
+    .bind(&c_attempt)
+    .bind(&c_first)
+    .bind(&c_last)
+    .bind(&c_count)
+    .bind(&c_levels)
+    .bind(&c_bytes)
+    .bind(&c_first_ts)
+    .bind(&c_last_ts)
+    .bind(&c_z)
+    .fetch_all(&mut *conn)
+    .await?;
+    drop(c_z);
+    let by_key: HashMap<(String, i32, i64), i64> = ids
+        .into_iter()
+        .map(|(id, r, a, f)| ((r, a, f), id))
+        .collect();
+    let mut events = Vec::with_capacity(out.len());
+    for (i, c) in out.iter_mut().enumerate() {
+        c.id = *by_key
+            .get(&(c.result_id.clone(), c_attempt[i], c_first[i]))
+            .ok_or_else(|| anyhow::anyhow!("log chunk row missing"))?;
+        events.push(serde_json::json!({"id": c.id, "launchId": launch_id, "resultId": c.result_id,
+            "attempt": c.attempt, "firstSeq": c_first[i], "lastSeq": c_last[i], "lines": c.lines.len()}));
+    }
+    crate::events::emit_many(&mut *conn, "log.chunk", Some(project_key), events).await?;
     Ok(out)
 }
 
@@ -427,7 +502,10 @@ pub struct LogSearch {
 }
 
 impl Store {
-    /// Adds `bytes` to the log volume of a launch unless that exceeds `max`; false when it would.
+    /// Adds `bytes` to the log volume of a launch unless that exceeds `max`; false when it would,
+    /// or when the launch no longer exists. The volume has its own row (`launch_log_bytes`): the
+    /// launch row is locked by every transaction storing results of the launch, and log
+    /// requests would wait for them.
     pub async fn charge_log_bytes(
         &self,
         launch_id: Uuid,
@@ -435,13 +513,21 @@ impl Store {
         max: i64,
     ) -> anyhow::Result<bool> {
         let r = sqlx::query(
-            "update launches set log_bytes = log_bytes + $2 where id = $1 and log_bytes + $2 <= $3",
+            "insert into launch_log_bytes (launch_id, bytes) select $1, $2 where $2 <= $3 \
+             on conflict (launch_id) do update set bytes = launch_log_bytes.bytes + excluded.bytes \
+             where launch_log_bytes.bytes + excluded.bytes <= $3",
         )
         .bind(launch_id)
         .bind(bytes)
         .bind(max)
         .execute(&self.pool)
-        .await?;
+        .await;
+        let r = match r {
+            Err(sqlx::Error::Database(d)) if d.code().as_deref() == Some("23503") => {
+                return Ok(false);
+            }
+            r => r?,
+        };
         Ok(r.rows_affected() == 1)
     }
 

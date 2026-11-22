@@ -67,6 +67,16 @@ pub fn retryable(e: &anyhow::Error) -> Option<&'static str> {
         })
 }
 
+/// True when `e` may mean that a launch row is gone: a foreign key violation (SQLSTATE 23503)
+/// or a row that was not found. Callers check that the launch is really gone before acting.
+pub fn launch_maybe_gone(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| match c.downcast_ref::<sqlx::Error>() {
+        Some(sqlx::Error::RowNotFound) => true,
+        Some(sqlx::Error::Database(d)) => d.code().as_deref() == Some("23503"),
+        _ => false,
+    })
+}
+
 /// Counts a retried transaction (`fastproof_db_tx_retries_total{path, reason}`) and sleeps a
 /// short jittered backoff that grows with `attempt` (about 20 ms, 40 ms, 80 ms, ...).
 pub async fn retry_pause(path: &'static str, e: &anyhow::Error, attempt: u32) {
@@ -537,6 +547,21 @@ impl Store {
     }
 }
 
+/// A stored test case: id, hash, display name, source file and line, last seen.
+type KnownTestCase = (
+    Uuid,
+    String,
+    String,
+    Option<String>,
+    Option<i32>,
+    DateTime<Utc>,
+);
+
+/// The items of `v` at `at`.
+fn pick<T: Clone>(v: &[T], at: &[usize]) -> Vec<T> {
+    at.iter().map(|&i| v[i].clone()).collect()
+}
+
 pub async fn persist_attempts_in(
     conn: &mut sqlx::PgConnection,
     launch: &LaunchRef,
@@ -547,10 +572,13 @@ pub async fn persist_attempts_in(
     if attempts.is_empty() {
         return Ok(out);
     }
-    let seq0: i64 = sqlx::query_scalar("select attempt_seq from launches where id = $1 for update")
-        .bind(launch.id)
-        .fetch_one(&mut *conn)
-        .await?;
+    // `no key update` serializes the writers of this launch without blocking the foreign key
+    // checks of rows that reference it (log chunks of the launch written meanwhile).
+    let seq0: i64 =
+        sqlx::query_scalar("select attempt_seq from launches where id = $1 for no key update")
+            .bind(launch.id)
+            .fetch_one(&mut *conn)
+            .await?;
 
     let mut seen: HashMap<String, usize> = HashMap::new();
     let mut prepared: Vec<Prepared> = Vec::with_capacity(attempts.len());
@@ -614,7 +642,48 @@ pub async fn persist_attempts_in(
                 .unwrap_or_default()
         }));
     }
-    let rows: Vec<(Uuid, String)> = sqlx::query_as(
+    // Test cases that exist and need no change are only share-locked: `for key share` keeps
+    // them from being deleted (`refresh_vacated`) without waiting for, or blocking, other
+    // launches that use them. An upsert would lock them until commit even when it changes
+    // nothing, which made launches sharing tests wait for each other's whole transaction.
+    let known: Vec<KnownTestCase> = sqlx::query_as(
+            "select id, test_case_hash, display_name, source_file, source_line, last_seen_at from test_cases \
+             where project_id = $1 and test_case_hash = any($2) order by id for key share",
+        )
+        .bind(launch.project_id)
+        .bind(&tc_hashes)
+        .fetch_all(&mut *conn)
+        .await?;
+    let stale = now - chrono::Duration::hours(1);
+    let mut tc_by_hash: HashMap<String, Uuid> = HashMap::with_capacity(tc_hashes.len());
+    let mut current: HashSet<String> = HashSet::with_capacity(known.len());
+    {
+        let at: HashMap<&str, usize> = tc_hashes
+            .iter()
+            .enumerate()
+            .map(|(i, h)| (h.as_str(), i))
+            .collect();
+        for (id, hash, display, file, line, seen) in known {
+            let Some(&i) = at.get(hash.as_str()) else {
+                continue;
+            };
+            let changed = display != tc_display[i]
+                || (tc_file[i].is_some() && file != tc_file[i])
+                || (tc_line[i].is_some() && line != tc_line[i])
+                || seen < stale;
+            if !changed {
+                current.insert(hash.clone());
+            }
+            tc_by_hash.insert(hash, id);
+        }
+    }
+    let upsert: Vec<usize> = (0..tc_hashes.len())
+        .filter(|&i| !current.contains(&tc_hashes[i]))
+        .collect();
+    if !upsert.is_empty() {
+        let u_ids: Vec<Uuid> = upsert.iter().map(|&i| tc_ids[i]).collect();
+        let u_hashes: Vec<String> = pick(&tc_hashes, &upsert);
+        let rows: Vec<(Uuid, String)> = sqlx::query_as(
             "insert into test_cases (id, project_id, test_case_hash, full_name, display_name, source_file, \
                source_line, code_ref, explicit_id, explicit_id_source, first_seen_at, last_seen_at) \
              select i, $1, h, f, d, sf, sl, cr, e, es, $11, $11 from unnest($2::uuid[], $3::text[], $4::text[], \
@@ -630,20 +699,21 @@ pub async fn persist_attempts_in(
              returning id, test_case_hash",
         )
         .bind(launch.project_id)
-        .bind(&tc_ids)
-        .bind(&tc_hashes)
-        .bind(&tc_full)
-        .bind(&tc_display)
-        .bind(&tc_file)
-        .bind(&tc_line)
-        .bind(&tc_code)
-        .bind(&tc_explicit)
-        .bind(&tc_explicit_src)
+        .bind(&u_ids)
+        .bind(&u_hashes)
+        .bind(pick(&tc_full, &upsert))
+        .bind(pick(&tc_display, &upsert))
+        .bind(pick(&tc_file, &upsert))
+        .bind(pick(&tc_line, &upsert))
+        .bind(pick(&tc_code, &upsert))
+        .bind(pick(&tc_explicit, &upsert))
+        .bind(pick(&tc_explicit_src, &upsert))
         .bind(now)
         .fetch_all(&mut *conn)
         .await?;
-    let mut tc_by_hash: HashMap<String, Uuid> = rows.into_iter().map(|(i, h)| (h, i)).collect();
-    // Rows left unchanged (the `where` above) return nothing: read their ids.
+        tc_by_hash.extend(rows.into_iter().map(|(i, h)| (h, i)));
+    }
+    // Rows left unchanged by the upsert (another launch inserted them meanwhile): read their ids.
     let unchanged: Vec<&String> = tc_hashes
         .iter()
         .filter(|h| !tc_by_hash.contains_key(*h))
@@ -682,7 +752,30 @@ pub async fn persist_attempts_in(
         se_env.push(opt_no_nul(p.r.identity.env_key.as_deref()));
         se_params.push(json_no_nul(display_parameters(&p.r.parameters)));
     }
-    let rows: Vec<(Uuid, String, Uuid)> = sqlx::query_as(
+    // Series as the test cases: existing ones are share-locked, new or stale ones upserted.
+    let known: Vec<(Uuid, String, Uuid, DateTime<Utc>)> = sqlx::query_as(
+        "select id, series_key, test_case_id, last_seen_at from series \
+         where project_id = $1 and series_key = any($2) order by id for key share",
+    )
+    .bind(launch.project_id)
+    .bind(&se_keys)
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut series_by_key: HashMap<String, (Uuid, Uuid)> = HashMap::with_capacity(se_keys.len());
+    let mut current: HashSet<String> = HashSet::with_capacity(known.len());
+    for (id, key, tc, seen) in known {
+        if seen >= stale {
+            current.insert(key.clone());
+        }
+        series_by_key.insert(key, (id, tc));
+    }
+    let upsert: Vec<usize> = (0..se_keys.len())
+        .filter(|&i| !current.contains(&se_keys[i]))
+        .collect();
+    if !upsert.is_empty() {
+        let u_ids: Vec<Uuid> = upsert.iter().map(|&i| se_ids[i]).collect();
+        let u_tc: Vec<Uuid> = upsert.iter().map(|&i| se_tc[i]).collect();
+        let rows: Vec<(Uuid, String, Uuid)> = sqlx::query_as(
             "insert into series (id, project_id, test_case_id, series_key, parameters_hash, env_key, parameters, \
                first_seen_at, last_seen_at) \
              select i, $1, tc, k, ph, e, p, $8, $8 from unnest($2::uuid[], $3::uuid[], $4::text[], $5::text[], \
@@ -692,17 +785,17 @@ pub async fn persist_attempts_in(
              returning id, series_key, test_case_id",
         )
         .bind(launch.project_id)
-        .bind(&se_ids)
-        .bind(&se_tc)
-        .bind(&se_keys)
-        .bind(&se_phash)
-        .bind(&se_env)
-        .bind(&se_params)
+        .bind(&u_ids)
+        .bind(&u_tc)
+        .bind(pick(&se_keys, &upsert))
+        .bind(pick(&se_phash, &upsert))
+        .bind(pick(&se_env, &upsert))
+        .bind(pick(&se_params, &upsert))
         .bind(now)
         .fetch_all(&mut *conn)
         .await?;
-    let mut series_by_key: HashMap<String, (Uuid, Uuid)> =
-        rows.into_iter().map(|(i, k, tc)| (k, (i, tc))).collect();
+        series_by_key.extend(rows.into_iter().map(|(i, k, tc)| (k, (i, tc))));
+    }
     let unchanged: Vec<&String> = se_keys
         .iter()
         .filter(|k| !series_by_key.contains_key(*k))
@@ -1082,6 +1175,15 @@ pub async fn persist_attempts_in(
         .await?;
     }
     out.results = groups.len() as u64;
+    let stored: Vec<serde_json::Value> = prepared
+        .iter()
+        .zip(a_series.iter())
+        .filter(|(p, _)| accepted.contains(&p.client_key))
+        .map(|(p, series)| {
+            serde_json::json!({"id": p.id, "resultId": result_of[series], "launchId": launch.id,
+                    "seriesId": series, "status": status_text(&p.r)})
+        })
+        .collect();
     let analyzed: Vec<crate::analysis::PersistedAttempt<'_>> = prepared
         .iter()
         .filter(|p| accepted.contains(&p.client_key))
@@ -1103,6 +1205,8 @@ pub async fn persist_attempts_in(
         Some(seq0 + prepared.len() as i64),
     )
     .await?;
+    // The outbox rows last: their ids are taken at insert, and the outbox reader waits at the
+    // first id whose transaction is still open, so they go in right before the commit.
     crate::events::emit_many(
         &mut *conn,
         "result.updated",
@@ -1119,15 +1223,6 @@ pub async fn persist_attempts_in(
         )
         .await?;
     }
-    let stored: Vec<serde_json::Value> = prepared
-        .iter()
-        .zip(a_series.iter())
-        .filter(|(p, _)| out.accepted_keys.contains(&p.client_key))
-        .map(|(p, series)| {
-            serde_json::json!({"id": p.id, "resultId": result_of[series], "launchId": launch.id,
-                    "seriesId": series, "status": status_text(&p.r)})
-        })
-        .collect();
     crate::events::emit_many(
         &mut *conn,
         "attempt.stored",

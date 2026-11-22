@@ -2334,3 +2334,120 @@ async fn report_issue_link_and_cli() {
     let (code, _, _) = cli(vec!["--launch".into(), "missing".into()]).await;
     assert_ne!(code, Some(0));
 }
+
+#[tokio::test]
+async fn cases_api_identity_and_filter_match_the_case_list() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = Server::start(&db).await;
+    s.project("mix").await;
+    let p = pid(&db, "mix").await;
+    let base = "/api/v1/projects/mix/cases";
+    let mut numbers = Vec::new();
+    for (name, tags) in [
+        ("Pay", json!(["smoke", "pay"])),
+        ("Refund", json!(["pay"])),
+        ("Login", json!(["smoke"])),
+    ] {
+        let (st, c) = s
+            .post(
+                base,
+                ADMIN_TOKEN,
+                json!({"name": name, "body": {"steps": [{"action": "Do", "expected": "Done"}]}, "tags": tags}),
+            )
+            .await;
+        assert_eq!(st, StatusCode::CREATED, "{c}");
+        numbers.push(c["number"].as_i64().unwrap());
+    }
+    let filter = json!({"tags": ["smoke", "pay"]});
+    let (st, listed) = s
+        .get(&format!("{base}?tag=smoke&tag=pay"), ADMIN_TOKEN)
+        .await;
+    assert_eq!(st, StatusCode::OK, "{listed}");
+    let mut want: Vec<i64> = listed["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["number"].as_i64().unwrap())
+        .collect();
+    want.sort();
+    let plan = managed(
+        &s,
+        "mix",
+        ADMIN_TOKEN,
+        json!({"name": "F", "filter": filter}),
+    )
+    .await;
+    let (_, plan_items) = s
+        .get(
+            &format!(
+                "/api/v1/projects/mix/test-plans/{}/items",
+                plan["id"].as_str().unwrap()
+            ),
+            ADMIN_TOKEN,
+        )
+        .await;
+    let mut got: Vec<i64> = plan_items["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["caseNumber"].as_i64().unwrap())
+        .collect();
+    got.sort();
+    assert_eq!(got, want, "a plan filter matches what the case list shows");
+    assert_eq!(got, vec![numbers[0]]);
+
+    let before: Vec<(Uuid, i64)> = sqlx::query_as(
+        "select t.id, c.number from test_cases t join cases c on c.id = t.case_id \
+         where t.project_id = $1 and t.kind = 'manual' order by c.number",
+    )
+    .bind(p)
+    .fetch_all(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        before.len(),
+        3,
+        "the cases API created the manual identities"
+    );
+    let l = s.launch("mix", None).await;
+    let lid = l["id"].as_str().unwrap();
+    let (st, _) = s
+        .post(
+            &format!("/api/v1/projects/mix/launches/{lid}/run-items"),
+            ADMIN_TOKEN,
+            json!({"caseNumbers": numbers}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK);
+    let list = items(&s, "mix", lid).await;
+    let done = set_status(
+        &s,
+        "mix",
+        ADMIN_TOKEN,
+        &item_of(&list, numbers[1]),
+        "passed",
+    )
+    .await;
+    let tc: Uuid = sqlx::query_scalar("select test_case_id from results where id = $1::uuid")
+        .bind(done["resultId"].as_str().unwrap())
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    let after: i64 = sqlx::query_scalar(
+        "select count(*) from test_cases where project_id = $1 and kind = 'manual'",
+    )
+    .bind(p)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(after, 3, "run items reuse the identities");
+    assert_eq!(
+        tc, before[1].0,
+        "the result lands on the case's manual identity"
+    );
+    let (st, c) = s.get(&format!("{base}/{}", numbers[1]), ADMIN_TOKEN).await;
+    assert_eq!(st, StatusCode::OK, "{c}");
+    assert_eq!(c["identities"].as_array().unwrap().len(), 1);
+}

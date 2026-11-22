@@ -15,9 +15,8 @@ use sqlx::{PgConnection, Postgres, QueryBuilder, Row};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-use super::fields::MAX_OPTION_BYTES;
 use super::{
-    CaseFilter, FolderCounts, MAX_TAG_BYTES, PlanAssign, StartPlanLaunch, TestPlan, TestPlanItem,
+    CaseFilter, FolderCounts, PlanAssign, StartPlanLaunch, TestPlan, TestPlanItem,
     TestPlanItemsChange, TestPlanKind, TestPlanWrite, TmError, TmLimits, TmResult, check_name,
     double_option, lock_project,
 };
@@ -25,10 +24,6 @@ use crate::analysis::plans::{TestPlanJson, TestPlanTest};
 use crate::launches::{LaunchStart, like_escape};
 use crate::{Launch, Page, Project, Store, json_no_nul, no_nul};
 
-/// Values in one list of a filter (folders, field values), at most.
-pub const MAX_FILTER_VALUES: usize = 1000;
-/// Bytes of the filter's text query, at most.
-pub const MAX_FILTER_Q_BYTES: usize = 200;
 /// Bytes of an assignee, at most.
 pub const MAX_ASSIGNEE_BYTES: usize = 200;
 /// Code identities read for one `testplan.json`, at most.
@@ -95,168 +90,20 @@ pub fn check_assignee(a: &str) -> TmResult<String> {
     check_name("assignee", a, MAX_ASSIGNEE_BYTES)
 }
 
-/// Checks the sizes of a filter (`limits` for fields and tags). Folder ownership is checked
-/// by [`check_filter_folders`].
-pub fn check_filter(f: &CaseFilter, limits: &TmLimits) -> TmResult<()> {
-    if let Some(ids) = &f.folder_ids
-        && ids.len() > MAX_FILTER_VALUES
-    {
-        return Err(bad(format!(
-            "filter.folderIds has at most {MAX_FILTER_VALUES} folders"
-        )));
-    }
-    if let Some(fields) = &f.fields {
-        if fields.len() > limits.max_fields {
-            return Err(bad(format!(
-                "filter.fields has at most {} fields",
-                limits.max_fields
-            )));
-        }
-        for (k, vals) in fields {
-            if !super::fields::valid_key(k) {
-                return Err(bad(format!("filter.fields: invalid field key {k:?}")));
-            }
-            if vals.is_empty() || vals.len() > MAX_FILTER_VALUES {
-                return Err(bad(format!(
-                    "filter.fields.{k} lists 1 to {MAX_FILTER_VALUES} values"
-                )));
-            }
-            if vals.iter().any(|v| v.len() > MAX_OPTION_BYTES) {
-                return Err(bad(format!(
-                    "filter.fields.{k}: values have at most {MAX_OPTION_BYTES} bytes"
-                )));
-            }
-        }
-    }
-    if let Some(tags) = &f.tags {
-        if tags.len() > limits.max_tags {
-            return Err(bad(format!(
-                "filter.tags has at most {} tags",
-                limits.max_tags
-            )));
-        }
-        if tags.iter().any(|t| t.is_empty() || t.len() > MAX_TAG_BYTES) {
-            return Err(bad(format!(
-                "filter.tags: tags have 1 to {MAX_TAG_BYTES} bytes"
-            )));
-        }
-    }
-    if let Some(q) = &f.q
-        && q.len() > MAX_FILTER_Q_BYTES
-    {
-        return Err(bad(format!(
-            "filter.q has at most {MAX_FILTER_Q_BYTES} bytes"
-        )));
-    }
-    Ok(())
-}
-
-/// Every folder of the filter belongs to the project (404 otherwise).
-pub async fn check_filter_folders(
-    conn: &mut PgConnection,
-    project_id: Uuid,
-    f: &CaseFilter,
-) -> TmResult<()> {
-    let Some(ids) = &f.folder_ids else {
-        return Ok(());
-    };
-    let mut ids = ids.clone();
-    ids.sort();
-    ids.dedup();
-    let n: i64 = sqlx::query_scalar(
-        "select count(*) from case_folders where project_id = $1 and id = any($2)",
-    )
-    .bind(project_id)
-    .bind(&ids)
-    .fetch_one(&mut *conn)
-    .await?;
-    if n as usize != ids.len() {
-        return Err(TmError::NotFound("folder"));
-    }
-    Ok(())
-}
-
-/// `TC-12` or `12` as a case number.
-pub fn case_number_query(q: &str) -> Option<i64> {
-    let t = q.trim();
-    let t = t
-        .strip_prefix("TC-")
-        .or_else(|| t.strip_prefix("tc-"))
-        .unwrap_or(t);
-    if t.is_empty() || t.len() > 18 || !t.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    t.parse().ok()
-}
-
-/// Appends the conditions of `f` over `cases c` (not archived, in the project).
-pub(crate) fn push_case_filter(qb: &mut QueryBuilder<Postgres>, project_id: Uuid, f: &CaseFilter) {
-    qb.push(" c.project_id = ")
-        .push_bind(project_id)
-        .push(" and c.archived_at is null");
-    if let Some(ids) = &f.folder_ids {
-        if f.recursive.unwrap_or(true) {
-            qb.push(
-                " and c.folder_id in (select fo.id from case_folders fo where fo.project_id = ",
-            )
-            .push_bind(project_id)
-            .push(" and fo.path_ids && ")
-            .push_bind(ids.clone())
-            .push(")");
-        } else {
-            qb.push(" and c.folder_id = any(")
-                .push_bind(ids.clone())
-                .push(")");
-        }
-    }
-    if let Some(st) = &f.statuses {
-        let st: Vec<String> = st.iter().map(|s| s.as_str().to_string()).collect();
-        qb.push(" and c.status = any(").push_bind(st).push(")");
-    }
-    if let Some(a) = f.automation {
-        qb.push(" and c.automated = ")
-            .push_bind(a == super::ResultSource::Automated);
-    }
-    if let Some(fields) = &f.fields {
-        for (k, vals) in fields {
-            let vals: Vec<String> = vals.iter().map(|v| no_nul(v)).collect();
-            qb.push(" and (c.fields -> ")
-                .push_bind(k.clone())
-                .push(" ?| ")
-                .push_bind(vals.clone())
-                .push(" or (c.fields ->> ")
-                .push_bind(k.clone())
-                .push(") = any(")
-                .push_bind(vals)
-                .push("))");
-        }
-    }
-    if let Some(tags) = &f.tags {
-        let tags: Vec<String> = tags.iter().map(|t| no_nul(t)).collect();
-        qb.push(" and c.tags && ").push_bind(tags);
-    }
-    if let Some(q) = f.q.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
-        match case_number_query(q) {
-            Some(n) => {
-                qb.push(" and c.number = ").push_bind(n);
-            }
-            None => {
-                qb.push(" and c.name ilike ")
-                    .push_bind(format!("%{}%", like_escape(q)));
-            }
-        }
-    }
-}
-
-/// Ids of the cases matching a filter, at most `cap`.
+/// Ids of the cases (not archived) matching a filter, at most `cap`, by number: the case
+/// list's filter (`cases::push_filter`), so plans and the case list match the same cases.
+/// The caller checks the filter with `cases::check_filter` and `cases::check_filter_folders`.
 pub async fn filter_case_ids(
     conn: &mut PgConnection,
     project_id: Uuid,
     f: &CaseFilter,
     cap: usize,
 ) -> sqlx::Result<Vec<Uuid>> {
-    let mut qb: QueryBuilder<Postgres> = QueryBuilder::new("select c.id from cases c where");
-    push_case_filter(&mut qb, project_id, f);
+    let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(
+        "select c.id from cases c where c.archived_at is null and c.project_id = ",
+    );
+    qb.push_bind(project_id);
+    super::cases::push_filter(&mut qb, project_id, f);
     qb.push(" order by c.number limit ").push_bind(cap as i64);
     qb.build_query_scalar().fetch_all(&mut *conn).await
 }
@@ -561,7 +408,7 @@ impl Store {
         }
         let filter = w.filter.clone().flatten();
         if let Some(f) = &filter {
-            check_filter(f, limits)?;
+            super::cases::check_filter(f)?;
         }
         let numbers = w.case_numbers.clone().unwrap_or_default();
         if numbers.len() > limits.max_bulk {
@@ -570,7 +417,7 @@ impl Store {
         let mut tx = self.pool.begin().await?;
         lock_project(&mut tx, project_id, "plans").await?;
         if let Some(f) = &filter {
-            check_filter_folders(&mut tx, project_id, f).await?;
+            super::cases::check_filter_folders(&mut tx, project_id, f).await?;
         }
         let explicit = resolve_numbers(&mut tx, project_id, &numbers).await?;
         let id = Uuid::now_v7();
@@ -679,7 +526,7 @@ impl Store {
             });
         }
         if let Some(Some(f)) = &p.filter {
-            check_filter(f, limits)?;
+            super::cases::check_filter(f)?;
         }
         let mut tx = self.pool.begin().await?;
         let row = managed_for_change(&mut tx, project_id, id, false).await?;
@@ -691,7 +538,7 @@ impl Store {
             });
         }
         if let Some(Some(f)) = &p.filter {
-            check_filter_folders(&mut tx, project_id, f).await?;
+            super::cases::check_filter_folders(&mut tx, project_id, f).await?;
         }
         let filter_json = match &p.filter {
             Some(Some(f)) => Some(json_no_nul(serde_json::to_value(f)?)),

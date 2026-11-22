@@ -365,6 +365,7 @@ impl Store {
         )
         .await?;
         crate::events::notify_launch(&mut tx, project_key, id).await?;
+        crate::tm::sync::queue_launch(&mut tx, project_id, id).await?;
         tx.commit().await?;
         self.launch(project_id, id).await
     }

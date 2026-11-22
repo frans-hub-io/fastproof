@@ -94,6 +94,7 @@ pub fn validate_start(b: &LaunchStart) -> ApiResult<()> {
             ("vcs.branch", &v.branch),
             ("vcs.commit", &v.commit),
             ("vcs.commitUrl", &v.commit_url),
+            ("vcs.defaultBranch", &v.default_branch),
         ] {
             bounded(n, x.as_deref(), 2048)?;
         }

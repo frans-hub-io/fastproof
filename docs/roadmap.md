@@ -37,7 +37,7 @@ See [Scaling and big data](operations/scaling.md).
 
 - [Rules and triage](guide/rules-and-triage.md): failure clusters, defect types, mutes, and rules with dry runs
   and retroactive application.
-- [Quality gates](guide/quality-gates.md) and [notifications](guide/notifications.md): signed webhooks, Slack,
+- [Quality gates](guide/quality-gates.md) and [notifications](guide/notifications.md): signed webhooks, Slack, Microsoft Teams,
   email, Telegram, merge request comments and commit statuses.
 - [MCP for GitHub Copilot](guide/mcp-copilot.md): local agents read launches, failures, clusters, history,
   logs and FastMock interactions, and write triage that is marked as AI, audited and revertible, with

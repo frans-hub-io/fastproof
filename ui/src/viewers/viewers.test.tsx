@@ -94,9 +94,10 @@ describe('attachment viewers', () => {
     const items = screen.getAllByTestId('attachment-item');
     expect(items).toHaveLength(3);
     expect(items[1]).toHaveAttribute('target', '_blank');
+    server.use(http.post('/api/v1/projects/web-shop/attachments/v/media-url', () => HttpResponse.json({ url: '/api/v1/media/tok', expiresAt: new Date(Date.now() + 900_000).toISOString() })));
     await user.click(screen.getByText('video.webm'));
     const viewer = await screen.findByTestId('video-viewer');
-    expect(viewer).toHaveAttribute('src', '/api/v1/projects/web-shop/attachments/v/content');
+    expect(viewer).toHaveAttribute('src', '/api/v1/media/tok');
     await user.click(screen.getByText(/cmp \(expected/));
     await waitFor(() => expect(screen.getByTestId('image-compare')).toBeInTheDocument());
   });

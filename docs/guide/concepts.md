@@ -45,6 +45,29 @@ attaches fixtures to results as soon as both are present.
 - **Attachments** are stored once per project by content hash (SHA-256): screenshots, videos, Playwright
   traces, image diffs, HTTP exchanges, logs and other files.
 
+## Test videos
+
+When an attempt has a video attachment, its page gets a **Video** tab next to the steps. The player streams the
+recording from a short-lived address that the server hands out for the attachment (it needs no sign-in, works
+with cookie and token sign-in, and is replaced automatically before it expires). A video opened from the
+attachment list uses the same player without the step list.
+
+- **Steps on the timeline.** Each step with a start time is marked on the seek bar at
+  `step start - attempt start`; nested steps appear when you hover the bar, failed steps are red and the
+  moment of the failure is highlighted. Click a step in the list beside the player to jump there; while the
+  video plays, the current step is highlighted and scrolled into view.
+- **Approximate.** Playwright starts recording when the page opens, which is close to the start of the test but
+  not exactly at it. Nudge the steps by 0.5 s with the buttons above the list; the nudge is kept in the page
+  address (`vo`), so a shared link shows the same alignment. An attempt with several videos (several pages)
+  has a switcher (`video`).
+- **Controls.** Play and pause, seek with buffered ranges and hover previews, speed 0.25x to 2x, volume,
+  picture in picture, full screen, download. Speed and volume are remembered in the browser.
+- **Keyboard** (with focus in the player): `Space` or `k` play and pause, `Left` and `Right` jump 5 s
+  (`Shift` 1 min), `Home` and `End`, `,` and `.` step one frame while paused, `f` full screen, `m` mute.
+- Recordings written by Playwright have no stored length; then only the elapsed time is shown and seeking works
+  within what the browser has loaded. If the browser cannot decode the codec, the player says so and offers
+  the download.
+
 ## Test identity
 
 To build history, FastProof must recognise the same test in different launches. It uses the same identity as

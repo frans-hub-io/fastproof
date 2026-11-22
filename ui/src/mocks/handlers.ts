@@ -24,6 +24,7 @@ import {
   type MockRole,
 } from './fixtures';
 import { stageCHandlers } from './handlersC';
+import { mediaHandlers } from './media';
 import { analyze, analyzeDetail, isImportant, resetStageC } from './stageC';
 import { resetTm, subscribeTmEvents, tmHandlers, tmLaunchList } from './tm';
 
@@ -511,6 +512,7 @@ export const handlers = [
   }),
 
   ...stageCHandlers({ role: currentRole, error, audit }),
+  ...mediaHandlers(error),
 
   http.all(`${API}/*`, () => error(404, 'not_found', 'no such endpoint')),
 ];

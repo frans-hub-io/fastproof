@@ -50,6 +50,25 @@ export async function request<T>(path: string, init?: RequestInit & { json?: unk
   return (text ? JSON.parse(text) : undefined) as T;
 }
 
+/** Like `request`, but also returns the response headers (for `ETag`) and sends raw bodies as given. */
+export async function requestRaw(path: string, init?: RequestInit & { json?: unknown }): Promise<{ data: unknown; headers: Headers; status: number }> {
+  const headers = new Headers(init?.headers);
+  if (!headers.has('Accept')) headers.set('Accept', 'application/json');
+  let body = init?.body;
+  if (init?.json !== undefined) {
+    headers.set('Content-Type', 'application/json');
+    body = JSON.stringify(init.json);
+  }
+  const res = await apiFetch(path, { ...init, headers, body });
+  if (res.status === 401) {
+    redirectToLogin(loginUrl(currentPath()));
+    throw new ApiError(401, { code: 'unauthorized', message: 'Authentication required' });
+  }
+  if (!res.ok) throw await apiErrorFrom(res);
+  const text = res.status === 204 ? '' : await res.text();
+  return { data: text ? (JSON.parse(text) as unknown) : undefined, headers: res.headers, status: res.status };
+}
+
 export function errorMessage(e: unknown): string {
   if (e instanceof ApiError) {
     const details = describeDetails(e.details);

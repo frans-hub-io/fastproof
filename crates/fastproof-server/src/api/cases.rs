@@ -41,6 +41,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(start_case_backfill))
         .routes(routes!(get_case, update_case, patch_case, archive_case))
         .routes(routes!(restore_case))
+        .routes(routes!(review_case))
         .routes(routes!(list_case_versions))
         .routes(routes!(get_case_version))
         .routes(routes!(restore_case_version))
@@ -396,6 +397,38 @@ pub async fn patch_case(
         .map_err(tm_error)?;
     for (action, detail) in audit_change(&before, &after) {
         s.audit(&auth, action, Some(&p.key), detail).await;
+    }
+    reply(&s, &p, &after).await
+}
+
+#[utoipa::path(post, path = "/api/v1/projects/{key}/cases/{n}/review", tag = "cases", operation_id = "review_case",
+    description = "Marks a case an AI agent created as reviewed: clears `aiUnreviewed` (no new version). Audited as \
+        `case.review`; a case that is already reviewed is returned unchanged.",
+    params(("key" = String, Path), ("n" = i64, Path), ("If-Match" = String, Header)),
+    responses((status = 200, body = Case, headers(("ETag" = String))), (status = 403, body = ErrorBody),
+        (status = 404, body = ErrorBody), (status = 412, body = ErrorBody), (status = 428, body = ErrorBody)))]
+pub async fn review_case(
+    State(s): State<AppState>,
+    auth: Auth,
+    headers: HeaderMap,
+    P((key, n)): P<(String, String)>,
+) -> ApiResult<CaseReply> {
+    let p = s.project_for(&auth, &key, &s.perms.cases_write).await?;
+    let n = case_number(&n)?;
+    let expected = if_match(&headers)?;
+    let (before, after) = s
+        .store
+        .mark_case_reviewed(&ctx(&s, &p, &auth), n, expected)
+        .await
+        .map_err(tm_error)?;
+    if before.ai_unreviewed {
+        s.audit(
+            &auth,
+            "case.review",
+            Some(&p.key),
+            serde_json::json!({"number": after.number}),
+        )
+        .await;
     }
     reply(&s, &p, &after).await
 }

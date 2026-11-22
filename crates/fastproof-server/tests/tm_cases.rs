@@ -1808,3 +1808,63 @@ async fn save_of_a_100_step_case_is_fast() {
     assert_eq!(rev, 21);
     assert!(p50 < 2000.0, "save p50 {p50} ms");
 }
+
+#[tokio::test]
+async fn review_clears_the_ai_draft_mark_with_if_match() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = Server::start(&db).await;
+    s.project("rv").await;
+    s.project("other").await;
+    let c = create(&s, "rv", json!({"name": "Drafted by an agent", "body": {}})).await;
+    sqlx::query("update cases set ai_unreviewed = true where id = $1::uuid")
+        .bind(c.body["id"].as_str().unwrap())
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let path = "/api/v1/projects/rv/cases/1/review";
+    let r = send(
+        &s,
+        Method::GET,
+        "/api/v1/projects/rv/cases/1",
+        ADMIN_TOKEN,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(r.body["aiUnreviewed"], true);
+    let etag = r.etag.unwrap();
+    let r = send(&s, Method::POST, path, ADMIN_TOKEN, None, None).await;
+    assert_eq!(r.status, StatusCode::PRECONDITION_REQUIRED, "{}", r.body);
+    let r = send(&s, Method::POST, path, ADMIN_TOKEN, Some("\"r0\""), None).await;
+    assert_eq!(r.status, StatusCode::PRECONDITION_FAILED, "{}", r.body);
+    assert_eq!(r.body["details"]["currentRevision"], 1);
+    let r = send(
+        &s,
+        Method::POST,
+        "/api/v1/projects/other/cases/1/review",
+        ADMIN_TOKEN,
+        Some(&etag),
+        None,
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND, "{}", r.body);
+    let r = send(&s, Method::POST, path, ADMIN_TOKEN, Some(&etag), None).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert_eq!(r.body["aiUnreviewed"], false);
+    assert_eq!(r.body["revision"], 2);
+    assert_eq!(r.body["version"], 1, "no new version");
+    assert_eq!(r.etag.as_deref(), Some("\"r2\""));
+    let again = send(&s, Method::POST, path, ADMIN_TOKEN, Some("\"r2\""), None).await;
+    assert_eq!(again.status, StatusCode::OK);
+    assert_eq!(again.body["revision"], 2, "already reviewed: unchanged");
+    audit_has(&s, &["case.review"]).await;
+    let anon = s
+        .req(Method::POST, path, None)
+        .header("if-match", "\"r2\"")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(anon.status(), StatusCode::UNAUTHORIZED);
+}

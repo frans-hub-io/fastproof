@@ -1056,7 +1056,7 @@ export function projects(): Project[] {
   ];
 }
 
-const ALL_PERMS = ['projects:read', 'projects:write', 'launches:read', 'launches:write', 'results:triage', 'rules:write', 'settings:write', 'audit:read', 'tokens:read', 'tokens:write'];
+const ALL_PERMS = ['projects:read', 'projects:write', 'launches:read', 'launches:write', 'results:triage', 'rules:write', 'settings:write', 'audit:read', 'tokens:read', 'tokens:write', 'cases:read', 'cases:write', 'cases:import', 'cases:sync', 'plans:write', 'runs:execute'];
 
 export type MockRole = 'admin' | 'viewer';
 
@@ -1068,7 +1068,7 @@ export function meFor(role: MockRole) {
       authMethod: 'session',
       roles: ['viewer'],
       groups: ['qa'],
-      permissions: { global: [], scopes: { 'web-shop': ['projects:read', 'launches:read', 'tokens:read'] }, allScopes: [] },
+      permissions: { global: [], scopes: { 'web-shop': ['projects:read', 'launches:read', 'tokens:read', 'cases:read'] }, allScopes: [] },
     };
   }
   return {

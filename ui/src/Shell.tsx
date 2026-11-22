@@ -1,9 +1,10 @@
-import { AppShellLayout, type CommandItem, type NavItem } from '@franshub/ui-shell';
-import { IconAdjustments, IconBell, IconChartLine, IconClockCog, IconFlask2, IconGitCompare, IconKey, IconListDetails, IconShieldCheck, IconShieldSearch, IconWand, IconWaveSine } from '@tabler/icons-react';
+import { AppShellLayout, useCan, type CommandItem, type NavItem } from '@franshub/ui-shell';
+import { IconAdjustments, IconBell, IconChartLine, IconChecklist, IconClipboardList, IconClockCog, IconFlask2, IconGitCompare, IconKey, IconListDetails, IconShieldCheck, IconShieldSearch, IconWand, IconWaveSine } from '@tabler/icons-react';
 import { useQueryClient, type InfiniteData } from '@tanstack/react-query';
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { matchPath, useLocation, useNavigate } from 'react-router';
 import { useProjects } from './api/hooks';
+import { useCaseIndex } from './api/tm';
 import type { Launch, Page } from './api/types';
 import { readRecent, type RecentLaunch } from './lib/recent';
 
@@ -38,6 +39,8 @@ export function Shell({ children }: { children: ReactNode }) {
   const qc = useQueryClient();
   const projectKey = matchPath('/p/:key/*', location.pathname)?.params.key ?? matchPath('/p/:key', location.pathname)?.params.key;
   const path = location.pathname;
+  const canReadCases = useCan('cases:read', projectKey);
+  const caseIndex = useCaseIndex(projectKey, canReadCases);
 
   const navItems = useMemo<NavItem[]>(() => {
     const items: NavItem[] = [{ label: 'Projects', href: '/', icon: <IconFlask2 size={18} />, active: path === '/' }];
@@ -46,7 +49,10 @@ export function Shell({ children }: { children: ReactNode }) {
       const base = `/p/${projectKey}`;
       const section = (s: string) => path === `${base}/${s}` || path.startsWith(`${base}/${s}/`);
       const sections = ['dashboard', 'flaky', 'compare', 'rules', 'gates', 'notifications', 'settings'];
+      sections.push('cases', 'plans');
       items.push({ label: `${name}: launches`, href: base, icon: <IconListDetails size={18} />, active: path.startsWith(base) && !sections.some(section) });
+      items.push({ label: 'Test cases', href: `${base}/cases`, icon: <IconClipboardList size={18} />, active: section('cases'), permission: 'cases:read', scope: projectKey });
+      items.push({ label: 'Test plans', href: `${base}/plans`, icon: <IconChecklist size={18} />, active: section('plans'), permission: 'cases:read', scope: projectKey });
       items.push({ label: 'Dashboard', href: `${base}/dashboard`, icon: <IconChartLine size={18} />, active: section('dashboard') });
       items.push({ label: 'Flaky tests', href: `${base}/flaky`, icon: <IconWaveSine size={18} />, active: section('flaky') });
       items.push({ label: 'Compare launches', href: `${base}/compare`, icon: <IconGitCompare size={18} />, active: section('compare') });
@@ -92,8 +98,13 @@ export function Shell({ children }: { children: ReactNode }) {
         });
       }
     }
+    if (projectKey) {
+      for (const c of caseIndex.data ?? []) {
+        out.push({ id: `case:${String(c.number)}`, label: `TC-${String(c.number)} ${c.name}`, group: 'Test cases', keywords: [`tc${String(c.number)}`, String(c.number)], onSelect: () => void navigate(`/p/${projectKey}/cases/${String(c.number)}`) });
+      }
+    }
     return out;
-  }, [projects.data, recent, projectKey, qc, navigate]);
+  }, [projects.data, recent, projectKey, qc, navigate, caseIndex.data]);
 
   return (
     <AppShellLayout productName="FastProof" logo={<Logo />} navItems={navItems} commands={commands} onNavigate={(href) => void navigate(href)}>

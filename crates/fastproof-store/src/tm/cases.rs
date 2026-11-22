@@ -1603,6 +1603,41 @@ impl Store {
         Ok((cur, row))
     }
 
+    /// Clears `ai_unreviewed` of a case whose revision is `expected` ("Reviewed"); `revision + 1`,
+    /// no version (the content did not change). Returns the case before and after; a case that
+    /// is already reviewed is returned unchanged.
+    pub async fn mark_case_reviewed(
+        &self,
+        ctx: &CaseCtx<'_>,
+        n: i64,
+        expected: i64,
+    ) -> TmResult<(CaseRow, CaseRow)> {
+        let mut tx = self.pool.begin().await?;
+        let cur = lock_case_by_number(&mut tx, ctx.project_id, n, Some(expected)).await?;
+        if !cur.ai_unreviewed {
+            return Ok((cur.clone(), cur));
+        }
+        let r = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "update cases set ai_unreviewed = false, revision = revision + 1, updated_by = $3, \
+             updated_at = now() where id = $1 and project_id = $2 returning {CASE_COLS}"
+        )))
+        .bind(cur.id)
+        .bind(ctx.project_id)
+        .bind(no_nul(ctx.by))
+        .fetch_one(&mut *tx)
+        .await?;
+        let row = case_row(&r)?;
+        case_event(
+            &mut tx,
+            ctx.project_key,
+            "case.updated",
+            json!({"number": row.number, "revision": row.revision, "source": "ui"}),
+        )
+        .await?;
+        tx.commit().await?;
+        Ok((cur, row))
+    }
+
     /// Archives (`archive = true`) or restores a case; `revision + 1`, no version.
     pub async fn set_case_archived(
         &self,

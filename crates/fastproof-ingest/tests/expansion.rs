@@ -161,11 +161,11 @@ fn junit_attempts_per_test_are_capped() {
 fn junit_attempt_copies_are_charged_to_the_budget() {
     let _g = lock();
     let t = TempDir::new().unwrap();
-    let xml = junit_case(&big_properties(300, 3400), &"<failure/>".repeat(90));
+    let xml = junit_case(&big_properties(300, 1000), &"<failure/>".repeat(90));
     let p = write(t.path(), "junit.xml", xml.as_bytes());
     let run = ingest(
         &p,
-        limits(serde_json::json!({"max_total_uncompressed_bytes": 32 * MIB})),
+        limits(serde_json::json!({"max_total_uncompressed_bytes": 8 * MIB})),
     );
     assert_eq!(limit_of(&run), "max_total_uncompressed_bytes");
     assert!(run.peak < 64 * MIB, "peak {} MiB", run.peak / MIB);
@@ -261,7 +261,7 @@ fn ctrf_retry_copies_keep_steps_out_and_are_charged() {
     let t = TempDir::new().unwrap();
     let steps = vec![r#"{"name":"s","status":"passed"}"#; 1000].join(",");
     let tags: String = (0..400)
-        .map(|i| format!("\"{i}{}\"", "t".repeat(2600)))
+        .map(|i| format!("\"{i}{}\"", "t".repeat(1000)))
         .collect::<Vec<_>>()
         .join(",");
     let retries = vec![r#"{"status":"failed"}"#; 60].join(",");
@@ -271,7 +271,7 @@ fn ctrf_retry_copies_keep_steps_out_and_are_charged() {
     let p = write(t.path(), "ctrf-report.json", doc.as_bytes());
     let run = ingest(
         &p,
-        limits(serde_json::json!({"max_total_uncompressed_bytes": 32 * MIB})),
+        limits(serde_json::json!({"max_total_uncompressed_bytes": 8 * MIB})),
     );
     assert_eq!(limit_of(&run), "max_total_uncompressed_bytes");
 
@@ -527,4 +527,44 @@ fn suite_properties_are_merged_in_linear_time() {
     let b = run.result.as_ref().unwrap();
     assert_eq!(b.launch_meta.attributes.len(), 160_000);
     assert!(run.took < Duration::from_secs(20), "took {:?}", run.took);
+}
+
+#[test]
+fn long_label_names_and_values_are_cut_with_a_warning() {
+    let _g = lock();
+    let t = TempDir::new().unwrap();
+    let d = t.path().join("allure");
+    let value = "\u{1F600}".repeat(MIB / 8);
+    write(
+        &d,
+        "a-result.json",
+        format!(
+            r#"{{"uuid":"a","name":"n","status":"passed","start":1,"stop":2,"labels":[{{"name":"{n}","value":"{value}"}},{{"name":"tag","value":"ok"}}]}}"#,
+            n = "k".repeat(10_000)
+        )
+        .as_bytes(),
+    );
+    let b = ingest(&d, defaults()).result.unwrap();
+    let labels = &b.results[0].labels;
+    assert!(labels[0].name.len() <= 256, "{}", labels[0].name.len());
+    assert!(labels[0].value.len() <= 1024, "{}", labels[0].value.len());
+    assert_eq!(labels[1].value, "ok");
+    assert!(
+        b.warnings.iter().any(|w| w.message.contains("label names")),
+        "{:?}",
+        b.warnings
+    );
+
+    let props = format!(
+        r#"<property name="owner" value="{}"/>"#,
+        "o".repeat(100_000)
+    );
+    let p = write(t.path(), "junit.xml", junit_case(&props, "").as_bytes());
+    let b = ingest(&p, defaults()).result.unwrap();
+    let owner = b.results[0]
+        .labels
+        .iter()
+        .find(|l| l.name == "owner")
+        .unwrap();
+    assert_eq!(owner.value.len(), 1024);
 }

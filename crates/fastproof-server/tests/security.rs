@@ -217,6 +217,55 @@ async fn database_limits() {
     assert_eq!(st, StatusCode::OK, "{b}");
 }
 
+/// The launch explorer aggregates scan a whole launch, so they take a heavy slot of the caller.
+#[tokio::test]
+async fn explorer_aggregates_take_heavy_slots() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = Server::start_with(&db, &[("FASTPROOF_HEAVY_QUERIES_PER_CALLER", "1")]).await;
+    s.project("agg").await;
+    let lid = launch_id(&s, "agg").await;
+    let mut h = axum::http::HeaderMap::new();
+    h.insert(
+        "authorization",
+        format!("Bearer {ADMIN_TOKEN}").parse().unwrap(),
+    );
+    let auth = state(&s)
+        .platform
+        .authenticate(&h, &axum::http::Method::GET)
+        .await
+        .unwrap();
+    let base = format!("/api/v1/projects/agg/launches/{lid}");
+    let paths = [
+        format!("{base}/labels"),
+        format!("{base}/facets"),
+        format!("{base}/environments"),
+        format!("{base}/tree"),
+        format!("{base}/tree/tests?path=%5B%5D"),
+    ];
+    let other = s.token("other", "viewer", &["agg"]).await;
+    let held = state(&s).guards.heavy(&auth).await.unwrap();
+    for p in &paths {
+        let (st, b) = s.get(p, ADMIN_TOKEN).await;
+        assert_eq!(st, StatusCode::TOO_MANY_REQUESTS, "{p}: {b}");
+        let r = s
+            .req(Method::GET, p, Some(ADMIN_TOKEN))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(r.headers().get("retry-after").unwrap(), "2", "{p}");
+        let (st, b) = s.get(p, &other).await;
+        assert_eq!(st, StatusCode::OK, "{p}: {b}");
+    }
+    drop(held);
+    for p in &paths {
+        let (st, b) = s.get(p, ADMIN_TOKEN).await;
+        assert_eq!(st, StatusCode::OK, "{p}: {b}");
+    }
+}
+
 /// B9: log searches have a bounded time window for every backend.
 #[tokio::test]
 async fn log_search_window_is_bounded() {

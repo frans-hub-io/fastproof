@@ -23,6 +23,10 @@ import {
   type Row,
   saveExpansion,
   toggleValue,
+  decodeValue,
+  encodeValue,
+  listValues,
+  NONE_VALUE,
   validLabelName,
   worstStatus,
 } from './explorer';
@@ -239,5 +243,32 @@ describe('explorer grouping and filters', () => {
     expect(toggleValue(undefined, 'a', true)).toBe('a');
     expect(groupName('')).toBe('(none)');
     expect(groupName('Shop')).toBe('Shop');
+  });
+
+  it('round-trips values with commas and percent signs through the list', () => {
+    expect(encodeValue('a,b')).toBe('a%2Cb');
+    expect(encodeValue('100%')).toBe('100%25');
+    expect(decodeValue('a%2cb')).toBe('a,b');
+    for (const v of ['a,b', '100%', '%2C', 'x,,y', '(none)', ' mixed, %25 ']) {
+      expect(decodeValue(encodeValue(v.trim())), v).toBe(v.trim());
+    }
+    const list = toggleValue(toggleValue(undefined, 'a,b', true) ?? undefined, 'c', true);
+    expect(list).toBe('a%2Cb,c');
+    expect(listValues(list ?? undefined)).toEqual(['a,b', 'c']);
+    expect(toggleValue(list ?? undefined, 'a,b', false)).toBe('c');
+  });
+
+  it('keeps plain comma-separated lists working', () => {
+    expect(listValues('critical,blocker,50%')).toEqual(['critical', 'blocker', '50%']);
+    expect(listValues(' a , b ,,')).toEqual(['a', 'b']);
+  });
+
+  it('keeps the missing-label marker apart from a value that reads (none)', () => {
+    expect(NONE_VALUE).not.toBe('(none)');
+    expect(toggleValue(undefined, NONE_VALUE, true)).toBe('%00');
+    expect(toggleValue(undefined, '(none)', true)).toBe('(none)');
+    expect(listValues('%00,(none)')).toEqual([NONE_VALUE, '(none)']);
+    expect(toggleValue('%00,(none)', NONE_VALUE, false)).toBe('(none)');
+    expect(groupName('')).toBe('(none)');
   });
 });

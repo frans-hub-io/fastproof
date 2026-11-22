@@ -139,7 +139,7 @@ export function FilterMenu({ project, launch }: { project: string; launch: Launc
   const [p] = useParam();
   const n = extraCount(p);
   const [opened, setOpened] = useState(false);
-  const facets = useLaunchFacets(project, launch.id, p.env, launch.status === 'running', opened || n > 0);
+  const facets = useLaunchFacets(project, launch.id, p.env, launch.status === 'running', opened || n > 0, opened);
   const defectTypes = useDefectTypeMap(project);
   return (
     <Popover opened={opened} onChange={setOpened} position="bottom-start" width="min(340px, calc(100vw - 32px))" shadow="md" withinPortal trapFocus returnFocus>

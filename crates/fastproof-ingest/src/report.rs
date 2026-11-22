@@ -161,6 +161,8 @@ pub fn report_to_parsed(r: ReportResult, o: &ReportOptions<'_>) -> Result<Parsed
     for s in r.steps {
         steps.push(w.step(s, 1)?);
     }
+    let mut labels = r.labels;
+    crate::ctx::clamp_labels(&mut labels);
     let max_log = o.limits.max_log_bytes;
     let running = r.status.is_running();
     let interrupted = !running && r.stop.is_none() && r.start.is_some() && r.duration_ms.is_none();
@@ -189,7 +191,7 @@ pub fn report_to_parsed(r: ReportResult, o: &ReportOptions<'_>) -> Result<Parsed
             html: r.description_html.map(|h| sanitize_html(&h)),
         },
         parameters: r.parameters,
-        labels: r.labels,
+        labels,
         links: r.links,
         steps,
         attachments,
@@ -218,6 +220,22 @@ mod tests {
             status: Status::Passed.into(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn long_labels_are_cut() {
+        let mut r = base();
+        r.labels = vec![fastproof_model::Label::new("tag", "t".repeat(5000))];
+        let limits = Limits::default();
+        let p = report_to_parsed(
+            r,
+            &ReportOptions {
+                limits: &limits,
+                environment_key: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(p.labels[0].value.len(), crate::ctx::MAX_LABEL_VALUE_BYTES);
     }
 
     #[test]

@@ -26,6 +26,7 @@ use uuid::Uuid;
 
 use super::uploads::{identity_encoding, too_large};
 use super::{ErrorBody, P, Q, key_value, page_limit};
+use crate::limits::heavy_error;
 use crate::state::AppState;
 
 /// Results persisted per transaction.
@@ -548,12 +549,13 @@ pub async fn list(
 }
 
 /// The explorer filters shared by the tree, its pages, the result list and the label list.
-/// Lists are comma-separated; values within one filter are alternatives, filters combine.
+/// Lists are comma-separated, a comma inside a value is written `%2C` and a percent sign `%25`;
+/// values within one filter are alternatives, filters combine.
 #[derive(Deserialize, IntoParams, Default)]
 #[into_params(parameter_in = Query)]
 #[serde(rename_all = "camelCase")]
 pub struct ExplorerQuery {
-    /// Substring of the error message.
+    /// Words of the error message (whole words, case-insensitive).
     pub message: Option<String>,
     /// `true`: only results with more than one attempt.
     pub retried: Option<String>,
@@ -562,11 +564,11 @@ pub struct ExplorerQuery {
     /// `true`: failed or broken, not muted results whose series did not fail in the previous
     /// finished launch on the same branch and environment.
     pub new_failures: Option<String>,
-    /// Severity label values; `(none)` matches results without the label.
+    /// Severity label values; `%00` matches results without the label.
     pub severity: Option<String>,
-    /// Owner label values; `(none)` matches results without the label.
+    /// Owner label values; `%00` matches results without the label.
     pub owner: Option<String>,
-    /// Tag label values; `(none)` matches results without the label.
+    /// Tag label values; `%00` matches results without the label.
     pub tag: Option<String>,
     pub min_duration_ms: Option<String>,
     pub max_duration_ms: Option<String>,
@@ -574,14 +576,40 @@ pub struct ExplorerQuery {
     pub defect: Option<String>,
     /// `trace`, `video` or `screenshot`.
     pub attachment: Option<String>,
-    /// An environment key of the results' series; `(none)` matches results without one.
+    /// An environment key of the results' series (`%2C` for a comma, `%25` for a percent sign); `%00` matches results without one.
     pub env: Option<String>,
 }
 
 /// Values of one list filter, at most.
 pub const MAX_FILTER_VALUES: usize = 20;
-/// The value of a label filter that matches results without the label.
-pub const NONE_VALUE: &str = "(none)";
+/// The item of a label filter, or the `env`, that matches results without the label or without
+/// an environment (`%00` in the URL). No stored value contains a NUL.
+const NO_LABEL: &str = "\0";
+
+/// Reads one item of a list filter: `%2C` is a comma, `%25` a percent sign, `%00` the marker
+/// of a missing label; any other `%` stays as it is, so plain comma-separated lists work.
+fn list_item(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.find('%') {
+        out.push_str(&rest[..i]);
+        let tail = &rest[i..];
+        let escape = tail.get(..3).map(str::to_ascii_uppercase);
+        match escape.as_deref() {
+            Some("%2C") => out.push(','),
+            Some("%25") => out.push('%'),
+            Some("%00") => out.push_str(NO_LABEL),
+            _ => {
+                out.push('%');
+                rest = &tail[1..];
+                continue;
+            }
+        }
+        rest = &tail[3..];
+    }
+    out.push_str(rest);
+    out
+}
 
 fn values(v: Option<&str>, name: &str) -> ApiResult<Vec<String>> {
     let Some(v) = v else { return Ok(Vec::new()) };
@@ -592,7 +620,7 @@ fn values(v: Option<&str>, name: &str) -> ApiResult<Vec<String>> {
         .split(',')
         .map(str::trim)
         .filter(|x| !x.is_empty())
-        .map(str::to_string)
+        .map(list_item)
         .collect();
     if items.len() > MAX_FILTER_VALUES {
         return Err(ApiError::bad_request(format!(
@@ -648,7 +676,7 @@ impl ExplorerQuery {
         ] {
             let values: Vec<String> = values(v.as_deref(), name)?
                 .into_iter()
-                .map(|x| if x == NONE_VALUE { String::new() } else { x })
+                .map(|x| if x == NO_LABEL { String::new() } else { x })
                 .collect();
             if !values.is_empty() {
                 labels.push((name.to_string(), values));
@@ -681,8 +709,10 @@ impl ExplorerQuery {
                     "env has at most {MAX_Q_BYTES} bytes"
                 )));
             }
-            Some(NONE_VALUE) => Some(EnvFilter::None),
-            Some(e) => Some(EnvFilter::Key(e.to_string())),
+            Some(e) => match list_item(e) {
+                k if k == NO_LABEL => Some(EnvFilter::None),
+                k => Some(EnvFilter::Key(k)),
+            },
         };
         let min = millis(self.min_duration_ms.as_deref(), "minDurationMs")?;
         let max = millis(self.max_duration_ms.as_deref(), "maxDurationMs")?;
@@ -853,7 +883,7 @@ async fn tree_filter(
 
 #[utoipa::path(get, path = "/api/v1/projects/{key}/launches/{id}/tree", tag = "results", operation_id = "results_tree",
     params(("key" = String, Path), ("id" = Uuid, Path), TreeQuery, ExplorerQuery),
-    responses((status = 200, body = TreeNode), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
+    responses((status = 200, body = TreeNode), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody), (status = 429, body = ErrorBody), (status = 503, body = ErrorBody)))]
 pub async fn tree(
     State(s): State<AppState>,
     auth: Auth,
@@ -863,6 +893,7 @@ pub async fn tree(
 ) -> ApiResult<Json<TreeNode>> {
     let project = s.project_for(&auth, &key, &s.perms.launches_read).await?;
     let launch = s.launch_of(&project, id).await?;
+    let _permit = s.guards.heavy(&auth).await?;
     let by = group_by(q.group_by.as_deref())?;
     let filter = tree_filter(
         &s,
@@ -880,12 +911,14 @@ pub async fn tree(
         filter,
         reveal: q.reveal,
     };
-    Ok(Json(s.store.tree_with(&launch, &o).await?))
+    Ok(Json(
+        s.store.tree_with(&launch, &o).await.map_err(heavy_error)?,
+    ))
 }
 
 #[utoipa::path(get, path = "/api/v1/projects/{key}/launches/{id}/tree/tests", tag = "results", operation_id = "results_tree_tests",
     params(("key" = String, Path), ("id" = Uuid, Path), TreeTestsQuery, ExplorerQuery),
-    responses((status = 200, body = Page<TreeTest>), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
+    responses((status = 200, body = Page<TreeTest>), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody), (status = 429, body = ErrorBody), (status = 503, body = ErrorBody)))]
 pub async fn tree_tests(
     State(s): State<AppState>,
     auth: Auth,
@@ -895,6 +928,7 @@ pub async fn tree_tests(
 ) -> ApiResult<Json<Page<TreeTest>>> {
     let project = s.project_for(&auth, &key, &s.perms.launches_read).await?;
     let launch = s.launch_of(&project, id).await?;
+    let _permit = s.guards.heavy(&auth).await?;
     let by = group_by(q.group_by.as_deref())?;
     if q.path.len() > MAX_TREE_PATH_BYTES {
         return Err(ApiError::bad_request(format!(
@@ -928,7 +962,8 @@ pub async fn tree_tests(
     Ok(Json(
         s.store
             .tree_tests(&launch, &by, &path, &f, q.before.as_deref(), limit)
-            .await?,
+            .await
+            .map_err(heavy_error)?,
     ))
 }
 
@@ -943,7 +978,7 @@ pub struct LabelNameList {
 #[derive(Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct EnvQuery {
-    /// An environment key; `(none)` for results without one.
+    /// An environment key (`%2C` for a comma, `%25` for a percent sign); `%00` for results without one.
     pub env: Option<String>,
 }
 
@@ -959,7 +994,7 @@ impl EnvQuery {
 #[utoipa::path(get, path = "/api/v1/projects/{key}/launches/{id}/labels", tag = "results", operation_id = "results_labels",
     params(("key" = String, Path), ("id" = Uuid, Path), EnvQuery),
     description = "The label names of the results of a launch with how many results have each and how many distinct values it has: the choices of a custom tree grouping.",
-    responses((status = 200, body = LabelNameList), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
+    responses((status = 200, body = LabelNameList), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody), (status = 429, body = ErrorBody), (status = 503, body = ErrorBody)))]
 pub async fn labels(
     State(s): State<AppState>,
     auth: Auth,
@@ -968,16 +1003,21 @@ pub async fn labels(
 ) -> ApiResult<Json<LabelNameList>> {
     let project = s.project_for(&auth, &key, &s.perms.launches_read).await?;
     let launch = s.launch_of(&project, id).await?;
+    let _permit = s.guards.heavy(&auth).await?;
     let f = q.explorer().filter(&s, &launch).await?;
     Ok(Json(LabelNameList {
-        items: s.store.launch_labels(&launch, &f).await?,
+        items: s
+            .store
+            .launch_labels(&launch, &f)
+            .await
+            .map_err(heavy_error)?,
     }))
 }
 
 #[utoipa::path(get, path = "/api/v1/projects/{key}/launches/{id}/facets", tag = "results", operation_id = "results_facets",
     params(("key" = String, Path), ("id" = Uuid, Path), EnvQuery),
     description = "How many results of a launch (in one environment) each explorer filter value keeps.",
-    responses((status = 200, body = LaunchFacets), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
+    responses((status = 200, body = LaunchFacets), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody), (status = 429, body = ErrorBody), (status = 503, body = ErrorBody)))]
 pub async fn facets(
     State(s): State<AppState>,
     auth: Auth,
@@ -986,9 +1026,15 @@ pub async fn facets(
 ) -> ApiResult<Json<LaunchFacets>> {
     let project = s.project_for(&auth, &key, &s.perms.launches_read).await?;
     let launch = s.launch_of(&project, id).await?;
+    let _permit = s.guards.heavy(&auth).await?;
     let f = q.explorer().filter(&s, &launch).await?;
     let b = baseline(&s, &launch).await?;
-    Ok(Json(s.store.launch_facets(&launch, &f, &b).await?))
+    Ok(Json(
+        s.store
+            .launch_facets(&launch, &f, &b)
+            .await
+            .map_err(heavy_error)?,
+    ))
 }
 
 /// The environments of a launch.
@@ -1001,7 +1047,7 @@ pub struct EnvironmentCountsList {
 #[utoipa::path(get, path = "/api/v1/projects/{key}/launches/{id}/environments", tag = "results", operation_id = "results_environments",
     params(("key" = String, Path), ("id" = Uuid, Path)),
     description = "The environments the results of a launch ran in (the environment key of their series: the launch environment, and for some formats a project or target per result), with status counts.",
-    responses((status = 200, body = EnvironmentCountsList), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
+    responses((status = 200, body = EnvironmentCountsList), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody), (status = 429, body = ErrorBody), (status = 503, body = ErrorBody)))]
 pub async fn environments(
     State(s): State<AppState>,
     auth: Auth,
@@ -1009,8 +1055,13 @@ pub async fn environments(
 ) -> ApiResult<Json<EnvironmentCountsList>> {
     let project = s.project_for(&auth, &key, &s.perms.launches_read).await?;
     let launch = s.launch_of(&project, id).await?;
+    let _permit = s.guards.heavy(&auth).await?;
     Ok(Json(EnvironmentCountsList {
-        items: s.store.launch_environments(&launch).await?,
+        items: s
+            .store
+            .launch_environments(&launch)
+            .await
+            .map_err(heavy_error)?,
     }))
 }
 

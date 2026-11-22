@@ -18,6 +18,18 @@ function currentPath(): string {
   return `${pathname}${search}${hash}`;
 }
 
+const retryAfter = new WeakMap<object, number>();
+
+/** The `Retry-After` of a failed response in milliseconds, when the server sent whole seconds. */
+export function retryAfterMs(err: unknown): number | undefined {
+  return typeof err === 'object' && err !== null ? retryAfter.get(err) : undefined;
+}
+
+function noteRetryAfter(err: ApiError, header: string | null): void {
+  const n = header !== null && /^\d{1,4}$/.test(header.trim()) ? Number(header) : NaN;
+  if (Number.isFinite(n)) retryAfter.set(err, n * 1000);
+}
+
 export type Query = Record<string, string | number | boolean | null | undefined>;
 
 export function withQuery(path: string, query?: Query): string {
@@ -44,7 +56,11 @@ export async function request<T>(path: string, init?: RequestInit & { json?: unk
     redirectToLogin(loginUrl(currentPath()));
     throw new ApiError(401, { code: 'unauthorized', message: 'Authentication required' });
   }
-  if (!res.ok) throw await apiErrorFrom(res);
+  if (!res.ok) {
+    const err = await apiErrorFrom(res);
+    noteRetryAfter(err, res.headers.get('Retry-After'));
+    throw err;
+  }
   if (res.status === 204) return undefined as T;
   const text = await res.text();
   return (text ? JSON.parse(text) : undefined) as T;

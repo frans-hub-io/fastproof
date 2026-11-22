@@ -11,7 +11,8 @@ use std::time::Duration;
 use anyhow::bail;
 use axum::body::Body;
 use axum::extract::{Request, State};
-use axum::http::{HeaderMap, Method, StatusCode};
+use axum::http::header::RETRY_AFTER;
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use franshub_access::Permission;
@@ -26,6 +27,8 @@ use crate::state::AppState;
 
 /// How long a heavy read waits for a free slot before it answers 503.
 pub const HEAVY_WAIT: Duration = Duration::from_secs(5);
+/// Seconds a client is told to wait before it retries a refused heavy read.
+const HEAVY_RETRY_AFTER: &str = "2";
 /// How long an upload waits for a free spool slot before it answers 503.
 pub const SPOOL_WAIT: Duration = Duration::from_secs(10);
 
@@ -215,6 +218,7 @@ impl Guards {
             metrics::counter!("fastproof_guard_rejections_total", "guard" => "heavy_per_caller")
                 .increment(1);
             ApiError::too_many_requests("too many concurrent queries for this caller")
+                .with_header(RETRY_AFTER, HeaderValue::from_static(HEAVY_RETRY_AFTER))
         })?;
         let global =
             match tokio::time::timeout(HEAVY_WAIT, self.heavy.clone().acquire_owned()).await {
@@ -222,7 +226,8 @@ impl Guards {
                 _ => {
                     metrics::counter!("fastproof_guard_rejections_total", "guard" => "heavy_global")
                     .increment(1);
-                    return Err(ApiError::unavailable("the server is busy; retry later"));
+                    return Err(ApiError::unavailable("the server is busy; retry later")
+                        .with_header(RETRY_AFTER, HeaderValue::from_static(HEAVY_RETRY_AFTER)));
                 }
             };
         Ok(HeavyPermit {

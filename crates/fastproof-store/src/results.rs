@@ -346,8 +346,11 @@ fn push_label_missing(qb: &mut QueryBuilder<Postgres>, name: &str) {
 /// The filters the tree and the result list share (all but status, text, flaky and source).
 fn push_extra_filter(qb: &mut QueryBuilder<Postgres>, f: &TreeFilter) {
     if let Some(m) = &f.message {
-        qb.push(" and r.message ilike ")
-            .push_bind(format!("%{}%", like_escape(m)));
+        qb.push(
+            " and to_tsvector('simple', coalesce(r.message, '')) @@ plainto_tsquery('simple', ",
+        )
+        .push_bind(no_nul(m))
+        .push(")");
     }
     if f.retried {
         qb.push(" and r.attempt_count > 1");

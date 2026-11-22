@@ -193,6 +193,7 @@ pub(crate) fn parse(v: &Value, file: &str, ctx: &mut Ctx<'_>) -> Result<CtrfDoc,
             labels.push(Label::new("suite", s.clone()));
         }
         ctx.check_labels(labels.len(), file)?;
+        ctx.clamp_labels(&mut labels, file);
         let retry_attempts = arr(t, "retryAttempts");
         ctx.check_attempts(retry_attempts.len() + 1, file)?;
         let allure_id = labels

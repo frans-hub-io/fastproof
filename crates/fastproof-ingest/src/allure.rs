@@ -132,7 +132,7 @@ pub(crate) fn parse_result(
         return Ok(None);
     }
     let mut budget = ctx.steps(file);
-    let labels: Vec<Label> = arr(v, "labels")
+    let mut labels: Vec<Label> = arr(v, "labels")
         .iter()
         .filter_map(|l| {
             Some(Label::new(
@@ -142,6 +142,7 @@ pub(crate) fn parse_result(
         })
         .collect();
     ctx.check_labels(labels.len(), file)?;
+    ctx.clamp_labels(&mut labels, file);
     let links: Vec<Link> = arr(v, "links")
         .iter()
         .filter_map(|l| {

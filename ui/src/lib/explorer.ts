@@ -61,8 +61,22 @@ export function pageGroupBy(groupBy: TreeGroupBy, root: TreeNode | null | undefi
 export const FILTER_PARAMS = ['message', 'retried', 'muted', 'newFailures', 'severity', 'owner', 'tag', 'minDurationMs', 'maxDurationMs', 'defect', 'attachment', 'source'] as const;
 export type FilterParam = (typeof FILTER_PARAMS)[number];
 
-/** The value of a label filter that keeps results without the label. */
-export const NONE_VALUE = '(none)';
+/** The value of a label filter that keeps results without the label (written `%00` in the URL). */
+export const NONE_VALUE = '\u0000';
+
+/** The name a group of missing labels shows. */
+const NONE_NAME = '(none)';
+
+/** One value of a list filter as it is written in the URL: a comma and a percent sign are escaped. */
+export function encodeValue(value: string): string {
+  if (value === NONE_VALUE) return '%00';
+  return value.replace(/%/g, '%25').replace(/,/g, '%2C');
+}
+
+/** One item of a list filter, read back; other `%` sequences stay (plain lists keep working). */
+export function decodeValue(item: string): string {
+  return item.replace(/%(2C|25|00)/gi, (_, h: string) => (h === '00' ? NONE_VALUE : h === '25' ? '%' : ','));
+}
 
 function num(v: string | null): number | undefined {
   if (v === null || v.trim() === '') return undefined;
@@ -112,21 +126,21 @@ export function extraCount(p: ExplorerParams & { source?: string }): number {
   return n;
 }
 
-/** The values of a comma-separated list filter. */
+/** The values of a comma-separated list filter (a comma inside a value is `%2C`). */
 export function listValues(v: string | undefined): string[] {
-  return (v ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+  return (v ?? '').split(',').map((x) => x.trim()).filter(Boolean).map(decodeValue);
 }
 
 /** The list with `value` added or removed. */
 export function toggleValue(v: string | undefined, value: string, on: boolean): string | null {
   const list = listValues(v).filter((x) => x !== value);
   if (on) list.push(value);
-  return list.length ? list.join(',') : null;
+  return list.length ? list.map(encodeValue).join(',') : null;
 }
 
 /** The name a group shows: results without the label of a level sit in `(none)`. */
 export function groupName(name: string): string {
-  return name === '' ? NONE_VALUE : name;
+  return name === '' ? NONE_NAME : name;
 }
 
 export function parseSort(v: string | null): ExplorerSort {

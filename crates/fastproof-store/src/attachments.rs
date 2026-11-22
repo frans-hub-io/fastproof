@@ -250,6 +250,37 @@ impl Store {
         }))
     }
 
+    /// An attachment of the project by its SHA-256 with the key of its (not deleted) project.
+    pub async fn attachment_by_sha(
+        &self,
+        project_id: Uuid,
+        sha256: &str,
+    ) -> anyhow::Result<Option<(String, StoredAttachment)>> {
+        let r = sqlx::query(
+            "select p.key as project_key, a.id, a.project_id, a.sha256, a.size, a.content_type, \
+                    a.original_name, a.blob_key \
+             from attachments a join projects p on p.id = a.project_id \
+             where a.project_id = $1 and a.sha256 = $2 and p.deleted_at is null",
+        )
+        .bind(project_id)
+        .bind(sha256)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(r) = r else { return Ok(None) };
+        Ok(Some((
+            r.try_get("project_key")?,
+            StoredAttachment {
+                id: r.try_get("id")?,
+                project_id: r.try_get("project_id")?,
+                sha256: r.try_get("sha256")?,
+                size: r.try_get("size")?,
+                content_type: r.try_get("content_type")?,
+                original_name: r.try_get("original_name")?,
+                blob_key: r.try_get("blob_key")?,
+            },
+        )))
+    }
+
     /// Deletes up to `batch` attachments that no launch links, no case holds (`case_attachments`)
     /// and no manual step result references (`run_step_results.attachment_ids`), and that were
     /// not seen for `grace`, and queues their blobs in `blob_deletions` (same transaction); returns how

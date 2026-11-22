@@ -1,4 +1,4 @@
-{{- if .Values.garage.enabled }}
+{{- if include "fastproof.garageEnabled" . }}
 {{- $g := .Values.garage -}}
 {{- $name := include "fastproof.garageName" . -}}
 {{- $secret := include "fastproof.garageSecretName" . -}}

@@ -52,9 +52,13 @@ and put `sslmode=verify-full` in the URL (or set `database.sslMode`).
 
 | Option | Values | When |
 |---|---|---|
-| Volume | `blob.backend: fs` (default), `blob.fs.persistence.*` | One replica, or several with a ReadWriteMany volume. The PVC is kept when the release is uninstalled |
-| External S3 | `blob.backend: s3`, `blob.s3.endpoint`, `bucket`, `region`, `credentials.existingSecret` (keys `access-key`, `secret-key`), optional `ca` | Production: AWS S3 or any S3-compatible service with path-style addressing |
-| Bundled Garage v2.5.0 | `garage.enabled: true`, `blob.backend: s3` | Evaluation and small installations: one Garage node with a generated key and a default bucket |
+| Bundled Garage v2.5.0 | nothing (the default), or `blob.backend: s3` | Evaluation and small installations: one Garage node with a generated key and a default bucket. Used while `blob.backend` is `s3` (or unset), `blob.s3.endpoint` is empty and `garage.enabled` is `true` (its default) |
+| External S3 | `blob.s3.endpoint`, `bucket`, `region`, `credentials.existingSecret` (keys `access-key`, `secret-key`), optional `ca` | Production: AWS S3 or any S3-compatible service with path-style addressing. Setting the endpoint turns the bundled Garage off |
+| Volume | `blob.backend: fs`, `blob.fs.persistence.*` | Development, or one replica, or several with a ReadWriteMany volume. Always explicit. The PVC is kept when the release is uninstalled |
+
+The default is object storage because it serves video and large attachments with byte ranges from any replica
+and lets the API scale out without a shared volume. An existing release that stores attachments on a volume is
+not switched silently: see [Upgrading](upgrading.md#attachments-default-to-s3).
 
 Garage is AGPL-3.0 licensed and runs as a separate, unmodified service. The chart ships its own small Garage
 StatefulSet (non-root, read-only root filesystem, seccomp, probes on `/health`, resources) instead of
@@ -161,7 +165,8 @@ digest:
 | `server.extraEnv`, `server.extraEnvFrom` | none | Additional environment |
 | `database.*` | | External database URL, pool size, TLS |
 | `migrations.mode` | `job` | `job`: a Helm hook Job runs `fastproof migrate`; `auto`: the server migrates at start |
-| `blob.*`, `garage.*` | `fs` | Attachment storage |
+| `blob.*`, `garage.*` | bundled Garage (`s3`) | Attachment storage (see [Attachments](#attachments)) |
+| `server.mediaUrlTtlSeconds` | `900` | Lifetime of signed media URLs, 1 to 3600 (`FASTPROOF_MEDIA_URL_TTL_SECONDS`) |
 | `spool.sizeLimit` | `4Gi` | `emptyDir` for uploads in progress (`FASTPROOF_SPOOL_DIR`) |
 | `auth.adminTokens.existingSecret` / `tokens` / `generate` | none | Static tokens file |
 | `auth.access.roles`, `auth.access.bindings` or `existingConfigMap` | none | Access file |

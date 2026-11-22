@@ -7,8 +7,10 @@
 
 use std::fmt;
 use std::io::Write;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, bail};
@@ -20,7 +22,9 @@ use object_store::buffered::BufWriter;
 use object_store::local::LocalFileSystem;
 use object_store::path::Path as ObjPath;
 use object_store::signer::{Method, Signer};
-use object_store::{ClientOptions, ObjectStore, ObjectStoreExt, PutPayload, RetryConfig};
+use object_store::{
+    ClientOptions, GetOptions, GetRange, ObjectStore, ObjectStoreExt, PutPayload, RetryConfig,
+};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncWriteExt, BufReader};
 
@@ -189,11 +193,21 @@ pub struct BlobBody {
     pub stream: BoxStream<'static, anyhow::Result<Bytes>>,
 }
 
+/// A byte range of a blob being streamed.
+pub struct BlobRange {
+    /// The size of the whole blob.
+    pub total: u64,
+    /// The bytes the stream yields: `range.end - range.start` of them.
+    pub range: Range<u64>,
+    pub stream: BoxStream<'static, anyhow::Result<Bytes>>,
+}
+
 /// The configured store.
 #[derive(Clone)]
 pub struct BlobStore {
     inner: Arc<dyn ObjectStore>,
     s3: Option<Arc<AmazonS3>>,
+    streamed: Arc<AtomicU64>,
     backend: &'static str,
     description: String,
 }
@@ -224,6 +238,7 @@ impl BlobStore {
                 Ok(Self {
                     inner: Arc::new(fs),
                     s3: None,
+                    streamed: Arc::default(),
                     backend: "fs",
                     description: dir.display().to_string(),
                 })
@@ -275,6 +290,7 @@ impl BlobStore {
                 Ok(Self {
                     inner: s3.clone(),
                     s3: Some(s3),
+                    streamed: Arc::default(),
                     backend: "s3",
                     description: format!("{}/{}", c.endpoint.as_deref().unwrap_or("aws"), c.bucket),
                 })
@@ -331,12 +347,66 @@ impl BlobStore {
         match self.inner.get(&key.path()).await {
             Ok(r) => {
                 let size = r.meta.size;
-                let stream = r.into_stream().map_err(anyhow::Error::from).boxed();
+                let stream = self.counted(r.into_stream());
                 Ok(Some(BlobBody { size, stream }))
             }
             Err(e) if is_not_found(&e) => Ok(None),
             Err(e) => Err(anyhow::Error::from(e).context(format!("reading {key}"))),
         }
+    }
+
+    /// Streams the bytes `range` of a blob (a ranged read of the store, never a read of what
+    /// precedes it); `None` when the blob does not exist. The range must lie inside the blob.
+    pub async fn get_range(
+        &self,
+        key: &BlobKey,
+        range: Range<u64>,
+    ) -> anyhow::Result<Option<BlobRange>> {
+        if range.start >= range.end {
+            bail!("empty range of {key}");
+        }
+        let opts = GetOptions {
+            range: Some(GetRange::Bounded(range.clone())),
+            ..GetOptions::default()
+        };
+        match self.inner.get_opts(&key.path(), opts).await {
+            Ok(r) => {
+                if r.range != range {
+                    bail!(
+                        "the store answered bytes {}..{} of {key} for {}..{}",
+                        r.range.start,
+                        r.range.end,
+                        range.start,
+                        range.end
+                    );
+                }
+                Ok(Some(BlobRange {
+                    total: r.meta.size,
+                    range,
+                    stream: self.counted(r.into_stream()),
+                }))
+            }
+            Err(e) if is_not_found(&e) => Ok(None),
+            Err(e) => Err(anyhow::Error::from(e).context(format!("reading {key}"))),
+        }
+    }
+
+    fn counted(
+        &self,
+        s: impl futures::Stream<Item = object_store::Result<Bytes>> + Send + 'static,
+    ) -> BoxStream<'static, anyhow::Result<Bytes>> {
+        let n = self.streamed.clone();
+        s.map_err(anyhow::Error::from)
+            .inspect_ok(move |b| {
+                n.fetch_add(b.len() as u64, Ordering::Relaxed);
+            })
+            .boxed()
+    }
+
+    /// Bytes this store handle yielded to readers since it was opened (all clones share it):
+    /// tests use it to show that a ranged read does not read the prefix.
+    pub fn bytes_streamed(&self) -> u64 {
+        self.streamed.load(Ordering::Relaxed)
     }
 
     /// Downloads a blob into a local file; `None` when it does not exist.
@@ -674,6 +744,45 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, SpoolError::TooLarge { max: 100 }));
         assert!(!spool.exists());
+    }
+
+    #[tokio::test]
+    async fn fs_range_reads_only_the_range() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = BlobStore::open(&BlobConfig::Fs {
+            dir: dir.path().join("blobs"),
+        })
+        .unwrap();
+        let data: Vec<u8> = (0..100_000u32).map(|i| (i % 251) as u8).collect();
+        let sha = "ab".repeat(32);
+        let key = BlobKey::attachment("team-a", &sha).unwrap();
+        store
+            .put_bytes(&key, Bytes::from(data.clone()))
+            .await
+            .unwrap();
+        let r = store
+            .get_range(&key, 99_000..99_500)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!((r.total, r.range.clone()), (100_000, 99_000..99_500));
+        let got: Vec<Bytes> = r.stream.try_collect().await.unwrap();
+        assert_eq!(got.concat(), &data[99_000..99_500]);
+        assert_eq!(store.bytes_streamed(), 500);
+        assert!(store.get_range(&key, 0..0).await.is_err());
+        assert!(
+            store
+                .get_range(
+                    &BlobKey::attachment("team-a", &"cd".repeat(32)).unwrap(),
+                    0..1
+                )
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let all = store.get(&key).await.unwrap().unwrap();
+        let _: Vec<Bytes> = all.stream.try_collect().await.unwrap();
+        assert_eq!(store.bytes_streamed(), 100_500);
     }
 
     #[tokio::test]

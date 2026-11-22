@@ -7,7 +7,44 @@ version has migrated the schema.
 
 This page lists what needs attention per release.
 
-## Next release: faster Kafka writers
+## Next release: video serving and S3 by default
+
+The content route of attachments now answers byte ranges and conditional requests, and `<video>` elements load
+attachments through short-lived signed [media URLs](../reference/api.md#attachment-content-and-media-urls). Nothing
+needs to be done for these: there is no migration (the signing key is created in `stream_keys` at first start),
+and the new setting `FASTPROOF_MEDIA_URL_TTL_SECONDS` has a default. Metrics gain `media_urls_issued_total`,
+`media_url_rejections_total{reason}` and `attachment_bytes_served_total`.
+
+### Attachments default to S3
+
+The Helm chart's attachment storage default changes from a volume (`blob.backend: fs`) to object storage:
+with `blob.backend` unset, the chart deploys the bundled Garage and uses it, unless `blob.s3.endpoint` names an
+external S3 service. The setting `garage.enabled` is now `true` by default and only has an effect while the
+backend is `s3` and no endpoint is set. Setting `blob.backend: fs` keeps the volume, as before.
+
+An upgrade must not point FastProof at an empty bucket while the attachments sit on a volume, so the chart
+checks the existing release:
+
+- **Existing release with `blob.backend` unset and attachments on a volume.** The chart reads the
+  `FASTPROOF_BLOB_BACKEND` of the release's ConfigMap with `lookup` and keeps `fs`. It prints a warning in the
+  notes: add `blob.backend: fs` to your values to make the choice explicit.
+- **`helm template`, `--dry-run=client` and similar renders that mark an upgrade (`--is-upgrade`) without
+  cluster access** cannot read the release. The render fails with a message asking for an explicit
+  `blob.backend`.
+- **GitOps tools that render with `helm template` as an install** (no `--is-upgrade`, no `lookup`) cannot see the
+  existing release at all. Before updating the chart there, set `blob.backend` to what the release uses: `fs`
+  to keep the volume, or `s3` with an endpoint. If you upgraded without doing so, the volume is still there:
+  set `blob.backend: fs` and sync again, and attachments uploaded in between are in Garage.
+- **Existing releases that already use `blob.backend: s3`** with an endpoint or with `garage.enabled: true` are
+  unchanged.
+
+To move attachments from a volume to S3, keep `blob.backend: fs` until you have copied the blob directory into
+the bucket (the object keys are the same relative paths: `projects/<key>/attachments/<aa>/<sha256>`, for
+example `rclone copy /var/lib/fastproof/blobs s3:<bucket>`), then switch to `s3` with the endpoint (or the
+bundled Garage) and verify a few attachments. The `fs` volume is kept on uninstall, so there is no hurry to
+delete it.
+
+## Earlier in the next release: faster Kafka writers
 
 The writers of Kafka mode (and ingest in `direct` mode) store results and logs with far fewer statements and
 locks; see [Kafka writer](scaling.md#kafka-writer). Things to know before upgrading:

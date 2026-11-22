@@ -52,7 +52,7 @@ PostgreSQL 14 to 18 is supported; 18 is recommended. PostgreSQL 14 reached end o
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `FASTPROOF_BLOB_BACKEND` | `fs` | `fs` (a directory) or `s3` |
+| `FASTPROOF_BLOB_BACKEND` | `fs` | `fs` (a directory) or `s3`. The Helm chart defaults to `s3` with the bundled Garage; the binary keeps `fs` so a plain `docker run` needs no storage service |
 | `FASTPROOF_BLOB_DIR` | `/var/lib/fastproof/blobs` | Directory for `fs`. Several replicas need a shared (ReadWriteMany) volume |
 | `FASTPROOF_S3_ENDPOINT` | none | S3-compatible endpoint, for example `https://s3.example.com` |
 | `FASTPROOF_S3_REGION` | `us-east-1` | Signing region; must match the server's region (Garage defaults to `garage`) |
@@ -62,8 +62,16 @@ PostgreSQL 14 to 18 is supported; 18 is recommended. PostgreSQL 14 reached end o
 | `FASTPROOF_S3_CA_FILE` | none | Custom CA for the S3 endpoint |
 | `FASTPROOF_S3_PATH_STYLE` | `true` | Path-style addressing (`https://s3.example.com/bucket/key`) |
 
+| `FASTPROOF_MEDIA_URL_TTL_SECONDS` | `900` | Lifetime of [signed media URLs](../reference/api.md#attachment-content-and-media-urls), 1 to 3600 |
+
 Attachments are content-addressed by SHA-256 and stored once per project. There is no key prefix setting:
 FastProof uses the whole bucket, so give every installation its own bucket.
+
+Content is read with ranged requests (`Range` on S3, a seek on `fs`), so a seek in a long video reads only
+the bytes the player asks for from either backend. The signing key of media URLs is the row `media-url` of the
+`stream_keys` table, created at first start and shared by all replicas the way the Kafka signing key is; no
+setting is needed. Removing the row (`delete from stream_keys where name = 'media-url'`) and restarting every
+replica rotates it, and the media URLs issued before stop working (the player asks for new ones).
 
 ## Ingest
 

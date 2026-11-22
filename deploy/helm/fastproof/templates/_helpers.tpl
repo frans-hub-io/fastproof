@@ -108,12 +108,38 @@ verify-full
 {{- end -}}
 {{- end -}}
 
+{{- define "fastproof.existingBlobBackend" -}}
+{{- $cm := lookup "v1" "ConfigMap" .Release.Namespace (include "fastproof.fullname" .) -}}
+{{- dig "data" "FASTPROOF_BLOB_BACKEND" "" $cm -}}
+{{- end -}}
+
 {{- define "fastproof.blobBackend" -}}
-{{- if .Values.garage.enabled -}}s3{{- else -}}{{- .Values.blob.backend -}}{{- end -}}
+{{- if .Values.blob.backend -}}
+{{- .Values.blob.backend -}}
+{{- else if .Values.blob.s3.endpoint -}}
+s3
+{{- else -}}
+{{- $existing := include "fastproof.existingBlobBackend" . -}}
+{{- if $existing -}}
+{{- $existing -}}
+{{- else if .Release.IsUpgrade -}}
+{{- fail "this is an upgrade but the blob backend of the existing release cannot be read (no cluster access while rendering). The default backend is now s3 with the bundled Garage, which would start with an empty bucket. Set blob.backend explicitly: fs to keep the attachments on the existing volume, or s3 to move to object storage" -}}
+{{- else -}}
+s3
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "fastproof.blobBackendKept" -}}
+{{- if and (not .Values.blob.backend) (not .Values.blob.s3.endpoint) (eq (include "fastproof.blobBackend" .) "fs") -}}true{{- end -}}
+{{- end -}}
+
+{{- define "fastproof.garageEnabled" -}}
+{{- if and .Values.garage.enabled (eq (include "fastproof.blobBackend" .) "s3") (not .Values.blob.s3.endpoint) -}}true{{- end -}}
 {{- end -}}
 
 {{- define "fastproof.s3CredentialsSecret" -}}
-{{- if .Values.garage.enabled -}}
+{{- if include "fastproof.garageEnabled" . -}}
 {{- toJson (dict "name" (include "fastproof.garageSecretName" .) "accessKey" .Values.garage.credentials.accessKeyKey "secretKey" .Values.garage.credentials.secretKeyKey) -}}
 {{- else if .Values.blob.s3.credentials.existingSecret -}}
 {{- toJson (dict "name" .Values.blob.s3.credentials.existingSecret "accessKey" .Values.blob.s3.credentials.accessKeyKey "secretKey" .Values.blob.s3.credentials.secretKeyKey) -}}
@@ -241,22 +267,15 @@ off
 {{- if not (has .Values.migrations.mode (list "job" "auto")) -}}
 {{- fail "migrations.mode must be job or auto" -}}
 {{- end -}}
-{{- if not (has .Values.blob.backend (list "fs" "s3")) -}}
+{{- if not (has (include "fastproof.blobBackend" .) (list "fs" "s3")) -}}
 {{- fail "blob.backend must be fs or s3" -}}
 {{- end -}}
-{{- if .Values.garage.enabled -}}
-{{- if eq .Values.blob.backend "fs" -}}
-{{- fail "garage.enabled stores attachments in the bundled Garage: set blob.backend to s3" -}}
-{{- end -}}
-{{- if .Values.blob.s3.endpoint -}}
-{{- fail "set either garage.enabled or blob.s3.endpoint, not both" -}}
-{{- end -}}
-{{- else if eq .Values.blob.backend "s3" -}}
+{{- if and (eq (include "fastproof.blobBackend" .) "s3") (not (include "fastproof.garageEnabled" .)) -}}
 {{- if not .Values.blob.s3.endpoint -}}
-{{- fail "blob.s3.endpoint is required when blob.backend is s3 (or enable garage)" -}}
+{{- fail "blob.s3.endpoint is required when blob.backend is s3 and the bundled Garage is off (garage.enabled=false)" -}}
 {{- end -}}
 {{- if not .Values.blob.s3.bucket -}}
-{{- fail "blob.s3.bucket is required when blob.backend is s3" -}}
+{{- fail "blob.s3.bucket is required with an external S3 endpoint" -}}
 {{- end -}}
 {{- $c := .Values.blob.s3.credentials -}}
 {{- if and (not $c.existingSecret) (not (and $c.accessKey $c.secretKey)) -}}
@@ -305,7 +324,7 @@ off
 {{- if and (not (include "fastproof.bundledDatabase" .)) (not $e.database.to) -}}
 {{- fail "networkPolicy.egress.database.to is required for an external database while the egress policy is enabled" -}}
 {{- end -}}
-{{- if and (eq .Values.blob.backend "s3") (not .Values.garage.enabled) (not $e.s3.to) -}}
+{{- if and (eq (include "fastproof.blobBackend" .) "s3") (not (include "fastproof.garageEnabled" .)) (not $e.s3.to) -}}
 {{- fail "networkPolicy.egress.s3.to is required for an external S3 endpoint while the egress policy is enabled" -}}
 {{- end -}}
 {{- if and .Values.oidc.issuer (not $e.oidc.to) -}}
@@ -321,7 +340,7 @@ off
 {{- end -}}
 
 {{- define "fastproof.needsCa" -}}
-{{- $s3 := and (eq (include "fastproof.blobBackend" .) "s3") (not .Values.garage.enabled) (or .Values.blob.s3.ca.existingSecret .Values.blob.s3.ca.existingConfigMap) -}}
+{{- $s3 := and (eq (include "fastproof.blobBackend" .) "s3") (not (include "fastproof.garageEnabled" .)) (or .Values.blob.s3.ca.existingSecret .Values.blob.s3.ca.existingConfigMap) -}}
 {{- $oidc := and .Values.oidc.issuer (or .Values.oidc.ca.existingSecret .Values.oidc.ca.existingConfigMap) -}}
 {{- $tls := and .Values.tls.existingSecret (or .Values.tls.clientCa.existingSecret .Values.tls.clientCa.existingConfigMap) -}}
 {{- $streaming := or (include "fastproof.streamingCas" . | fromJsonArray) -}}

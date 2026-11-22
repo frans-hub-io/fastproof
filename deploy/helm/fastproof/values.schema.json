@@ -441,6 +441,11 @@
           "type": "integer",
           "minimum": 1
         },
+        "mediaUrlTtlSeconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3600
+        },
         "ingestWorkers": {
           "type": "integer",
           "minimum": 1,
@@ -610,6 +615,7 @@
       "properties": {
         "backend": {
           "enum": [
+            "",
             "fs",
             "s3"
           ]

@@ -1,0 +1,128 @@
+suite: blob storage defaults
+templates:
+  - templates/configmap.yaml
+  - templates/garage.yaml
+  - templates/deployment.yaml
+  - templates/NOTES.txt
+release:
+  name: fp
+  namespace: qa
+set:
+  database.existingSecret: db
+  auth.adminTokens.generate: true
+tests:
+  - it: stores attachments in the bundled Garage by default
+    template: templates/configmap.yaml
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: data.FASTPROOF_BLOB_BACKEND
+          value: s3
+      - equal:
+          path: data.FASTPROOF_S3_ENDPOINT
+          value: http://fp-garage:3900
+      - equal:
+          path: data.FASTPROOF_MEDIA_URL_TTL_SECONDS
+          value: "900"
+      - notExists:
+          path: data.FASTPROOF_BLOB_DIR
+
+  - it: renders the bundled Garage by default
+    template: templates/garage.yaml
+    documentIndex: 3
+    asserts:
+      - isKind:
+          of: StatefulSet
+
+  - it: sets the media URL lifetime
+    template: templates/configmap.yaml
+    documentIndex: 0
+    set:
+      server.mediaUrlTtlSeconds: 120
+    asserts:
+      - equal:
+          path: data.FASTPROOF_MEDIA_URL_TTL_SECONDS
+          value: "120"
+
+  - it: uses an external S3 endpoint instead of Garage when one is set
+    set:
+      blob.s3.endpoint: https://s3.example.com
+      blob.s3.bucket: reports
+      blob.s3.credentials.existingSecret: s3-creds
+    asserts:
+      - equal:
+          path: data.FASTPROOF_BLOB_BACKEND
+          value: s3
+        template: templates/configmap.yaml
+        documentIndex: 0
+      - equal:
+          path: data.FASTPROOF_S3_ENDPOINT
+          value: https://s3.example.com
+        template: templates/configmap.yaml
+        documentIndex: 0
+      - hasDocuments:
+          count: 0
+        template: templates/garage.yaml
+
+  - it: keeps the filesystem when it is chosen explicitly
+    set:
+      blob.backend: fs
+    asserts:
+      - equal:
+          path: data.FASTPROOF_BLOB_BACKEND
+          value: fs
+        template: templates/configmap.yaml
+        documentIndex: 0
+      - equal:
+          path: data.FASTPROOF_BLOB_DIR
+          value: /var/lib/fastproof/blobs
+        template: templates/configmap.yaml
+        documentIndex: 0
+      - hasDocuments:
+          count: 0
+        template: templates/garage.yaml
+
+  - it: upgrades with the filesystem when it is stated
+    release:
+      name: fp
+      namespace: qa
+      revision: 2
+      upgrade: true
+    set:
+      blob.backend: fs
+    template: templates/configmap.yaml
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: data.FASTPROOF_BLOB_BACKEND
+          value: fs
+
+  - it: upgrades to S3 when it is stated
+    release:
+      name: fp
+      namespace: qa
+      revision: 2
+      upgrade: true
+    set:
+      blob.backend: s3
+    template: templates/configmap.yaml
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: data.FASTPROOF_BLOB_BACKEND
+          value: s3
+
+  - it: needs an endpoint when Garage is off
+    set:
+      blob.backend: s3
+      garage.enabled: false
+    template: templates/deployment.yaml
+    asserts:
+      - failedTemplate:
+          errorPattern: "blob.s3.endpoint is required"
+
+  - it: describes Garage in the notes
+    template: templates/NOTES.txt
+    asserts:
+      - matchRegexRaw:
+          pattern: 'bundled single-node Garage'

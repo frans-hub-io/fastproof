@@ -63,7 +63,12 @@ pub fn api_router() -> (Router<AppState>, utoipa::openapi::OpenApi) {
         .routes(routes!(api::results::detail))
         .routes(routes!(api::results::history))
         .routes(routes!(api::attachments::upload))
-        .routes(routes!(api::attachments::content))
+        .routes(routes!(
+            api::attachments::content,
+            api::attachments::content_head
+        ))
+        .routes(routes!(api::media::create))
+        .routes(routes!(api::media::get, api::media::head))
         .routes(routes!(api::events::stream))
         .routes(routes!(api::logs::ingest, api::logs::list))
         .routes(routes!(api::logs::stream))
@@ -239,7 +244,8 @@ pub fn router(state: AppState) -> Router {
             .merge(crate::ui::router::<AppState>());
     }
     let app = app.with_state(state.clone());
-    app.merge(swagger)
+    let inner = app
+        .merge(swagger)
         .layer(middleware::from_fn(crate::limits::catch_panic))
         .layer(middleware::from_fn_with_state(
             state.cfg.guards.body_idle_timeout,
@@ -250,7 +256,10 @@ pub fn router(state: AppState) -> Router {
             security_headers,
         ))
         .layer(middleware::from_fn(franshub_observe::http_metrics))
-        .layer(middleware::from_fn(franshub_observe::request_id))
+        .layer(middleware::from_fn(franshub_observe::request_id));
+    Router::new()
+        .fallback_service(inner)
+        .layer(middleware::from_fn(api::media::redact_path))
 }
 
 /// A running server.
@@ -470,7 +479,9 @@ async fn start_inner(cfg: Config, pool: PgPool, boot: Boot) -> anyhow::Result<Ru
         _ => None,
     };
     let search = crate::stream::search_backend(&cfg)?;
+    let media = crate::api::media::Media::load(&store, cfg.media_url_ttl).await?;
     let state = AppState(Arc::new(Inner {
+        media,
         perms: Perms::new(&platform),
         platform,
         history: Arc::new(PgHistoryStore::new(pool.clone())),

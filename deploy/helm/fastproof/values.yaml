@@ -17,6 +17,7 @@ server:
   logFilter: info
   ui: true
   maxUploadBytes: 1073741824
+  mediaUrlTtlSeconds: 900
   ingestWorkers: 2
   retainUploads: false
   outboxRetentionDays: 7
@@ -178,7 +179,7 @@ migrations:
         memory: 256Mi
 
 blob:
-  backend: fs
+  backend: ""
   fs:
     persistence:
       enabled: true
@@ -527,7 +528,7 @@ valkey:
       memory: 256Mi
 
 garage:
-  enabled: false
+  enabled: true
   image:
     repository: docker.io/dxflrs/garage
     tag: v2.5.0

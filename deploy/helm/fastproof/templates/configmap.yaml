@@ -30,7 +30,7 @@ data:
   {{- if eq $backend "fs" }}
   FASTPROOF_BLOB_DIR: /var/lib/fastproof/blobs
   {{- else }}
-  {{- if .Values.garage.enabled }}
+  {{- if include "fastproof.garageEnabled" . }}
   FASTPROOF_S3_ENDPOINT: {{ printf "http://%s:3900" (include "fastproof.garageName" .) | quote }}
   FASTPROOF_S3_REGION: {{ .Values.garage.region | quote }}
   FASTPROOF_S3_BUCKET: {{ .Values.garage.bucket | quote }}
@@ -48,6 +48,7 @@ data:
   FASTPROOF_S3_SECRET_KEY_FILE: /etc/fastproof/secrets/s3-secret-key
   {{- end }}
   FASTPROOF_SPOOL_DIR: /tmp/fastproof
+  FASTPROOF_MEDIA_URL_TTL_SECONDS: {{ .Values.server.mediaUrlTtlSeconds | int64 | quote }}
   FASTPROOF_MAX_UPLOAD_BYTES: {{ .Values.server.maxUploadBytes | int64 | quote }}
   FASTPROOF_INGEST_WORKERS: {{ .Values.server.ingestWorkers | quote }}
   FASTPROOF_RETAIN_UPLOADS: {{ .Values.server.retainUploads | quote }}

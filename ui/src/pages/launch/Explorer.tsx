@@ -544,7 +544,7 @@ export function Explorer({ project, launch }: { project: string; launch: Launch 
             </Menu.Dropdown>
           </Menu>
           <Tooltip label="Expand all">
-            <ActionIcon variant="subtle" color="gray" aria-label="Expand all" onClick={() => tree && setExpanded(() => new Set(allKeys(tree)))} data-testid="explorer-expand-all">
+            <ActionIcon variant="subtle" color="gray" aria-label="Expand all" disabled={!settled} onClick={() => tree && setExpanded(() => new Set(allKeys(tree)))} data-testid="explorer-expand-all">
               <IconFoldDown size={16} />
             </ActionIcon>
           </Tooltip>

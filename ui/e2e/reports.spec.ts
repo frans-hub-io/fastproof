@@ -20,8 +20,8 @@ test('projects → launches → launch → result', async ({ page, baseURL }) =>
   await page.getByRole('tab', { name: 'Results' }).click();
   await page.locator('label').filter({ hasText: /^Failed \d+$/ }).click();
   await expect(page).toHaveURL(/status=failed/);
-  await expect.poll(() => page.getByTestId('result-row').count()).toBeLessThan(30);
   await expect(page.getByTestId('result-row').first()).toContainText('Failed');
+  await expect.poll(() => page.getByTestId('result-row').count()).toBeLessThan(30);
 
   await page.getByRole('tab', { name: /Failures/ }).click();
   await expect(page.getByTestId('cluster').first()).toBeVisible();

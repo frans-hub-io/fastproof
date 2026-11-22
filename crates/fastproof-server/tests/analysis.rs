@@ -1277,15 +1277,21 @@ async fn retention_by_count_queues_unreferenced_blobs() {
         .await
         .unwrap();
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
-    while path.exists() {
-        assert!(std::time::Instant::now() < deadline, "blob not deleted");
+    loop {
+        let n: i64 = sqlx::query_scalar("select count(*) from blob_deletions")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        if !path.exists() && n == 0 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "blob not deleted (file exists: {}, queued: {n})",
+            path.exists()
+        );
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
-    let n: i64 = sqlx::query_scalar("select count(*) from blob_deletions")
-        .fetch_one(&db.pool)
-        .await
-        .unwrap();
-    assert_eq!(n, 0);
 }
 
 #[tokio::test]

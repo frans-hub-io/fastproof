@@ -13,8 +13,11 @@ use fastproof_store::launches::{LaunchFilter, LaunchStart};
 use fastproof_store::projects::CreateProject;
 use fastproof_store::results::{GroupBy, ResultFilter};
 use fastproof_store::{HistoryFilter, HistoryStore, PgHistoryStore, Store};
+use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
-use sqlx::{ConnectOptions, PgPool};
+
+#[path = "support/testdb.rs"]
+mod testdb;
 
 struct TestDb {
     admin: PgConnectOptions,
@@ -24,20 +27,8 @@ struct TestDb {
 
 impl TestDb {
     async fn new() -> Option<Self> {
-        let Ok(url) = std::env::var("FASTPROOF_TEST_DATABASE_URL") else {
-            eprintln!("FASTPROOF_TEST_DATABASE_URL is not set: skipped");
-            return None;
-        };
-        let admin: PgConnectOptions = url.parse().expect("FASTPROOF_TEST_DATABASE_URL");
-        let name = format!("fastproof_test_{:016x}", rand::random::<u64>());
-        let mut conn = admin
-            .connect()
-            .await
-            .expect("connecting to the test server");
-        sqlx::query(sqlx::AssertSqlSafe(format!("create database {name}")))
-            .execute(&mut conn)
-            .await
-            .unwrap();
+        let admin = testdb::admin()?;
+        let name = testdb::create(&admin).await;
         let pool = PgPoolOptions::new()
             .max_connections(8)
             .connect_with(admin.clone().database(&name))
@@ -49,25 +40,8 @@ impl TestDb {
 
 impl Drop for TestDb {
     fn drop(&mut self) {
-        let admin = self.admin.clone();
-        let name = self.name.clone();
-        std::thread::spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap();
-            rt.block_on(async move {
-                if let Ok(mut c) = admin.connect().await {
-                    let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
-                        "drop database if exists {name} with (force)"
-                    )))
-                    .execute(&mut c)
-                    .await;
-                }
-            });
-        })
-        .join()
-        .unwrap();
+        drop(self.pool.close());
+        testdb::drop_database(&self.admin, &self.name);
     }
 }
 

@@ -1,8 +1,12 @@
 //! Test harness: a fresh `fastproof_test_*` database per test (dropped afterwards, also on
-//! failure) and servers on random ports. Tests need `FASTPROOF_TEST_DATABASE_URL`; S3 tests
-//! also `FASTPROOF_TEST_S3_*`. Without them they pass without doing anything.
+//! failure; see `testdb`) and servers on random ports. Tests need
+//! `FASTPROOF_TEST_DATABASE_URL`; S3 tests also `FASTPROOF_TEST_S3_*`. Without them they pass
+//! without doing anything.
 
 #![allow(dead_code)]
+
+#[path = "../../../fastproof-store/tests/support/testdb.rs"]
+pub mod testdb;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -26,20 +30,9 @@ pub struct TestDb {
 impl TestDb {
     pub async fn new() -> Option<Self> {
         fastproof_blob::install_crypto_provider();
-        let Ok(url) = std::env::var("FASTPROOF_TEST_DATABASE_URL") else {
-            eprintln!("FASTPROOF_TEST_DATABASE_URL is not set: skipped");
-            return None;
-        };
-        let admin: PgConnectOptions = url.parse().expect("FASTPROOF_TEST_DATABASE_URL");
-        let name = format!("fastproof_test_{:016x}", rand::random::<u64>());
-        let mut conn = admin
-            .connect()
-            .await
-            .expect("connecting to the test server");
-        sqlx::query(sqlx::AssertSqlSafe(format!("create database {name}")))
-            .execute(&mut conn)
-            .await
-            .unwrap();
+        let admin = testdb::admin()?;
+        let url = std::env::var("FASTPROOF_TEST_DATABASE_URL").unwrap();
+        let name = testdb::create(&admin).await;
         let mut u = url::Url::parse(&url).unwrap();
         u.set_path(&format!("/{name}"));
         let pool = PgPoolOptions::new()
@@ -97,25 +90,10 @@ impl TestDb {
 
 impl Drop for TestDb {
     fn drop(&mut self) {
-        let admin = self.admin.clone();
-        let name = self.name.clone();
-        std::thread::spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap();
-            rt.block_on(async move {
-                if let Ok(mut c) = admin.connect().await {
-                    let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
-                        "drop database if exists {name} with (force)"
-                    )))
-                    .execute(&mut c)
-                    .await;
-                }
-            });
-        })
-        .join()
-        .unwrap();
+        // Closing marks the pool closed at once (the returned future only waits for its
+        // connections), so it opens no new connection while the database is dropped.
+        drop(self.pool.close());
+        testdb::drop_database(&self.admin, &self.name);
     }
 }
 
@@ -388,6 +366,7 @@ impl Drop for Server {
         if let Some(r) = self.running.take() {
             let stop = r.stopped();
             stop.cancel();
+            drop(r.state.store.pool().close());
             drop(r);
         }
     }

@@ -134,13 +134,29 @@ type Target = (
     Uuid,
     String,
     Option<serde_json::Value>,
+    bool,
 );
 
-/// Recounts muted results of launches.
-pub(crate) async fn recount_muted(
-    conn: &mut PgConnection,
-    launches: &[Uuid],
-) -> anyhow::Result<()> {
+/// Locks launch rows (`for no key update`, in id order) before their results change. Ingest
+/// locks the launch row before its automated results, so a change of automated results that
+/// takes the launch rows first cannot deadlock with it. Manual writes lock their results before
+/// the launch row, so changes that touch manual results keep the opposite order and are retried
+/// when PostgreSQL breaks a deadlock.
+pub async fn lock_launches(conn: &mut PgConnection, launches: &[Uuid]) -> anyhow::Result<()> {
+    let mut ids = launches.to_vec();
+    ids.sort();
+    ids.dedup();
+    sqlx::query("select 1 from launches where id = any($1) order by id for no key update")
+        .bind(&ids)
+        .execute(&mut *conn)
+        .await?;
+    Ok(())
+}
+
+/// Recounts muted results of launches (`count_muted`), after locking the launch rows. Every
+/// change of the `muted` flag of results goes through this (or adds its exact change of the
+/// counter in the same transaction), so the counter always equals a recount.
+pub async fn recount_muted(conn: &mut PgConnection, launches: &[Uuid]) -> anyhow::Result<()> {
     if launches.is_empty() {
         return Ok(());
     }
@@ -150,10 +166,7 @@ pub(crate) async fn recount_muted(
     // Locked first, so the count below sees every committed change: manual writes add their
     // change of `count_muted` to the launch row and hold it until their commit, and a count
     // taken before waiting for them would overwrite it.
-    sqlx::query("select 1 from launches where id = any($1) order by id for no key update")
-        .bind(&ids)
-        .execute(&mut *conn)
-        .await?;
+    lock_launches(conn, &ids).await?;
     sqlx::query(
         "update launches l set count_muted = (select count(*) from results r \
            where r.launch_id = l.id and r.launch_created_at = l.created_at and r.muted), updated_at = now() \
@@ -181,8 +194,32 @@ fn base_type<'a>(
 }
 
 impl Store {
-    /// Applies a validated triage request.
+    /// Applies a validated triage request. The transaction runs again (at most
+    /// [`crate::ingest::TX_ATTEMPTS`] times) when PostgreSQL aborts it to break a deadlock with
+    /// a concurrent writer of the same results.
     pub async fn triage(
+        &self,
+        project_id: Uuid,
+        project_key: &str,
+        req: &TriageRequest,
+        by: &str,
+    ) -> anyhow::Result<Result<TriageOutcome, TriageRefusal>> {
+        let mut attempt = 1;
+        loop {
+            match self.triage_once(project_id, project_key, req, by).await {
+                Err(e)
+                    if attempt < crate::ingest::TX_ATTEMPTS
+                        && crate::ingest::retryable(&e).is_some() =>
+                {
+                    crate::ingest::retry_pause("triage", &e, attempt).await;
+                    attempt += 1;
+                }
+                r => return r,
+            }
+        }
+    }
+
+    async fn triage_once(
         &self,
         project_id: Uuid,
         project_key: &str,
@@ -193,7 +230,8 @@ impl Store {
         let mut tx = self.pool.begin().await?;
         let targets: Vec<Target> = if let Some(ids) = &req.result_ids {
             sqlx::query_as(
-                "select id, launch_created_at, launch_id, series_id, status, defect from results \
+                "select id, launch_created_at, launch_id, series_id, status, defect, \
+                   run_item_id is not null from results \
                  where project_id = $1 and id = any($2) and ($3::uuid is null or launch_id = $3) \
                    and ($4::text is null or fingerprint = $4) order by id limit $5",
             )
@@ -217,7 +255,8 @@ impl Store {
                 return Ok(Err(TriageRefusal::UnknownLaunch));
             };
             sqlx::query_as(
-                "select id, launch_created_at, launch_id, series_id, status, defect from results \
+                "select id, launch_created_at, launch_id, series_id, status, defect, \
+                   run_item_id is not null from results \
                  where launch_id = $1 and launch_created_at = $2 and fingerprint = $3 order by id",
             )
             .bind(launch)
@@ -246,10 +285,14 @@ impl Store {
             .collect();
         let ids: Vec<Uuid> = targets.iter().map(|t| t.0).collect();
         let created: Vec<DateTime<Utc>> = targets.iter().map(|t| t.1).collect();
+        if !targets.iter().any(|t| t.6) {
+            // Automated results only: the launch rows first, in the order ingest takes them.
+            lock_launches(&mut tx, &launches).await?;
+        }
 
         if req.defect_type_id.is_some() || req.comment.is_some() || req.issue.is_some() {
             let mut defects = Vec::with_capacity(targets.len());
-            for (_, _, _, _, status, defect) in &targets {
+            for (_, _, _, _, status, defect, _) in &targets {
                 let existing: Option<Defect> =
                     defect.clone().and_then(|d| serde_json::from_value(d).ok());
                 let t = chosen

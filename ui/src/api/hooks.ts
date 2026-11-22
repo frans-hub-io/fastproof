@@ -23,6 +23,7 @@ import type {
   TreeNode,
   TreeTest,
   Upload,
+  VersionInfo,
 } from './types';
 
 export const qk = {
@@ -38,10 +39,21 @@ export const qk = {
   tokens: () => ['tokens'] as const,
   tokenOptions: () => ['tokenOptions'] as const,
   audit: (filters?: AuditFilters) => (filters ? (['audit', filters] as const) : (['audit'] as const)),
+  version: () => ['version'] as const,
 };
 
 export const LAUNCH_PAGE = 30;
 export const RESULT_PAGE = 500;
+
+/** The server's version, for the footer; it changes only with a new deployment. */
+export function useServerVersion() {
+  return useQuery({
+    queryKey: qk.version(),
+    queryFn: () => request<VersionInfo>(`${API}/version`).then((r) => r.version),
+    staleTime: Infinity,
+    retry: false,
+  });
+}
 
 export function useProjects() {
   return useQuery({

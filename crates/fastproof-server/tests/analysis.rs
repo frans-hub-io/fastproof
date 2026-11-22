@@ -1425,3 +1425,95 @@ async fn testplan_json_for_allure_adapters_and_cli() {
     let cli: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(cli, tp);
 }
+
+/// The stage B triage of the MCP tools (`Fallback`) changes `muted` through the same counter
+/// path as the API: `count_muted` of the launch equals a recount after mutes and unmutes.
+#[tokio::test]
+async fn fallback_triage_keeps_count_muted_exact() {
+    use fastproof_server::integrations::analysis::{
+        AnalysisOps, Fallback, TriageMute, TriageRequest,
+    };
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = Server::start(&db).await;
+    s.project("fb").await;
+    let lid = launch_on(&s, "fb", "main").await;
+    post_results(
+        &s,
+        "fb",
+        &lid,
+        (0..6)
+            .map(|i| {
+                res(
+                    &i.to_string(),
+                    &format!("t{i}"),
+                    "failed",
+                    Some("boom"),
+                    None,
+                )
+            })
+            .collect(),
+    )
+    .await;
+    let launch: uuid::Uuid = lid.parse().unwrap();
+    let mut ids: Vec<uuid::Uuid> = Vec::new();
+    for _ in 0..200 {
+        ids = sqlx::query_scalar("select id from results where launch_id = $1 order by id")
+            .bind(launch)
+            .fetch_all(&db.pool)
+            .await
+            .unwrap();
+        if ids.len() == 6 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(ids.len(), 6);
+    let state = &s.running.as_ref().unwrap().state;
+    let project = state.store.project("fb").await.unwrap().unwrap();
+    let counted = || async {
+        sqlx::query_as::<_, (i32, i64)>(
+            "select l.count_muted, (select count(*) from results r where r.launch_id = l.id and r.muted) \
+             from launches l where l.id = $1",
+        )
+        .bind(launch)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap()
+    };
+    let mute = TriageRequest {
+        result_ids: Some(ids[..4].to_vec()),
+        mute: Some(TriageMute {
+            until: None,
+            reason: "noisy".into(),
+        }),
+        ..Default::default()
+    };
+    let out = Fallback
+        .triage(state, &project, "bot", &mute)
+        .await
+        .unwrap();
+    assert_eq!(out["updated"], 4, "{out}");
+    assert_eq!(counted().await, (4, 4));
+    let unmute = TriageRequest {
+        result_ids: Some(ids[2..5].to_vec()),
+        unmute: Some(true),
+        ..Default::default()
+    };
+    Fallback
+        .triage(state, &project, "bot", &unmute)
+        .await
+        .unwrap();
+    assert_eq!(counted().await, (2, 2));
+    let comment = TriageRequest {
+        result_ids: Some(ids.clone()),
+        comment: Some("seen".into()),
+        ..Default::default()
+    };
+    Fallback
+        .triage(state, &project, "bot", &comment)
+        .await
+        .unwrap();
+    assert_eq!(counted().await, (2, 2), "a comment does not change mutes");
+}

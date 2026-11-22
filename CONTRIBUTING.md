@@ -30,6 +30,20 @@ helm unittest deploy/helm/fastproof
 
 Documentation: `docs/prepare.sh && mkdocs build --strict` with `mkdocs-material` installed.
 
+## Releasing
+
+1. Set the next version in `[workspace.package]` of `Cargo.toml` (for example `0.2.0-dev1`; `cargo build`
+   updates `Cargo.lock`), the chart's `appVersion` in `deploy/helm/fastproof/Chart.yaml` and the version named
+   in `README.md` and the docs, and merge that to `main`.
+2. Tag the merge commit `v<version>` and push the tag. The release workflow builds the image with
+   `VERSION=<version>` (the tag without `v`).
+3. Check the version the image reports: `docker run --rm docker.io/franshub/fastproof:<version> version`.
+
+Where the version comes from: the image build passes `VERSION` to the compiler as `FASTPROOF_BUILD_VERSION`,
+which becomes the version of the binary (`fastproof version` and `--version`, `GET /api/v1/version`, the UI
+footer, `fastproof_build_info{version}` on `/metrics`, the MCP server info and the `User-Agent` of outbound
+calls). A build without `FASTPROOF_BUILD_VERSION` (`cargo build`, CI) reports the Cargo version from step 1.
+
 ## Guidelines
 
 - Keep pull requests focused, with tests for new behaviour and a short description of why.

@@ -188,7 +188,7 @@ digest:
 | `kafka.*`, `sinks.*`, `opensearch.*` | off | Kafka, ClickHouse and OpenSearch; see above |
 | `kafka.topics.replication`, `kafka.clientId`, `kafka.maxRecordBytes` | `-1`, `fastproof`, `900000` | `FASTPROOF_KAFKA_REPLICATION`, `_CLIENT_ID`, `_MAX_RECORD_BYTES` |
 | `kafka.consumer.fetchMaxBytes`, `maxInflightBytes`, `batchMaxRecords`, `batchMaxBytes` | `1048576`, `67108864`, `1000`, `1048576` | `FASTPROOF_KAFKA_FETCH_MAX_BYTES`, `_MAX_INFLIGHT_BYTES`, `_BATCH_MAX_RECORDS`, `_BATCH_MAX_BYTES`; the fetch and the budget are raised to at least `kafka.maxRecordBytes`. See [memory of the Kafka consumers](scaling.md#memory-of-the-kafka-consumers) |
-| `database.connectTimeoutSeconds`, `kafka.connectTimeoutSeconds` | `300`, `300` | How long pods wait at start for PostgreSQL and Kafka before they exit (`FASTPROOF_DATABASE_CONNECT_TIMEOUT_SECONDS`, `FASTPROOF_KAFKA_CONNECT_TIMEOUT_SECONDS`) |
+| `database.connectTimeoutSeconds`, `kafka.connectTimeoutSeconds` | `300`, `300` | How long pods wait at start for PostgreSQL and Kafka before they exit (`FASTPROOF_DATABASE_CONNECT_TIMEOUT_SECONDS`, the older name of `FASTPROOF_DATABASE_WAIT`, and `FASTPROOF_KAFKA_CONNECT_TIMEOUT_SECONDS`) |
 | `sinks.batchSize`, `sinks.flushIntervalMs`, `sinks.opensearch.replicas` | `2000`, `1000`, `1` | `FASTPROOF_SINK_BATCH_SIZE`, `FASTPROOF_SINK_FLUSH_INTERVAL_MS`, `FASTPROOF_OPENSEARCH_REPLICAS` |
 
 Every secret (database URL, S3 keys, token file, OIDC client secret, Kafka, ClickHouse and OpenSearch

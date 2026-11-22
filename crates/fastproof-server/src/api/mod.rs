@@ -18,6 +18,7 @@ pub mod results;
 pub mod runs;
 pub mod search;
 pub mod uploads;
+pub mod version;
 
 use axum::extract::{FromRequestParts, Path, Query};
 use axum::http::request::Parts;

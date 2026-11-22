@@ -274,20 +274,19 @@ impl AnalysisOps for Fallback {
             None
         };
         let ids: Vec<Uuid> = req.result_ids.clone().unwrap_or_default();
-        let r = sqlx::query(
-            "update results set defect = $4, muted = coalesce($5, muted), updated_at = now() \
-             where project_id = $1 and ((cardinality($2::uuid[]) > 0 and id = any($2)) or \
-             ($3::uuid is not null and $6::text is not null and launch_id = $3 and fingerprint = $6))",
-        )
-        .bind(project.id)
-        .bind(&ids)
-        .bind(req.launch_id)
-        .bind(defect)
-        .bind(muted)
-        .bind(req.fingerprint.as_deref())
-        .execute(s.store.pool())
-        .await?;
-        Ok(json!({"updated": r.rows_affected()}))
+        let mut attempt = 1;
+        loop {
+            match fallback_triage(s, project, &ids, req, &defect, muted).await {
+                Err(e)
+                    if attempt < fastproof_store::ingest::TX_ATTEMPTS
+                        && fastproof_store::ingest::retryable(&e).is_some() =>
+                {
+                    fastproof_store::ingest::retry_pause("triage", &e, attempt).await;
+                    attempt += 1;
+                }
+                r => return r.map(|n| json!({"updated": n})),
+            }
+        }
     }
 
     async fn create_rule_draft(
@@ -299,6 +298,39 @@ impl AnalysisOps for Fallback {
     ) -> anyhow::Result<Value> {
         anyhow::bail!("rules are not available in this build")
     }
+}
+
+/// One transaction of [`Fallback::triage`]: the results, then `count_muted` of their launches
+/// recounted (as every change of the `muted` flag does), so the counter never drifts.
+async fn fallback_triage(
+    s: &AppState,
+    project: &Project,
+    ids: &[Uuid],
+    req: &TriageRequest,
+    defect: &Value,
+    muted: Option<bool>,
+) -> anyhow::Result<u64> {
+    let mut tx = s.store.pool().begin().await?;
+    let launches: Vec<Uuid> = sqlx::query_scalar(
+        "update results set defect = $4, muted = coalesce($5, muted), updated_at = now() \
+         where project_id = $1 and ((cardinality($2::uuid[]) > 0 and id = any($2)) or \
+         ($3::uuid is not null and $6::text is not null and launch_id = $3 and fingerprint = $6)) \
+         returning launch_id",
+    )
+    .bind(project.id)
+    .bind(ids)
+    .bind(req.launch_id)
+    .bind(defect)
+    .bind(muted)
+    .bind(req.fingerprint.as_deref())
+    .fetch_all(&mut *tx)
+    .await?;
+    let updated = launches.len() as u64;
+    if muted.is_some() {
+        fastproof_store::analysis::triage::recount_muted(&mut tx, &launches).await?;
+    }
+    tx.commit().await?;
+    Ok(updated)
 }
 
 /// The analysis module of the server: the same functions the HTTP API uses.

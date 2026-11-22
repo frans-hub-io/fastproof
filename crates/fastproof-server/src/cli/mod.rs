@@ -24,7 +24,7 @@ use self::client::Client;
 #[derive(Parser, Debug)]
 #[command(
     name = "fastproof",
-    version,
+    version = crate::VERSION,
     about = "FastProof test reporting server and CLI"
 )]
 pub struct Cli {

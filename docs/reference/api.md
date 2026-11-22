@@ -43,6 +43,7 @@ Everything the UI and the CLI do goes through the HTTP API at `/api/v1`. It is d
 | Live events | `GET /api/v1/projects/{key}/events` (Server-Sent Events: `launch.updated`, `upload.updated`; for test management `case.updated`, `case.archived`, `runItem.updated`, `manualRun.updated`, `tmJob.updated`) |
 | Identity and tokens | `GET /api/v1/me`, `GET/POST /api/v1/tokens`, `GET /api/v1/tokens/options`, `GET /api/v1/tokens/self`, `GET/DELETE /api/v1/tokens/{id}` (see [Tokens](#tokens)) |
 | Audit | `GET /api/v1/audit?action=&principal=&scope=&before=&limit=` (see [Audit log](#audit-log)) |
+| Version | `GET /api/v1/version` (any signed-in principal): `{version}` of the server, the same as `fastproof version` |
 
 ## Project settings
 

@@ -68,6 +68,7 @@ pub fn api_router() -> (Router<AppState>, utoipa::openapi::OpenApi) {
         .routes(routes!(api::search::similar))
         .routes(routes!(api::admin::audit))
         .routes(routes!(api::admin::jobs))
+        .routes(routes!(api::version::get))
         .routes(routes!(api::integrations::gate))
         .routes(routes!(api::integrations::secrets))
         .routes(routes!(
@@ -360,7 +361,7 @@ async fn boot(cfg: &Config, prometheus: Option<PrometheusHandle>) -> anyhow::Res
     })
 }
 
-/// Connects (waiting for PostgreSQL up to `FASTPROOF_DATABASE_CONNECT_TIMEOUT_SECONDS`),
+/// Connects (waiting for PostgreSQL up to `FASTPROOF_DATABASE_WAIT`),
 /// migrates (or checks), builds the state and starts listeners, workers and the scheduler.
 /// `prometheus` serves `/metrics` on the ops listener, which answers from the start.
 pub async fn start(cfg: Config, prometheus: Option<PrometheusHandle>) -> anyhow::Result<Running> {
@@ -403,7 +404,7 @@ async fn start_inner(cfg: Config, pool: PgPool, boot: Boot) -> anyhow::Result<Ru
         MigrateMode::Off => {
             crate::db::wait_for(
                 "the database schema",
-                "FASTPROOF_DATABASE_CONNECT_TIMEOUT_SECONDS",
+                "FASTPROOF_DATABASE_WAIT",
                 cfg.db.connect_timeout,
                 || async {
                     franshub_store_pg::check_schema(&pool).await?;

@@ -3,7 +3,7 @@ import { IconAdjustments, IconBell, IconChartLine, IconChecklist, IconClipboardL
 import { useQueryClient, type InfiniteData } from '@tanstack/react-query';
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { matchPath, useLocation, useNavigate } from 'react-router';
-import { useProjects } from './api/hooks';
+import { useProjects, useServerVersion } from './api/hooks';
 import { useCaseIndex } from './api/tm';
 import type { Launch, Page } from './api/types';
 import { readRecent, type RecentLaunch } from './lib/recent';
@@ -28,6 +28,16 @@ function Logo() {
       <img src="/brand/monogram-light.svg" alt="" width={46} height={26} className="fp-on-light" />
       <img src="/brand/monogram-dark.svg" alt="" width={46} height={26} className="fp-on-dark" />
     </>
+  );
+}
+
+function Footer() {
+  const version = useServerVersion();
+  if (!version.data) return null;
+  return (
+    <footer className="fp-footer" data-testid="server-version">
+      FastProof {version.data}
+    </footer>
   );
 }
 
@@ -110,6 +120,7 @@ export function Shell({ children }: { children: ReactNode }) {
   return (
     <AppShellLayout productName="FastProof" logo={<Logo />} navItems={navItems} commands={commands} onNavigate={(href) => void navigate(href)}>
       {children}
+      <Footer />
     </AppShellLayout>
   );
 }

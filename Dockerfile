@@ -20,6 +20,7 @@ RUN npm run build
 
 FROM ${RUST_IMAGE} AS build
 ARG TARGETARCH
+ARG VERSION=
 RUN apt-get update \
  && apt-get install -y --no-install-recommends musl-tools \
  && rm -rf /var/lib/apt/lists/*
@@ -39,13 +40,14 @@ ENV CARGO_INCREMENTAL=0 \
     CARGO_PROFILE_RELEASE_DEBUG=0 \
     CARGO_TERM_COLOR=never
 RUN triple="$(cat /target-triple)" \
- && RUSTFLAGS="--remap-path-prefix=${CARGO_HOME}=/cargo --remap-path-prefix=/src=/build" \
+ && FASTPROOF_BUILD_VERSION="${VERSION}" \
+    RUSTFLAGS="--remap-path-prefix=${CARGO_HOME}=/cargo --remap-path-prefix=/src=/build" \
     cargo build --release --locked --target "${triple}" -p fastproof-server --bin fastproof \
  && install -D -m 0755 "target/${triple}/release/fastproof" /out/usr/local/bin/fastproof \
  && install -d -m 0750 /out/var/lib/fastproof/blobs
 
 FROM ${RUNTIME_IMAGE}
-ARG VERSION=0.1.0-dev1
+ARG VERSION=0.2.0-dev1
 ARG REVISION=unknown
 LABEL org.opencontainers.image.title="FastProof" \
       org.opencontainers.image.description="Self-hosted test reporting server: allure-results, JUnit XML, CTRF and Playwright reports with history, flaky detection and triage" \

@@ -1612,6 +1612,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/version": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description The version of the server. Any signed-in principal may read it. */
+        get: operations["server_version"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -4704,6 +4721,11 @@ export interface components {
              *     (`https://api.github.com`, `https://github.example.com/api/v3`).
              */
             url: string;
+        };
+        /** @description The running build. */
+        VersionInfo: {
+            /** @description The release tag without the `v` (such as `0.2.0`), or the Cargo version of a local build. */
+            version: string;
         };
         /**
          * @description What made a case version.
@@ -11395,6 +11417,33 @@ export interface operations {
                 };
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    server_version: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VersionInfo"];
+                };
+            };
+            401: {
                 headers: {
                     [name: string]: unknown;
                 };

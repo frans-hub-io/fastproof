@@ -14,6 +14,8 @@ export type IsoDateTime = string;
 
 export type ErrorBody = S['ErrorBody'];
 
+export type VersionInfo = S['VersionInfo'];
+
 export interface Page<T> {
   items: T[];
   next?: string | null;

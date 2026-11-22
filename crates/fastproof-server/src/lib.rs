@@ -26,5 +26,9 @@ pub mod ui;
 pub use app::{Running, start, start_with_pool};
 pub use config::Config;
 
-/// Version of this build.
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// Version of this build: `FASTPROOF_BUILD_VERSION` at compile time (the release tag without
+/// the `v`, set by the image build), else the Cargo package version.
+pub const VERSION: &str = match option_env!("FASTPROOF_BUILD_VERSION") {
+    Some(v) if !v.is_empty() => v,
+    _ => env!("CARGO_PKG_VERSION"),
+};

@@ -35,12 +35,13 @@ ingest:
   mode: kafka
 
 kafka:
-  bundled:
-    enabled: true
-    mode: simple
-    simple:
-      image:
-        repository: registry.example.com/mirror/apache/kafka
+  enabled: true
+  image:
+    registry: registry.example.com/mirror
+    repository: apache/kafka
+    tag: "4.4.0@sha256:833b867a9585a141da455dc2b57431c65cbccb27f11c91f694444cca9f777e0f"
+    pullSecrets:
+      - name: mirror-pull
 
 sinks:
   clickhouse:

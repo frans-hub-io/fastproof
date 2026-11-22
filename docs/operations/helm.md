@@ -75,8 +75,7 @@ Optional, for large installations; see [Scaling and big data](scaling.md) for wh
 |---|---|
 | `ingest.mode: kafka` | Uploads and live logs go through Kafka |
 | `kafka.external.*` | Your Kafka: `brokers`, `tls.enabled`, `tls.ca`, `sasl.mechanism` (`plain`, `scram-sha-256`, `scram-sha-512`), `sasl.username`, `sasl.password.existingSecret` |
-| `kafka.bundled.enabled: true`, `kafka.bundled.mode: simple` | A single-node KRaft broker from this chart (`apache/kafka` 4.4.0): non-root, read-only root filesystem, own ServiceAccount, SCRAM-SHA-512 (or PLAIN) with a generated password, optional TLS from `kafka.bundled.simple.tls.existingSecret` |
-| `kafka.bundled.mode: chart` with `kafka.enabled: true` | The CloudPirates `kafka` chart 0.2.1 (values under `kafka.*`). SASL PLAIN only, and no dedicated ServiceAccount yet, so it fails policies that forbid the `default` ServiceAccount; use `simple` there |
+| `kafka.enabled: true` | The bundled Kafka: the CloudPirates `kafka` chart 0.3.0 (`apache/kafka` 4.4.0 pinned by digest, KRaft, values under `kafka.*`). One broker with its own ServiceAccount (no token), non-root, read-only root filesystem, probes, resources and a 10Gi volume. FastProof connects with SASL PLAIN using the password the chart generates, and creates its topics. See [Bundled Kafka](#bundled-kafka) |
 | `sinks.clickhouse.enabled` with `sinks.clickhouse.external.*` | Your ClickHouse: `url` (HTTP interface), `user`, `password`, `ca` |
 | `sinks.clickhouse.bundled.enabled: true` | A single-node ClickHouse 26.8 LTS (distroless image) from this chart: non-root, read-only root filesystem, probes on `/ping`, memory caps for about 2 GiB, a `fastproof` user limited to its database, native/MySQL/PostgreSQL ports closed, optional HTTPS from `sinks.clickhouse.bundled.tls.existingSecret` |
 | `sinks.opensearch.enabled` with `sinks.opensearch.external.*` | Your OpenSearch 2.19 or 3.x |
@@ -84,8 +83,8 @@ Optional, for large installations; see [Scaling and big data](scaling.md) for wh
 | `search.backend` | `postgres`, `clickhouse` or `opensearch`; needs the matching sink |
 | `roles.split: true` | Separate Deployments per role; see [Several replicas](#several-replicas) |
 
-Helm conditions cannot read strings, so the CloudPirates chart needs both `kafka.bundled.mode: chart` and
-`kafka.enabled: true`; the chart fails with a clear message when they disagree.
+Set either `kafka.enabled` or `kafka.external.brokers`; the chart fails with a clear message when both are set,
+when `ingest.mode: kafka` has neither, or when Kafka is configured with `ingest.mode: direct`.
 
 The bundled OpenSearch keeps the official chart's fixed names (`fastproof-opensearch-node`, Secrets
 `fastproof-opensearch-tls`, `fastproof-opensearch-security`, `fastproof-opensearch-credentials`), so install
@@ -96,9 +95,36 @@ the security REST API. Set `sinks.opensearch.bundled.generateTls: false` to brin
 example from cert-manager with `privateKey.encoding: PKCS8`) in `fastproof-opensearch-tls` with `ca.crt`,
 `tls.crt` and `tls.key` and the subject `CN=fastproof-opensearch-node`.
 
-The bundled Kafka bootstraps the SCRAM user when its volume is first formatted. To rotate the password later,
-change it with `kafka-configs.sh --alter --add-config` and then in the Secret. Keep generated and supplied
-passwords alphanumeric.
+#### Bundled Kafka
+
+`kafka.enabled: true` with `ingest.mode: kafka` is all it takes: the chart deploys the broker and points
+FastProof at the `<release>-kafka` Service. FastProof's own settings (`kafka.topics.*`, `kafka.consumer.*`,
+`kafka.clientId` and the rest) sit next to the broker's.
+
+| Values | Default | Meaning |
+|---|---|---|
+| `kafka.auth.clientUser` | `fastproof` | SASL PLAIN user FastProof connects as. The chart supports PLAIN only (no SCRAM) |
+| `kafka.auth.existingSecret` | none | Secret with `client-password`, `inter-broker-password` and `controller-password`. Without it the chart generates `<release>-kafka` once and keeps it on upgrades |
+| `kafka.tls.enabled`, `kafka.tls.source` | `false`, `self-signed` | TLS on every listener. `self-signed` generates a CA and a certificate once, `cert-manager` requests one from `kafka.tls.certManager.issuerRef`, `existing-secret` uses `kafka.tls.existingSecret` |
+| `kafka.tls.existingSecret`, `kafka.tls.caFilename` | none, `ca.crt` | Your certificate Secret (`tls.crt`, `tls.key` and the CA); FastProof trusts the CA from it |
+| `kafka.serviceAccount.create` | `true` | Dedicated ServiceAccount; `automountServiceAccountToken` is `false` |
+| `kafka.replicaCount` | `1` | Brokers. Replication factors follow the broker count, and a PodDisruptionBudget is added from two brokers |
+| `kafka.persistence.enabled`, `kafka.persistence.size` | `true`, `10Gi` | Broker volume |
+| `kafka.heapOpts`, `kafka.resources` | `-Xmx512m -Xms512m`, requests `100m`/`768Mi`, limits `1`/`1Gi` | Keep the memory limit about twice the heap |
+| `kafka.kafkaConfig.autoCreateTopicsEnable` | `false` | FastProof creates its topics with `kafka.topics.partitions` and `kafka.topics.replication`, so the broker does not create topics on first use |
+| `kafka.kafkaConfig.logRetentionHours` | `72` | How long records stay; writers normally consume them within seconds |
+
+Other keys: the [chart's values](https://github.com/CloudPirates-io/helm-charts/blob/main/charts/kafka/values.yaml).
+
+Turn TLS on for anything beyond evaluation: SASL PLAIN sends the password in clear text without it. With `self-signed` or
+`cert-manager` FastProof reads the CA from `<release>-kafka-tls`; with `existing-secret` the certificate must
+cover `<release>-kafka` and `*.<release>-kafka-headless.<namespace>.svc.cluster.local`, because clients
+bootstrap through the Service and then connect to each broker by its pod name. A cert-manager issuer must put
+the CA into `ca.crt` (a CA or self-signed issuer does).
+
+The generated password and the self-signed certificate are kept on upgrades by reading the existing Secrets.
+Tools that render the chart without cluster access (`helm template`, some GitOps controllers) would generate new
+ones on every render; give them `kafka.auth.existingSecret` and a `cert-manager` or `existing-secret` source.
 
 ### Mirror registries
 
@@ -109,15 +135,15 @@ digest:
 |---|---|
 | FastProof | `image.repository`, `image.tag`, `image.digest` |
 | Garage | `garage.image.repository`, `tag`, `digest` |
-| Bundled Kafka (`simple`) | `kafka.bundled.simple.image.repository`, `tag`, `digest` |
 | Bundled ClickHouse | `sinks.clickhouse.bundled.image.repository`, `tag`, `digest` |
 | CloudPirates PostgreSQL | `postgresql.image.registry`, `repository`, `tag` (tag may end in `@sha256:...`) |
 | Valkey | `valkey.image.registry`, `repository`, `tag` |
 | CloudNativePG | `cnpg.cluster.imageName` |
-| CloudPirates Kafka | `kafka.image.registry`, `repository`, `tag` |
+| CloudPirates Kafka | `kafka.image.registry`, `repository`, `tag` (tag may end in `@sha256:...`), `kafka.image.pullSecrets` |
 | OpenSearch | `opensearch.image.repository`, `tag` (and `opensearch.imagePullSecrets`) |
 
-`imagePullSecrets` applies to FastProof, the migration Job, Garage, Kafka (`simple`) and ClickHouse. The chart's
+`imagePullSecrets` applies to FastProof, the migration Job, Garage and ClickHouse; Kafka takes
+`kafka.image.pullSecrets`. The chart's
 `ci/mirror-values.yaml` shows every key with a mirror under one prefix.
 
 ## Main values
@@ -286,6 +312,14 @@ pod exits with an error that names the setting.
 Upgrade one minor version at a time and read the release notes. Downgrades are not supported once a newer
 version has migrated the schema; restore a backup instead.
 
+Releases that used the removed `kafka.bundled` values switch to `kafka.enabled: true`. The broker keeps the
+name `<release>-kafka`, but its StatefulSet changes fields Kubernetes cannot update in place and its old volume
+belongs to another cluster. Wait until the consumer lag is 0, delete the StatefulSet `<release>-kafka` and the
+PVC `data-<release>-kafka-0`, then run `helm upgrade`; records still in the old broker are lost. FastProof keeps
+consumer offsets in PostgreSQL, so on the new, empty topics each consumer logs
+`Kafka offset out of range; resetting` once and continues from the end of each partition: hold uploads until the
+writers are ready.
+
 ## Several replicas
 
 Replicas are stateless and behave as one: the upload queue is in PostgreSQL (each upload is processed once,
@@ -350,5 +384,5 @@ Port 9090 serves `/metrics` (Prometheus), `/healthz` and `/readyz`. Enable
 ## Uninstall
 
 `helm uninstall` removes FastProof and the bundled services. The attachment volume of `blob.backend: fs` and
-the volumes of the bundled PostgreSQL (CloudPirates) and Garage StatefulSets are kept; delete the PVCs to
+the volumes of the bundled PostgreSQL (CloudPirates), Garage and Kafka StatefulSets are kept; delete the PVCs to
 remove the data. A CloudNativePG cluster removes its own volumes when the `Cluster` is deleted.

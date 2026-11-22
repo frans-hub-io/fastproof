@@ -10,9 +10,9 @@ dependencies:
   version: 0.12.1
 - name: kafka
   repository: oci://registry-1.docker.io/cloudpirates
-  version: 0.2.1
+  version: 0.3.0
 - name: opensearch
   repository: https://opensearch-project.github.io/helm-charts
   version: 3.9.0
-digest: sha256:2d80dcf487048c32b1dc6cc315b60feaebb099386341f1b572880ff6ce7ee4bc
-generated: "2026-11-21T10:34:05.280711801Z"
+digest: sha256:77e3866f9c0467932f57145366529bbf0f42d9fa7af49a4b67c8a4d51248df4b
+generated: "2026-11-21T23:56:40.286990127Z"

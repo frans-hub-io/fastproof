@@ -147,7 +147,7 @@ tests:
     template: templates/deployment.yaml
     set:
       ingest.mode: direct
-      kafka.bundled.enabled: false
+      kafka.enabled: false
       sinks.clickhouse.enabled: false
     asserts:
       - hasDocuments:
@@ -160,7 +160,7 @@ tests:
     set:
       roles.split: false
       ingest.mode: direct
-      kafka.bundled.enabled: false
+      kafka.enabled: false
       sinks.clickhouse.enabled: false
       networkPolicy.enabled: false
       blob.backend: fs

@@ -86,32 +86,31 @@ tests:
     values:
       - ../ci/minimal-fs-values.yaml
     set:
-      kafka.bundled.enabled: true
+      kafka.enabled: true
     asserts:
       - failedTemplate:
           errorPattern: "Kafka is only used with ingest.mode=kafka"
 
-  - it: needs kafka.enabled for the chart mode
-    values:
-      - ../ci/minimal-fs-values.yaml
-    set:
-      ingest.mode: kafka
-      kafka.bundled.enabled: true
-      kafka.bundled.mode: chart
-    asserts:
-      - failedTemplate:
-          errorPattern: "also set kafka.enabled=true"
-
-  - it: refuses the CloudPirates chart outside the chart mode
+  - it: refuses the bundled and an external Kafka together
     values:
       - ../ci/minimal-fs-values.yaml
     set:
       ingest.mode: kafka
       kafka.enabled: true
+      kafka.external.brokers: [kafka.example.com:9092]
+    asserts:
+      - failedTemplate:
+          errorPattern: "set either kafka.enabled \\(the bundled Kafka\\) or kafka.external.brokers, not both"
+
+  - it: explains the removed kafka.bundled values
+    values:
+      - ../ci/minimal-fs-values.yaml
+    set:
+      ingest.mode: kafka
       kafka.bundled.enabled: true
     asserts:
       - failedTemplate:
-          errorPattern: "kafka.enabled switches on the CloudPirates kafka chart"
+          errorPattern: "kafka.bundled.\\* was removed"
 
   - it: needs credentials for external Kafka SASL
     values:

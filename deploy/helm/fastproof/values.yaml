@@ -573,6 +573,7 @@ garage:
   affinity: {}
 
 kafka:
+  enabled: false
   topics:
     prefix: fastproof.
     create: false
@@ -603,64 +604,12 @@ kafka:
         existingSecret: ""
         key: password
         value: ""
-  bundled:
-    enabled: false
-    mode: simple
-    simple:
-      image:
-        repository: docker.io/apache/kafka
-        tag: 4.4.0
-        digest: sha256:833b867a9585a141da455dc2b57431c65cbccb27f11c91f694444cca9f777e0f
-        pullPolicy: IfNotPresent
-      clusterId: ""
-      username: fastproof
-      saslMechanism: scram-sha-512
-      credentials:
-        existingSecret: ""
-        key: password
-      tls:
-        existingSecret: ""
-      heapOpts: -Xms512m -Xmx512m
-      logRetentionHours: 72
-      extraConfig: []
-      persistence:
-        enabled: true
-        storageClass: ""
-        size: 10Gi
-      resources:
-        requests:
-          cpu: 100m
-          memory: 768Mi
-        limits:
-          cpu: "1"
-          memory: 1Gi
-      podSecurityContext:
-        runAsNonRoot: true
-        runAsUser: 1000
-        runAsGroup: 1000
-        fsGroup: 1000
-        fsGroupChangePolicy: OnRootMismatch
-        seccompProfile:
-          type: RuntimeDefault
-      securityContext:
-        runAsNonRoot: true
-        allowPrivilegeEscalation: false
-        readOnlyRootFilesystem: true
-        capabilities:
-          drop:
-            - ALL
-      nodeSelector: {}
-      tolerations: []
-      affinity: {}
-  enabled: false
   replicaCount: 1
   image:
-    registry: docker.io
-    repository: apache/kafka
-    tag: "4.3.2@sha256:852a0d49fc4e656b022e7f23785411802c9a088c78a7c5e39f33969de9c227a7"
     imagePullPolicy: IfNotPresent
-  podDisruptionBudget:
-    enabled: false
+  serviceAccount:
+    create: true
+    automountServiceAccountToken: false
   auth:
     client:
       enabled: true
@@ -669,12 +618,11 @@ kafka:
     controller:
       enabled: true
     clientUser: fastproof
+    existingSecret: ""
+  tls:
+    enabled: false
+    source: self-signed
   kafkaConfig:
-    numPartitions: 12
-    defaultReplicationFactor: 1
-    offsetsTopicReplicationFactor: 1
-    transactionStateLogReplicationFactor: 1
-    transactionStateLogMinIsr: 1
     autoCreateTopicsEnable: false
     logRetentionHours: 72
   heapOpts: -Xmx512m -Xms512m

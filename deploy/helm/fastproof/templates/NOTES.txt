@@ -24,8 +24,15 @@ Attachments are stored on the volume {{ default (printf "%s-blobs" (include "fas
 {{- end }}
 
 Ingest mode: {{ .Values.ingest.mode }}{{ if .Values.roles.split }}; roles run as separate Deployments ({{ range $i, $r := include "fastproof.roleList" . | fromJsonArray }}{{ if $i }}, {{ end }}{{ $r.name }}{{ end }}){{ end }}; search backend: {{ .Values.search.backend }}{{ with include "fastproof.sinks" . }}; sinks: {{ . }}{{ end }}.
-{{- if .Values.kafka.bundled.enabled }}
-The bundled Kafka ({{ include "fastproof.kafkaName" . }}, {{ .Values.kafka.bundled.mode }} mode) is a single broker without replication: fine for a lab, use a managed or operator-run cluster in production.
+{{- if .Values.kafka.enabled }}
+{{- $sasl := include "fastproof.kafkaSasl" . }}
+The bundled Kafka ({{ include "fastproof.kafkaName" . }}, CloudPirates kafka chart) has {{ .Values.kafka.replicaCount | default 1 }} broker(s); FastProof connects {{ if $sasl }}as {{ ($sasl | fromJson).username }} with SASL PLAIN{{ else }}without authentication{{ end }}{{ if include "fastproof.kafkaTls" . }} over TLS{{ end }}.
+{{- if not (include "fastproof.kafkaTls" .) }}
+Kafka traffic is not encrypted: set kafka.tls.enabled=true (self-signed, cert-manager or an existing Secret) to protect the SASL password and the records.
+{{- end }}
+{{- if le (int (.Values.kafka.replicaCount | default 1)) 1 }}
+A single broker has no replication: fine for evaluation and small teams, use three brokers or a managed cluster for production.
+{{- end }}
 {{- end }}
 {{- if and .Values.sinks.clickhouse.enabled .Values.sinks.clickhouse.bundled.enabled }}
 The bundled ClickHouse ({{ include "fastproof.clickhouseName" . }}) is a single node; see the Scaling and big data page for the operator-based setup.

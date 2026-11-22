@@ -12,4 +12,8 @@ tests:
       - matchRegexRaw:
           pattern: 'Ingest mode: kafka; roles run as separate Deployments \(api, ingest, writer, sink\); search backend: clickhouse; sinks: clickhouse\.'
       - matchRegexRaw:
-          pattern: 'The bundled Kafka \(fp-kafka, simple mode\) is a single broker'
+          pattern: 'The bundled Kafka \(fp-kafka, CloudPirates kafka chart\) has 1 broker\(s\); FastProof connects as fastproof with SASL PLAIN\.'
+      - matchRegexRaw:
+          pattern: 'Kafka traffic is not encrypted: set kafka.tls.enabled=true'
+      - matchRegexRaw:
+          pattern: 'A single broker has no replication'

@@ -22,11 +22,15 @@ import { LaunchStatusBadge, StatusBadge, StatusBar, StatusDot } from '../compone
 import { ciLabel, commitUrl, repoLabel } from '../lib/ci';
 import { formatBytes, formatDateTime, formatDuration, formatRelative, isHttpUrl, percent, shortSha } from '../lib/format';
 import { stripAnsi } from '../lib/ansi';
+import { parseExplorerParams } from '../lib/explorer';
 import { useListKeys } from '../lib/keys';
 import { rememberLaunch } from '../lib/recent';
 import { STATUS_LABEL, statusVar, uploadStatusColor } from '../lib/status';
 import { Clusters } from './launch/Clusters';
+import { envName, useEnvironment } from './launch/environment';
+import { EnvironmentSwitch } from './launch/Environments';
 import { Explorer } from './launch/Explorer';
+import { ActiveFilters, FilterMenu } from './launch/Filters';
 import { TestPlanModal } from './launch/TestPlanModal';
 import { TransitionBadge } from './launch/TransitionBadge';
 import { LaunchProgress, LiveBadge } from './Launches';
@@ -113,8 +117,8 @@ function Chips({ launch }: { launch: Launch }) {
   );
 }
 
-function Summary({ launch }: { launch: Launch }) {
-  const c = launch.counts;
+function Summary({ launch, counts, env }: { launch: Launch; counts?: Counts; env?: string }) {
+  const c = counts ?? launch.counts;
   const order: ResultStatus[] = ['passed', 'failed', 'broken', 'skipped', 'unknown'];
   const data = order.filter((s) => c[s] > 0).map((s) => ({ name: STATUS_LABEL[s], value: c[s], color: statusVar(s) }));
   return (
@@ -138,7 +142,12 @@ function Summary({ launch }: { launch: Launch }) {
           </Tooltip>
         </div>
         <Stack gap="sm" style={{ flex: '1 1 260px', minWidth: 0 }}>
-          {launch.status === 'running' ? <LaunchProgress launch={launch} /> : <StatusBar counts={c} height={12} />}
+          {env && (
+            <Text size="xs" c="dimmed" data-testid="summary-scope">
+              Results in {envName(env)}
+            </Text>
+          )}
+          {launch.status === 'running' && !env ? <LaunchProgress launch={launch} /> : <StatusBar counts={c} height={12} />}
           <SimpleGrid cols={{ base: 4, md: 7 }} spacing="xs">
             <Stat label="Total" value={c.total} />
             {order.map((s) => (
@@ -303,7 +312,7 @@ function ResultRow({ project, r, index, selected, onHover, types }: { project: s
   );
 }
 
-function Results({ project, launch }: { project: string; launch: Launch }) {
+function Results({ project, launch, counts }: { project: string; launch: Launch; counts?: Counts }) {
   const [sp, setSp] = useSearchParams();
   const navigate = useNavigate();
   const statusParam = sp.get('status') ?? '';
@@ -313,9 +322,11 @@ function Results({ project, launch }: { project: string; launch: Launch }) {
   const flaky = sp.get('flaky') === 'true';
   const label = sp.get('label') ?? '';
   const source = sp.get('source') ?? '';
+  const explorerKey = sp.toString();
+  const explorer = useMemo(() => parseExplorerParams(new URLSearchParams(explorerKey)), [explorerKey]);
   const filters: ResultFilters = useMemo(
-    () => ({ status: statusParam || undefined, q: debounced || undefined, flaky: flaky || undefined, label: label || undefined, source: source || undefined }),
-    [statusParam, debounced, flaky, label, source],
+    () => ({ ...explorer, status: statusParam || undefined, q: debounced || undefined, flaky: flaky || undefined, label: label || undefined, source: source || undefined }),
+    [explorer, statusParam, debounced, flaky, label, source],
   );
   const q = useResults(project, launch.id, filters);
   const types = useDefectTypeMap(project);
@@ -349,7 +360,7 @@ function Results({ project, launch }: { project: string; launch: Launch }) {
   );
   useListKeys({ count: items.length, index: selected, setIndex: setSelected, onOpen: open });
 
-  const c: Counts = launch.counts;
+  const c: Counts = counts ?? launch.counts;
   return (
     <Stack gap="sm">
       <Group gap="sm" wrap="wrap" align="center">
@@ -366,6 +377,7 @@ function Results({ project, launch }: { project: string; launch: Launch }) {
           </Group>
         </Chip.Group>
         <Switch size="xs" label={`Flaky only (${String(c.flaky)})`} checked={flaky} onChange={(e) => set('flaky', e.currentTarget.checked ? 'true' : null)} />
+        <FilterMenu project={project} launch={launch} />
         {launch.manual && (
           <SegmentedControl
             size="xs"
@@ -381,6 +393,7 @@ function Results({ project, launch }: { project: string; launch: Launch }) {
           />
         )}
       </Group>
+      <ActiveFilters project={project} />
       <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="xs">
         <TextInput aria-label="Search results" placeholder="Search by name or error" leftSection={<IconSearch size={16} />} value={text} onChange={(e) => setText(e.currentTarget.value)} />
         <TextInput aria-label="Label filter" placeholder="Label name:value, e.g. severity:blocker" value={label} onChange={(e) => set('label', e.currentTarget.value || null)} />
@@ -444,6 +457,7 @@ export default function LaunchPage() {
   const tab = asked === 'tree' || (!asked && !sp.get('label')) ? 'explorer' : (asked ?? 'results');
   const [planOpen, setPlanOpen] = useState(false);
   const canPlan = useCan('launches:write', key);
+  const scope = useEnvironment(key, q.data);
 
   useEffect(() => {
     if (q.data) rememberLaunch({ project: key, id: q.data.id, number: q.data.number, name: q.data.name });
@@ -505,7 +519,8 @@ export default function LaunchPage() {
             {planOpen && <TestPlanModal project={key} launch={l} opened={planOpen} onClose={() => setPlanOpen(false)} initialStatuses={(sp.get('status') ?? '').split(',').filter((x): x is ResultStatus => (RESULT_STATUSES as readonly string[]).includes(x))} />}
             <Stack gap="md">
               <Chips launch={l} />
-              <Summary launch={l} />
+              <EnvironmentSwitch launch={l} scope={scope} />
+              <Summary launch={l} counts={scope.counts} env={scope.env} />
               <Uploads project={key} launch={l} />
               <Tabs value={tab} onChange={setTab} keepMounted={false}>
                 <Tabs.List>
@@ -528,10 +543,10 @@ export default function LaunchPage() {
                   )}
                 </Tabs.List>
                 <Tabs.Panel value="explorer" pt="md">
-                  <Explorer project={key} launch={l} />
+                  <Explorer project={key} launch={l} counts={scope.counts} />
                 </Tabs.Panel>
                 <Tabs.Panel value="results" pt="md">
-                  <Results project={key} launch={l} />
+                  <Results project={key} launch={l} counts={scope.counts} />
                 </Tabs.Panel>
                 <Tabs.Panel value="failures" pt="md">
                   <Clusters project={key} launch={l} />

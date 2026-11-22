@@ -202,7 +202,7 @@ async fn tree_with_tests_filters_and_pages() {
         "tree/tests?path=nope",
         "tree/tests?path=%7B%7D",
         "tree/tests",
-        "tree/tests?path=%5B%5D&groupBy=x",
+        "tree/tests?path=%5B%5D&groupBy=x%20y",
         "tree/tests?path=%5B%5D&status=lost",
         "tree/tests?path=%5B%5D&limit=501",
         "tree?status=lost",

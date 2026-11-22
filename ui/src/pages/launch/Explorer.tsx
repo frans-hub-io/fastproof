@@ -1,4 +1,4 @@
-import { ActionIcon, Badge, Button, Chip, Drawer, Group, Loader, Menu, SegmentedControl, Stack, Text, TextInput, Tooltip } from '@mantine/core';
+import { ActionIcon, Badge, Button, Chip, Drawer, Group, Loader, Menu, MultiSelect, Select, Stack, Text, TextInput, Tooltip } from '@mantine/core';
 import { EmptyState } from '@franshub/ui-shell';
 import { useDebouncedValue, useMediaQuery } from '@mantine/hooks';
 import {
@@ -20,7 +20,7 @@ import {
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
-import { fetchTreeTests, useExplorerTree } from '../../api/hooks';
+import { fetchTreeTests, useExplorerTree, useLaunchLabels } from '../../api/hooks';
 import { errorMessage } from '../../api/client';
 import { useDefectTypeMap } from '../../api/stageC';
 import type { Counts, Launch, ResultStatus, TreeFilters, TreeNode } from '../../api/types';
@@ -33,25 +33,37 @@ import {
   ancestorsOf,
   type ExplorerFilter,
   type ExplorerSort,
+  extraCount,
+  FILTER_PARAMS,
   filterActive,
   filterTree,
   flattenTree,
+  groupByOf,
+  groupName,
   initialExpansion,
   isComplete,
   keyAction,
   type LazyTests,
   loadExpansion,
+  MAX_GROUP_LEVELS,
+  pageGroupBy,
+  parseExplorerParams,
+  parseLevels,
   parseSort,
   parseView,
   type Row,
   saveExpansion,
-  VIEW_GROUP,
+  validLabelName,
+  VIEW_LABEL,
+  VIEWS,
   worstStatus,
 } from '../../lib/explorer';
 import { formatDuration } from '../../lib/format';
 import { isTypingTarget } from '../../lib/keys';
 import { STATUS_LABEL, statusVar } from '../../lib/status';
+import { useLatestSearchParams } from '../../lib/urlState';
 import { ExplorerDetail } from './ExplorerDetail';
+import { ActiveFilters, FilterMenu } from './Filters';
 
 const ROW_HEIGHT = 32;
 const SPLIT_KEY = 'fastproof.explorer.split';
@@ -145,13 +157,13 @@ const ExplorerRow = memo(function ExplorerRow({ row, index, active, selected, te
     const n = row.node;
     const status = worstStatus(n.counts);
     return (
-      <div {...common} style={indent} aria-expanded={row.expanded} data-testid="explorer-group" data-status={status ?? ''} data-key={row.key} onClick={() => onGroup(index, row.key)} title={n.path.join(' › ')}>
+      <div {...common} style={indent} aria-expanded={row.expanded} data-testid="explorer-group" data-status={status ?? ''} data-key={row.key} onClick={() => onGroup(index, row.key)} title={n.path.map(groupName).join(' › ')}>
         <span className="fp-x-chevron" aria-hidden>
           {row.expanded ? <IconChevronDown size={14} /> : <IconChevronRight size={14} />}
         </span>
         <StatusIcon status={status} size={15} />
-        <Text size="sm" fw={600} className="fh-truncate fp-x-name">
-          {n.name || '(no name)'}
+        <Text size="sm" fw={600} className="fh-truncate fp-x-name" c={n.name === '' ? 'dimmed' : undefined} fs={n.name === '' ? 'italic' : undefined}>
+          {groupName(n.name)}
         </Text>
         <CountPills counts={n.counts} />
         <Text size="xs" c="dimmed" className="fp-x-duration">
@@ -215,6 +227,57 @@ const ExplorerRow = memo(function ExplorerRow({ row, index, active, selected, te
   );
 });
 
+/** The labels of a custom grouping, outermost first, picked from those the launch has. */
+function CustomLevels({ project, launch, env, onChange }: { project: string; launch: Launch; env: string | undefined; onChange: () => void }) {
+  const labels = useLaunchLabels(project, launch.id, env);
+  const [sp, update] = useLatestSearchParams();
+  const levels = parseLevels(sp.get('by'));
+  const data = useMemo(() => {
+    const listed = (labels.data ?? []).filter((l) => validLabelName(l.name));
+    const names = new Set(listed.map((l) => l.name));
+    return [
+      ...listed.map((l) => ({ value: l.name, label: l.name, count: l.count, values: l.values })),
+      ...levels.filter((l) => !names.has(l)).map((l) => ({ value: l, label: l, count: 0, values: 0 })),
+    ];
+  }, [labels.data, levels]);
+  const counts = useMemo(() => new Map(data.map((d) => [d.value, d])), [data]);
+  return (
+    <MultiSelect
+      size="xs"
+      aria-label="Labels to group by, outermost first"
+      placeholder={levels.length ? undefined : labels.isPending ? 'Loading labels…' : 'Pick labels, outermost first'}
+      data={data}
+      value={levels}
+      onChange={(v) => {
+        onChange();
+        update({ by: v.join(',') || null });
+      }}
+      maxValues={MAX_GROUP_LEVELS}
+      searchable
+      clearable
+      hidePickedOptions
+      nothingFoundMessage={labels.isError ? errorMessage(labels.error) : 'No such label in this launch'}
+      renderOption={({ option }) => {
+        const d = counts.get(option.value);
+        return (
+          <Group gap="xs" wrap="nowrap" justify="space-between" style={{ width: '100%' }}>
+            <Text size="xs" className="fh-truncate">
+              {option.label}
+            </Text>
+            {d && d.count > 0 && (
+              <Text size="xs" c="dimmed" style={{ flex: 'none' }}>
+                {d.count.toLocaleString()} · {d.values.toLocaleString()} value{d.values === 1 ? '' : 's'}
+              </Text>
+            )}
+          </Group>
+        );
+      }}
+      comboboxProps={{ withinPortal: true }}
+      data-testid="explorer-custom-levels"
+    />
+  );
+}
+
 function useSplit(): [number, (n: number) => void] {
   const [split, setSplit] = useState<number>(() => {
     try {
@@ -241,11 +304,14 @@ interface Scoped<T> {
   value: T;
 }
 
-/** The launch tree down to the tests, with the selected test beside it. */
-export function Explorer({ project, launch }: { project: string; launch: Launch }) {
+/** The launch tree down to the tests, with the selected test beside it; `counts` are those
+ * of the environment picked on the launch page. */
+export function Explorer({ project, launch, counts }: { project: string; launch: Launch; counts?: Counts }) {
   const [sp, setSp] = useSearchParams();
   const phone = useMediaQuery('(max-width: 48em)');
   const view = parseView(sp.get('view'));
+  const byParam = sp.get('by');
+  const levels = useMemo(() => parseLevels(byParam), [byParam]);
   const sort = parseSort(sp.get('sort'));
   const selected = sp.get('test');
   const statusParam = sp.get('status') ?? '';
@@ -254,7 +320,15 @@ export function Explorer({ project, launch }: { project: string; launch: Launch 
   const [text, setText] = useState(sp.get('q') ?? '');
   const [debounced] = useDebouncedValue(text, 250);
   const filter: ExplorerFilter = useMemo(() => ({ statuses, flaky, text: debounced }), [statuses, flaky, debounced]);
-  const groupBy = VIEW_GROUP[view];
+  const extraKey = FILTER_PARAMS.map((k) => sp.get(k) ?? '').join('\u0000');
+  const envParam = sp.get('env') ?? undefined;
+  const extra = useMemo(() => {
+    const p = parseExplorerParams(new URLSearchParams(FILTER_PARAMS.map((k, i) => [k, extraKey.split('\u0000')[i] ?? ''])));
+    delete p.env;
+    return p;
+  }, [extraKey]);
+  const extraOn = extraCount(extra) > 0;
+  const groupBy = groupByOf(view, levels);
   const running = launch.status === 'running';
   const types = useDefectTypeMap(project);
 
@@ -284,24 +358,26 @@ export function Explorer({ project, launch }: { project: string; launch: Launch 
   }
 
   const [reveal] = useState(selected ?? undefined);
-  const baseFilters: TreeFilters = useMemo(() => ({ groupBy, reveal }), [groupBy, reveal]);
-  const base = useExplorerTree(project, launch.id, baseFilters, running);
+  const baseFilters: TreeFilters = useMemo(() => ({ groupBy, reveal, env: envParam }), [groupBy, reveal, envParam]);
+  const base = useExplorerTree(project, launch.id, baseFilters, running, !extraOn);
   const complete = base.data ? isComplete(base.data) : true;
-  const serverFiltered = !complete && filterActive(filter);
+  const serverFiltered = extraOn || (!complete && filterActive(filter));
   const serverFilters: TreeFilters = useMemo(
-    () => ({ groupBy, status: statusParam || undefined, q: debounced.trim() || undefined, flaky: flaky || undefined, reveal }),
-    [groupBy, statusParam, debounced, flaky, reveal],
+    () => ({ ...extra, groupBy, env: envParam, status: statusParam || undefined, q: debounced.trim() || undefined, flaky: flaky || undefined, reveal }),
+    [extra, groupBy, envParam, statusParam, debounced, flaky, reveal],
   );
   const filtered = useExplorerTree(project, launch.id, serverFilters, running, serverFiltered);
-  const lazyFilters = serverFiltered ? serverFilters : baseFilters;
   const source = serverFiltered ? filtered : base;
+  const anyFilter = filterActive(filter) || extraOn;
   const tree: TreeNode | null = useMemo(() => {
     if (serverFiltered) return filtered.data ?? null;
     return base.data ? filterTree(base.data, filter) : null;
   }, [serverFiltered, filtered.data, base.data, filter]);
   const settled = !!tree && !source.isPlaceholderData;
+  const pageBy = pageGroupBy(groupBy, source.data);
+  const lazyFilters = useMemo(() => ({ ...(serverFiltered ? serverFilters : baseFilters), groupBy: pageBy }), [serverFiltered, serverFilters, baseFilters, pageBy]);
 
-  const lazyScope = `${groupBy}|${serverFiltered ? JSON.stringify(serverFilters) : ''}`;
+  const lazyScope = JSON.stringify(serverFiltered ? lazyFilters : { groupBy: pageBy, env: envParam });
   const [lazyState, setLazyState] = useState<Scoped<Map<string, LazyTests>>>({ scope: lazyScope, value: new Map() });
   const lazy = lazyState.scope === lazyScope ? lazyState.value : null;
   const guard = useRef<{ scope: string; inflight: Set<string>; next: Map<string, string | null> }>({ scope: lazyScope, inflight: new Set(), next: new Map() });
@@ -342,14 +418,15 @@ export function Explorer({ project, launch }: { project: string; launch: Launch 
     [project, launch.id, lazyFilters, lazyScope],
   );
 
-  const storageKey = `fastproof.explorer.${launch.id}.${view}`;
+  const storageKey = `fastproof.explorer.${launch.id}.${view === 'custom' ? `custom:${groupBy}` : view}${envParam ? `.${envParam}` : ''}`;
   const [expState, setExpState] = useState<Scoped<Set<string>> | null>(null);
-  if (base.data && !base.isPlaceholderData && expState?.scope !== storageKey) {
-    const keys = loadExpansion(storageKey) ?? initialExpansion(base.data);
-    if (selected) for (const k of ancestorsOf(base.data, selected) ?? []) keys.add(k);
+  const expSource = extraOn ? filtered : base;
+  if (expSource.data && !expSource.isPlaceholderData && expState?.scope !== storageKey) {
+    const keys = loadExpansion(storageKey) ?? initialExpansion(expSource.data);
+    if (selected) for (const k of ancestorsOf(expSource.data, selected) ?? []) keys.add(k);
     setExpState({ scope: storageKey, value: keys });
   }
-  const filterScope = filterActive(filter) ? `${view}|${JSON.stringify(filter)}` : '';
+  const filterScope = anyFilter ? `${storageKey}|${JSON.stringify(filter)}|${JSON.stringify(extra)}` : '';
   const [filterExp, setFilterExp] = useState<Scoped<Set<string>> | null>(null);
   if (filterScope && tree && settled && filterExp?.scope !== filterScope) {
     setFilterExp({ scope: filterScope, value: new Set(allKeys(tree, 5000)) });
@@ -506,25 +583,29 @@ export function Explorer({ project, launch }: { project: string; launch: Launch 
     window.addEventListener('pointerup', up);
   };
 
-  const c = launch.counts;
+  const loading = extraOn ? filtered.isPending && !filtered.data : base.isPending || (serverFiltered && filtered.isPending && !filtered.data);
+  const c = counts ?? launch.counts;
   const toolbar = (
     <Stack gap={8} p="xs" className="fp-x-toolbar">
       <Group gap="xs" wrap="nowrap" justify="space-between">
-        <SegmentedControl
-          size="xs"
-          value={view}
-          onChange={(v) => {
-            setActive(-1);
-            setParam('view', v === 'suites' ? null : v);
-          }}
-          data={[
-            { value: 'suites', label: 'Suites' },
-            { value: 'features', label: 'Features' },
-            { value: 'packages', label: 'Packages' },
-          ]}
-          aria-label="Group by"
-          data-testid="explorer-view"
-        />
+        <Group gap="xs" wrap="nowrap" style={{ minWidth: 0 }}>
+          <Select
+            size="xs"
+            w={phone ? 108 : 124}
+            value={view}
+            onChange={(v) => {
+              if (!v) return;
+              setActive(-1);
+              setParam('view', v === 'suites' ? null : v);
+            }}
+            data={VIEWS.map((v) => ({ value: v, label: VIEW_LABEL[v] }))}
+            allowDeselect={false}
+            aria-label="Group by"
+            comboboxProps={{ withinPortal: true }}
+            data-testid="explorer-view"
+          />
+          <FilterMenu project={project} launch={launch} />
+        </Group>
         <Group gap={2} wrap="nowrap">
           <Menu position="bottom-end" withinPortal>
             <Menu.Target>
@@ -555,12 +636,21 @@ export function Explorer({ project, launch }: { project: string; launch: Launch 
           </Tooltip>
         </Group>
       </Group>
+      {view === 'custom' && (
+        <CustomLevels
+          project={project}
+          launch={launch}
+          env={envParam}
+          onChange={() => setActive(-1)}
+        />
+      )}
+      <ActiveFilters project={project} />
       <TextInput
         size="xs"
         aria-label="Search tests"
         placeholder="Search tests and groups"
         leftSection={<IconSearch size={14} />}
-        rightSection={(base.isFetching || filtered.isFetching) && !base.isPending ? <Loader size={12} /> : undefined}
+        rightSection={(base.isFetching || filtered.isFetching) && !loading ? <Loader size={12} /> : undefined}
         value={text}
         onChange={(e) => setText(e.currentTarget.value)}
         data-testid="explorer-search"
@@ -588,7 +678,6 @@ export function Explorer({ project, launch }: { project: string; launch: Launch 
     </Stack>
   );
 
-  const loading = base.isPending || (serverFiltered && filtered.isPending && !filtered.data);
   const error = source.isError ? errorMessage(source.error) : null;
   const list = loading ? (
     <Group justify="center" p="lg">
@@ -599,7 +688,7 @@ export function Explorer({ project, launch }: { project: string; launch: Launch 
       {error}
     </Text>
   ) : !rows.length ? (
-    <EmptyState title={filterActive(filter) ? 'No tests match' : 'No results yet'} description={filterActive(filter) ? 'Change the search or the status filters.' : undefined} />
+    <EmptyState title={anyFilter ? 'No tests match' : 'No results yet'} description={anyFilter ? 'Change the search or the filters.' : undefined} />
   ) : (
     <div
       ref={treeEl}
@@ -633,7 +722,7 @@ export function Explorer({ project, launch }: { project: string; launch: Launch 
   const footer = (
     <Group gap="xs" justify="space-between" px="xs" py={4} className="fp-x-footer" wrap="nowrap">
       <Text size="xs" c="dimmed" className="fh-truncate">
-        {filterActive(filter) ? `${total.toLocaleString()} of ${c.total.toLocaleString()} tests` : `${c.total.toLocaleString()} tests`}
+        {anyFilter ? `${total.toLocaleString()} of ${c.total.toLocaleString()} tests` : `${c.total.toLocaleString()} tests`}
         {typeof tree?.durationMs === 'number' ? ` · ${formatDuration(tree.durationMs)} in total` : ''}
       </Text>
       <Text size="xs" c="dimmed" visibleFrom="sm" className="fh-truncate" title="↑ ↓ move, → ← open and close groups, Enter shows a test, Esc closes it">

@@ -10,7 +10,10 @@ import {
   meFor,
   projectLaunches,
   projects,
+  labelLevels,
   resultDetail,
+  resultEnv,
+  resultKinds,
   RUNNING_LAUNCH_ID,
   testCaseExists,
   testCaseHistory,
@@ -115,6 +118,68 @@ function filterLaunches(list: Launch[], url: URL): Launch[] {
   });
 }
 
+const NONE = '(none)';
+const LABEL_NAME = /^[\p{L}\p{N}_\-.:@/]{1,64}$/u;
+
+/** A `groupBy` the server accepts, or null. */
+function validGroupBy(g: string): boolean {
+  const levels = labelLevels(g);
+  if (!levels) return true;
+  return levels.length >= 1 && levels.length <= 5 && levels.every((n) => LABEL_NAME.test(n)) && new Set(levels).size === levels.length;
+}
+
+function labelValue(r: ResultSummary, name: string): string | null {
+  return r.labels.find((l) => l.name === name)?.value || null;
+}
+
+function isNewFailure(r: ResultSummary): boolean {
+  return (r.status === 'failed' || r.status === 'broken') && !r.muted && (r.transition === 'regressed' || r.transition === 'new');
+}
+
+/** The explorer filters shared by the tree and the result list, as the server applies them. */
+function explorerFilter(r: ResultSummary, url: URL): boolean {
+  const sp = url.searchParams;
+  const list = (k: string) => (sp.get(k) ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+  const message = sp.get('message')?.trim().toLowerCase();
+  if (message && !(r.message ?? '').toLowerCase().includes(message)) return false;
+  if (sp.get('retried') === 'true' && r.attemptCount <= 1) return false;
+  if (sp.get('muted') === 'true' && !r.muted) return false;
+  if (sp.get('muted') === 'false' && r.muted) return false;
+  if (sp.get('newFailures') === 'true' && !isNewFailure(r)) return false;
+  for (const k of ['severity', 'owner', 'tag']) {
+    const want = list(k);
+    if (want.length && !want.some((v) => (v === NONE ? !labelValue(r, k) : r.labels.some((l) => l.name === k && l.value === v)))) return false;
+  }
+  const min = sp.get('minDurationMs');
+  const max = sp.get('maxDurationMs');
+  if (min && (r.durationMs ?? 0) < Number(min)) return false;
+  if (max && (r.durationMs ?? 0) > Number(max)) return false;
+  const defects = list('defect');
+  if (defects.length && !defects.some((d) => (d === 'none' ? !r.defect : r.defect?.typeId === d))) return false;
+  const kinds = list('attachment');
+  if (kinds.length && !kinds.some((k) => resultKinds(r).includes(k))) return false;
+  const env = sp.get('env');
+  if (env && (resultEnv(r) ?? NONE) !== env) return false;
+  return true;
+}
+
+function countsOf(list: ResultSummary[]) {
+  const c = { total: 0, passed: 0, failed: 0, broken: 0, skipped: 0, unknown: 0, flaky: 0, muted: 0 };
+  for (const r of list) {
+    c.total++;
+    c[r.status]++;
+    if (r.flakyInRun) c.flaky++;
+    if (r.muted) c.muted++;
+  }
+  return c;
+}
+
+function valueCounts(values: (string | null | undefined)[]): { value: string; count: number }[] {
+  const m = new Map<string, number>();
+  for (const v of values) if (v) m.set(v, (m.get(v) ?? 0) + 1);
+  return [...m.entries()].map(([value, count]) => ({ value, count })).sort((a, b) => b.count - a.count || a.value.localeCompare(b.value));
+}
+
 function filterResults(list: ResultSummary[], url: URL): ResultSummary[] {
   const status = url.searchParams.get('status');
   const q = url.searchParams.get('q')?.toLowerCase();
@@ -130,7 +195,7 @@ function filterResults(list: ResultSummary[], url: URL): ResultSummary[] {
     if (flaky === 'true' && !r.flakyInRun) return false;
     if (flaky === 'false' && r.flakyInRun) return false;
     if (fp && r.fingerprint !== fp) return false;
-    return true;
+    return explorerFilter(r, url);
   });
 }
 
@@ -227,9 +292,74 @@ export const handlers = [
     if (!def || def.project !== params.key) return error(404, 'not_found', 'launch not found');
     const url = new URL(request.url);
     const g = url.searchParams.get('groupBy') ?? 'suite';
-    if (g !== 'suite' && g !== 'feature' && g !== 'package') return error(400, 'invalid_query', 'groupBy must be suite, feature or package', { field: 'groupBy' });
+    if (!validGroupBy(g)) return error(400, 'invalid_query', 'groupBy must be suite, feature, package or up to five label names', { field: 'groupBy' });
     const results = filterTree(launchResults(def.launch.id).map((r) => analyze(def.project, r)), url);
     return HttpResponse.json(treeOf(def.launch.id, g, { results, includeTests: url.searchParams.get('includeTests') === 'true', reveal: url.searchParams.get('reveal'), budget: treeBudget() }));
+  }),
+
+  http.get(`${API}/projects/:key/launches/:id/labels`, ({ params, request }) => {
+    const def = launchDef(String(params.id));
+    if (!def || def.project !== params.key) return error(404, 'not_found', 'launch not found');
+    const url = new URL(request.url);
+    const env = url.searchParams.get('env');
+    const results = launchResults(def.launch.id).filter((r) => !env || (resultEnv(r) ?? NONE) === env);
+    const by = new Map<string, { count: number; values: Set<string> }>();
+    for (const r of results) {
+      const seen = new Set<string>();
+      for (const l of r.labels) {
+        const e = by.get(l.name) ?? { count: 0, values: new Set<string>() };
+        if (!seen.has(l.name)) e.count++;
+        seen.add(l.name);
+        e.values.add(l.value);
+        by.set(l.name, e);
+      }
+    }
+    const items = [...by.entries()].map(([name, e]) => ({ name, count: e.count, values: e.values.size })).sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+    return HttpResponse.json({ items });
+  }),
+
+  http.get(`${API}/projects/:key/launches/:id/facets`, ({ params, request }) => {
+    const def = launchDef(String(params.id));
+    if (!def || def.project !== params.key) return error(404, 'not_found', 'launch not found');
+    const url = new URL(request.url);
+    const env = url.searchParams.get('env');
+    const results = launchResults(def.launch.id)
+      .map((r) => analyze(def.project, r))
+      .filter((r) => !env || (resultEnv(r) ?? NONE) === env);
+    const labels = ['severity', 'owner', 'tag'].map((name) => ({
+      name,
+      values: valueCounts(results.flatMap((r) => [...new Set(r.labels.filter((l) => l.name === name).map((l) => l.value))])),
+      none: results.filter((r) => !labelValue(r, name)).length,
+      more: false,
+    }));
+    const noDefect = results.filter((r) => !r.defect).length;
+    const defects = valueCounts(results.map((r) => r.defect?.typeId));
+    if (noDefect) defects.push({ value: 'none', count: noDefect });
+    const durations = results.map((r) => r.durationMs ?? 0);
+    return HttpResponse.json({
+      counts: countsOf(results),
+      retried: results.filter((r) => r.attemptCount > 1).length,
+      newFailures: results.filter(isNewFailure).length,
+      baselineLaunchId: null,
+      manual: 0,
+      automated: results.length,
+      labels,
+      defects,
+      attachments: ['trace', 'video', 'screenshot'].map((value) => ({ value, count: results.filter((r) => resultKinds(r).includes(value)).length })),
+      maxDurationMs: durations.length ? Math.max(...durations) : null,
+    });
+  }),
+
+  http.get(`${API}/projects/:key/launches/:id/environments`, ({ params }) => {
+    const def = launchDef(String(params.id));
+    if (!def || def.project !== params.key) return error(404, 'not_found', 'launch not found');
+    const groups = new Map<string | null, ResultSummary[]>();
+    for (const r of launchResults(def.launch.id)) {
+      const k = resultEnv(r);
+      groups.set(k, [...(groups.get(k) ?? []), r]);
+    }
+    const items = [...groups.entries()].map(([key, list]) => ({ key, counts: countsOf(list) })).sort((a, b) => b.counts.total - a.counts.total);
+    return HttpResponse.json({ items });
   }),
 
   http.get(`${API}/projects/:key/launches/:id/tree/tests`, ({ params, request }) => {
@@ -237,7 +367,7 @@ export const handlers = [
     if (!def || def.project !== params.key) return error(404, 'not_found', 'launch not found');
     const url = new URL(request.url);
     const g = url.searchParams.get('groupBy') ?? 'suite';
-    if (g !== 'suite' && g !== 'feature' && g !== 'package') return error(400, 'invalid_query', 'groupBy must be suite, feature or package', { field: 'groupBy' });
+    if (!validGroupBy(g)) return error(400, 'invalid_query', 'groupBy must be suite, feature, package or up to five label names', { field: 'groupBy' });
     let path: unknown;
     try {
       path = JSON.parse(url.searchParams.get('path') ?? '');

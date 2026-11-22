@@ -102,6 +102,7 @@ nav:
       - guide/formats.md
       - guide/reporters.md
       - guide/live-logs.md
+      - guide/launch-explorer.md
       - guide/migrating-from-allure.md
   - Test management:
       - guide/test-management.md

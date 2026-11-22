@@ -64,3 +64,25 @@ test('phone width: the tree fills the screen and a test opens in a drawer', asyn
   await expect(page.getByRole('dialog')).toHaveCount(0);
   await expect(page.getByTestId('explorer-tree')).toBeVisible();
 });
+
+test('phone width: grouping, filters and the environment switcher fit the screen', async ({ page }) => {
+  await page.setViewportSize({ width: 360, height: 780 });
+  await page.goto('/p/web-shop');
+  await page.getByRole('link', { name: '#41 web-shop nightly' }).click();
+  await expect(page.getByTestId('environments')).toBeVisible();
+  await expect(page.getByTestId('environment-row')).toHaveCount(2);
+  await expect(page.getByTestId('explorer-tree')).toBeVisible();
+  await noHorizontalScroll(page);
+  await page.getByTestId('explorer-filters').click();
+  const menu = page.getByTestId('explorer-filters-menu');
+  await expect(menu).toBeVisible();
+  const box = await menu.boundingBox();
+  expect(box && box.x >= 0 && box.x + box.width <= 360).toBe(true);
+  await menu.getByTestId('filter-retried').check();
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('active-filter-retried')).toBeVisible();
+  await page.getByTestId('explorer-view').click();
+  await page.getByRole('option', { name: 'Custom…', exact: true }).click();
+  await expect(page.getByTestId('explorer-custom-levels')).toBeVisible();
+  await noHorizontalScroll(page);
+});

@@ -3,19 +3,27 @@ import type { Counts, ResultStatus, TreeNode, TreeTest } from '../api/types';
 import {
   allKeys,
   ancestorsOf,
+  extraCount,
   failureKeys,
   filterTree,
   flattenTree,
+  groupByOf,
+  groupName,
   initialExpansion,
   isComplete,
   keyAction,
   type LazyTests,
   loadExpansion,
   nodeKey,
+  pageGroupBy,
+  parseExplorerParams,
+  parseLevels,
   parseSort,
   parseView,
   type Row,
   saveExpansion,
+  toggleValue,
+  validLabelName,
   worstStatus,
 } from './explorer';
 
@@ -181,5 +189,55 @@ describe('explorer tree', () => {
     } finally {
       if (original) Object.defineProperty(window, 'sessionStorage', original);
     }
+  });
+});
+
+describe('explorer grouping and filters', () => {
+  it('maps the presets and a custom grouping to groupBy', () => {
+    expect(parseView('owner')).toBe('owner');
+    expect(parseView('custom')).toBe('custom');
+    expect(groupByOf('suites', [])).toBe('suite');
+    expect(groupByOf('features', [])).toBe('epic,feature,story');
+    expect(groupByOf('severity', ['x'])).toBe('severity');
+    expect(groupByOf('custom', [])).toBe('suite');
+    expect(groupByOf('custom', ['team', 'owner'])).toBe('team,owner');
+    expect(groupByOf('custom', ['feature']), 'a label named like a preset').toBe('label:feature');
+  });
+
+  it('keeps valid, distinct label names, five at most', () => {
+    expect(parseLevels('epic, feature ,epic,bad name,,x.y')).toEqual(['epic', 'feature', 'x.y']);
+    expect(parseLevels('a,b,c,d,e,f')).toEqual(['a', 'b', 'c', 'd', 'e']);
+    expect(parseLevels(null)).toEqual([]);
+    expect(validLabelName('ünïcode_1')).toBe(true);
+    expect(validLabelName('a'.repeat(65))).toBe(false);
+    expect(validLabelName('ж'.repeat(33)), 'the server counts bytes').toBe(false);
+    expect(validLabelName('')).toBe(false);
+  });
+
+  it('pages groups by the levels the tree reports', () => {
+    const root = { name: 'root', path: [], counts: counts([]), children: [] } as TreeNode;
+    expect(pageGroupBy('epic,feature,story', { ...root, levels: ['feature', 'story'] })).toBe('feature,story');
+    expect(pageGroupBy('epic,package', { ...root, levels: ['package'] })).toBe('label:package');
+    expect(pageGroupBy('suite', root)).toBe('suite');
+    expect(pageGroupBy('owner', null)).toBe('owner');
+  });
+
+  it('reads the filters from the URL and counts those set', () => {
+    const p = parseExplorerParams(new URLSearchParams('retried=true&muted=false&severity=critical,(none)&minDurationMs=1500&maxDurationMs=x&env=staging&source=manual&message=%20%20&newFailures=1'));
+    expect(p).toMatchObject({ retried: true, muted: false, severity: 'critical,(none)', minDurationMs: 1500, env: 'staging', source: 'manual' });
+    expect(p.maxDurationMs).toBeUndefined();
+    expect(p.message).toBeUndefined();
+    expect(p.newFailures).toBeUndefined();
+    expect(extraCount(p), 'env is a scope, not a filter').toBe(5);
+    expect(extraCount(parseExplorerParams(new URLSearchParams('')))).toBe(0);
+  });
+
+  it('toggles list values and names the group of missing labels', () => {
+    expect(toggleValue('a,b', 'c', true)).toBe('a,b,c');
+    expect(toggleValue('a,b', 'a', false)).toBe('b');
+    expect(toggleValue('a', 'a', false)).toBeNull();
+    expect(toggleValue(undefined, 'a', true)).toBe('a');
+    expect(groupName('')).toBe('(none)');
+    expect(groupName('Shop')).toBe('Shop');
   });
 });

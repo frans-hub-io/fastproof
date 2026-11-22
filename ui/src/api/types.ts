@@ -86,7 +86,27 @@ export type ResultSummary = Omit<S['ResultSummary'], 'status' | 'defect' | 'tran
   transition?: Transition | null;
 };
 
-export interface ResultFilters {
+/**
+ * Explorer filters shared by the tree, its pages and the result list; the names are those of
+ * the API and of the page URL. Lists are comma-separated.
+ */
+export interface ExplorerParams {
+  message?: string;
+  retried?: boolean;
+  muted?: boolean;
+  newFailures?: boolean;
+  severity?: string;
+  owner?: string;
+  tag?: string;
+  minDurationMs?: number;
+  maxDurationMs?: number;
+  defect?: string;
+  attachment?: string;
+  /** An environment key, or `(none)`. */
+  env?: string;
+}
+
+export interface ResultFilters extends ExplorerParams {
   status?: string;
   q?: string;
   suite?: string;
@@ -96,7 +116,14 @@ export interface ResultFilters {
   source?: string;
 }
 
-export type TreeGroupBy = 'suite' | 'feature' | 'package';
+/** `suite`, `feature`, `package` or comma-separated label names. */
+export type TreeGroupBy = string;
+
+export type LabelName = S['LabelName'];
+export type ValueCount = S['ValueCount'];
+export type LabelFacet = S['LabelFacet'];
+export type LaunchFacets = S['LaunchFacets'];
+export type EnvironmentCounts = S['EnvironmentCounts'];
 
 export type TreeDefect = Omit<S['TreeDefect'], 'group' | 'source'> & { group: DefectGroup; source: DefectSource };
 
@@ -113,11 +140,12 @@ export type TreeNode = Omit<S['TreeNode'], 'children' | 'tests'> & {
 };
 
 /** Filters of the launch tree with leaves. */
-export interface TreeFilters {
+export interface TreeFilters extends ExplorerParams {
   groupBy: TreeGroupBy;
   status?: string;
   q?: string;
   flaky?: boolean;
+  source?: string;
   reveal?: string;
 }
 

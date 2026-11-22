@@ -6,6 +6,11 @@ const group = (page: Page, name: string) => tree(page).locator('[data-testid="ex
 const testRow = (page: Page, name: string) => tree(page).locator(`[data-testid="explorer-test"][title="${name}"]`);
 const chip = (page: Page, label: string) => page.getByTestId('explorer').locator('label').filter({ hasText: new RegExp(`^${label} \\d+$`) });
 const groups = (page: Page) => tree(page).getByTestId('explorer-group');
+const topGroups = (page: Page) => tree(page).locator('[data-testid="explorer-group"][aria-level="1"]');
+async function pickView(page: Page, label: string) {
+  await page.getByTestId('explorer-view').click();
+  await page.getByRole('option', { name: label, exact: true }).click();
+}
 
 test('the launch opens on the tree: failing paths are open down to the tests', async ({ page }) => {
   await openRichLaunch(page);
@@ -155,15 +160,15 @@ test('keyboard: arrows move, open and close groups, Enter shows a test', async (
 test('views, sort and big groups read page by page', async ({ page }) => {
   await page.addInitScript(() => window.localStorage.setItem('fastproof.mock.treeBudget', '30'));
   await openRichLaunch(page);
-  await page.getByTestId('explorer-view').getByText('Features').click();
+  await pickView(page, 'Behaviors');
   await expect(page).toHaveURL(/view=features/);
   await expect(async () => {
     await page.getByTestId('explorer-collapse-all').click();
     await expect(group(page, 'Checkout')).toBeVisible({ timeout: 1_000 });
   }).toPass({ timeout: 15_000 });
-  await page.getByTestId('explorer-view').getByText('Packages').click();
+  await pickView(page, 'Packages');
   await expect(page).toHaveURL(/view=packages/);
-  await page.getByTestId('explorer-view').getByText('Suites').click();
+  await pickView(page, 'Suites');
   await expect(page).not.toHaveURL(/view=/);
   await expect(async () => {
     await page.getByTestId('explorer-expand-all').click();
@@ -176,3 +181,76 @@ test('views, sort and big groups read page by page', async ({ page }) => {
   await chip(page, 'Failed').click();
   await expect.poll(async () => new Set(await tree(page).getByTestId('explorer-test').evaluateAll((els) => els.map((e) => e.getAttribute('data-status'))))).toEqual(new Set(['failed']));
 });
+
+test('group by a label preset or a custom list of labels; results without a label sit in (none)', async ({ page }) => {
+  await openRichLaunch(page);
+  await pickView(page, 'Severity');
+  await expect(page).toHaveURL(/view=severity/);
+  await expect(topGroups(page).filter({ hasText: 'critical' })).toBeVisible();
+  await pickView(page, 'Custom…');
+  await expect(page).toHaveURL(/view=custom/);
+  const levels = page.getByTestId('explorer-custom-levels');
+  await levels.click();
+  await expect(page.getByRole('option', { name: /^owner/ })).toContainText(/\d+ · 4 values/);
+  await page.getByRole('option', { name: /^tag/ }).click();
+  await page.getByRole('option', { name: /^framework/ }).click();
+  await page.keyboard.press('Escape');
+  await expect(page).toHaveURL(/by=tag%2Cframework|by=tag,framework/);
+  await page.getByTestId('explorer-collapse-all').click();
+  await expect(topGroups(page).filter({ hasText: 'smoke' })).toBeVisible();
+  const none = topGroups(page).filter({ hasText: '(none)' });
+  await expect(none, 'tests without a tag').toBeVisible();
+  await none.click();
+  await expect(tree(page).locator('[data-testid="explorer-group"][aria-level="2"]').filter({ hasText: 'junit5' })).toBeVisible();
+  await page.reload();
+  await expect(page.getByTestId('explorer-view')).toHaveValue('Custom…');
+  await expect(topGroups(page).filter({ hasText: '(none)' })).toBeVisible();
+});
+
+test('filters with counts narrow the tree and the result list and live in the URL', async ({ page }) => {
+  await openRichLaunch(page);
+  const before = await topGroups(page).count();
+  await page.getByTestId('explorer-filters').click();
+  const menu = page.getByTestId('explorer-filters-menu');
+  await expect(menu.getByTestId('filter-severity-critical')).toBeVisible();
+  await expect(menu.locator('label').filter({ hasText: /^critical\s*\d+$/ })).toBeVisible();
+  await menu.getByTestId('filter-severity-critical').check();
+  await menu.getByTestId('filter-attachment-screenshot').check();
+  await page.keyboard.press('Escape');
+  await expect(page).toHaveURL(/severity=critical/);
+  await expect(page).toHaveURL(/attachment=screenshot/);
+  await expect(page.getByTestId('active-filter-severity')).toContainText('critical');
+  await expect(page.getByTestId('explorer-filters')).toContainText('2');
+  await page.getByTestId('explorer-expand-all').click();
+  const shown = await tree(page).getByTestId('explorer-test').count();
+  expect(shown).toBeGreaterThan(0);
+  await expect(page.getByText(new RegExp(`^${String(shown)} of \\d+ tests`))).toBeVisible();
+
+  await page.getByRole('tab', { name: 'Results' }).click();
+  await expect(page.getByTestId('active-filter-severity')).toBeVisible();
+  await expect(page.getByTestId('result-row')).toHaveCount(shown);
+  await page.getByTestId('explorer-clear-filters').click();
+  await expect(page).not.toHaveURL(/severity=/);
+  await expect.poll(() => page.getByTestId('result-row').count()).toBeGreaterThan(shown);
+  await page.getByRole('tab', { name: 'Tree' }).click();
+  await expect.poll(() => topGroups(page).count()).toBe(before);
+});
+
+test('an environment switcher scopes the summary, the tree and the results', async ({ page }) => {
+  await openRichLaunch(page);
+  const box = page.getByTestId('environments');
+  await expect(box.getByTestId('environment-row')).toHaveCount(2);
+  const label = (await box.locator('label').filter({ hasText: /^staging-firefox · \d+$/ }).textContent()) ?? '';
+  const n = Number(/(\d+)$/.exec(label)?.[1]);
+  expect(n).toBeGreaterThan(0);
+  await box.locator('label').filter({ hasText: /^staging-firefox/ }).click();
+  await expect(page).toHaveURL(/env=staging-firefox/);
+  await expect(page.getByTestId('summary-scope')).toHaveText('Results in staging-firefox');
+  await expect(page.getByTestId('stat-total')).toContainText(String(n));
+  await expect(page.getByTestId('explorer').getByText(new RegExp(`^${String(n)} tests`))).toBeVisible();
+  await page.getByRole('tab', { name: 'Results' }).click();
+  await expect(page.getByTestId('result-row')).toHaveCount(n);
+  await box.locator('label').filter({ hasText: /^All environments/ }).click();
+  await expect(page).not.toHaveURL(/env=/);
+});
+

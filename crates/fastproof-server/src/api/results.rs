@@ -7,7 +7,11 @@ use bytes::{Bytes, BytesMut};
 use fastproof_ingest::{IngestError, JsonBounds, ReportOptions, report_to_parsed, scan_json};
 use fastproof_model::{AttachmentKind, ReportResult};
 use fastproof_store::ingest::{LaunchRef, NewAttempt};
-use fastproof_store::results::{GroupBy, ResultFilter, TreeFilter, TreeOptions};
+use fastproof_store::results::{
+    ATTACHMENT_FILTERS, Baseline, EnvFilter, EnvironmentCounts, GroupBy, LabelName, LaunchFacets,
+    MAX_GROUP_LEVELS, MAX_LABEL_NAME_BYTES, ResultFilter, TreeFilter, TreeOptions,
+    valid_label_name,
+};
 use fastproof_store::tm::ResultSource;
 use fastproof_store::{
     DailyEntry, HistoryEntry, HistoryFilter, Launch, Page, ResultDetail, ResultSummary, TreeNode,
@@ -485,13 +489,14 @@ pub struct ResultQuery {
 }
 
 #[utoipa::path(get, path = "/api/v1/projects/{key}/launches/{id}/results", tag = "results", operation_id = "results_list",
-    params(("key" = String, Path), ("id" = Uuid, Path), ResultQuery),
+    params(("key" = String, Path), ("id" = Uuid, Path), ResultQuery, ExplorerQuery),
     responses((status = 200, body = Page<ResultSummary>), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
 pub async fn list(
     State(s): State<AppState>,
     auth: Auth,
     P((key, id)): P<(String, Uuid)>,
     Q(q): Q<ResultQuery>,
+    Q(explorer): Q<ExplorerQuery>,
 ) -> ApiResult<Json<Page<ResultSummary>>> {
     let project = s.project_for(&auth, &key, &s.perms.launches_read).await?;
     let launch = s.launch_of(&project, id).await?;
@@ -535,10 +540,192 @@ pub async fn list(
         flaky: q.flaky,
         fingerprint: q.fingerprint,
         source: q.source,
+        extra: explorer.filter(&s, &launch).await?,
         before: q.before,
         limit: page_limit(q.limit)?,
     };
     Ok(Json(s.store.results(&launch, &f).await?))
+}
+
+/// The explorer filters shared by the tree, its pages, the result list and the label list.
+/// Lists are comma-separated; values within one filter are alternatives, filters combine.
+#[derive(Deserialize, IntoParams, Default)]
+#[into_params(parameter_in = Query)]
+#[serde(rename_all = "camelCase")]
+pub struct ExplorerQuery {
+    /// Substring of the error message.
+    pub message: Option<String>,
+    /// `true`: only results with more than one attempt.
+    pub retried: Option<String>,
+    /// `true` or `false`.
+    pub muted: Option<String>,
+    /// `true`: failed or broken, not muted results whose series did not fail in the previous
+    /// finished launch on the same branch and environment.
+    pub new_failures: Option<String>,
+    /// Severity label values; `(none)` matches results without the label.
+    pub severity: Option<String>,
+    /// Owner label values; `(none)` matches results without the label.
+    pub owner: Option<String>,
+    /// Tag label values; `(none)` matches results without the label.
+    pub tag: Option<String>,
+    pub min_duration_ms: Option<String>,
+    pub max_duration_ms: Option<String>,
+    /// Defect type ids; `none` matches results without a defect.
+    pub defect: Option<String>,
+    /// `trace`, `video` or `screenshot`.
+    pub attachment: Option<String>,
+    /// An environment key of the results' series; `(none)` matches results without one.
+    pub env: Option<String>,
+}
+
+/// Values of one list filter, at most.
+pub const MAX_FILTER_VALUES: usize = 20;
+/// The value of a label filter that matches results without the label.
+pub const NONE_VALUE: &str = "(none)";
+
+fn values(v: Option<&str>, name: &str) -> ApiResult<Vec<String>> {
+    let Some(v) = v else { return Ok(Vec::new()) };
+    if v.len() > MAX_Q_BYTES * 4 {
+        return Err(ApiError::bad_request(format!("{name} is too long")));
+    }
+    let items: Vec<String> = v
+        .split(',')
+        .map(str::trim)
+        .filter(|x| !x.is_empty())
+        .map(str::to_string)
+        .collect();
+    if items.len() > MAX_FILTER_VALUES {
+        return Err(ApiError::bad_request(format!(
+            "{name} has at most {MAX_FILTER_VALUES} values"
+        )));
+    }
+    if items.iter().any(|x| x.len() > MAX_Q_BYTES) {
+        return Err(ApiError::bad_request(format!(
+            "values of {name} have at most {MAX_Q_BYTES} bytes"
+        )));
+    }
+    Ok(items)
+}
+
+fn flag(v: Option<&str>, name: &str) -> ApiResult<Option<bool>> {
+    match v {
+        None | Some("") => Ok(None),
+        Some("true") => Ok(Some(true)),
+        Some("false") => Ok(Some(false)),
+        Some(_) => Err(ApiError::bad_request(format!(
+            "{name} must be true or false"
+        ))),
+    }
+}
+
+fn millis(v: Option<&str>, name: &str) -> ApiResult<Option<i64>> {
+    match v.filter(|v| !v.is_empty()) {
+        None => Ok(None),
+        Some(v) => v
+            .parse::<i64>()
+            .ok()
+            .filter(|n| (0..=i64::MAX / 2).contains(n))
+            .map(Some)
+            .ok_or_else(|| {
+                ApiError::bad_request(format!("{name} must be a number of milliseconds"))
+            }),
+    }
+}
+
+impl ExplorerQuery {
+    /// The filters, after validation; `newFailures` resolves the baseline launch.
+    async fn filter(&self, s: &AppState, launch: &Launch) -> ApiResult<TreeFilter> {
+        if self.message.as_ref().is_some_and(|v| v.len() > MAX_Q_BYTES) {
+            return Err(ApiError::bad_request(format!(
+                "message has at most {MAX_Q_BYTES} bytes"
+            )));
+        }
+        let mut labels = Vec::new();
+        for (name, v) in [
+            ("severity", &self.severity),
+            ("owner", &self.owner),
+            ("tag", &self.tag),
+        ] {
+            let values: Vec<String> = values(v.as_deref(), name)?
+                .into_iter()
+                .map(|x| if x == NONE_VALUE { String::new() } else { x })
+                .collect();
+            if !values.is_empty() {
+                labels.push((name.to_string(), values));
+            }
+        }
+        let defects = values(self.defect.as_deref(), "defect")?;
+        if defects
+            .iter()
+            .any(|d| d != "none" && d.parse::<Uuid>().is_err())
+        {
+            return Err(ApiError::bad_request(
+                "defect must list defect type ids or none",
+            ));
+        }
+        let mut attachments = 0;
+        for a in values(self.attachment.as_deref(), "attachment")? {
+            let bit = ATTACHMENT_FILTERS
+                .iter()
+                .find(|(n, _)| *n == a)
+                .map(|(_, b)| *b)
+                .ok_or_else(|| {
+                    ApiError::bad_request("attachment must be trace, video or screenshot")
+                })?;
+            attachments |= bit;
+        }
+        let env = match self.env.as_deref().map(str::trim).filter(|e| !e.is_empty()) {
+            None => None,
+            Some(e) if e.len() > MAX_Q_BYTES => {
+                return Err(ApiError::bad_request(format!(
+                    "env has at most {MAX_Q_BYTES} bytes"
+                )));
+            }
+            Some(NONE_VALUE) => Some(EnvFilter::None),
+            Some(e) => Some(EnvFilter::Key(e.to_string())),
+        };
+        let min = millis(self.min_duration_ms.as_deref(), "minDurationMs")?;
+        let max = millis(self.max_duration_ms.as_deref(), "maxDurationMs")?;
+        let new_failures = if flag(self.new_failures.as_deref(), "newFailures")? == Some(true) {
+            Some(baseline(s, launch).await?)
+        } else {
+            None
+        };
+        Ok(TreeFilter {
+            message: self.message.clone().filter(|m| !m.trim().is_empty()),
+            retried: flag(self.retried.as_deref(), "retried")? == Some(true),
+            muted: flag(self.muted.as_deref(), "muted")?,
+            new_failures,
+            labels,
+            min_duration_ms: min,
+            max_duration_ms: max,
+            defects,
+            attachments,
+            env,
+            ..TreeFilter::default()
+        })
+    }
+}
+
+/// The launch "new failures" compares with: the previous finished launch on the same branch
+/// and environment (none without a branch).
+async fn baseline(s: &AppState, launch: &Launch) -> ApiResult<Baseline> {
+    let Some(branch) = crate::integrations::gates::branch_of(launch) else {
+        return Ok(Baseline { launch: None });
+    };
+    let b = s
+        .store
+        .baseline_launch(
+            launch.project_id,
+            branch,
+            crate::integrations::gates::env_of(launch),
+            launch.id,
+            launch.created_at,
+        )
+        .await?;
+    Ok(Baseline {
+        launch: b.map(|l| (l.id, l.created_at)),
+    })
 }
 
 /// Query of the tree.
@@ -546,7 +733,9 @@ pub async fn list(
 #[into_params(parameter_in = Query)]
 #[serde(rename_all = "camelCase")]
 pub struct TreeQuery {
-    /// `suite` (default), `feature` or `package`.
+    /// `suite` (default), `feature` or `package`, or up to five label names separated by
+    /// commas (`epic,feature,story`, `owner`); `label:<name>` names a label that is also a
+    /// preset (`label:feature`).
     pub group_by: Option<String>,
     /// Leaves (`tests`, `testCount`) instead of `resultIds`; groups that do not fit the
     /// response are read from `.../tree/tests`.
@@ -568,7 +757,7 @@ pub struct TreeQuery {
 #[into_params(parameter_in = Query)]
 #[serde(rename_all = "camelCase")]
 pub struct TreeTestsQuery {
-    /// `suite` (default), `feature` or `package`.
+    /// As in the tree.
     pub group_by: Option<String>,
     /// The group: its `path` as a JSON array of names (`[]` for the root).
     pub path: String,
@@ -587,14 +776,34 @@ pub const MAX_TREE_PATH_BYTES: usize = 8 * 1024;
 pub const MAX_TREE_PATH_NAMES: usize = 64;
 
 fn group_by(v: Option<&str>) -> ApiResult<GroupBy> {
-    match v.unwrap_or("suite") {
-        "suite" => Ok(GroupBy::Suite),
-        "feature" => Ok(GroupBy::Feature),
-        "package" => Ok(GroupBy::Package),
-        _ => Err(ApiError::bad_request(
-            "groupBy must be suite, feature or package",
-        )),
+    match v.unwrap_or("suite").trim() {
+        "suite" | "" => return Ok(GroupBy::Suite),
+        "feature" => return Ok(GroupBy::Feature),
+        "package" => return Ok(GroupBy::Package),
+        _ => {}
     }
+    let v = v.unwrap_or_default();
+    let names: Vec<String> = v
+        .split(',')
+        .map(str::trim)
+        .map(|n| n.strip_prefix("label:").unwrap_or(n).to_string())
+        .collect();
+    if names.is_empty() || names.len() > MAX_GROUP_LEVELS {
+        return Err(ApiError::bad_request(format!(
+            "groupBy has 1 to {MAX_GROUP_LEVELS} label names"
+        )));
+    }
+    if !names.iter().all(|n| valid_label_name(n)) {
+        return Err(ApiError::bad_request(format!(
+            "groupBy must be suite, feature, package or label names of at most \
+             {MAX_LABEL_NAME_BYTES} letters, digits and _ - . : @ /"
+        )));
+    }
+    let mut seen = std::collections::HashSet::new();
+    if !names.iter().all(|n| seen.insert(n.as_str())) {
+        return Err(ApiError::bad_request("groupBy names a label twice"));
+    }
+    Ok(GroupBy::Labels(names))
 }
 
 fn statuses(v: Option<&str>) -> ApiResult<Vec<String>> {
@@ -619,11 +828,14 @@ fn statuses(v: Option<&str>) -> ApiResult<Vec<String>> {
     Ok(list)
 }
 
-fn tree_filter(
+async fn tree_filter(
+    s: &AppState,
+    launch: &Launch,
     status: Option<&str>,
     q: Option<String>,
     flaky: Option<bool>,
     source: Option<ResultSource>,
+    explorer: &ExplorerQuery,
 ) -> ApiResult<TreeFilter> {
     if q.as_ref().is_some_and(|v| v.len() > MAX_Q_BYTES) {
         return Err(ApiError::bad_request(format!(
@@ -635,37 +847,51 @@ fn tree_filter(
         q: q.filter(|v| !v.trim().is_empty()),
         flaky: flaky.filter(|f| *f),
         source,
+        ..explorer.filter(s, launch).await?
     })
 }
 
 #[utoipa::path(get, path = "/api/v1/projects/{key}/launches/{id}/tree", tag = "results", operation_id = "results_tree",
-    params(("key" = String, Path), ("id" = Uuid, Path), TreeQuery),
+    params(("key" = String, Path), ("id" = Uuid, Path), TreeQuery, ExplorerQuery),
     responses((status = 200, body = TreeNode), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
 pub async fn tree(
     State(s): State<AppState>,
     auth: Auth,
     P((key, id)): P<(String, Uuid)>,
     Q(q): Q<TreeQuery>,
+    Q(explorer): Q<ExplorerQuery>,
 ) -> ApiResult<Json<TreeNode>> {
     let project = s.project_for(&auth, &key, &s.perms.launches_read).await?;
     let launch = s.launch_of(&project, id).await?;
+    let by = group_by(q.group_by.as_deref())?;
+    let filter = tree_filter(
+        &s,
+        &launch,
+        q.status.as_deref(),
+        q.q,
+        q.flaky,
+        q.source,
+        &explorer,
+    )
+    .await?;
     let o = TreeOptions {
-        by: group_by(q.group_by.as_deref())?,
+        by,
         include_tests: q.include_tests.unwrap_or(false),
-        filter: tree_filter(q.status.as_deref(), q.q, q.flaky, q.source)?,
+        filter,
         reveal: q.reveal,
     };
     Ok(Json(s.store.tree_with(&launch, &o).await?))
 }
 
 #[utoipa::path(get, path = "/api/v1/projects/{key}/launches/{id}/tree/tests", tag = "results", operation_id = "results_tree_tests",
-    params(("key" = String, Path), ("id" = Uuid, Path), TreeTestsQuery),
+    params(("key" = String, Path), ("id" = Uuid, Path), TreeTestsQuery, ExplorerQuery),
     responses((status = 200, body = Page<TreeTest>), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
 pub async fn tree_tests(
     State(s): State<AppState>,
     auth: Auth,
     P((key, id)): P<(String, Uuid)>,
     Q(q): Q<TreeTestsQuery>,
+    Q(explorer): Q<ExplorerQuery>,
 ) -> ApiResult<Json<Page<TreeTest>>> {
     let project = s.project_for(&auth, &key, &s.perms.launches_read).await?;
     let launch = s.launch_of(&project, id).await?;
@@ -688,13 +914,104 @@ pub async fn tree_tests(
     {
         return Err(ApiError::bad_request("before is not a cursor"));
     }
-    let f = tree_filter(q.status.as_deref(), q.q, q.flaky, q.source)?;
+    let f = tree_filter(
+        &s,
+        &launch,
+        q.status.as_deref(),
+        q.q,
+        q.flaky,
+        q.source,
+        &explorer,
+    )
+    .await?;
     let limit = page_limit(q.limit)?;
     Ok(Json(
         s.store
-            .tree_tests(&launch, by, &path, &f, q.before.as_deref(), limit)
+            .tree_tests(&launch, &by, &path, &f, q.before.as_deref(), limit)
             .await?,
     ))
+}
+
+/// Label names of a launch.
+#[derive(Serialize, ToSchema)]
+pub struct LabelNameList {
+    /// Most used first, at most 200.
+    pub items: Vec<LabelName>,
+}
+
+/// Query of the label names and the facets of a launch.
+#[derive(Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct EnvQuery {
+    /// An environment key; `(none)` for results without one.
+    pub env: Option<String>,
+}
+
+impl EnvQuery {
+    fn explorer(&self) -> ExplorerQuery {
+        ExplorerQuery {
+            env: self.env.clone(),
+            ..ExplorerQuery::default()
+        }
+    }
+}
+
+#[utoipa::path(get, path = "/api/v1/projects/{key}/launches/{id}/labels", tag = "results", operation_id = "results_labels",
+    params(("key" = String, Path), ("id" = Uuid, Path), EnvQuery),
+    description = "The label names of the results of a launch with how many results have each and how many distinct values it has: the choices of a custom tree grouping.",
+    responses((status = 200, body = LabelNameList), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
+pub async fn labels(
+    State(s): State<AppState>,
+    auth: Auth,
+    P((key, id)): P<(String, Uuid)>,
+    Q(q): Q<EnvQuery>,
+) -> ApiResult<Json<LabelNameList>> {
+    let project = s.project_for(&auth, &key, &s.perms.launches_read).await?;
+    let launch = s.launch_of(&project, id).await?;
+    let f = q.explorer().filter(&s, &launch).await?;
+    Ok(Json(LabelNameList {
+        items: s.store.launch_labels(&launch, &f).await?,
+    }))
+}
+
+#[utoipa::path(get, path = "/api/v1/projects/{key}/launches/{id}/facets", tag = "results", operation_id = "results_facets",
+    params(("key" = String, Path), ("id" = Uuid, Path), EnvQuery),
+    description = "How many results of a launch (in one environment) each explorer filter value keeps.",
+    responses((status = 200, body = LaunchFacets), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
+pub async fn facets(
+    State(s): State<AppState>,
+    auth: Auth,
+    P((key, id)): P<(String, Uuid)>,
+    Q(q): Q<EnvQuery>,
+) -> ApiResult<Json<LaunchFacets>> {
+    let project = s.project_for(&auth, &key, &s.perms.launches_read).await?;
+    let launch = s.launch_of(&project, id).await?;
+    let f = q.explorer().filter(&s, &launch).await?;
+    let b = baseline(&s, &launch).await?;
+    Ok(Json(s.store.launch_facets(&launch, &f, &b).await?))
+}
+
+/// The environments of a launch.
+#[derive(Serialize, ToSchema)]
+pub struct EnvironmentCountsList {
+    /// Largest first, at most 100.
+    pub items: Vec<EnvironmentCounts>,
+}
+
+#[utoipa::path(get, path = "/api/v1/projects/{key}/launches/{id}/environments", tag = "results", operation_id = "results_environments",
+    params(("key" = String, Path), ("id" = Uuid, Path)),
+    description = "The environments the results of a launch ran in (the environment key of their series: the launch environment, and for some formats a project or target per result), with status counts.",
+    responses((status = 200, body = EnvironmentCountsList), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
+pub async fn environments(
+    State(s): State<AppState>,
+    auth: Auth,
+    P((key, id)): P<(String, Uuid)>,
+) -> ApiResult<Json<EnvironmentCountsList>> {
+    let project = s.project_for(&auth, &key, &s.perms.launches_read).await?;
+    let launch = s.launch_of(&project, id).await?;
+    Ok(Json(EnvironmentCountsList {
+        items: s.store.launch_environments(&launch).await?,
+    }))
 }
 
 #[utoipa::path(get, path = "/api/v1/projects/{key}/results/{id}", tag = "results", operation_id = "results_detail",

@@ -1,14 +1,132 @@
-import type { Counts, ResultStatus, TreeGroupBy, TreeNode, TreeTest } from '../api/types';
+import type { Counts, ExplorerParams, ResultStatus, TreeGroupBy, TreeNode, TreeTest } from '../api/types';
 
-export type ExplorerView = 'suites' | 'features' | 'packages';
+export type ExplorerView = 'suites' | 'features' | 'packages' | 'owner' | 'severity' | 'custom';
 export type ExplorerSort = 'name' | 'status' | 'duration';
 
-export const VIEWS: readonly ExplorerView[] = ['suites', 'features', 'packages'];
-export const VIEW_GROUP: Record<ExplorerView, TreeGroupBy> = { suites: 'suite', features: 'feature', packages: 'package' };
+export const VIEWS: readonly ExplorerView[] = ['suites', 'features', 'packages', 'owner', 'severity', 'custom'];
+export const VIEW_GROUP: Record<Exclude<ExplorerView, 'custom'>, TreeGroupBy> = {
+  suites: 'suite',
+  features: 'epic,feature,story',
+  packages: 'package',
+  owner: 'owner',
+  severity: 'severity',
+};
+export const VIEW_LABEL: Record<ExplorerView, string> = {
+  suites: 'Suites',
+  features: 'Behaviors',
+  packages: 'Packages',
+  owner: 'Owner',
+  severity: 'Severity',
+  custom: 'Custom…',
+};
 export const SORTS: readonly ExplorerSort[] = ['name', 'status', 'duration'];
+
+/** Levels of a custom grouping, at most (as the server allows). */
+export const MAX_GROUP_LEVELS = 5;
+const LABEL_NAME = /^[\p{L}\p{N}_\-.:@/]{1,64}$/u;
 
 export function parseView(v: string | null): ExplorerView {
   return (VIEWS as readonly string[]).includes(v ?? '') ? (v as ExplorerView) : 'suites';
+}
+
+/** Whether the server accepts `name` as a label to group by. */
+export function validLabelName(name: string): boolean {
+  return LABEL_NAME.test(name) && new TextEncoder().encode(name).length <= 64;
+}
+
+/** The label names of a custom grouping from the URL (`by=a,b`): valid, distinct, at most five. */
+export function parseLevels(v: string | null): string[] {
+  const out: string[] = [];
+  for (const n of (v ?? '').split(',').map((x) => x.trim())) {
+    if (validLabelName(n) && !out.includes(n) && out.length < MAX_GROUP_LEVELS) out.push(n);
+  }
+  return out;
+}
+
+/** The `groupBy` of a view; a custom view without labels groups by suite. */
+export function groupByOf(view: ExplorerView, levels: readonly string[]): TreeGroupBy {
+  if (view !== 'custom') return VIEW_GROUP[view];
+  if (!levels.length) return 'suite';
+  return levels.map((l) => (l === 'suite' || l === 'feature' || l === 'package') && levels.length === 1 ? `label:${l}` : l).join(',');
+}
+
+/** The `groupBy` of the pages of a group: the levels the tree response reports, when any. */
+export function pageGroupBy(groupBy: TreeGroupBy, root: TreeNode | null | undefined): TreeGroupBy {
+  const levels = root?.levels;
+  if (!levels?.length) return groupBy;
+  return levels.length === 1 && (levels[0] === 'suite' || levels[0] === 'feature' || levels[0] === 'package') ? `label:${levels[0]}` : levels.join(',');
+}
+
+/** The URL parameters of the explorer filters (besides `status`, `flaky`, `q` and `env`). */
+export const FILTER_PARAMS = ['message', 'retried', 'muted', 'newFailures', 'severity', 'owner', 'tag', 'minDurationMs', 'maxDurationMs', 'defect', 'attachment', 'source'] as const;
+export type FilterParam = (typeof FILTER_PARAMS)[number];
+
+/** The value of a label filter that keeps results without the label. */
+export const NONE_VALUE = '(none)';
+
+function num(v: string | null): number | undefined {
+  if (v === null || v.trim() === '') return undefined;
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 ? Math.round(n) : undefined;
+}
+
+/** The explorer filters in the page URL (shared by the tree and the result list). */
+export function parseExplorerParams(sp: URLSearchParams): ExplorerParams & { source?: string } {
+  const text = (k: string) => {
+    const v = sp.get(k)?.trim();
+    return v ? v : undefined;
+  };
+  const muted = sp.get('muted');
+  const source = sp.get('source');
+  return {
+    message: text('message'),
+    retried: sp.get('retried') === 'true' || undefined,
+    muted: muted === 'true' ? true : muted === 'false' ? false : undefined,
+    newFailures: sp.get('newFailures') === 'true' || undefined,
+    severity: text('severity'),
+    owner: text('owner'),
+    tag: text('tag'),
+    minDurationMs: num(sp.get('minDurationMs')),
+    maxDurationMs: num(sp.get('maxDurationMs')),
+    defect: text('defect'),
+    attachment: text('attachment'),
+    env: text('env'),
+    source: source === 'manual' || source === 'automated' ? source : undefined,
+  };
+}
+
+/** How many of the filters in the menu are set (`env` is a scope, not a filter). */
+export function extraCount(p: ExplorerParams & { source?: string }): number {
+  let n = 0;
+  if (p.message) n++;
+  if (p.retried) n++;
+  if (p.muted !== undefined) n++;
+  if (p.newFailures) n++;
+  if (p.severity) n++;
+  if (p.owner) n++;
+  if (p.tag) n++;
+  if (p.minDurationMs !== undefined || p.maxDurationMs !== undefined) n++;
+  if (p.defect) n++;
+  if (p.attachment) n++;
+  if (p.source) n++;
+  return n;
+}
+
+/** The values of a comma-separated list filter. */
+export function listValues(v: string | undefined): string[] {
+  return (v ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+}
+
+/** The list with `value` added or removed. */
+export function toggleValue(v: string | undefined, value: string, on: boolean): string | null {
+  const list = listValues(v).filter((x) => x !== value);
+  if (on) list.push(value);
+  return list.length ? list.join(',') : null;
+}
+
+/** The name a group shows: results without the label of a level sit in `(none)`. */
+export function groupName(name: string): string {
+  return name === '' ? NONE_VALUE : name;
 }
 
 export function parseSort(v: string | null): ExplorerSort {

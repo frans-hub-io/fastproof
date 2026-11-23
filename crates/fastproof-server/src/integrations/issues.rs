@@ -57,6 +57,8 @@ mod tests {
                 key_regex: "[A-Z][A-Z0-9]+-[0-9]+".into(),
                 project_id: None,
                 issue_type_id: None,
+                id: None,
+                api: None,
             },
             IssueTracker {
                 tracker: "github".into(),
@@ -64,6 +66,8 @@ mod tests {
                 key_regex: "#?[0-9]+".into(),
                 project_id: None,
                 issue_type_id: None,
+                id: None,
+                api: None,
             },
         ]
     }

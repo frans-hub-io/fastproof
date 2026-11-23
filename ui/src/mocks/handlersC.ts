@@ -241,12 +241,12 @@ export function stageCHandlers({ role, error, audit }: Helpers) {
       if (!NAME.test(name)) return error(400, 'invalid_body', 'name must match [a-z0-9][a-z0-9._-]{0,62}', { field: 'name' });
       const body = (await request.json()) as { value?: string; purpose?: string; origin?: string };
       if (!body.value || body.value.length > 8192) return error(400, 'invalid_body', 'value must be 1-8192 characters', { field: 'value' });
-      if (!body.purpose || !['vcs', 'fastmock', 'slack', 'telegram', 'webhook', 'smtp', 'teams'].includes(body.purpose)) return error(400, 'invalid_body', 'purpose is required', { field: 'purpose' });
+      if (!body.purpose || !['vcs', 'tracker', 'tracker-webhook', 'fastmock', 'slack', 'telegram', 'webhook', 'smtp', 'teams'].includes(body.purpose)) return error(400, 'invalid_body', 'purpose is required', { field: 'purpose' });
       if (body.purpose === 'teams') {
         if (!/^https:\/\/[^\s/]+\/\S*$/.test(body.value)) return error(400, 'invalid_body', 'a teams secret is the workflow URL: https://… with its sig parameter', { field: 'value' });
         body.origin = new URL(body.value).origin;
       }
-      if ((body.purpose === 'vcs' || body.purpose === 'fastmock') && !body.origin) return error(400, 'invalid_body', `a ${body.purpose} secret needs origin`, { field: 'origin' });
+      if ((body.purpose === 'vcs' || body.purpose === 'tracker' || body.purpose === 'fastmock') && !body.origin) return error(400, 'invalid_body', `a ${body.purpose} secret needs origin`, { field: 'origin' });
       writeSecret(String(params.key), name, body.purpose, body.origin ?? null);
       audit('secret.write', String(params.key), { name, purpose: body.purpose });
       return new HttpResponse(null, { status: 204 });

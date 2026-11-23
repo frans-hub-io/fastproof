@@ -116,6 +116,7 @@ nav:
       - guide/rerun.md
       - guide/dashboards.md
       - guide/notifications.md
+      - guide/issue-trackers.md
       - guide/mcp-copilot.md
   - Operations:
       - operations/configuration.md

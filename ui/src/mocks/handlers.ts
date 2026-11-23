@@ -26,6 +26,7 @@ import {
 import { dashboardHandlers } from './handlersDashboards';
 import { resetDashboards } from './dashboards';
 import { stageCHandlers } from './handlersC';
+import { resetTrackers, trackerHandlers } from './trackers';
 import { mediaHandlers } from './media';
 import { mergeHandlers, resetMerges } from './merges';
 import { analyze, analyzeDetail, isImportant, resetStageC } from './stageC';
@@ -70,6 +71,7 @@ export function resetMockState(): void {
   resetDashboards();
   resetTm();
   resetMerges();
+  resetTrackers();
 }
 
 function error(status: number, code: string, message: string, details?: unknown) {
@@ -546,6 +548,7 @@ export const handlers = [
     return HttpResponse.json(page(list, url, (e) => String(e.id), 100));
   }),
 
+  ...trackerHandlers({ role: currentRole, error, audit }),
   ...stageCHandlers({ role: currentRole, error, audit }),
   ...dashboardHandlers({ role: currentRole, error, audit }),
   ...mediaHandlers(error),

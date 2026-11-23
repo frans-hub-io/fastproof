@@ -31,6 +31,7 @@ pub mod scheduler;
 pub mod search;
 pub mod stream;
 pub mod tm;
+pub mod trackers;
 pub mod types;
 pub mod uploads;
 

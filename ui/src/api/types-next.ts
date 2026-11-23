@@ -68,7 +68,7 @@ export type NotificationTarget = Omit<S['Notification'], 'kind' | 'on'> & {
   on: NotificationEvent[];
 };
 
-export type IssueTrackerType = 'jira' | 'gitlab' | 'github';
+export type IssueTrackerType = 'jira' | 'gitlab' | 'github' | 'azure';
 
 export type IssueTracker = Omit<S['IssueTracker'], 'type'> & { type: IssueTrackerType };
 

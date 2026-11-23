@@ -42,6 +42,10 @@ pub fn catalog() -> anyhow::Result<Catalog> {
         .permission("rules:write", "Manage triage rules")
         .permission("settings:write", "Change project settings, delete launches")
         .permission("audit:read", "Read the audit log")
+        .permission(
+            "issues:write",
+            "Create, link and stop following issues in the project's issue trackers",
+        )
         .permission("cases:read", "Read test cases, folders, fields and plans")
         .permission(
             "cases:write",
@@ -109,6 +113,7 @@ pub fn catalog() -> anyhow::Result<Catalog> {
                 "plans:write",
                 "runs:execute",
                 "dashboards:write",
+                "issues:write",
             ],
         )
         .role_described(
@@ -147,6 +152,7 @@ pub struct Perms {
     pub runs_execute: Permission,
     pub ai_propose: Permission,
     pub dashboards_write: Permission,
+    pub issues_write: Permission,
 }
 
 impl Perms {
@@ -170,6 +176,7 @@ impl Perms {
             runs_execute: p.permission("runs:execute"),
             ai_propose: p.permission("ai:propose"),
             dashboards_write: p.permission("dashboards:write"),
+            issues_write: p.permission("issues:write"),
         }
     }
 }

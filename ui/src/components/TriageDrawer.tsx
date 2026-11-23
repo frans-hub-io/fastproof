@@ -1,16 +1,21 @@
 import { Alert, Anchor, Button, Drawer, Group, SegmentedControl, Select, Stack, Switch, Text, Textarea, TextInput } from '@mantine/core';
 import { useMediaQuery } from '@mantine/hooks';
 import { notifications } from '@mantine/notifications';
-import { IconBellOff, IconExternalLink } from '@tabler/icons-react';
+import { IconBellOff, IconBug, IconExternalLink } from '@tabler/icons-react';
+import { useCan } from '@franshub/ui-shell';
 import { useMemo, useState } from 'react';
 import { errorMessage } from '../api/client';
 import { useDefectTypes, useSettings, useTriage } from '../api/stageC';
+import { useIssueStates } from '../api/trackers';
 import type { TriageRequest } from '../api/types-next';
 import { DEFECT_GROUPS } from '../api/types-next';
 import { GROUP_LABEL, issueUrlFor } from '../lib/defects';
 import { formatDateTime } from '../lib/format';
 import { DefectChip } from './Defect';
 import type { TriageTarget } from '../lib/triage';
+import { CreateIssueModal } from './CreateIssueModal';
+import { connectedTrackers } from '../lib/trackers';
+import { IssueStateBadge } from './IssueState';
 
 const MUTE_FOR: { value: string; label: string; days: number | null }[] = [
   { value: '1', label: '1 day', days: 1 },
@@ -34,6 +39,10 @@ function TriageForm({ project, target, onDone }: { project: string; target: Tria
   const [muteFor, setMuteFor] = useState('7');
   const [reason, setReason] = useState('');
   const [unmute, setUnmute] = useState(false);
+  const [issueFor, setIssueFor] = useState<TriageTarget | null>(null);
+  const canIssues = useCan('issues:write', project);
+  const connected = connectedTrackers(settings.data?.issueTrackers);
+  const current = useIssueStates(project, [target.defect?.issueUrl]).get(target.defect?.issueUrl ?? '');
 
   const grouped = useMemo(
     () =>
@@ -84,6 +93,7 @@ function TriageForm({ project, target, onDone }: { project: string; target: Tria
             Now:
           </Text>
           <DefectChip defect={target.defect} />
+          {current && <IssueStateBadge issue={current} />}
         </Group>
       )}
       <Select
@@ -126,6 +136,19 @@ function TriageForm({ project, target, onDone }: { project: string; target: Tria
             {issueBody.url} <IconExternalLink size={11} />
           </Anchor>
         )}
+        {canIssues && connected.length > 0 && (
+          <Group gap="xs">
+            <Button size="xs" variant="light" leftSection={<IconBug size={14} />} onClick={() => setIssueFor(target)} data-testid="triage-create-issue">
+              Create or link an issue in the tracker
+            </Button>
+          </Group>
+        )}
+        <CreateIssueModal
+          project={project}
+          target={issueFor}
+          onClose={() => setIssueFor(null)}
+          onCreated={onDone}
+        />
       </Stack>
       {target.muted ? (
         <Alert variant="light" color="gray" icon={<IconBellOff size={16} />} title={target.muteUntil ? `Muted until ${formatDateTime(target.muteUntil)}` : 'Muted until unmuted'}>

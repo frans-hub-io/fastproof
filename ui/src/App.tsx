@@ -23,6 +23,7 @@ const DashboardPage = lazy(() => import('./pages/Dashboard'));
 const DashboardsPage = lazy(() => import('./pages/dashboards/Dashboards'));
 const DashboardViewPage = lazy(() => import('./pages/dashboards/DashboardView'));
 const FlakyPage = lazy(() => import('./pages/Flaky'));
+const IssuesPage = lazy(() => import('./pages/Issues'));
 const ComparePage = lazy(() => import('./pages/Compare'));
 const RulesPage = lazy(() => import('./pages/Rules'));
 const GatesPage = lazy(() => import('./pages/Gates'));
@@ -64,6 +65,7 @@ export function AppRoutes() {
         <Route path="p/:key/dashboards" element={<DashboardsPage />} />
         <Route path="p/:key/dashboards/:id" element={<DashboardViewPage />} />
         <Route path="p/:key/flaky" element={<FlakyPage />} />
+        <Route path="p/:key/issues" element={<IssuesPage />} />
         <Route path="p/:key/compare" element={<ComparePage />} />
         <Route path="p/:key/rules" element={<RulesPage />} />
         <Route path="p/:key/gates" element={<GatesPage />} />

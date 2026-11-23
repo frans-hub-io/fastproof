@@ -36,6 +36,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/hooks/trackers/{key}/{trackerId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Receives the webhook of a tracker with `sync: webhook` (no bearer token). The request must prove the secret named by `webhookSecretRef` (purpose `tracker-webhook`): GitHub `X-Hub-Signature-256` and Jira `X-Hub-Signature` (`sha256=` HMAC of the body), GitLab `X-Gitlab-Token`, Azure DevOps basic authentication with the secret as the password. A verified call only schedules a read of the issue it names through the tracker's API (at most one per issue per 5 seconds); its payload is never taken as the state; an issue that backs off after failed reads or is being read is left alone. Every refusal is the same `401` after the same minimum time. At most 120 calls per project and tracker per minute (`429`). Body at most 256 KiB. */
+        post: operations["tracker_webhook"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/me": {
         parameters: {
             query?: never;
@@ -782,6 +799,23 @@ export interface paths {
         put?: never;
         /** @description Applies a ready import (its dry run): cases are created and, with `upsert`, matching ones updated with a version `source = import`. */
         post: operations["apply_import"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/issue-trackers/{trackerId}/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Reads the configured project from the tracker with the stored token (saved settings). Needs `settings:write`. */
+        post: operations["tracker_test"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1880,6 +1914,127 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{key}/tracker-issues": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Issues created or linked from FastProof with the state last read from their tracker, newest first. */
+        get: operations["tracker_issues_list"];
+        put?: never;
+        /** @description Creates an issue in a connected tracker for results or a failure cluster, from the tracker's title and description templates (values from results are escaped for the tracker's markup; messages and traces go into code blocks), optionally with up to 3 screenshots of the first result's last attempt (Jira, GitLab, Azure DevOps), links it to the results or the cluster, puts it on their defects and starts reading its state back. `dryRun` only renders the preview. Idempotent by `requestId`. At most 60 issues per project per hour and 10 000 tracked issues. Needs `issues:write` and `results:triage` (agent tokens have no `issues:write`); audited as `tracker.issue.create`. */
+        post: operations["tracker_issues_create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/tracker-issues/link": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Links an existing issue of a connected tracker to results or a failure cluster: reads it from the tracker (it must exist), tracks its state, and puts it on the results' defects; a Jira issue must belong to the configured project, an Azure DevOps work item to the configured project. At most 120 links per project per hour. Needs `issues:write` and `results:triage`; audited as `tracker.issue.link`. */
+        post: operations["tracker_issues_link"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/tracker-issues/lookup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description The tracked issues with these URLs or keys (the issue links of defects on a page of results), to show their state. */
+        post: operations["tracker_issues_lookup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/tracker-issues/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description One tracked issue with its links and the number of linked tests that are muted now. */
+        get: operations["tracker_issues_get"];
+        put?: never;
+        post?: never;
+        /** @description Stops tracking an issue (its links go; the issue stays in the tracker and on the defects). Needs `issues:write` and `results:triage`; audited as `tracker.issue.untrack`. */
+        delete: operations["tracker_issues_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/tracker-issues/{id}/dismiss": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Clears the un-mute suggestion of a closed issue and keeps the mutes. Needs `results:triage`. */
+        post: operations["tracker_issues_dismiss"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/tracker-issues/{id}/sync": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Reads the issue from its tracker now: not within 5 seconds of the last read, not while another read holds it and not while it backs off after failed reads (`429` with `Retry-After`). Needs `results:triage`. */
+        post: operations["tracker_issues_sync"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/tracker-issues/{id}/unmute": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Lifts the mutes of the tests linked to the issue (usually once it is closed) and clears the suggestion. Needs `results:triage` and `results:mute`; audited as `tracker.issue.unmute`. */
+        post: operations["tracker_issues_unmute"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{key}/triage": {
         parameters: {
             query?: never;
@@ -2742,6 +2897,30 @@ export interface components {
             /** Format: int64 */
             unknown: number;
         };
+        /** @description Body of `POST /tracker-issues`. */
+        CreateTrackerIssue: components["schemas"]["IssueFor"] & {
+            /** @description Attach screenshots; default from the tracker settings. */
+            attachScreenshots?: boolean | null;
+            /**
+             * Format: uuid
+             * @description Also set this defect type on the results.
+             */
+            defectTypeId?: string | null;
+            /** @description Only render the title and description; nothing is sent. */
+            dryRun?: boolean;
+            /** @description A note put above the description, at most 4000 bytes (shown as plain text). */
+            note?: string | null;
+            /**
+             * Format: uuid
+             * @description Makes the request idempotent: a retried request with the same id answers the issue it
+             *     created instead of creating another.
+             */
+            requestId: string;
+            /** @description Title instead of the template's, at most 255 characters. */
+            title?: string | null;
+            /** @description Tracker id (`issueTrackers[].id` with `api`). */
+            tracker: string;
+        };
         /** @description What `POST /test-plans` answers: the managed plan, or the id and test count of an adhoc one. */
         CreatedTestPlan: components["schemas"]["TestPlan"] | components["schemas"]["TestPlanCreated"];
         /** @description Answer of `POST /api/v1/tokens`: the token metadata and its value, shown only here. */
@@ -3213,20 +3392,61 @@ export interface components {
             duplicates: number;
             rejected: components["schemas"]["Rejected"][];
         };
+        /**
+         * @description What an issue is created or linked for: results, or a failure cluster (`launchId` and
+         *     `fingerprint`).
+         */
+        IssueFor: {
+            /** @description With `launchId`: every result of the launch with this failure fingerprint. */
+            fingerprint?: string | null;
+            /** Format: uuid */
+            launchId?: string | null;
+            /** @description 1 to 100 results. */
+            resultIds?: string[] | null;
+        };
+        /** @description Body of `POST /tracker-issues/lookup`. */
+        IssueLookup: {
+            /** @description Issue keys, at most 100. */
+            keys?: string[];
+            /** @description Issue URLs (as on defects), at most 100. */
+            urls?: string[];
+        };
+        /**
+         * @description Title and description of a new issue as they are sent (the description in the tracker's
+         *     markup: Markdown, Jira wiki markup, ADF JSON or HTML) and as plain text.
+         */
+        IssuePreview: {
+            body: string;
+            /** @description `markdown`, `jiraWiki`, `adf` or `html`. */
+            markup: string;
+            /** @description Screenshots that would be attached. */
+            screenshots: string[];
+            text: string;
+            title: string;
+        };
         /** @description An issue link. */
         IssueRef: {
             key?: string | null;
             url: string;
         };
-        /** @description An issue tracker for links from issue keys. */
+        /**
+         * @description An issue tracker for links from issue keys and, with `api`, for creating issues from
+         *     FastProof and reading their state back.
+         */
         IssueTracker: {
+            api?: components["schemas"]["TrackerApi"] | null;
+            /**
+             * @description Stable id that tracked issues and the tracker's webhook refer to
+             *     (`^[a-z0-9][a-z0-9_-]{0,31}$`); required with `api`.
+             */
+            id?: string | null;
             /** @description Jira only: the numeric id of the issue type of new issues (`issuetype`). */
             issueTypeId?: string | null;
             /** @description Keys this tracker owns, e.g. `[A-Z][A-Z0-9]+-[0-9]+` (matched in full). */
             keyRegex: string;
             /** @description Jira only: the numeric id of the project new issues go to (`pid`). */
             projectId?: string | null;
-            /** @description `jira`, `gitlab` or `github`. */
+            /** @description `jira`, `gitlab`, `github` or `azure` (Azure DevOps Boards). */
             type: string;
             /** @description URL with `{key}`, e.g. `https://jira.example.com/browse/{key}`. */
             urlTemplate: string;
@@ -3598,6 +3818,15 @@ export interface components {
             name?: string | null;
             type?: string | null;
             url: string;
+        };
+        /** @description Body of `POST /tracker-issues/link`. */
+        LinkTrackerIssue: components["schemas"]["IssueFor"] & {
+            /** Format: uuid */
+            defectTypeId?: string | null;
+            /** @description `SHOP-12` (Jira), `12` or `#12` (GitLab, GitHub, Azure DevOps). */
+            issueKey: string;
+            /** @description Tracker id. */
+            tracker: string;
         };
         /** @description A link of a result. */
         LinkView: {
@@ -5087,7 +5316,7 @@ export interface components {
          * @description What a secret may be used for.
          * @enum {string}
          */
-        SecretPurpose: "vcs" | "fastmock" | "slack" | "telegram" | "webhook" | "smtp" | "teams" | "testops" | "ci";
+        SecretPurpose: "vcs" | "tracker" | "tracker-webhook" | "fastmock" | "slack" | "telegram" | "webhook" | "smtp" | "teams" | "testops" | "ci";
         /** @description Body of `PUT .../secrets/{name}`. */
         SecretValue: {
             /**
@@ -5420,6 +5649,157 @@ export interface components {
             roles: components["schemas"]["GrantableRole"][];
             scopes: string[];
         };
+        /** @description The API connection of an issue tracker. */
+        TrackerApi: {
+            /**
+             * @description Attach image attachments of the result's last attempt (up to 3) to new issues (Jira,
+             *     GitLab, Azure DevOps; GitHub has no API for it).
+             */
+            attachScreenshots?: boolean;
+            /**
+             * @description `basic` (the secret holds `user:token`) or `bearer`. Defaults: `basic` for Jira Cloud
+             *     (`email:api-token`) and Azure DevOps (the secret is the personal access token), `bearer`
+             *     for Jira Server/Data Center (a personal access token), GitLab and GitHub.
+             */
+            auth?: string | null;
+            /** @description Description of new issues with `{{placeholders}}`. */
+            bodyTemplate?: string | null;
+            /** @description Azure DevOps: states that count as closed (default `Closed`, `Done`, `Removed`). */
+            closedStates?: string[] | null;
+            /**
+             * @description Jira only: `cloud` (REST API v3, the default) or `server` (Server and Data Center, REST
+             *     API v2).
+             */
+            deployment?: string | null;
+            /** @description Jira issue type name or Azure DevOps work item type of new issues (default `Bug`). */
+            issueType?: string | null;
+            /** @description Labels (Jira, GitLab, GitHub) or tags (Azure DevOps) of new issues, at most 10. */
+            labels?: string[] | null;
+            /**
+             * @description Where issues are created: Jira project key (`SHOP`), GitLab project path
+             *     (`group/app`), GitHub `owner/repo`, Azure DevOps project name.
+             */
+            project: string;
+            /**
+             * @description `poll` (the default: open issues are read every `FASTPROOF_TRACKER_POLL_SECONDS`),
+             *     `webhook` (the tracker's webhook triggers reads; a daily read as well) or `off`.
+             */
+            sync?: string | null;
+            /** @description Title of new issues with `{{placeholders}}` (see the issue trackers guide). */
+            titleTemplate?: string | null;
+            /** @description A secret with purpose `tracker` bound to the origin of `url`. */
+            tokenSecretRef: string;
+            /**
+             * @description Jira site or server base URL (`https://example.atlassian.net`,
+             *     `https://jira.example.com`), GitLab base URL, GitHub API URL (`https://api.github.com`,
+             *     `https://github.example.com/api/v3`) or Azure DevOps organization URL
+             *     (`https://dev.azure.com/example`).
+             */
+            url: string;
+            /**
+             * @description With `sync: webhook`: a secret with purpose `tracker-webhook` (at least 16 bytes) that
+             *     the tracker's webhook proves itself with (GitHub and Jira sign with it, GitLab sends it as its token, Azure DevOps as
+             *     the basic authentication password).
+             */
+            webhookSecretRef?: string | null;
+        };
+        /** @description An issue in a tracker. */
+        TrackerIssue: {
+            /** @description `creating`, `open` or `closed`. */
+            category: string;
+            /** Format: date-time */
+            closedAt?: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            createdBy: string;
+            /** Format: uuid */
+            id: string;
+            /** @description `SHOP-12` (Jira), `#12` (GitLab, GitHub) or `12` (Azure DevOps); absent while creating. */
+            key?: string | null;
+            /** @description Links to results and failure clusters (in the single-issue answer only). */
+            links?: components["schemas"]["TrackerIssueLink"][] | null;
+            /**
+             * Format: int64
+             * @description Linked tests that are muted now (in the single-issue answer only).
+             */
+            mutedTests?: number | null;
+            /** Format: date-time */
+            nextSyncAt?: string | null;
+            /** @description The state as the tracker names it (`In Progress`, `opened`, `closed`, `Done`). */
+            state: string;
+            /** @description Why the last read failed (no URL or token in it). */
+            syncError?: string | null;
+            /**
+             * Format: date-time
+             * @description Last successful read of the issue from the tracker.
+             */
+            syncedAt?: string | null;
+            title: string;
+            /** @description `id` of the tracker in the `issueTrackers` settings. */
+            trackerId: string;
+            /** @description `jira`, `gitlab`, `github` or `azure`. */
+            trackerType: string;
+            /** @description The issue was closed while tests linked to it are still muted. */
+            unmuteSuggested: boolean;
+            /** Format: date-time */
+            updatedAt: string;
+            url?: string | null;
+        };
+        /** @description Answer of `POST /tracker-issues`. */
+        TrackerIssueCreated: {
+            /** @description Screenshots attached. */
+            attached: number;
+            issue?: components["schemas"]["TrackerIssue"] | null;
+            /** @description Screenshots that could not be attached, and why. */
+            notes: string[];
+            preview: components["schemas"]["IssuePreview"];
+            /** @description The request id was used before: this is the issue it created. */
+            repeated: boolean;
+            /**
+             * Format: int64
+             * @description Results whose defect now links the issue.
+             */
+            updatedResults: number;
+        };
+        /** @description A tracked issue and what the caller may do with it. */
+        TrackerIssueDetail: components["schemas"]["TrackerIssue"] & {
+            /** @description The caller may un-mute the linked tests (`results:mute`). */
+            canUnmute: boolean;
+        };
+        /** @description A link of an issue to a result or to a failure cluster (a fingerprint in a launch). */
+        TrackerIssueLink: {
+            /** Format: date-time */
+            createdAt: string;
+            createdBy: string;
+            fingerprint?: string | null;
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            launchId?: string | null;
+            /** Format: uuid */
+            resultId?: string | null;
+            /**
+             * Format: int64
+             * @description Tests (series) behind the link.
+             */
+            tests: number;
+        };
+        /** @description `{items, next}` of tracked issues. */
+        TrackerIssueList: {
+            items: components["schemas"]["TrackerIssue"][];
+            /**
+             * Format: uuid
+             * @description Cursor of the next page (`before=`), `null` on the last page.
+             */
+            next?: string | null;
+        };
+        /** @description Answer of a connection test. */
+        TrackerTest: {
+            error?: string | null;
+            ok: boolean;
+            /** @description The project as the tracker names it. */
+            project?: string | null;
+        };
         /** @description The parts of a defect that name and color it in the tree. */
         TreeDefect: {
             group: string;
@@ -5513,6 +5893,19 @@ export interface components {
          * @enum {string}
          */
         UnknownFieldValues: "create" | "skip" | "fail";
+        /** @description Answer of `POST /tracker-issues/{id}/unmute`. */
+        UnmuteOutcome: {
+            /**
+             * Format: int64
+             * @description Results whose `muted` flag was cleared.
+             */
+            results: number;
+            /**
+             * Format: int64
+             * @description Tests whose mute was lifted.
+             */
+            tests: number;
+        };
         /**
          * @description What `untestedStepsTo` sets the untested steps of an item to.
          * @enum {string}
@@ -5746,6 +6139,56 @@ export interface operations {
                 };
             };
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    tracker_webhook: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                trackerId: string;
+            };
+            cookie?: never;
+        };
+        /** @description The tracker's webhook payload */
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -9081,6 +9524,52 @@ export interface operations {
                 };
             };
             /** @description `job_not_ready` or `import_busy` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    tracker_test: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                trackerId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TrackerTest"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -13647,6 +14136,456 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TmJob"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    tracker_issues_list: {
+        parameters: {
+            query?: {
+                /** @description Tracker id. */
+                tracker?: string;
+                /** @description `open`, `closed` or `creating`. */
+                state?: string;
+                /** @description Only issues that suggest un-muting (or only those that do not). */
+                unmuteSuggested?: boolean;
+                /** @description Issues linked to this result. */
+                resultId?: string;
+                /** @description Issues linked to results or clusters of this launch. */
+                launchId?: string;
+                before?: string;
+                /** @description 1 to 200, default 50. */
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TrackerIssueList"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    tracker_issues_create: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateTrackerIssue"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TrackerIssueCreated"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `no_issue_tracker`, `tracker_settings`, or the request id is still creating */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `tracker_refused` or `tracker_unavailable` */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    tracker_issues_link: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LinkTrackerIssue"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TrackerIssueCreated"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    tracker_issues_lookup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["IssueLookup"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TrackerIssueList"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    tracker_issues_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TrackerIssueDetail"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    tracker_issues_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    tracker_issues_dismiss: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    tracker_issues_sync: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TrackerIssueDetail"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    tracker_issues_unmute: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UnmuteOutcome"];
                 };
             };
             403: {

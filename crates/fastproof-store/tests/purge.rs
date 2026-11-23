@@ -178,6 +178,11 @@ begin
         where r.project_id = p and r.full_name = 'T1';
     insert into tm_jobs (id, project_id, kind, params) values (gen_random_uuid(), p, 'import', '{}'), (gen_random_uuid(), p, 'export', '{}');
     insert into launch_exports (id, project_id, launch_id, format, created_by, status) select gen_random_uuid(), p, l.id, 'html', 'u', 'failed' from launches l where l.project_id = p limit 2;
+    insert into tracker_issues (id, project_id, tracker_id, tracker_type, issue_key, category, created_by)
+        values (f1, p, 'jira', 'jira', 'SHOP-1', 'open', 't'), (f2, p, 'jira', 'jira', 'SHOP-2', 'closed', 't');
+    insert into tracker_issue_links (id, issue_id, project_id, launch_id, fingerprint, created_by)
+        values (gen_random_uuid(), f1, p, ml, 'f1', 't'), (gen_random_uuid(), f2, p, null, null, 't');
+    insert into tracker_requests (id, project_id, kind) values (gen_random_uuid(), p, 'create'), (gen_random_uuid(), p, 'link');
     return ml;
 end
 $f$;

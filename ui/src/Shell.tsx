@@ -1,5 +1,5 @@
 import { AppShellLayout, useCan, type CommandItem, type NavItem } from '@franshub/ui-shell';
-import { IconAdjustments, IconBell, IconChartLine, IconChecklist, IconClipboardList, IconClockCog, IconFlask2, IconGitCompare, IconKey, IconLayoutDashboard, IconListCheck, IconListDetails, IconShieldCheck, IconShieldSearch, IconWand, IconWaveSine } from '@tabler/icons-react';
+import { IconAdjustments, IconBell, IconBug, IconChartLine, IconChecklist, IconClipboardList, IconClockCog, IconFlask2, IconGitCompare, IconKey, IconLayoutDashboard, IconListCheck, IconListDetails, IconShieldCheck, IconShieldSearch, IconWand, IconWaveSine } from '@tabler/icons-react';
 import { useQueryClient, type InfiniteData } from '@tanstack/react-query';
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { matchPath, useLocation, useNavigate } from 'react-router';
@@ -58,7 +58,7 @@ export function Shell({ children }: { children: ReactNode }) {
       const name = projects.data?.find((p) => p.key === projectKey)?.name ?? projectKey;
       const base = `/p/${projectKey}`;
       const section = (s: string) => path === `${base}/${s}` || path.startsWith(`${base}/${s}/`);
-      const sections = ['dashboard', 'dashboards', 'flaky', 'compare', 'rules', 'gates', 'notifications', 'settings'];
+      const sections = ['dashboard', 'dashboards', 'flaky', 'compare', 'rules', 'gates', 'notifications', 'settings', 'issues'];
       sections.push('cases', 'plans', 'my-runs');
       items.push({ label: `${name}: launches`, href: base, icon: <IconListDetails size={18} />, active: path.startsWith(base) && !sections.some(section) });
       items.push({ label: 'Test cases', href: `${base}/cases`, icon: <IconClipboardList size={18} />, active: section('cases'), permission: 'cases:read', scope: projectKey });
@@ -68,6 +68,7 @@ export function Shell({ children }: { children: ReactNode }) {
       items.push({ label: 'Dashboards', href: `${base}/dashboards`, icon: <IconLayoutDashboard size={18} />, active: section('dashboards') });
       items.push({ label: 'Flaky tests', href: `${base}/flaky`, icon: <IconWaveSine size={18} />, active: section('flaky') });
       items.push({ label: 'Compare launches', href: `${base}/compare`, icon: <IconGitCompare size={18} />, active: section('compare') });
+      items.push({ label: 'Issues', href: `${base}/issues`, icon: <IconBug size={18} />, active: section('issues') });
       items.push({ label: 'Rules', href: `${base}/rules`, icon: <IconWand size={18} />, active: section('rules') });
       items.push({ label: 'Quality gates', href: `${base}/gates`, icon: <IconShieldCheck size={18} />, active: section('gates') });
       items.push({ label: 'Notifications', href: `${base}/notifications`, icon: <IconBell size={18} />, active: section('notifications') });

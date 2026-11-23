@@ -300,6 +300,7 @@ settings below decide what they may reach.
 | `FASTPROOF_TELEGRAM_API_URL` | `https://api.telegram.org` | Telegram Bot API base URL, for a proxy or a self-hosted Bot API server |
 | `FASTPROOF_DELIVERY_MAX_ATTEMPTS` | `6` | Attempts per notification or merge request update, 1 to 20 |
 | `FASTPROOF_DELIVERY_BACKOFF_SECONDS` | `30` | First retry delay, doubled per attempt, at most one hour (0 to 3600) |
+| `FASTPROOF_TRACKER_POLL_SECONDS` | `600` | How often open issues of trackers with `sync: poll` are read back (60 to 86400); closed issues and webhook-synced ones are read daily |
 | `FASTPROOF_METRICS_TOP_BRANCHES` | `10` | Branches per project with their own `branch` label in the quality metrics; the rest are `other` (1 to 100) |
 
 Every outbound call of an integration (webhooks, Slack, Microsoft Teams, Telegram, GitLab, GitHub, FastMock, and

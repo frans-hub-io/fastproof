@@ -8,6 +8,8 @@ import { errorMessage } from '../api/client';
 import { useProject } from '../api/hooks';
 import { useDefectTypes, useDeleteDefectType, useSaveDefectType, useSaveSettings, useSecrets, useSettings, useWriteSecret } from '../api/stageC';
 import type { DefectGroup, DefectType, IssueTracker, IssueTrackerType, ProjectSettings, RerunProvider, RerunSettings, SecretPurpose, VcsSettings } from '../api/types-next';
+import { TrackerApiFields } from '../components/TrackerApiFields';
+import { apiSaved, cleanApi, trackerApiErrors } from '../lib/trackers';
 import { DEFECT_GROUPS } from '../api/types-next';
 import { CopyValue } from '../components/CopyButton';
 import { DefectChip } from '../components/Defect';
@@ -318,16 +320,18 @@ function DefectTypes({ project, canWrite }: { project: string; canWrite: boolean
   );
 }
 
-const SAMPLE_KEY: Record<IssueTrackerType, string> = { jira: 'SHOP-123', gitlab: '42', github: '#42' };
+const SAMPLE_KEY: Record<IssueTrackerType, string> = { jira: 'SHOP-123', gitlab: '42', github: '#42', azure: '42' };
 
 const TRACKER_DEFAULT: Record<IssueTrackerType, IssueTracker> = {
   jira: { type: 'jira', urlTemplate: 'https://jira.example.com/browse/{key}', keyRegex: '^[A-Z][A-Z0-9]+-\\d+$' },
   gitlab: { type: 'gitlab', urlTemplate: 'https://gitlab.example.com/group/project/-/issues/{key}', keyRegex: '^#?\\d+$' },
   github: { type: 'github', urlTemplate: 'https://github.com/owner/repo/issues/{key}', keyRegex: '^#?\\d+$' },
+  azure: { type: 'azure', urlTemplate: 'https://dev.azure.com/example/Shop/_workitems/edit/{key}', keyRegex: '^#?\\d+$' },
 };
 
 /** Sends the Jira ids only when set on a Jira tracker. */
-function cleanTracker(t: IssueTracker): IssueTracker {
+function cleanTracker(tracker: IssueTracker): IssueTracker {
+  const t = cleanApi(tracker);
   const { projectId, issueTypeId, ...rest } = t;
   if (t.type !== 'jira') return rest;
   return { ...rest, ...(projectId ? { projectId } : {}), ...(issueTypeId ? { issueTypeId } : {}) };
@@ -356,6 +360,8 @@ const REPO_PATH = /^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)+$/;
 const ORIGIN = /^https?:\/\/[^\s/?#@]+\/?$/i;
 const PURPOSES: { value: SecretPurpose; label: string }[] = [
   { value: 'vcs', label: 'GitLab or GitHub token' },
+  { value: 'tracker', label: 'Issue tracker token' },
+  { value: 'tracker-webhook', label: 'Issue tracker webhook secret (16+ bytes)' },
   { value: 'fastmock', label: 'FastMock token' },
   { value: 'ci', label: 'CI token for reruns' },
   { value: 'slack', label: 'Slack webhook URL' },
@@ -386,14 +392,14 @@ function IntegrationsForm({ project, settings, canWrite }: { project: string; se
   const rrWorkflowError = rr?.provider === 'github' && !rr.workflow ? 'The workflow file, for example tests.yml' : null;
   const rrTokenError = rr && rr.provider !== 'webhook' && !rr.tokenSecretRef ? 'Choose the secret with the token' : null;
   const fmUrlError = fm && !HTTP_URL.test(fm.url) ? 'Must be an http(s) URL' : null;
-  const valid = tErrors.every((e) => !e.url && !e.regex) && trackers.every((t) => t.type !== 'jira' || ((!t.projectId || JIRA_ID.test(t.projectId)) && (!t.issueTypeId || JIRA_ID.test(t.issueTypeId)))) && !vcsUrlError && !vcsTokenError && !vcsRepoError && !fmUrlError && !rrUrlError && !rrRepoError && !rrWorkflowError && !rrTokenError && trackers.length <= 10;
+  const valid = tErrors.every((e) => !e.url && !e.regex) && trackers.every((t) => t.type !== 'jira' || ((!t.projectId || JIRA_ID.test(t.projectId)) && (!t.issueTypeId || JIRA_ID.test(t.issueTypeId)))) && !vcsUrlError && !vcsTokenError && !vcsRepoError && !fmUrlError && !rrUrlError && !rrRepoError && !rrWorkflowError && !rrTokenError && trackers.length <= 10 && trackers.every((t) => Object.keys(trackerApiErrors(t)).length === 0);
 
   const setTracker = (i: number, t: Partial<IssueTracker>) => setTrackers(trackers.map((x, j) => (j === i ? { ...x, ...t } : x)));
 
   return (
     <Fieldset variant="unstyled" disabled={!canWrite}>
       <Stack gap="md">
-        <Section title="Issue trackers" description="Triage turns an issue key into a link with these templates; {key} is replaced with the key.">
+        <Section title="Issue trackers" description="Triage turns an issue key into a link with these templates; {key} is replaced with the key. With an API connection, issues are created from results and their state is read back.">
           {trackers.length === 0 && (
             <Text size="sm" c="dimmed">
               No trackers. Triage still accepts full issue URLs.
@@ -411,6 +417,7 @@ function IntegrationsForm({ project, settings, canWrite }: { project: string; se
                         { value: 'jira', label: 'Jira' },
                         { value: 'gitlab', label: 'GitLab' },
                         { value: 'github', label: 'GitHub' },
+                        { value: 'azure', label: 'Azure DevOps' },
                       ]}
                       value={t.type}
                       onChange={(v) => v && setTracker(i, { type: v })}
@@ -442,6 +449,7 @@ function IntegrationsForm({ project, settings, canWrite }: { project: string; se
                       />
                     </SimpleGrid>
                   )}
+                  <TrackerApiFields project={project} tracker={t} secrets={names} saved={apiSaved(settings.issueTrackers, t)} onChange={(patch) => setTracker(i, patch)} />
                   <Group justify="space-between" wrap="nowrap" gap="xs">
                     <Text size="xs" c="dimmed" className="fh-truncate" style={{ minWidth: 0 }} data-testid="tracker-preview">
                       <span className="fp-mono">{SAMPLE_KEY[t.type]}</span> → {preview ?? 'the sample key does not match the pattern'}
@@ -458,9 +466,9 @@ function IntegrationsForm({ project, settings, canWrite }: { project: string; se
           })}
           {canWrite && trackers.length < 10 && (
             <Group gap="xs">
-              {(['jira', 'gitlab', 'github'] as const).map((k) => (
+              {(['jira', 'gitlab', 'github', 'azure'] as const).map((k) => (
                 <Button key={k} size="xs" variant="light" leftSection={<IconPlus size={14} />} onClick={() => setTrackers([...trackers, { ...TRACKER_DEFAULT[k] }])}>
-                  {k === 'jira' ? 'Jira' : k === 'gitlab' ? 'GitLab' : 'GitHub'}
+                  {k === 'jira' ? 'Jira' : k === 'gitlab' ? 'GitLab' : k === 'github' ? 'GitHub' : 'Azure DevOps'}
                 </Button>
               ))}
             </Group>
@@ -578,7 +586,7 @@ function Secrets({ project, canWrite }: { project: string; canWrite: boolean }) 
   }
   const nameError = name && !SECRET_NAME.test(name) ? 'Lowercase letters, digits, . _ -; up to 63 characters' : null;
   const valueError = value.length > 8192 ? 'At most 8192 characters' : purpose === 'teams' && value && !/^https:\/\/\S+$/i.test(value.trim()) ? 'The workflow URL: https://… (its origin is bound automatically)' : null;
-  const needsOrigin = purpose === 'vcs' || purpose === 'fastmock' || purpose === 'ci';
+  const needsOrigin = purpose === 'vcs' || purpose === 'tracker' || purpose === 'fastmock' || purpose === 'ci';
   const originError = origin && !ORIGIN.test(origin) ? 'An origin such as https://gitlab.example.com' : needsOrigin && !origin ? 'Required for this purpose' : null;
   const scopeError = purpose === 'ci' && !/^(github:[^:\s]+:[^:\s]+|gitlab:[^:\s]+|webhook:https?:\/\/\S+)$/.test(scope) ? 'github:owner/repo:workflow.yml, gitlab:group/project or webhook:<URL>' : null;
   const valid = SECRET_NAME.test(name) && value.length > 0 && !valueError && !!purpose && !originError && !scopeError;

@@ -27,12 +27,12 @@ const EVENTS: { value: NotificationEvent; label: string }[] = [
   { value: 'newFailures', label: 'New failures' },
 ];
 
-const EVENT_LABEL: Record<NotificationEvent, string> = { launchFinished: 'Launch finished', gateFailed: 'Gate failed', newFailures: 'New failures' };
+const EVENT_LABEL: Record<string, string> = { launchFinished: 'Launch finished', gateFailed: 'Gate failed', newFailures: 'New failures', manualRunClosed: 'Manual run closed' };
 
 const STATUS_COLOR: Record<Delivery['status'], string> = { delivered: 'green', failed: 'red', sending: 'yellow', pending: 'gray' };
 
 function eventsText(events: string[]): string {
-  return events.map((e) => (e in EVENT_LABEL ? EVENT_LABEL[e as NotificationEvent] : e)).join(', ') || '—';
+  return events.map((e) => (Object.hasOwn(EVENT_LABEL, e) ? EVENT_LABEL[e] : e)).join(', ') || '—';
 }
 
 /** Icon of a delivery channel: a notification kind, or the VCS provider for `vcs` deliveries. */

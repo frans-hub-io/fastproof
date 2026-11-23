@@ -8,12 +8,14 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './App';
 import { installTokenAuth } from './lib/authToken';
+import { installPrintLight } from './lib/printLight';
 import { setNonce } from 'get-nonce';
 import { cspNonce } from './lib/cspNonce';
 
 async function boot(): Promise<void> {
   applyInitialColorScheme();
   installTokenAuth();
+  installPrintLight();
   const nonce = cspNonce();
   // react-remove-scroll (Mantine modals and drawers) adds a <style> element with this nonce.
   if (nonce) setNonce(nonce);

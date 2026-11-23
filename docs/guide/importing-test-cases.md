@@ -201,6 +201,11 @@ Not imported: `Section Depth`, `Section Description`, `Suite`, `Suite ID`, `Temp
 steps in one cell, the cells hold numbered lists (`1. …`, sub-steps indented with a tab or numbered `1.2.`) and
 the expected results are matched to the steps by position. The layout is detected when it is not given.
 
+With separated steps, every step is one row of the file, and the import limit counts rows, not cases: at the
+default of 200 000 rows (`FASTPROOF_TM_MAX_IMPORT_ROWS`), 20 000 cases of 12 steps do not fit, and the import
+ends `failed` with `limit_reached`. Raise the limit (see [Limits](../operations/limits.md)) or export the steps
+in one cell per case.
+
 Not confirmed on a real export (TestRail's documentation was the source): the exact header of the one-cell
 layout and its numbering, whether separated-step rows repeat the `ID` (both forms are read), and the spacing
 around `>` in `Section Hierarchy`.

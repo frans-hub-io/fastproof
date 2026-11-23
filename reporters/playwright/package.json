@@ -36,6 +36,11 @@
   "peerDependencies": {
     "@playwright/test": ">=1.45.0 <2"
   },
+  "peerDependenciesMeta": {
+    "@playwright/test": {
+      "optional": true
+    }
+  },
   "devDependencies": {
     "@playwright/test": "1.65.0",
     "@types/node": "22.20.5",

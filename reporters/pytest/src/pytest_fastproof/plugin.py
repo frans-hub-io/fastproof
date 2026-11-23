@@ -665,6 +665,8 @@ def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line("markers", "fastproof_id(id): explicit FastProof test case id (also used by test plans)")
     config.addinivalue_line("markers", "fastproof_label(name, value): a FastProof label")
     config.addinivalue_line("markers", "fastproof_link(url, name=None, type='link'): a link on the FastProof result")
+    if config.pluginmanager.hasplugin("fastproof_allure_pytest") and config.getoption("allure_report_dir", default=None):
+        return
     plugin = FastProofPlugin(config)
     try:
         plugin.setup()

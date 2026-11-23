@@ -138,3 +138,87 @@ python -m pytest_fastproof flush
 As with Playwright, `flush` needs `FASTPROOF_URL` and a token; each session goes to the project it was recorded
 for, and `FASTPROOF_PROJECT` limits the flush to one project. Both tools read the same spool format, so either
 one can send the other's sessions (`--spool DIR`).
+
+## Allure adapter enhancers
+
+If your tests already use an Allure adapter, keep it. An enhancer plugs into the adapter's own listener hooks
+and mirrors every attempt to FastProof while the tests run; `allure-results` are written exactly as before, so
+`fastproof upload` and Allure Report keep working. What the enhancers add on top of the adapters:
+
+- live results (`running`, then the final result as soon as the attempt ends) and live steps, which the Allure
+  file writers only produce at the end of a test;
+- every retry as its own attempt, with its own trace id;
+- a W3C `traceparent` per attempt, also written as a `traceparent` label into the Allure result (turn it off
+  with `FASTPROOF_ALLURE_TRACE_LABEL=false`), and `baggage`, for FastMock and traced backends;
+- secret masking before anything is sent (Allure writes `masked` and `hidden` parameters to the result file in
+  clear text; the enhancers send `****` instead);
+- the same settings, offline spool and "never fail the run" rules as the other reporters
+  ([protocol](https://github.com/frans-hub-io/fastproof/blob/main/reporters/PROTOCOL.md)).
+
+Do not upload the same `allure-results` with `fastproof upload` as well: that makes a second launch.
+
+| Language | Package | Hooks |
+|---|---|---|
+| JavaScript | `@franshub/fastproof-allure-js` | `listeners` option of `allure-playwright` (tested with 3.15.0) or any adapter on `allure-js-commons` |
+| Java | `io.franshub.fastproof:fastproof-allure-java` | ServiceLoader `TestLifecycleListener` of allure-java 3.1.x (JUnit 5 and TestNG tested) |
+| Python | `fastproof-allure-pytest` | pluggy hooks of `allure-python-commons` (tested with allure-pytest 2.16.2, pytest-rerunfailures, xdist) |
+
+### JavaScript (allure-playwright)
+
+```ts
+// playwright.config.ts
+reporter: [
+  ['list'],
+  ['@franshub/fastproof-allure-js/playwright', {
+    resultsDir: 'allure-results',
+    fastproof: { environment: 'staging' },
+  }],
+],
+```
+
+Use it in place of `allure-playwright`: it is that reporter with the FastProof listener added, and it takes the
+same options. Install `@franshub/fastproof-playwright` next to it (the shared core); the
+`@franshub/fastproof-playwright/fixture` export gives tests the trace headers for the attempt. Other adapters
+on `allure-js-commons` take the listener directly: `createFastProofListener({ resultsDir })`, pass
+`.listener` in their `listeners` option, call `.start()` at the beginning and `await .close()` at the end of the
+run. Without Playwright the adapter does not tell which test a step belongs to, so live steps are streamed only
+while one test runs at a time; results, attempts and masking do not depend on it.
+
+### Java (JUnit 5, TestNG)
+
+Add the jar to the test classpath next to `allure-junit-platform` or `allure-testng`; no change in the tests:
+
+```xml
+<dependency>
+  <groupId>io.franshub.fastproof</groupId>
+  <artifactId>fastproof-allure-java</artifactId>
+  <version>0.1.0</version>
+  <scope>test</scope>
+</dependency>
+```
+
+Settings come from `FASTPROOF_*` environment variables or `fastproof.*` system properties
+(`fastproof.url`, `fastproof.project`, `fastproof.launch.name`, ...). The results directory is the one Allure
+uses (`allure.results.directory`). The report is closed in a JVM shutdown hook. Several test JVMs that should
+share one launch need the same `FASTPROOF_LAUNCH` (CI ids are picked up automatically). In test code
+`FastProof.trace().orElseThrow().headers(false)` gives the headers of the running attempt. The adapters decide
+what a retry looks like: Surefire reruns with JUnit 5 arrive as failed, then passed attempts; a TestNG
+`IRetryAnalyzer` retry is written by allure-testng as `skipped` (a known adapter issue), and FastProof shows it
+that way.
+
+### Python (allure-pytest)
+
+```sh
+pip install fastproof-allure-pytest
+pytest --alluredir=allure-results
+```
+
+With `--alluredir` the enhancer takes over from `pytest-fastproof` (installed as its dependency); without it
+`pytest-fastproof` reports as before. Every `pytest_runtest_logstart` is one attempt, which covers
+pytest-rerunfailures, and pytest-xdist workers send their own results into one launch. In tests,
+`fastproof_allure_pytest.trace().headers()` and the `fastproof_trace` fixture give the headers of the attempt.
+Allure's own `stdout`, `stderr` and `log` attachments are sent as attachments.
+
+The enhancers depend on internal hooks of the Allure adapters, which Allure may change between minor
+versions; the tested versions are listed above. They do not work with Allure for .NET 2.x.
+

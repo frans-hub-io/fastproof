@@ -327,10 +327,13 @@ pub async fn run(a: BenchArgs) -> anyhow::Result<BenchReport> {
                 }
                 Some(k) => {
                     use fastproof_stream::kafka::{Outgoing, TOPIC_LOGS, TOPIC_RESULTS};
-                    use fastproof_stream::messages::{LogRecord, ResultRecord, VERSION};
-                    let key = launch.id.to_string().into_bytes();
+                    use fastproof_stream::messages::{
+                        LogRecord, ResultRecord, VERSION, log_key, result_key,
+                    };
                     let mut recs = Vec::with_capacity(n_results);
                     for r in p.results {
+                        // The test name stands in for the series key (one per test here).
+                        let key = result_key(launch.id, r["fullName"].as_str().unwrap_or_default());
                         let rec = ResultRecord {
                             v: VERSION,
                             project: project.clone(),
@@ -341,7 +344,7 @@ pub async fn run(a: BenchArgs) -> anyhow::Result<BenchReport> {
                             upload_id: None,
                         };
                         recs.push(Outgoing {
-                            key: key.clone(),
+                            key,
                             value: serde_json::to_vec(&rec)?,
                         });
                     }
@@ -349,7 +352,7 @@ pub async fn run(a: BenchArgs) -> anyhow::Result<BenchReport> {
                     let mut recs = Vec::with_capacity(n_logs);
                     for l in p.logs {
                         recs.push(Outgoing {
-                            key: key.clone(),
+                            key: log_key(launch.id, &l.result_id),
                             value: serde_json::to_vec(&LogRecord::new(&project, launch.id, l))?,
                         });
                     }

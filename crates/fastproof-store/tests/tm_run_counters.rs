@@ -844,8 +844,8 @@ async fn concurrent_testers_ingest_mutes_and_close_keep_counters_exact() {
 }
 
 /// Triage that mutes and unmutes automated results while an ingest writes new attempts of the
-/// same tests into the launch: triage takes the launch row before the results, in the order
-/// ingest takes them, so neither waits for the other in a cycle (no deadlock at all, not only
+/// same tests into the launch: both lock the result rows in id order and the launch row for
+/// the counters last, so neither waits for the other in a cycle (no deadlock at all, not only
 /// none that reaches the caller), and `count_muted` equals a recount afterwards.
 #[tokio::test]
 async fn triage_of_automated_results_does_not_deadlock_with_ingest() {

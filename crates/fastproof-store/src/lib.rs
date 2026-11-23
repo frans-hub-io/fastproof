@@ -163,6 +163,7 @@ pub struct Store {
     board_pool: analysis::boards::BoardPool,
     board_cache: analysis::boards::BoardCache,
     board_limits: analysis::boards::BoardLimits,
+    log_chunk_events: logs::LogChunkEvents,
 }
 
 impl Store {
@@ -173,7 +174,19 @@ impl Store {
             board_pool: Default::default(),
             board_cache: Default::default(),
             board_limits: Default::default(),
+            log_chunk_events: logs::LogChunkEvents::default(),
         }
+    }
+
+    /// Sets how stored log chunks are announced in the outbox (default one event per chunk).
+    pub fn with_log_chunk_events(mut self, e: logs::LogChunkEvents) -> Self {
+        self.log_chunk_events = e;
+        self
+    }
+
+    /// How stored log chunks are announced in the outbox.
+    pub fn log_chunk_events(&self) -> logs::LogChunkEvents {
+        self.log_chunk_events
     }
 
     /// Sets how many rows one statement of a large delete may touch (default

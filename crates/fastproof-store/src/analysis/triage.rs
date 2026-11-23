@@ -137,11 +137,10 @@ type Target = (
     bool,
 );
 
-/// Locks launch rows (`for no key update`, in id order) before their results change. Ingest
-/// locks the launch row before its automated results, so a change of automated results that
-/// takes the launch rows first cannot deadlock with it. Manual writes lock their results before
-/// the launch row, so changes that touch manual results keep the opposite order and are retried
-/// when PostgreSQL breaks a deadlock.
+/// Locks launch rows (`for no key update`, in id order) for a counter update. Every writer of
+/// results takes the same order: the launch rows share-locked (`for key share`, so the launch
+/// is not deleted meanwhile, without blocking other writers), then the result rows in id
+/// order, then the launch rows for the counters right before the commit, then rule rows.
 pub async fn lock_launches(conn: &mut PgConnection, launches: &[Uuid]) -> anyhow::Result<()> {
     let mut ids = launches.to_vec();
     ids.sort();
@@ -285,10 +284,22 @@ impl Store {
             .collect();
         let ids: Vec<Uuid> = targets.iter().map(|t| t.0).collect();
         let created: Vec<DateTime<Utc>> = targets.iter().map(|t| t.1).collect();
-        if !targets.iter().any(|t| t.6) {
-            // Automated results only: the launch rows first, in the order ingest takes them.
-            lock_launches(&mut tx, &launches).await?;
-        }
+        // The order every writer of results takes (see [`lock_launches`]): launch rows
+        // share-locked, result rows in id order, the launch rows for the counter at the end.
+        sqlx::query("select 1 from launches where id = any($1) order by id for key share")
+            .bind(&launches)
+            .execute(&mut *tx)
+            .await?;
+        let mut sorted: Vec<(Uuid, DateTime<Utc>)> = targets.iter().map(|t| (t.0, t.1)).collect();
+        sorted.sort();
+        sqlx::query(
+            "select 1 from results r join unnest($1::uuid[], $2::timestamptz[]) as t(i, c) \
+               on r.id = t.i and r.launch_created_at = t.c order by r.id for no key update of r",
+        )
+        .bind(sorted.iter().map(|t| t.0).collect::<Vec<_>>())
+        .bind(sorted.iter().map(|t| t.1).collect::<Vec<_>>())
+        .execute(&mut *tx)
+        .await?;
 
         if req.defect_type_id.is_some() || req.comment.is_some() || req.issue.is_some() {
             let mut defects = Vec::with_capacity(targets.len());

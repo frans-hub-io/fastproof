@@ -1,4 +1,5 @@
-//! Analytics sinks: outbox events (`result.updated`, `attempt.stored`, `log.chunk`) are read in
+//! Analytics sinks: outbox events (`result.updated`, `attempt.stored`, `log.chunk` and
+//! `log.chunks`) are read in
 //! batches from PostgreSQL (direct mode) or the `events` topic (Kafka mode), the rows they name
 //! are loaded from PostgreSQL and written to ClickHouse or OpenSearch with retries, and the
 //! position is committed after each successful batch (at least once; the writes are
@@ -11,7 +12,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use fastproof_model::Step;
 use fastproof_store::Store;
-use fastproof_store::logs::{LogChunk, LogHits, LogSearch};
+use fastproof_store::logs::{LOG_CHUNK_EVENT, LOG_CHUNKS_EVENT, LogChunk, LogHits, LogSearch};
 use fastproof_store::stream::{
     SimilarResult, SimilarSource, SinkAttempt, SinkResult, message_hash,
 };
@@ -154,6 +155,20 @@ pub fn flatten_steps(steps: &[Step]) -> Vec<FlatStep> {
     out
 }
 
+/// Log chunks an event names: one for a `log.chunk` event (format 1), those listed in a
+/// `log.chunks` event (format 2).
+pub fn chunk_count(e: &EventRecord) -> usize {
+    match e.kind.as_str() {
+        LOG_CHUNK_EVENT => 1,
+        LOG_CHUNKS_EVENT => e
+            .payload
+            .get("chunks")
+            .and_then(|c| c.as_array())
+            .map_or(0, |c| c.len()),
+        _ => 0,
+    }
+}
+
 fn ids_of(events: &[EventRecord]) -> (Vec<Uuid>, Vec<Uuid>, Vec<i64>) {
     let mut results = BTreeSet::new();
     let mut attempts = BTreeSet::new();
@@ -171,9 +186,14 @@ fn ids_of(events: &[EventRecord]) -> (Vec<Uuid>, Vec<Uuid>, Vec<i64>) {
                     attempts.insert(u);
                 }
             }
-            "log.chunk" => {
+            LOG_CHUNK_EVENT => {
                 if let Some(c) = id.and_then(|v| v.as_i64()) {
                     chunks.insert(c);
+                }
+            }
+            LOG_CHUNKS_EVENT => {
+                if let Some(list) = e.payload.get("chunks").and_then(|c| c.as_array()) {
+                    chunks.extend(list.iter().filter_map(|c| c.get("id")?.as_i64()));
                 }
             }
             _ => {}
@@ -417,11 +437,10 @@ impl PartitionRunner for OutboxSink {
                 let got = reader.next(want).await?;
                 let full = got.len() as i64 == want;
                 for e in got {
-                    if e.kind == "log.chunk" {
-                        chunks += 1;
-                    }
                     reader.advance(e.id);
-                    events.push(EventRecord::from(e));
+                    let e = EventRecord::from(e);
+                    chunks += chunk_count(&e);
+                    events.push(e);
                 }
                 if !events.is_empty() && deadline.is_none() {
                     deadline = Some(Instant::now() + self.tuning.flush_interval);
@@ -490,7 +509,7 @@ pub fn sink_parts(events: &[EventRecord], max_events: usize) -> Vec<&[EventRecor
     let mut out = Vec::new();
     let (mut start, mut chunks) = (0, 0);
     for (i, e) in events.iter().enumerate() {
-        let c = usize::from(e.kind == "log.chunk");
+        let c = chunk_count(e);
         if i > start && (i - start >= max_events || chunks + c > MAX_CHUNKS_PER_BATCH) {
             out.push(&events[start..i]);
             start = i;

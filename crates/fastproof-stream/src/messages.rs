@@ -1,4 +1,4 @@
-//! Record values of the FastProof topics (JSON, key = launch id; `31-streaming.md`).
+//! Record values of the FastProof topics (JSON; `31-streaming.md`) and their keys.
 
 use fastproof_model::{ParsedResult, ReportResult};
 use fastproof_store::logs::{LogLevel, LogLine, LogStream};
@@ -7,6 +7,20 @@ use uuid::Uuid;
 
 /// Version of the record values.
 pub const VERSION: u32 = 1;
+
+/// Key of an `ingest.results` record: the launch and the test (series key). The attempts of
+/// one test in a launch stay in order on one partition, while the tests of a big launch
+/// spread over every partition and are written by several writers at once. Records keyed by
+/// the launch id alone (older gateways, outside producers) are stored the same way.
+pub fn result_key(launch_id: Uuid, series_key: &str) -> Vec<u8> {
+    format!("{launch_id}/{series_key}").into_bytes()
+}
+
+/// Key of an `ingest.logs` record: the launch and the result id the line belongs to, so the
+/// lines of one result stay in order on one partition.
+pub fn log_key(launch_id: Uuid, result_id: &str) -> Vec<u8> {
+    format!("{launch_id}/{result_id}").into_bytes()
+}
 
 /// `ingest.results`: a [`ReportResult`] from the gateway or a trusted producer, or (from the
 /// upload workers) an already parsed result with its idempotency key.

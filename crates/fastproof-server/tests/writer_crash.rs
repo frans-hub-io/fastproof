@@ -26,6 +26,7 @@ const LINES_PER_RESULT: usize = 10;
 /// Every this many results is first reported as running, then completed.
 const RUNNING_EVERY: usize = 10;
 const KILLS: usize = 4;
+const PARTITIONS: i32 = 4;
 /// Unsigned lines per launch from a trusted producer (no gateway signature).
 const UNSIGNED_LINES: usize = 50;
 
@@ -97,6 +98,18 @@ async fn progress(db: &TestDb) -> i64 {
 
 #[tokio::test]
 async fn killed_writers_store_everything_exactly_once_and_in_order() {
+    crash_run(false).await;
+}
+
+/// The same with records keyed as the gateway keys them now (launch and test, launch and
+/// result id), so every launch spreads over all partitions and is written by both writers at
+/// once: still exactly once, in partition order, and the counters are right.
+#[tokio::test]
+async fn killed_writers_of_spread_launches_store_everything_exactly_once() {
+    crash_run(true).await;
+}
+
+async fn crash_run(spread: bool) {
     if !cfg!(unix) {
         return;
     }
@@ -113,7 +126,7 @@ async fn killed_writers_store_everything_exactly_once_and_in_order() {
         ("FASTPROOF_KAFKA_BROKERS", brokers.clone()),
         ("FASTPROOF_KAFKA_TOPIC_PREFIX", prefix.clone()),
         ("FASTPROOF_KAFKA_CREATE_TOPICS", "true".into()),
-        ("FASTPROOF_KAFKA_PARTITIONS", "4".into()),
+        ("FASTPROOF_KAFKA_PARTITIONS", PARTITIONS.to_string()),
     ];
     let vars: Vec<(&str, &str)> = kafka_vars
         .iter()
@@ -148,6 +161,23 @@ async fn killed_writers_store_everything_exactly_once_and_in_order() {
         .unwrap();
     let results_topic = format!("{prefix}ingest.results");
     let logs_topic = format!("{prefix}ingest.logs");
+    let result_key = |launch: &uuid::Uuid, r: usize| {
+        if spread {
+            fastproof_stream::messages::result_key(
+                *launch,
+                &format!("crash.Suite{}#case{r}", r % 25),
+            )
+        } else {
+            launch.to_string().into_bytes()
+        }
+    };
+    let log_key = |launch: &uuid::Uuid, r: usize| {
+        if spread {
+            fastproof_stream::messages::log_key(*launch, &format!("t{r}"))
+        } else {
+            launch.to_string().into_bytes()
+        }
+    };
     let result = |launch: &uuid::Uuid, r: usize, status: &str| {
         let mut v = json!({"id": format!("t{r}"), "name": format!("case {r}"),
             "fullName": format!("crash.Suite{}#case{r}", r % 25), "status": status,
@@ -156,7 +186,7 @@ async fn killed_writers_store_everything_exactly_once_and_in_order() {
             v["error"] = json!({"message": format!("expected {r} but was {}", r + 1)});
         }
         Outgoing {
-            key: launch.to_string().into_bytes(),
+            key: result_key(launch, r),
             value: serde_json::to_vec(
                 &json!({"v": 1, "project": "crash", "launchId": launch, "result": v}),
             )
@@ -179,7 +209,7 @@ async fn killed_writers_store_everything_exactly_once_and_in_order() {
             }
             for seq in 0..LINES_PER_RESULT {
                 lines.push(Outgoing {
-                    key: launch.to_string().into_bytes(),
+                    key: log_key(launch, r),
                     value: serde_json::to_vec(&json!({"v": 1, "project": "crash",
                         "launchId": launch, "resultId": format!("t{r}"), "attempt": 0, "seq": seq,
                         "ts": 1_795_000_000_000i64 + seq as i64, "level": "info", "stream": "stdout",
@@ -389,8 +419,33 @@ async fn killed_writers_store_everything_exactly_once_and_in_order() {
                 .fetch_all(&db.pool)
                 .await
                 .unwrap();
-        let expected: Vec<String> = (0..RESULTS_PER_LAUNCH).map(|r| format!("r:t{r}")).collect();
-        assert_eq!(keys, expected, "attempts follow the partition order");
+        // The attempts of each partition keep the order they were produced in.
+        let partition =
+            |r: usize| fastproof_stream::kafka::partition_for(&result_key(launch, r), PARTITIONS);
+        for p in 0..PARTITIONS {
+            let stored: Vec<&String> = keys
+                .iter()
+                .filter(|k| partition(k[3..].parse().unwrap()) == p)
+                .collect();
+            let expected: Vec<String> = (0..RESULTS_PER_LAUNCH)
+                .filter(|r| partition(*r) == p)
+                .map(|r| format!("r:t{r}"))
+                .collect();
+            assert_eq!(
+                stored,
+                expected.iter().collect::<Vec<_>>(),
+                "attempts follow the partition order"
+            );
+        }
+        if spread {
+            let used: std::collections::BTreeSet<i32> =
+                (0..RESULTS_PER_LAUNCH).map(partition).collect();
+            assert_eq!(
+                used.len(),
+                PARTITIONS as usize,
+                "a launch spreads over every partition"
+            );
+        }
         let v = api.launch_get("crash", &launch.to_string()).await;
         assert_eq!(v["counts"]["total"], RESULTS_PER_LAUNCH as i64);
         let failed = (0..RESULTS_PER_LAUNCH)
@@ -398,6 +453,18 @@ async fn killed_writers_store_everything_exactly_once_and_in_order() {
             .count();
         assert_eq!(v["counts"]["failed"], failed as i64);
     }
+    assert_eq!(
+        count(
+            &db,
+            "select count(*) from launches l where l.count_total <> (select count(*) from results r where r.launch_id = l.id) \
+               or l.count_passed <> (select count(*) from results r where r.launch_id = l.id and r.status = 'passed') \
+               or l.first_result_at is distinct from (select min(started_at) from results r where r.launch_id = l.id) \
+               or l.last_result_at is distinct from (select max(coalesce(stopped_at, started_at)) from results r where r.launch_id = l.id)"
+        )
+        .await,
+        0,
+        "launch counters and times equal a recount"
+    );
     drop(api);
 }
 

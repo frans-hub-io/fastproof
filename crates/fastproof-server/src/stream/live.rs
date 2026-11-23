@@ -338,10 +338,16 @@ async fn publish_notices(store: &Store, hub: &LogHub, notices: Vec<LogNotice>) {
 /// How often a partition reader without subscribers moves to the end of the log.
 const IDLE_POLL: Duration = Duration::from_millis(500);
 
-/// The launch a record is keyed by (the gateway keys records by launch id).
+/// The launch a record is keyed by: the part of the key before the first `/`
+/// ([`fastproof_stream::messages::log_key`]), or the whole key (older producers).
 fn record_launch(r: &fastproof_stream::kafka::RecordAndOffset) -> Option<Uuid> {
-    std::str::from_utf8(r.record.key.as_deref()?)
-        .ok()?
+    key_launch(r.record.key.as_deref()?)
+}
+
+fn key_launch(key: &[u8]) -> Option<Uuid> {
+    let key = std::str::from_utf8(key).ok()?;
+    key.split_once('/')
+        .map_or(key, |(launch, _)| launch)
         .parse()
         .ok()
 }
@@ -462,6 +468,18 @@ pub async fn listen_kafka(kafka: Arc<Kafka>, hub: LogHub, stop: CancellationToke
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn launch_of_a_log_key() {
+        let l = uuid::Uuid::now_v7();
+        assert_eq!(
+            super::key_launch(&fastproof_stream::messages::log_key(l, "t1/a")),
+            Some(l)
+        );
+        assert_eq!(super::key_launch(l.to_string().as_bytes()), Some(l));
+        assert_eq!(super::key_launch(b"nonsense/x"), None);
+    }
+
     use super::*;
     use fastproof_store::logs::{LogLevel, LogStream};
 

@@ -38,6 +38,23 @@ impl UploadHandler {
         Self { s, stop, slots }
     }
 
+    /// The launch of the upload was deleted while it was processed: the upload went with it,
+    /// so there is no status left to record; the record is done (its offset is committed).
+    fn launch_gone(&self, job: &fastproof_store::uploads::ClaimedJob) {
+        if let Some(p) = self
+            .s
+            .local_uploads
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&job.upload_id)
+        {
+            let _ = std::fs::remove_file(p);
+        }
+        metrics::counter!("fastproof_ingest_jobs_total", "outcome" => "launch_deleted")
+            .increment(1);
+        tracing::info!(upload = %job.upload_id, launch = %job.launch_id, "launch deleted while its upload was processed; stopped");
+    }
+
     async fn process(&self, rec: UploadRecord) -> anyhow::Result<()> {
         let s = &self.s;
         let kafka = s
@@ -64,7 +81,10 @@ impl UploadHandler {
             let _ = tokio::fs::remove_dir_all(&work).await;
             match r {
                 Ok(done) => {
-                    s.store.finish_upload(&job, &done).await?;
+                    if !s.store.finish_upload(&job, &done).await? {
+                        self.launch_gone(&job);
+                        return Ok(());
+                    }
                     if !s.cfg.retain_uploads
                         && let Some(k) =
                             job.blob_key.as_deref().and_then(|k| BlobKey::parse(k).ok())
@@ -94,6 +114,10 @@ impl UploadHandler {
                     return Ok(());
                 }
                 Err(JobFailure::LeaseLost) => anyhow::bail!("stopping"),
+                Err(JobFailure::LaunchGone) => {
+                    self.launch_gone(&job);
+                    return Ok(());
+                }
                 Err(JobFailure::Retry(e)) => {
                     tracing::warn!(upload = %job.upload_id, attempt, error = %format!("{e:#}"), "processing an upload failed");
                     if attempt == ATTEMPTS {

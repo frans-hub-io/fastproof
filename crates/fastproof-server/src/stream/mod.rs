@@ -20,7 +20,7 @@ use fastproof_stream::groups::{Group, PartitionRunner};
 use fastproof_stream::kafka::{
     Outgoing, Start, TOPIC_EVENTS, TOPIC_LOGS, TOPIC_RESULTS, TOPIC_UPLOADS,
 };
-use fastproof_stream::messages::{LogRecord, ResultRecord, VERSION};
+use fastproof_stream::messages::{LogRecord, ResultRecord, VERSION, log_key, result_key};
 use fastproof_stream::sink::{KafkaSink, OutboxRelay, OutboxSink, SearchBackend, Sink};
 use franshub_http::{ApiError, ApiResult};
 use tokio::task::JoinHandle;
@@ -67,17 +67,18 @@ fn unavailable(e: anyhow::Error) -> ApiError {
     )
 }
 
-/// Produces validated results to `ingest.results` (key = launch id).
+/// Produces validated results to `ingest.results` (keyed by launch and series key, see
+/// [`fastproof_stream::messages::result_key`]): `(index, result, series key)`.
 pub async fn produce_results(
     s: &AppState,
     launch: &LaunchRef,
-    results: Vec<(u64, ReportResult)>,
+    results: Vec<(u64, ReportResult, String)>,
 ) -> ApiResult<Produced> {
     let kafka = s.kafka()?;
     let max = kafka.config().max_record_bytes;
     let mut out = Produced::default();
     let mut records = Vec::with_capacity(results.len());
-    for (index, r) in results {
+    for (index, r, series_key) in results {
         let rec = ResultRecord {
             v: VERSION,
             project: launch.project_key.clone(),
@@ -96,7 +97,7 @@ pub async fn produce_results(
             continue;
         }
         records.push(Outgoing {
-            key: launch.id.to_string().into_bytes(),
+            key: result_key(launch.id, &series_key),
             value,
         });
     }
@@ -110,7 +111,8 @@ pub async fn produce_results(
     Ok(out)
 }
 
-/// Produces log lines to `ingest.logs` (key = launch id).
+/// Produces log lines to `ingest.logs` (keyed by launch and result id, see
+/// [`fastproof_stream::messages::log_key`]).
 pub async fn produce_logs(
     s: &AppState,
     project: &str,
@@ -119,10 +121,9 @@ pub async fn produce_logs(
 ) -> ApiResult<()> {
     let kafka = s.kafka()?;
     let mut records = Vec::with_capacity(lines.len());
-    let key = launch_id.to_string().into_bytes();
     for l in lines {
         records.push(Outgoing {
-            key: key.clone(),
+            key: log_key(launch_id, &l.result_id),
             value: serde_json::to_vec(&LogRecord::new(project, launch_id, l))
                 .map_err(anyhow::Error::from)?,
         });

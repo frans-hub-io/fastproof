@@ -233,11 +233,12 @@ impl Store {
         Ok(Some(job))
     }
 
-    /// Marks an upload processed from Kafka done.
-    pub async fn finish_upload(&self, job: &ClaimedJob, done: &UploadDone) -> anyhow::Result<()> {
+    /// Marks an upload processed from Kafka done; false when the upload is gone (its launch
+    /// was deleted meanwhile).
+    pub async fn finish_upload(&self, job: &ClaimedJob, done: &UploadDone) -> anyhow::Result<bool> {
         let counts = serde_json::to_value(&done.counts)?;
         let mut tx = self.pool.begin().await?;
-        sqlx::query(
+        let updated = sqlx::query(
             "update uploads set status = 'done', format = coalesce($2, format), counts = $3, warnings = $4, \
              globals = $5, error = null, finished_at = now() where id = $1",
         )
@@ -247,7 +248,11 @@ impl Store {
         .bind(json_no_nul(serde_json::to_value(&done.warnings)?))
         .bind(done.globals.clone().map(json_no_nul))
         .execute(&mut *tx)
-        .await?;
+        .await?
+        .rows_affected();
+        if updated == 0 {
+            return Ok(false);
+        }
         crate::events::emit(
             &mut tx,
             "upload.done",
@@ -259,7 +264,7 @@ impl Store {
             .await?;
         crate::events::notify_launch(&mut tx, &job.project_key, job.launch_id).await?;
         tx.commit().await?;
-        Ok(())
+        Ok(true)
     }
 
     /// Fails an upload processed from Kafka.
@@ -283,6 +288,56 @@ impl Store {
             .await?;
         crate::events::notify_launch(&mut tx, &job.project_key, job.launch_id).await?;
         tx.commit().await?;
+        Ok(())
+    }
+
+    /// True while the upload exists (it goes with its launch).
+    pub async fn upload_exists(&self, upload_id: Uuid) -> anyhow::Result<bool> {
+        Ok(
+            sqlx::query_scalar::<_, i32>("select 1 from uploads where id = $1")
+                .bind(upload_id)
+                .fetch_optional(&self.pool)
+                .await?
+                .is_some(),
+        )
+    }
+
+    /// Records attachments whose content an upload stored after its launch was deleted, without
+    /// linking them: unlinked attachments are collected after their grace period and their
+    /// blobs deleted ([`Store::collect_attachments`]), the same way as attachments of deleted
+    /// launches, so no blob is left that no row knows of. Hashes stored already are only
+    /// touched.
+    pub async fn keep_unlinked_attachments(
+        &self,
+        project_id: Uuid,
+        items: &[crate::attachments::NewAttachment],
+    ) -> anyhow::Result<()> {
+        if items.is_empty() {
+            return Ok(());
+        }
+        let mut sorted: Vec<&crate::attachments::NewAttachment> = items.iter().collect();
+        sorted.sort_by(|a, b| a.sha256.cmp(&b.sha256));
+        sorted.dedup_by(|a, b| a.sha256 == b.sha256);
+        sqlx::query(
+            "insert into attachments (id, project_id, sha256, size, content_type, original_name, blob_key) \
+             select i, $1, s, z, c, n, k from unnest($2::uuid[], $3::text[], $4::bigint[], $5::text[], \
+               $6::text[], $7::text[]) as t(i, s, z, c, n, k) \
+             on conflict (project_id, sha256) do update set last_seen_at = now()",
+        )
+        .bind(project_id)
+        .bind(sorted.iter().map(|_| Uuid::now_v7()).collect::<Vec<_>>())
+        .bind(sorted.iter().map(|a| a.sha256.clone()).collect::<Vec<_>>())
+        .bind(sorted.iter().map(|a| a.size).collect::<Vec<_>>())
+        .bind(sorted.iter().map(|a| no_nul(&a.content_type)).collect::<Vec<_>>())
+        .bind(
+            sorted
+                .iter()
+                .map(|a| a.original_name.as_deref().map(no_nul))
+                .collect::<Vec<_>>(),
+        )
+        .bind(sorted.iter().map(|a| a.blob_key.clone()).collect::<Vec<_>>())
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 

@@ -187,6 +187,7 @@ impl Store {
     /// before or does not exist. Debug launches are marked without aggregating.
     pub async fn rollup_launch(&self, launch_id: Uuid) -> anyhow::Result<bool> {
         let mut tx = self.pool.begin().await?;
+        crate::ingest::lock_launch_exclusive(&mut tx, launch_id).await?;
         let l: Option<LaunchRow> = sqlx::query_as(
             "select project_id, created_at, branch, env_key, debug, rolled_up_at from launches \
              where id = $1 for update",

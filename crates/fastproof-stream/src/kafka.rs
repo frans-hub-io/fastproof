@@ -539,6 +539,33 @@ impl Kafka {
         Ok(())
     }
 
+    /// The timestamp (milliseconds) of the record at `offset`, `None` when the log has no such
+    /// record (out of range). Consumers compare it with the record they committed last: a
+    /// different record at that offset means the topic was created again, and the committed
+    /// offset would skip the first records of the new log.
+    pub async fn record_timestamp_at(
+        &self,
+        topic: &str,
+        partition: i32,
+        offset: i64,
+    ) -> anyhow::Result<Option<i64>> {
+        let pc = self.partition(topic, partition).await?;
+        match pc.fetch_records(offset, 1..MIN_FETCH_BYTES as i32, 0).await {
+            Ok((records, _)) => Ok(records
+                .iter()
+                .find(|r| r.offset == offset)
+                .map(|r| r.record.timestamp.timestamp_millis())),
+            Err(ClientError::ServerError {
+                protocol_error: ProtocolError::OffsetOutOfRange,
+                ..
+            }) => Ok(None),
+            Err(e) => {
+                let e = anyhow::Error::new(e).context(format!("fetching from {topic}/{partition}"));
+                Err(self.on_error(topic, e).await)
+            }
+        }
+    }
+
     /// Deletes a topic (tests and tools; FastProof never deletes its topics).
     pub async fn delete_topic(&self, topic: &str) -> anyhow::Result<()> {
         self.client

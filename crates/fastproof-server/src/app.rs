@@ -475,7 +475,7 @@ async fn start_inner(cfg: Config, pool: PgPool, boot: Boot) -> anyhow::Result<Ru
     if let Err(e) = blobs.check().await {
         tracing::error!(error = %format!("{e:#}"), "the blob store is not reachable; readiness will fail until it is");
     }
-    let store = Store::new(pool.clone());
+    let store = Store::new(pool.clone()).with_log_chunk_events(cfg.log_chunk_events);
     let pg = Arc::new(PgPlatformStore::new(pool.clone()));
     let platform = platform(&cfg, &store, pg.clone()).await?;
     let sessions = platform.oidc().map(|rt| {

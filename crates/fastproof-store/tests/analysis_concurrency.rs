@@ -132,12 +132,17 @@ async fn a_launch_waiting_for_another_judges_by_its_result() {
     }
     let a = launch(&store, &p, false).await;
     let b = launch(&store, &p, false).await;
-    let mut tx = db.pool.begin().await.unwrap();
+    let mut conn = db.pool.acquire().await.unwrap();
+    let seq0 = fastproof_store::ingest::reserve_attempt_seq(&mut conn, a.id, 1)
+        .await
+        .unwrap();
+    let mut tx = sqlx::Connection::begin(&mut *conn).await.unwrap();
     fastproof_store::ingest::persist_attempts_in(
         &mut tx,
         &a,
         None,
         vec![attempt("pays", Status::Failed)],
+        seq0,
     )
     .await
     .unwrap();
@@ -187,12 +192,17 @@ async fn two_launches_of_a_series_without_statistics_both_count() {
     assert_eq!(count, 0, "debug runs keep no statistics");
     let a = launch(&store, &p, false).await;
     let b = launch(&store, &p, false).await;
-    let mut tx = db.pool.begin().await.unwrap();
+    let mut conn = db.pool.acquire().await.unwrap();
+    let seq0 = fastproof_store::ingest::reserve_attempt_seq(&mut conn, a.id, 1)
+        .await
+        .unwrap();
+    let mut tx = sqlx::Connection::begin(&mut *conn).await.unwrap();
     fastproof_store::ingest::persist_attempts_in(
         &mut tx,
         &a,
         None,
         vec![attempt("pays", Status::Failed)],
+        seq0,
     )
     .await
     .unwrap();

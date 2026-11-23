@@ -273,6 +273,16 @@ impl Store {
         };
         let now = Utc::now();
         let mut tx = self.pool.begin().await?;
+        // The order every writer of results takes (`triage::lock_launches`): the launch row
+        // share-locked, the result rows in id order, the launch row for the counter at the end.
+        let live: Option<i32> =
+            sqlx::query_scalar("select 1 from launches where id = $1 for key share")
+                .bind(launch_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        if live.is_none() {
+            return Ok(0);
+        }
         let (by_id, by_group) = type_refs(&mut tx, project_id).await?;
         let mut ids = Vec::new();
         let mut created = Vec::new();
@@ -299,6 +309,17 @@ impl Store {
         if ids.is_empty() {
             return Ok(0);
         }
+        let mut order: Vec<(Uuid, DateTime<Utc>)> =
+            ids.iter().copied().zip(created.iter().copied()).collect();
+        order.sort();
+        sqlx::query(
+            "select 1 from results r join unnest($1::uuid[], $2::timestamptz[]) as t(i, c) \
+               on r.id = t.i and r.launch_created_at = t.c order by r.id for no key update of r",
+        )
+        .bind(order.iter().map(|o| o.0).collect::<Vec<_>>())
+        .bind(order.iter().map(|o| o.1).collect::<Vec<_>>())
+        .execute(&mut *tx)
+        .await?;
         sqlx::query(
             "update results r set defect = t.d, updated_at = now() \
              from unnest($1::uuid[], $2::timestamptz[], $3::jsonb[]) as t(i, c, d) \
@@ -489,21 +510,48 @@ impl Store {
     /// Lifts mutes that ended: their rows go and the results of those series are unmuted.
     pub async fn expire_mutes(&self) -> anyhow::Result<u64> {
         let mut tx = self.pool.begin().await?;
+        let ending: Vec<Uuid> = sqlx::query_scalar(
+            "select series_id from series_mutes where until is not null and until <= now() \
+             order by series_id limit 1000",
+        )
+        .fetch_all(&mut *tx)
+        .await?;
+        if ending.is_empty() {
+            return Ok(0);
+        }
+        // The order every writer of results takes (`triage::lock_launches`): result rows in
+        // id order, then the mutes, the launch rows at the end.
+        let muted: Vec<(Uuid, DateTime<Utc>, Uuid)> = sqlx::query_as(
+            "select id, launch_created_at, series_id from results \
+             where series_id = any($1) and muted order by id for no key update",
+        )
+        .bind(&ending)
+        .fetch_all(&mut *tx)
+        .await?;
         let expired: Vec<Uuid> = sqlx::query_scalar(
-            "delete from series_mutes where series_id in (select series_id from series_mutes \
-               where until is not null and until <= now() order by series_id limit 1000 for update skip locked) \
+            "delete from series_mutes where series_id = any($1) and until is not null and until <= now() \
              returning series_id",
         )
+        .bind(&ending)
         .fetch_all(&mut *tx)
         .await?;
         if expired.is_empty() {
             return Ok(0);
         }
+        let expired_set: BTreeSet<Uuid> = expired.iter().copied().collect();
+        let (ids, created): (Vec<Uuid>, Vec<DateTime<Utc>>) = muted
+            .iter()
+            .filter(|r| expired_set.contains(&r.2))
+            .map(|r| (r.0, r.1))
+            .unzip();
+        // The launches of the rows actually unmuted, whatever launch they belong to.
         let launches: Vec<Uuid> = sqlx::query_scalar(
-            "update results set muted = false, mute_until = null, updated_at = now() \
-             where series_id = any($1) and muted returning launch_id",
+            "update results r set muted = false, mute_until = null, updated_at = now() \
+             from unnest($1::uuid[], $2::timestamptz[]) as t(i, c) \
+             where r.id = t.i and r.launch_created_at = t.c and r.muted returning r.launch_id",
         )
-        .bind(&expired)
+        .bind(&ids)
+        .bind(&created)
         .fetch_all(&mut *tx)
         .await?;
         let launches: Vec<Uuid> = launches

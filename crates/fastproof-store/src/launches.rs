@@ -478,6 +478,7 @@ impl Store {
         id: Uuid,
     ) -> anyhow::Result<bool> {
         let mut tx = self.pool.begin().await?;
+        crate::ingest::lock_launch_exclusive(&mut tx, id).await?;
         let created: Option<DateTime<Utc>> = sqlx::query_scalar(
             "select created_at from launches where project_id = $1 and id = $2 for update",
         )

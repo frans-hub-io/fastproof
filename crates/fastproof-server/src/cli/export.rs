@@ -91,10 +91,44 @@ pub fn find_chromium(explicit: Option<&Path>) -> Option<PathBuf> {
     None
 }
 
-async fn save(r: reqwest::Response, out: &Path) -> anyhow::Result<u64> {
+/// What the CLI puts in front of an HTML report it prints: the policy of the server's page,
+/// applied again here so that a server that sends something else still cannot make the browser
+/// run scripts or load local files (`file:` frames and images are blocked by `default-src`).
+pub const PRINT_PREFIX: &str = "<!doctype html>\n<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'\">\n";
+
+/// A private (0700) directory removed on drop, whatever path leaves the command.
+pub struct PrivateDir(PathBuf);
+
+impl PrivateDir {
+    pub fn new() -> anyhow::Result<Self> {
+        let p = std::env::temp_dir().join(format!("fastproof-export-{}", Uuid::now_v7()));
+        let mut b = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            b.mode(0o700);
+        }
+        b.create(&p)
+            .with_context(|| format!("creating {}", p.display()))?;
+        Ok(Self(p))
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for PrivateDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+async fn save(r: reqwest::Response, out: &Path, prefix: &str) -> anyhow::Result<u64> {
     let mut f = tokio::fs::File::create(out)
         .await
         .with_context(|| format!("creating {}", out.display()))?;
+    f.write_all(prefix.as_bytes()).await?;
     let mut n = 0u64;
     let mut s = r.bytes_stream();
     while let Some(c) = s.next().await {
@@ -142,11 +176,12 @@ pub async fn run(a: ExportArgs) -> anyhow::Result<i32> {
     let out = a.out.clone().unwrap_or_else(|| {
         PathBuf::from(format!("launch-{project}-{}.{}", launch.number, a.format))
     });
-    let html_path = if pdf {
-        std::env::temp_dir().join(format!("fastproof-export-{}.html", Uuid::now_v7()))
-    } else {
-        out.clone()
+    let private = if pdf { Some(PrivateDir::new()?) } else { None };
+    let html_path = match &private {
+        Some(d) => d.path().join("report.html"),
+        None => out.clone(),
     };
+    let prefix = if pdf { PRINT_PREFIX } else { "" };
     let big = launch.counts.total > crate::launch_export::MAX_SYNC_RESULTS;
     let bytes = if big || a.background {
         let job: Value = client
@@ -191,7 +226,7 @@ pub async fn run(a: ExportArgs) -> anyhow::Result<i32> {
         if !r.status().is_success() {
             return Err(error_of(r).await);
         }
-        save(r, &html_path).await?
+        save(r, &html_path, prefix).await?
     } else {
         let r = client
             .request(
@@ -204,12 +239,14 @@ pub async fn run(a: ExportArgs) -> anyhow::Result<i32> {
         if !r.status().is_success() {
             return Err(error_of(r).await);
         }
-        save(r, &html_path).await?
+        save(r, &html_path, prefix).await?
     };
     if let Some(chromium) = chromium {
-        let r = print_pdf(&chromium, &html_path, &out, a.no_sandbox).await;
-        let _ = std::fs::remove_file(&html_path);
-        r?;
+        let dir = private
+            .as_ref()
+            .map(PrivateDir::path)
+            .unwrap_or(Path::new("."));
+        print_pdf(&chromium, &html_path, &out, dir, a.no_sandbox).await?;
         eprintln!("wrote {}", out.display());
     } else {
         eprintln!("wrote {} ({bytes} bytes)", out.display());
@@ -221,13 +258,18 @@ async fn print_pdf(
     chromium: &Path,
     html: &Path,
     out: &Path,
+    dir: &Path,
     no_sandbox: bool,
 ) -> anyhow::Result<()> {
-    let profile = std::env::temp_dir().join(format!("fastproof-chromium-{}", Uuid::now_v7()));
+    let profile = dir.join("profile");
     let abs = std::fs::canonicalize(html)?;
     let mut cmd = tokio::process::Command::new(chromium);
     cmd.arg("--headless")
         .arg("--disable-gpu")
+        .arg("--disable-extensions")
+        .arg("--disable-background-networking")
+        .arg("--no-first-run")
+        .arg("--blink-settings=scriptEnabled=false")
         .arg("--no-pdf-header-footer")
         .arg(format!("--user-data-dir={}", profile.display()))
         .arg(format!("--print-to-pdf={}", out.display()));
@@ -243,9 +285,7 @@ async fn print_pdf(
         .with_context(|| format!("starting {}", chromium.display()))?;
     let o = tokio::time::timeout(Duration::from_secs(180), child.wait_with_output())
         .await
-        .context("Chromium did not finish within 180 s")?;
-    let _ = std::fs::remove_dir_all(&profile);
-    let o = o?;
+        .context("Chromium did not finish within 180 s")??;
     if !o.status.success() || !out.is_file() {
         bail!(
             "Chromium failed ({}): {}",

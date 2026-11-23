@@ -118,6 +118,7 @@ the start is refused. After copying the attachments to a new store on purpose, s
 | Variable | Default | Meaning |
 |---|---|---|
 | `FASTPROOF_SPOOL_DIR` | `/tmp/fastproof` | Temporary files of uploads being received and processed and of launch exports being built (an `emptyDir` in Kubernetes) |
+| `FASTPROOF_LAUNCH_EXPORT_MAX_BYTES` | `2147483648` | Largest launch export file (uncompressed content); a bigger export fails with an error |
 | `FASTPROOF_MAX_UPLOAD_BYTES` | `1073741824` (1 GiB) | Largest upload request |
 | `FASTPROOF_INGEST_WORKERS` | `2` | Uploads processed at the same time per replica |
 | `FASTPROOF_RETAIN_UPLOADS` | `false` | Keep the raw uploaded files in blob storage after processing (for re-parsing) |

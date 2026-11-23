@@ -66,11 +66,29 @@ describe('launch export', () => {
     expect(created).toHaveLength(1);
   });
 
-  it('prints the report for PDF', async () => {
+  it('opens the sandboxed server page without opener for PDF', async () => {
     const user = userEvent.setup();
-    const print = vi.fn();
-    const win = { addEventListener: (_: string, cb: () => void) => cb(), focus: vi.fn(), print } as unknown as Window;
-    vi.spyOn(window, 'open').mockReturnValue(win);
+    const open = vi.spyOn(window, 'open').mockReturnValue({} as Window);
+    render(
+      <Providers route="/p/web-shop/launches/x?status=failed">
+        <ExportMenu project="web-shop" launch={rich()} />
+      </Providers>,
+    );
+    await user.click(screen.getByTestId('export-menu'));
+    await user.click(await screen.findByTestId('export-pdf'));
+    await waitFor(() => expect(open).toHaveBeenCalled());
+    const [url, target, features] = open.mock.calls[0] as [string, string, string];
+    expect(url).toContain('/export?format=html&inline=true&status=failed');
+    expect(target).toBe('_blank');
+    expect(features).toContain('noopener');
+    expect(created).toHaveLength(0);
+  });
+
+  it('saves the file instead of a blob page when signed in with a token', async () => {
+    const user = userEvent.setup();
+    window.sessionStorage.setItem('fastproof.apiToken', 'tok');
+    const open = vi.spyOn(window, 'open').mockReturnValue({} as Window);
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
     render(
       <Providers route="/p/web-shop/launches/x">
         <ExportMenu project="web-shop" launch={rich()} />
@@ -78,6 +96,8 @@ describe('launch export', () => {
     );
     await user.click(screen.getByTestId('export-menu'));
     await user.click(await screen.findByTestId('export-pdf'));
-    await waitFor(() => expect(print).toHaveBeenCalled());
+    await waitFor(() => expect(click).toHaveBeenCalled());
+    expect(open).not.toHaveBeenCalled();
+    window.sessionStorage.removeItem('fastproof.apiToken');
   });
 });

@@ -462,11 +462,12 @@ async fn start_inner(cfg: Config, pool: PgPool, boot: Boot) -> anyhow::Result<Ru
             }
         });
     }
-    for sub in ["incoming", "work", "attachments", "media"] {
+    for sub in ["incoming", "work", "attachments", "media", "launch-exports"] {
         let d = cfg.spool_dir.join(sub);
         std::fs::create_dir_all(&d)
             .with_context(|| format!("FASTPROOF_SPOOL_DIR: creating {}", d.display()))?;
     }
+    crate::launch_export::sweep_spool(&cfg.spool_dir);
     let blobs = BlobStore::open(&cfg.blob).context("opening the blob store")?;
     if let Err(e) = blobs.check().await {
         tracing::error!(error = %format!("{e:#}"), "the blob store is not reachable; readiness will fail until it is");

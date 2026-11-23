@@ -8,6 +8,15 @@ use fastproof_store::{Launch, ResultSummary};
 pub const MAX_NAME_CHARS: usize = 1000;
 pub const MAX_MESSAGE_CHARS: usize = 500;
 
+/// Bidirectional and invisible format characters: they can reorder or hide text in a cell.
+pub fn is_format_control(c: char) -> bool {
+    matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{2069}' | '\u{061c}' | '\u{feff}')
+}
+
+/// The policy of the report (the response header adds `sandbox`).
+pub const POLICY: &str =
+    "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'";
+
 pub fn esc(s: &str) -> String {
     let mut o = String::with_capacity(s.len() + 8);
     for c in s.chars() {
@@ -18,6 +27,7 @@ pub fn esc(s: &str) -> String {
             '"' => o.push_str("&quot;"),
             '\'' => o.push_str("&#39;"),
             c if c.is_control() && c != '\n' && c != '\t' => o.push('\u{fffd}'),
+            c if is_format_control(c) => o.push('\u{fffd}'),
             c => o.push(c),
         }
     }
@@ -89,7 +99,9 @@ pub fn head(l: &Launch, project: &str, filter_text: &str) -> String {
     let mut o = String::with_capacity(8192);
     o.push_str("<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">");
     o.push_str("<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">");
-    o.push_str("<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'; img-src data:\">");
+    o.push_str(&format!(
+        "<meta http-equiv=\"Content-Security-Policy\" content=\"{POLICY}\">"
+    ));
     o.push_str("<meta name=\"referrer\" content=\"no-referrer\">");
     o.push_str(&format!(
         "<title>{}</title><style>{STYLE}</style></head><body><main>",
@@ -245,6 +257,14 @@ pub fn tail(written: i64, version: &str, generated: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn replaces_bidi_and_invisible_controls() {
+        assert_eq!(
+            esc("a\u{202e}b\u{2066}c\u{200b}d"),
+            "a\u{fffd}b\u{fffd}c\u{fffd}d"
+        );
+    }
 
     #[test]
     fn escapes_markup_and_controls() {

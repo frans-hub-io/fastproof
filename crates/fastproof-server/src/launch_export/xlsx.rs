@@ -7,7 +7,8 @@ use std::io::{BufWriter, Write};
 use zip::ZipWriter;
 use zip::write::SimpleFileOptions;
 
-pub const MAX_CELL_CHARS: usize = 32_000;
+/// Excel's limit of a cell, in UTF-16 code units.
+pub const MAX_CELL_UNITS: usize = 32_767;
 
 pub enum Cell<'a> {
     Text(&'a str),
@@ -15,22 +16,30 @@ pub enum Cell<'a> {
     Empty,
 }
 
-pub fn xml_escape(s: &str, max: usize) -> String {
-    let mut o = String::with_capacity(s.len().min(max) + 8);
-    for (i, c) in s.chars().enumerate() {
-        if i >= max {
+/// Escapes `s` for XML, dropping characters XML 1.0 forbids and stopping before `max` UTF-16 units.
+pub fn xml_escape(s: &str, max_units: usize) -> String {
+    let mut o = String::with_capacity(s.len().min(max_units) + 8);
+    let mut units = 0usize;
+    for c in s.chars() {
+        let c = if super::html::is_format_control(c) {
+            '\u{fffd}'
+        } else {
+            c
+        };
+        let keep = matches!(c, '\t' | '\n' | '\r' | '\u{20}'..='\u{d7ff}' | '\u{e000}'..='\u{fffd}' | '\u{10000}'..='\u{10ffff}');
+        if !keep {
+            continue;
+        }
+        if units + c.len_utf16() > max_units {
             break;
         }
+        units += c.len_utf16();
         match c {
             '&' => o.push_str("&amp;"),
             '<' => o.push_str("&lt;"),
             '>' => o.push_str("&gt;"),
             '"' => o.push_str("&quot;"),
-            '\t' | '\n' | '\r' => o.push(c),
-            '\u{20}'..='\u{d7ff}' | '\u{e000}'..='\u{fffd}' | '\u{10000}'..='\u{10ffff}' => {
-                o.push(c)
-            }
-            _ => {}
+            c => o.push(c),
         }
     }
     o
@@ -57,7 +66,7 @@ pub fn row_xml(row: usize, cells: &[Cell<'_>], bold: bool) -> String {
         match c {
             Cell::Text(t) if !t.is_empty() => o.push_str(&format!(
                 "<c r=\"{r}\" t=\"inlineStr\"{style}><is><t xml:space=\"preserve\">{}</t></is></c>",
-                xml_escape(t, MAX_CELL_CHARS)
+                xml_escape(t, MAX_CELL_UNITS)
             )),
             Cell::Num(n) => o.push_str(&format!("<c r=\"{r}\"{style}><v>{n}</v></c>")),
             _ => {}

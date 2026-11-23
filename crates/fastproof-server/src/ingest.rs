@@ -557,7 +557,7 @@ pub(crate) async fn process_inner(
 
 /// Deletes spool files of this replica older than `age` (crashed requests and workers).
 pub async fn clean_local_spool(dir: &Path, age: Duration) {
-    for sub in ["incoming", "work", "attachments"] {
+    for sub in ["incoming", "work", "attachments", "launch-exports"] {
         let Ok(mut rd) = tokio::fs::read_dir(dir.join(sub)).await else {
             continue;
         };

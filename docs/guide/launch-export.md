@@ -11,7 +11,7 @@ The **Export** button in the launch header offers:
 | Item | What you get |
 |---|---|
 | HTML report | `launch-<project>-<number>.html`: one file with the launch details, the counts, a status bar and a table of the results. It works offline: no scripts, no fonts, images or other files are fetched. It follows the light or dark theme of the system |
-| PDF (print the report) | The same report in a new tab with the print dialog open: choose **Save as PDF**. The report has a print layout (landscape A4, repeated table header, rows that do not split) |
+| PDF (print the report) | The same report in a new tab (opened without access to the application; the server sends it sandboxed): press Ctrl/Cmd+P and choose **Save as PDF**. The report has a print layout (landscape A4, repeated table header, rows that do not split). Signed in with an API token, or for a launch that needs a job, the HTML file is saved and you print it from disk |
 | Excel (XLSX) | A **Summary** sheet (launch, counts, the filters used) and a **Results** sheet with one row per result and a filter row |
 
 Launches of more than 10 000 results are built by a background job: the page shows the progress and saves
@@ -30,7 +30,7 @@ it (`--timeout`, one hour by default).
 
 `--format pdf` fetches the HTML report and prints it with a local Chromium or Chrome (the server image has
 none): `--chromium /path/to/chrome`, or `FASTPROOF_CHROMIUM`, or the first of `chromium`, `chromium-browser`,
-`google-chrome`, `google-chrome-stable`, `chrome` and `microsoft-edge` in `PATH`. Add `--no-sandbox` when
+`google-chrome`, `google-chrome-stable`, `chrome` and `microsoft-edge` in `PATH`. The CLI works in a private temporary directory that it removes on every path, adds its own content security policy in front of the report (no scripts, no local files), and starts Chromium without extensions, network warm-up and scripting. Add `--no-sandbox` when
 running as root in a container. Without a browser the command stops with a message; the HTML report prints
 from any browser.
 
@@ -45,8 +45,8 @@ from any browser.
 
 All of them take the filters of `GET .../results` (`status`, `q`, `suite`, `label`, `flaky`, `source`,
 `message`, `retried`, `muted`, `newFailures`, `severity`, `owner`, `tag`, `minDurationMs`, `maxDurationMs`,
-`defect`, `attachment`, `env`). A job is visible and downloadable only by its creator; a caller has at most
-2 and a project at most 4 jobs queued or running (`409 export_busy`). Every export is recorded in the audit
+`defect`, `attachment`, `env`). A job is visible and downloadable only by its creator (the same token, user or static credential, not just the same name); a caller has at most
+2 and a project at most 4 jobs queued or running, and the server at most 8 (`409 export_busy`, answered at once, never queued for long). A caller may create 20 exports and a project 100 per 24 hours, finished ones included (`409 export_quota`). A job for a launch of more than 500 000 results needs a filter (`409 export_too_large`). Every export is recorded in the audit
 log as `launch.export`.
 
 ## What the files contain
@@ -59,11 +59,11 @@ launch link for them.
 Test names, messages and labels come from test runs and are untrusted. In the HTML report every value is
 escaped, URLs are shown as text and never as links, and the page carries a content security policy that
 allows no scripts and no connections; the server also sends it with `Content-Security-Policy: sandbox`.
-In the workbook text is stored as text, never as a formula, so a result named `=HYPERLINK(…)` stays text.
+In the workbook text is stored as text, never as a formula, so a result named `=HYPERLINK(…)` stays text. Bidirectional and invisible format characters in names are replaced by U+FFFD in both files. If you save the workbook as CSV and open that in a spreadsheet, a text that starts with `=` would be evaluated by it: that step is outside FastProof.
 
 ## Limits and memory
 
 Results are read in pages of 500 and written to a spool file in `FASTPROOF_SPOOL_DIR`, so memory stays flat
 whatever the size; the finished job file is kept in blob storage for 24 hours and then removed (the job
 `launch.exports` runs every minute; a job that makes no progress for five minutes is marked `failed`). One
-background export runs per replica at a time. Inline exports count as heavy requests.
+background export runs per replica at a time. A file is limited to 2 GiB (`FASTPROOF_LAUNCH_EXPORT_MAX_BYTES`); a running job sends a heartbeat while it builds and uploads, files of failed jobs and of deleted projects are removed, and the export spool is swept when the server starts. Inline exports count as heavy requests.

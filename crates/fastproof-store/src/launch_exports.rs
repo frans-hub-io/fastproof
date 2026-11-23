@@ -16,6 +16,12 @@ pub const LAUNCH_EXPORT_TTL_HOURS: i64 = 24;
 pub const MAX_ACTIVE_PER_CALLER: i64 = 2;
 /// Exports a project may have queued or running.
 pub const MAX_ACTIVE_PER_PROJECT: i64 = 4;
+/// Exports a caller may create per 24 hours (finished ones count too).
+pub const MAX_PER_CALLER_DAY: i64 = 20;
+/// Exports a project may create per 24 hours.
+pub const MAX_PER_PROJECT_DAY: i64 = 100;
+/// Exports queued or running on the whole server.
+pub const MAX_ACTIVE_TOTAL: i64 = 8;
 /// Seconds without progress after which a running export is considered lost.
 pub const STALE_AFTER_SECONDS: i64 = 300;
 
@@ -43,6 +49,15 @@ pub struct LaunchExport {
     /// Set only in the answer that creates the job and in the status of a done job.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub download_url: Option<String>,
+}
+
+/// Why a job was not created.
+#[derive(Debug, PartialEq, Eq)]
+pub enum CreateDenied {
+    /// Too many queued or running exports of the caller, the project or the server.
+    Busy,
+    /// The rolling 24 hour quota of the caller or the project is used.
+    Quota,
 }
 
 /// A job with what the worker needs.
@@ -79,7 +94,8 @@ fn row(r: &PgRow) -> Result<LaunchExport, sqlx::Error> {
 }
 
 impl Store {
-    /// Creates a queued job; `None` when the caller or the project has too many active ones.
+    /// Creates a queued job, or says why not. `owner` is the stable identity of the caller
+    /// (`created_by` is only the name shown).
     #[allow(clippy::too_many_arguments)]
     pub async fn create_launch_export(
         &self,
@@ -90,26 +106,42 @@ impl Store {
         query: &str,
         total: i64,
         created_by: &str,
-    ) -> anyhow::Result<Option<LaunchExport>> {
+        owner: &str,
+    ) -> anyhow::Result<Result<LaunchExport, CreateDenied>> {
         let mut tx = self.pool.begin().await?;
         sqlx::query("select pg_advisory_xact_lock(hashtextextended($1, 710))")
             .bind(project_id.to_string())
             .execute(&mut *tx)
             .await?;
-        let (mine, all): (i64, i64) = sqlx::query_as(
-            "select count(*) filter (where created_by = $2), count(*) from launch_exports \
-             where project_id = $1 and status in ('queued', 'running')",
+        let (mine, all, total_active): (i64, i64, i64) = sqlx::query_as(
+            "select count(*) filter (where owner_key = $2), count(*), \
+               (select count(*) from launch_exports where status in ('queued', 'running')) \
+             from launch_exports where project_id = $1 and status in ('queued', 'running')",
         )
         .bind(project_id)
-        .bind(created_by)
+        .bind(owner)
         .fetch_one(&mut *tx)
         .await?;
-        if mine >= MAX_ACTIVE_PER_CALLER || all >= MAX_ACTIVE_PER_PROJECT {
-            return Ok(None);
+        if mine >= MAX_ACTIVE_PER_CALLER
+            || all >= MAX_ACTIVE_PER_PROJECT
+            || total_active >= MAX_ACTIVE_TOTAL
+        {
+            return Ok(Err(CreateDenied::Busy));
+        }
+        let (day_mine, day_all): (i64, i64) = sqlx::query_as(
+            "select count(*) filter (where owner_key = $2), count(*) from launch_exports \
+             where project_id = $1 and created_at > now() - interval '24 hours'",
+        )
+        .bind(project_id)
+        .bind(owner)
+        .fetch_one(&mut *tx)
+        .await?;
+        if day_mine >= MAX_PER_CALLER_DAY || day_all >= MAX_PER_PROJECT_DAY {
+            return Ok(Err(CreateDenied::Quota));
         }
         let r = sqlx::query(concat!(
-            "insert into launch_exports (id, project_id, launch_id, format, query, total, created_by) \
-             values ($1, $2, $3, $4, $5, $6, $7) returning ",
+            "insert into launch_exports (id, project_id, launch_id, format, query, total, created_by, owner_key) \
+             values ($1, $2, $3, $4, $5, $6, $7, $8) returning ",
             columns!()
         ))
         .bind(id)
@@ -119,27 +151,29 @@ impl Store {
         .bind(query)
         .bind(total)
         .bind(created_by)
+        .bind(owner)
         .fetch_one(&mut *tx)
         .await?;
         tx.commit().await?;
-        Ok(Some(row(&r)?))
+        Ok(Ok(row(&r)?))
     }
 
+    /// The job with its blob key and owner identity.
     pub async fn launch_export(
         &self,
         project_id: Uuid,
         id: Uuid,
-    ) -> anyhow::Result<Option<(LaunchExport, Option<String>)>> {
+    ) -> anyhow::Result<Option<(LaunchExport, Option<String>, String)>> {
         let r = sqlx::query(concat!(
             "select ",
             columns!(),
-            ", blob_key from launch_exports where project_id = $1 and id = $2"
+            ", blob_key, owner_key from launch_exports where project_id = $1 and id = $2"
         ))
         .bind(project_id)
         .bind(id)
         .fetch_optional(&self.pool)
         .await?;
-        r.map(|r| Ok((row(&r)?, r.try_get("blob_key")?)))
+        r.map(|r| Ok((row(&r)?, r.try_get("blob_key")?, r.try_get("owner_key")?)))
             .transpose()
     }
 
@@ -183,14 +217,36 @@ impl Store {
             == 1)
     }
 
+    /// Keeps a running job alive without changing its progress (the upload of the file).
+    pub async fn touch_launch_export(&self, id: Uuid) -> anyhow::Result<()> {
+        sqlx::query(
+            "update launch_exports set updated_at = now() where id = $1 and status = 'running'",
+        )
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Records the key the file is about to be uploaded to, so cleanup finds it in any state.
+    pub async fn set_launch_export_blob(&self, id: Uuid, blob_key: &str) -> anyhow::Result<()> {
+        sqlx::query("update launch_exports set blob_key = $2 where id = $1")
+            .bind(id)
+            .bind(blob_key)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Marks the job done; `false` when it is not running any more (the caller deletes the file).
     pub async fn finish_launch_export(
         &self,
         id: Uuid,
         done: i64,
         blob_key: &str,
         size: i64,
-    ) -> anyhow::Result<()> {
-        sqlx::query(
+    ) -> anyhow::Result<bool> {
+        Ok(sqlx::query(
             "update launch_exports set status = 'done', done = $2, blob_key = $3, size_bytes = $4, \
              finished_at = now(), updated_at = now() where id = $1 and status = 'running'",
         )
@@ -199,8 +255,9 @@ impl Store {
         .bind(blob_key)
         .bind(size)
         .execute(&self.pool)
-        .await?;
-        Ok(())
+        .await?
+        .rows_affected()
+            == 1)
     }
 
     pub async fn fail_launch_export(&self, id: Uuid, error: &str) -> anyhow::Result<()> {
@@ -230,10 +287,14 @@ impl Store {
         .rows_affected())
     }
 
-    /// Done jobs past the TTL with the blob to delete.
+    /// Jobs whose file is to be deleted: done ones past the TTL and failed or expired ones that
+    /// still name a file.
     pub async fn due_launch_exports(&self, limit: i64) -> anyhow::Result<Vec<(Uuid, String)>> {
         Ok(sqlx::query_as(
-            "select id, blob_key from launch_exports where status = 'done' and blob_key is not null              and finished_at < now() - make_interval(hours => $1::int) order by finished_at limit $2",
+            "select id, blob_key from launch_exports where blob_key is not null and ( \
+               (status = 'done' and finished_at < now() - make_interval(hours => $1::int)) \
+               or (status in ('failed', 'expired') and updated_at < now() - interval '10 minutes')) \
+             order by updated_at limit $2",
         )
         .bind(LAUNCH_EXPORT_TTL_HOURS as i32)
         .bind(limit)
@@ -241,11 +302,15 @@ impl Store {
         .await?)
     }
 
+    /// After the file is deleted: a done job becomes `expired`, the key is forgotten.
     pub async fn expire_launch_export(&self, id: Uuid) -> anyhow::Result<()> {
-        sqlx::query("update launch_exports set status = 'expired', blob_key = null where id = $1")
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
+        sqlx::query(
+            "update launch_exports set blob_key = null, \
+             status = case when status = 'done' then 'expired' else status end where id = $1",
+        )
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 

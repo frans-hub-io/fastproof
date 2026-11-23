@@ -3,13 +3,14 @@
 //! (`POST .../launches/{id}/exports`, status, download for 24 hours). The filters are those of
 //! the result list. Permission: `launches:read`, as for reading the launch.
 
+use crate::limits::caller_key;
 use axum::Json;
 use axum::body::Body;
 use axum::extract::{RawQuery, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::Response;
 use fastproof_blob::BlobKey;
-use fastproof_store::launch_exports::LaunchExport;
+use fastproof_store::launch_exports::{CreateDenied, LAUNCH_EXPORT_TTL_HOURS, LaunchExport};
 use franshub_auth::Auth;
 use franshub_http::{ApiError, ApiResult};
 use futures::StreamExt;
@@ -79,7 +80,8 @@ fn headers(r: &mut Response, f: Format, name: &str, inline: bool, len: Option<u6
     }
     h.insert(
         header::CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static("sandbox; default-src 'none'; style-src 'unsafe-inline'"),
+        HeaderValue::from_str(&format!("sandbox; {}", crate::launch_export::html::POLICY))
+            .unwrap_or_else(|_| HeaderValue::from_static("sandbox; default-src 'none'")),
     );
     h.insert(
         header::X_CONTENT_TYPE_OPTIONS,
@@ -176,6 +178,15 @@ pub async fn create_launch_export(
     let launch = s.launch_of(&project, id).await?;
     let (format, _, text) = parse_request(raw.as_deref())?;
     parse_filter(&s, &launch, &text).await?;
+    if text.is_empty() && launch.counts.total > MAX_EXPORT_RESULTS {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "export_too_large",
+            format!(
+                "the launch has more than {MAX_EXPORT_RESULTS} results: narrow the export with a filter"
+            ),
+        ));
+    }
     let job_id = Uuid::now_v7();
     let job = s
         .store
@@ -187,14 +198,20 @@ pub async fn create_launch_export(
             &text,
             launch.counts.total.min(MAX_EXPORT_RESULTS),
             &auth.principal.name,
+            &caller_key(&auth),
         )
         .await?
-        .ok_or_else(|| {
-            ApiError::new(
+        .map_err(|d| match d {
+            CreateDenied::Busy => ApiError::new(
                 StatusCode::CONFLICT,
                 "export_busy",
                 "too many exports are queued or running; retry when one is done",
-            )
+            ),
+            CreateDenied::Quota => ApiError::new(
+                StatusCode::CONFLICT,
+                "export_quota",
+                "the exports of the last 24 hours are used up; retry later",
+            ),
         })?;
     s.audit(
         &auth,
@@ -219,7 +236,11 @@ pub async fn get_launch_export(
 ) -> ApiResult<Json<LaunchExport>> {
     let project = s.project_for(&auth, &key, &s.perms.launches_read).await?;
     let (mut job, _) = own_export(&s, &auth, &project, id, export_id).await?;
-    if job.status == "done" {
+    if job.status == "done"
+        && job.finished_at.is_some_and(|f| {
+            chrono::Utc::now() - f < chrono::Duration::hours(LAUNCH_EXPORT_TTL_HOURS)
+        })
+    {
         job.download_url = Some(download_url(&project.key, id, export_id));
     }
     Ok(Json(job))
@@ -232,12 +253,12 @@ async fn own_export(
     launch: Uuid,
     id: Uuid,
 ) -> ApiResult<(LaunchExport, Option<String>)> {
-    let (job, blob) = s
+    let (job, blob, owner) = s
         .store
         .launch_export(project.id, id)
         .await?
         .ok_or_else(|| ApiError::not_found("export"))?;
-    if job.launch_id != launch || job.created_by != auth.principal.name {
+    if job.launch_id != launch || owner != caller_key(auth) {
         return Err(ApiError::not_found("export"));
     }
     Ok((job, blob))
@@ -255,7 +276,10 @@ pub async fn download_launch_export(
 ) -> ApiResult<Response> {
     let project = s.project_for(&auth, &key, &s.perms.launches_read).await?;
     let (job, blob) = own_export(&s, &auth, &project, id, export_id).await?;
-    let (true, Some(blob)) = (job.status == "done", blob) else {
+    let fresh = job
+        .finished_at
+        .is_some_and(|f| chrono::Utc::now() - f < chrono::Duration::hours(LAUNCH_EXPORT_TTL_HOURS));
+    let (true, true, Some(blob)) = (job.status == "done", fresh, blob) else {
         return Err(ApiError::not_found("export"));
     };
     let format = Format::parse(&job.format).ok_or_else(|| ApiError::not_found("export"))?;

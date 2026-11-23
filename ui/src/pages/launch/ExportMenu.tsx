@@ -5,7 +5,7 @@ import { useState } from 'react';
 import { useSearchParams } from 'react-router';
 import { errorMessage } from '../../api/client';
 import type { Launch } from '../../api/types';
-import { buildExport, exportFileName, exportFilters, printBlob, saveBlob, type ExportFormat } from '../../lib/launchExport';
+import { buildExport, exportFileName, exportFilters, openForPrint, saveBlob, type ExportFormat } from '../../lib/launchExport';
 
 /** Export of the launch: HTML report, PDF (the browser prints the report) and Excel; the filters of the page apply. */
 export function ExportMenu({ project, launch }: { project: string; launch: Launch }) {
@@ -19,12 +19,18 @@ export function ExportMenu({ project, launch }: { project: string; launch: Launc
     const big = launch.counts.total > 10_000;
     if (big) notifications.show({ id, loading: true, autoClose: false, withCloseButton: false, title: 'Exporting', message: 'Queued' });
     try {
-      const blob = await buildExport(project, launch, format, exportFilters(sp), (job) => {
+      const progress = (job: { done: number; total: number }) => {
         if (big) notifications.update({ id, loading: true, autoClose: false, title: 'Exporting', message: `${String(job.done)} of ${String(job.total)} results` });
-      });
-      if (big) notifications.hide(id);
-      if (format === 'pdf') printBlob(blob);
-      else saveBlob(blob, exportFileName(project, launch, format));
+      };
+      if (format === 'pdf') {
+        const hint = await openForPrint(project, launch, exportFilters(sp), progress);
+        notifications.hide(id);
+        notifications.show({ title: 'PDF', message: hint });
+      } else {
+        const blob = await buildExport(project, launch, format, exportFilters(sp), progress);
+        notifications.hide(id);
+        saveBlob(blob, exportFileName(project, launch, format));
+      }
     } catch (e) {
       notifications.hide(id);
       notifications.show({ color: 'red', title: 'Export failed', message: errorMessage(e) });

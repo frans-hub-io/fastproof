@@ -1,6 +1,7 @@
 import { apiErrorFrom, apiFetch } from '@franshub/ui-shell';
 import { API, request, withQuery } from '../api/client';
 import type { Launch, LaunchExport } from '../api/types';
+import { usesToken } from './authToken';
 
 export type ExportFormat = 'html' | 'xlsx' | 'pdf';
 
@@ -43,19 +44,25 @@ export function saveBlob(blob: Blob, name: string): void {
   setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
 
-/** Opens the print-optimised report in a new tab and starts the browser's print dialog (Save as PDF). */
-export function printBlob(blob: Blob): void {
-  const url = URL.createObjectURL(new Blob([blob], { type: 'text/html' }));
-  const w = window.open(url, '_blank');
-  if (!w) {
-    URL.revokeObjectURL(url);
-    throw new Error('The browser blocked the new tab; allow pop-ups for this site and try again.');
+/** The server URL of the HTML report shown in the browser (sent with `Content-Security-Policy: sandbox`). */
+export function reportUrl(project: string, launch: Launch, filters: Record<string, string>): string {
+  return withQuery(`${base(project, launch.id)}/export`, { format: 'html', inline: 'true', ...filters });
+}
+
+/**
+ * Opens the report for printing. With a cookie session the server URL opens in a new tab without
+ * `opener`, where the sandbox header applies (print it with Ctrl/Cmd+P, Save as PDF). The report is
+ * never put in a `blob:` document of the application's origin. Signed in with a token (a URL cannot
+ * carry it), or for a launch that needs a job, the file is saved instead and opened from disk.
+ * Returns what the caller should tell the user.
+ */
+export async function openForPrint(project: string, launch: Launch, filters: Record<string, string>, onProgress?: (job: LaunchExport) => void): Promise<string> {
+  if (!usesToken() && launch.counts.total <= EXPORT_SYNC_LIMIT) {
+    window.open(reportUrl(project, launch, filters), '_blank', 'noopener,noreferrer');
+    return 'Press Ctrl/Cmd+P in the new tab and choose Save as PDF (allow pop-ups if no tab opened).';
   }
-  w.addEventListener('load', () => {
-    w.focus();
-    w.print();
-  });
-  setTimeout(() => URL.revokeObjectURL(url), 5 * 60_000);
+  saveBlob(await buildExport(project, launch, 'pdf', filters, onProgress), exportFileName(project, launch, 'pdf'));
+  return 'Open the saved HTML file in a browser and print it (Save as PDF).';
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));

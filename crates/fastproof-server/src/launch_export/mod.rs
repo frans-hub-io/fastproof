@@ -24,6 +24,10 @@ use crate::state::AppState;
 pub const MAX_SYNC_RESULTS: i64 = 10_000;
 /// Results any export may hold (a worksheet has 1 048 576 rows).
 pub const MAX_EXPORT_RESULTS: i64 = 500_000;
+/// Bytes an export file may have (uncompressed content), at most: `FASTPROOF_LAUNCH_EXPORT_MAX_BYTES`.
+pub const DEFAULT_MAX_EXPORT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+/// Seconds between heartbeats of a running job (file generation and upload).
+const HEARTBEAT: std::time::Duration = std::time::Duration::from_secs(30);
 /// Results read per page.
 pub const PAGE: i64 = 500;
 /// Bytes of the filter text of a request, at most.
@@ -124,10 +128,36 @@ fn spool(s: &AppState, ext: &str) -> anyhow::Result<PathBuf> {
     Ok(dir.join(format!("{}.{ext}", Uuid::now_v7())))
 }
 
+/// The byte cap of one export file.
+pub fn max_export_bytes() -> u64 {
+    std::env::var("FASTPROOF_LAUNCH_EXPORT_MAX_BYTES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(DEFAULT_MAX_EXPORT_BYTES)
+}
+
+/// Removes everything a crashed process left in the export spool (called at start, when no
+/// export of this process can be running).
+pub fn sweep_spool(spool_dir: &Path) {
+    let dir = spool_dir.join("launch-exports");
+    if let Ok(rd) = std::fs::read_dir(&dir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                let _ = std::fs::remove_dir_all(&p);
+            } else {
+                let _ = std::fs::remove_file(&p);
+            }
+        }
+    }
+}
+
 /// Why a generation stopped.
 #[derive(Debug)]
 pub enum Stop {
     TooMany(i64),
+    TooBig(u64),
     Cancelled,
 }
 
@@ -135,6 +165,7 @@ impl std::fmt::Display for Stop {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Stop::TooMany(n) => write!(f, "the export has more than {n} results"),
+            Stop::TooBig(n) => write!(f, "the export file would exceed {n} bytes"),
             Stop::Cancelled => write!(f, "the export was cancelled"),
         }
     }
@@ -231,8 +262,10 @@ async fn write_html(
     job: Option<Uuid>,
 ) -> anyhow::Result<i64> {
     let mut out = tokio::io::BufWriter::new(tokio::fs::File::create(path).await?);
-    out.write_all(html::head(launch, project_key, filter_text).as_bytes())
-        .await?;
+    let head = html::head(launch, project_key, filter_text);
+    let cap = max_export_bytes();
+    let mut bytes = head.len() as u64;
+    out.write_all(head.as_bytes()).await?;
     let mut pager = Pager::new(s, launch, filter, max, job);
     let mut n = 0;
     while let Some((items, done)) = pager.next().await? {
@@ -240,6 +273,10 @@ async fn write_html(
         let mut chunk = String::with_capacity(items.len() * 400);
         for r in &items {
             chunk.push_str(&html::row(r));
+        }
+        bytes += chunk.len() as u64;
+        if bytes > cap {
+            return Err(Stop::TooBig(cap).into());
         }
         out.write_all(chunk.as_bytes()).await?;
     }
@@ -402,6 +439,8 @@ async fn write_xlsx(
     wb.rows(&xlsx::row_xml(1, &headers, true))?;
     let wb = Arc::new(Mutex::new(Some(wb)));
     let mut pager = Pager::new(s, launch, filter, max, job);
+    let cap = max_export_bytes();
+    let mut bytes = 0u64;
     let mut n = 0i64;
     while let Some((items, done)) = pager.next().await? {
         n = done;
@@ -409,6 +448,10 @@ async fn write_xlsx(
         let mut xml = String::with_capacity(items.len() * 600);
         for (i, r) in items.iter().enumerate() {
             xml.push_str(&result_row(first + i, r));
+        }
+        bytes += xml.len() as u64;
+        if bytes > cap {
+            return Err(Stop::TooBig(cap).into());
         }
         let wb = wb.clone();
         tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
@@ -477,6 +520,7 @@ async fn run_job(s: &AppState, id: Uuid) -> anyhow::Result<()> {
     let filter = parse_filter(s, &launch, &job.query)
         .await
         .map_err(|e| anyhow::anyhow!("invalid filter: {e:?}"))?;
+    let _beat = Heartbeat::start(s, id);
     let g = generate(
         s,
         &job.project_key,
@@ -492,19 +536,65 @@ async fn run_job(s: &AppState, id: Uuid) -> anyhow::Result<()> {
         &id.to_string(),
         &format!("launch-export.{}", format.as_str()),
     )?;
+    s.store.set_launch_export_blob(id, key.as_str()).await?;
     let size = s.blobs.put_file(&key, &g.file.0).await?;
-    s.store
-        .finish_launch_export(id, g.results, key.as_str(), size as i64)
-        .await?;
+    complete(s, id, &key, g.results, size as i64).await
+}
+
+/// Marks the job done; when it is not running any more (it was failed while the file was
+/// uploaded), the uploaded file is deleted so no object is left without a row.
+pub async fn complete(
+    s: &AppState,
+    id: Uuid,
+    key: &BlobKey,
+    results: i64,
+    size: i64,
+) -> anyhow::Result<()> {
+    if !s
+        .store
+        .finish_launch_export(id, results, key.as_str(), size)
+        .await?
+    {
+        s.blobs.delete(key).await?;
+        s.store.expire_launch_export(id).await?;
+    }
     Ok(())
 }
 
-/// The scheduler job: fails lost jobs and removes expired files.
+/// Keeps a running job alive while its file is built and uploaded; stops when dropped.
+struct Heartbeat(tokio::task::JoinHandle<()>);
+
+impl Heartbeat {
+    fn start(s: &AppState, id: Uuid) -> Self {
+        let s = s.clone();
+        Self(tokio::spawn(async move {
+            let mut t = tokio::time::interval(HEARTBEAT);
+            t.tick().await;
+            loop {
+                t.tick().await;
+                let _ = s.store.touch_launch_export(id).await;
+            }
+        }))
+    }
+}
+
+impl Drop for Heartbeat {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// The scheduler job: fails lost jobs and removes expired files. A file that cannot be deleted
+/// is logged and retried later; it never stops the others.
 pub async fn tick(s: &AppState) -> anyhow::Result<()> {
     s.store.fail_stale_launch_exports().await?;
     for (id, key) in s.store.due_launch_exports(100).await? {
-        if let Ok(k) = BlobKey::parse(&key) {
-            s.blobs.delete(&k).await?;
+        if let Ok(k) = BlobKey::parse(&key)
+            && let Err(e) = s.blobs.delete(&k).await
+        {
+            tracing::warn!(job = %id, error = %format!("{e:#}"), "deleting an expired launch export failed");
+            metrics::counter!("fastproof_launch_export_delete_failures_total").increment(1);
+            continue;
         }
         s.store.expire_launch_export(id).await?;
     }

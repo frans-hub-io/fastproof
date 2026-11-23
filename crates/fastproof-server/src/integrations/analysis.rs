@@ -329,7 +329,6 @@ async fn fallback_triage(
     if muted.is_some() {
         fastproof_store::analysis::triage::recount_muted(&mut tx, &launches).await?;
     }
-    fastproof_store::explorer::touch(&mut tx, &launches).await?;
     tx.commit().await?;
     Ok(updated)
 }

@@ -70,6 +70,7 @@ See [Live logs](../guide/live-logs.md) for the log fields.
 | OpenSearch search | 30 s | 503 |
 | SQL statement of a heavy read | `FASTPROOF_DATABASE_STATEMENT_TIMEOUT_SECONDS` | 503 `timeout` |
 | Tree groups of one result with several values of a grouping label | 20 values per label, 64 groups | further values and combinations are left out |
+| Groups of one launch tree, and distinct placements it reads | 200 000 each | `partial: true` on the root; the counts cover the groups listed |
 | Results read for the label names and filter counts of a launch | 200 000 (and 64 values per label name of a result for the filter counts) | `partial: true` |
 | Cached explorer aggregates | 32 per launch, 2 MiB each, kept 7 days | the oldest go; larger ones are not cached |
 

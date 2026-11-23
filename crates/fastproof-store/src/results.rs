@@ -249,7 +249,7 @@ fn tree_select(by: &GroupBy) -> QueryBuilder<Postgres> {
     push_label_projection(&mut qb, by);
     qb.push(
         " as labels, r.status, r.flaky_in_run, r.muted, r.duration_ms, r.attempt_count, r.flaky, \
-         r.transition, r.defect from results r ",
+         r.transition, r.defect, r.suite_tree, r.suite_titled from results r ",
     );
     qb
 }
@@ -468,6 +468,8 @@ struct TreeRow {
     flaky: bool,
     transition: Option<String>,
     defect: Option<TreeDefect>,
+    /// `suite_tree` and `suite_titled`, when the select reads them and they are set.
+    stored: Option<(Vec<String>, bool)>,
 }
 
 fn tree_row(r: &PgRow) -> Result<TreeRow, sqlx::Error> {
@@ -487,10 +489,28 @@ fn tree_row(r: &PgRow) -> Result<TreeRow, sqlx::Error> {
         flaky: r.try_get("flaky")?,
         transition: r.try_get("transition")?,
         defect: defect.and_then(|d| serde_json::from_value::<TreeDefect>(d).ok()),
+        stored: r
+            .try_get::<Option<Vec<String>>, _>("suite_tree")
+            .ok()
+            .flatten()
+            .map(|p| {
+                let titled: Option<bool> = r.try_get("suite_titled").ok().flatten();
+                (p, titled.unwrap_or(false))
+            }),
     })
 }
 
 impl TreeRow {
+    /// The key with the stored Suites path, when the row has one: the tree, its pages and the
+    /// result-id tree then place the row alike. (Changing [`suite_tree_path`] needs a migration
+    /// that clears `suite_tree` and resets the `explorer.results.backfill` state.)
+    fn with_stored(&self, by: &GroupBy, mut key: PlaceKey) -> PlaceKey {
+        if matches!(by, GroupBy::Suite) {
+            key.stored = self.stored.clone();
+        }
+        key
+    }
+
     fn leaf(&self, name: String) -> TreeTest {
         TreeTest {
             id: self.id,
@@ -666,8 +686,12 @@ const TITLE_SEP: &str = " \u{203a} ";
 
 /// Fixture steps attached to one attempt at read time, at most.
 pub const MAX_FIXTURE_STEPS: usize = 10_000;
-/// Largest tree the tree endpoint builds.
+/// Largest tree the tree endpoint builds by reading results (with result ids).
 pub const MAX_TREE_RESULTS: i64 = 200_000;
+/// Counted keys (distinct placements with status and flags) one tree reads, at most.
+pub const MAX_TREE_KEYS: usize = 200_000;
+/// Groups one tree holds, at most; beyond it the tree is `partial`.
+pub const MAX_TREE_NODES: usize = 200_000;
 
 pub(crate) const SUMMARY_SELECT: &str = "select r.id, r.launch_id, r.launch_created_at, r.test_case_id, r.series_id, \
     s.series_key, r.name, r.full_name, r.suite_path, r.status, r.flaky_in_run, r.attempt_count, r.duration_ms, \
@@ -900,19 +924,27 @@ impl Builder {
         c: &Counts,
         duration: Option<i64>,
         mut leaf: impl FnMut(&mut Builder, bool),
-    ) {
+    ) -> usize {
         self.add(c, duration);
         let mut seen: HashSet<&[String]> = HashSet::new();
+        let mut created = 0;
         for (path, titled) in paths {
             let mut node: &mut Builder = self;
             for i in 0..path.len() {
-                node = node.children.entry(path[i].clone()).or_default();
+                node = match node.children.entry(path[i].clone()) {
+                    std::collections::btree_map::Entry::Occupied(o) => o.into_mut(),
+                    std::collections::btree_map::Entry::Vacant(v) => {
+                        created += 1;
+                        v.insert(Builder::default())
+                    }
+                };
                 if seen.insert(&path[..=i]) {
                     node.add(c, duration);
                 }
             }
             leaf(node, *titled);
         }
+        created
     }
 
     fn node(&self, path: &[String]) -> Option<&Builder> {
@@ -972,6 +1004,7 @@ impl Builder {
             test_count,
             tests,
             levels: None,
+            partial: false,
         }
     }
 }
@@ -1223,24 +1256,23 @@ fn tree_cache_key(by: &GroupBy, f: &TreeFilter) -> Option<String> {
         return None;
     }
     let by = match by {
-        GroupBy::Suite => "suite".to_string(),
-        GroupBy::Feature => "feature".to_string(),
-        GroupBy::Package => "package".to_string(),
-        GroupBy::Labels(names) => format!("labels:{}", names.join(",")),
+        GroupBy::Suite => serde_json::json!(["suite"]),
+        GroupBy::Feature => serde_json::json!(["feature"]),
+        GroupBy::Package => serde_json::json!(["package"]),
+        GroupBy::Labels(names) => serde_json::json!(["labels", names]),
     };
     Some(format!(
-        "tree1:{}:{}",
-        crate::explorer::key_part(&by),
-        env_key_part(env.as_ref())
+        "tree2:{}",
+        serde_json::json!([by, env_key_part(env.as_ref())])
     ))
 }
 
-/// The cache key part of an environment filter.
-fn env_key_part(env: Option<&EnvFilter>) -> String {
+/// The cache key part of an environment filter, as JSON (no two filters share one).
+fn env_key_part(env: Option<&EnvFilter>) -> serde_json::Value {
     match env {
-        None => "all".into(),
-        Some(EnvFilter::None) => "none".into(),
-        Some(EnvFilter::Key(k)) => format!("k:{}", crate::explorer::key_part(k)),
+        None => serde_json::Value::Null,
+        Some(EnvFilter::None) => serde_json::json!({ "none": true }),
+        Some(EnvFilter::Key(k)) => serde_json::json!({ "key": k }),
     }
 }
 
@@ -1262,8 +1294,11 @@ fn push_group_prefilter(qb: &mut QueryBuilder<Postgres>, by: &GroupBy, path: &[S
         GroupBy::Suite => {
             let titled = format!("{}{}%", like_escape(&path.join(TITLE_SEP)), TITLE_SEP);
             let class = format!("{}#%", like_escape(&path.join(".")));
-            qb.push(" and (r.suite_path = ")
-                .push_bind(path.iter().map(|p| no_nul(p)).collect::<Vec<_>>())
+            let p: Vec<String> = path.iter().map(|p| no_nul(p)).collect();
+            qb.push(" and (r.suite_tree = ")
+                .push_bind(p.clone())
+                .push(" or r.suite_path = ")
+                .push_bind(p)
                 .push(" or r.full_name like ")
                 .push_bind(titled)
                 .push(" or r.full_name like ")
@@ -1400,15 +1435,23 @@ impl Store {
         let rows: Vec<TreeRow> = rows.iter().map(tree_row).collect::<Result<_, _>>()?;
         let by = present_levels(&o.by, rows.iter().map(|r| r.labels.as_slice()));
         let mut root = Builder::default();
+        let mut nodes = 0;
+        let mut partial = false;
         for row in rows {
+            if nodes >= self.tree_limits.1 {
+                partial = true;
+                break;
+            }
             let key = PlaceKey::of(&by, &row.suite_path, &row.labels, &row.full_name);
+            let key = row.with_stored(&by, key);
             let c = counts_of(&row.status, row.flaky_in_run, row.muted, 1);
-            root.place(&place(&by, &key), &c, row.duration_ms, |node, _| {
+            nodes += root.place(&place(&by, &key), &c, row.duration_ms, |node, _| {
                 node.direct += 1;
                 node.ids.push(row.id);
             });
         }
         let mut node = root.into_node(String::new(), Vec::new(), false, &HashSet::new());
+        node.partial = partial;
         if let GroupBy::Labels(levels) = by {
             node.levels = Some(levels);
         }
@@ -1430,6 +1473,9 @@ impl Store {
             .await?;
         let mut generation = 0;
         let mut cached: Option<Vec<Counted>> = None;
+        // An entry that misses only because of the reveal is not written again (a deep link
+        // into a group the plain tree does not inline would rewrite it on every view).
+        let mut had_entry = false;
         // Suites stored at ingest: the tests of the inlined groups are read by their path, so
         // no ids are aggregated (the largest cost of the count otherwise).
         let suites = matches!(o.by, GroupBy::Suite);
@@ -1438,7 +1484,9 @@ impl Store {
             generation = crate::explorer::gen_of(&mut tx, launch.id).await?;
             if let Some(v) = crate::explorer::cache_get(&mut tx, launch.id, key, generation).await?
             {
-                cached = serde_json::from_value::<Vec<Counted>>(v).ok().filter(|c| {
+                let parsed = serde_json::from_value::<Vec<Counted>>(v).ok();
+                had_entry = parsed.is_some();
+                cached = parsed.filter(|c| {
                     by_path(c)
                         || o.reveal.is_none_or(|r| {
                             c.iter()
@@ -1448,19 +1496,31 @@ impl Store {
             }
         }
         let from_cache = cached.is_some();
+        let mut partial = false;
         let mut counted = match cached {
             Some(c) => c,
-            None => self.count_keys(&mut tx, launch, o, !suites).await?,
+            None => {
+                let (c, p) = self.count_keys(&mut tx, launch, o, !suites).await?;
+                partial = p;
+                c
+            }
         };
         if suites && !by_path(&counted) && counted.iter().all(|c| c.ids.is_none()) {
             // Results not backfilled yet: count again with their ids.
-            counted = self.count_keys(&mut tx, launch, o, true).await?;
+            let (c, p) = self.count_keys(&mut tx, launch, o, true).await?;
+            counted = c;
+            partial = p;
         }
         let by_path = by_path(&counted);
         let by = present_levels(&o.by, counted.iter().map(|c| c.key.labels.as_slice()));
         let mut root = Builder::default();
+        let mut nodes = 0;
         for (i, c) in counted.iter().enumerate() {
-            root.place(
+            if nodes >= self.tree_limits.1 {
+                partial = true;
+                break;
+            }
+            nodes += root.place(
                 &place(&by, &c.key),
                 &c.counts,
                 c.duration,
@@ -1502,7 +1562,7 @@ impl Store {
         let inline = inline_groups(groups);
         // Stored suites whose ids are not known (the first build, or a revealed group the
         // cached build did not inline) are read by their path.
-        let by_path_groups: Vec<Vec<String>> = if by_path {
+        let by_path_groups: HashSet<Vec<String>> = if by_path {
             inline
                 .iter()
                 .filter(|p| {
@@ -1512,10 +1572,10 @@ impl Store {
                 .cloned()
                 .collect()
         } else {
-            Vec::new()
+            HashSet::new()
         };
         let mut wanted: HashMap<Uuid, Vec<(&[String], bool)>> = HashMap::new();
-        for path in inline.iter().filter(|p| !by_path_groups.contains(p)) {
+        for path in inline.iter().filter(|p| !by_path_groups.contains(*p)) {
             for &(i, titled) in root
                 .node(path)
                 .map(|n| n.keys.as_slice())
@@ -1562,9 +1622,9 @@ impl Store {
                 }
                 qb.push(")");
             } else {
-                qb.push(" and to_jsonb(r.suite_tree) = any(")
+                qb.push(" and to_jsonb(r.suite_tree) in (select p from unnest(")
                     .push_bind(paths)
-                    .push("::jsonb[])");
+                    .push("::jsonb[]) as w(p))");
             }
             qb.push(" order by r.full_name, r.id");
             let rows = qb.build().fetch_all(&mut *tx).await?;
@@ -1614,7 +1674,9 @@ impl Store {
             }
         }
         tx.commit().await?;
-        if let Some(key) = cache_key.filter(|_| !from_cache && counted.len() <= MAX_CACHED_KEYS) {
+        if let Some(key) = cache_key
+            .filter(|_| !from_cache && !partial && !had_entry && counted.len() <= MAX_CACHED_KEYS)
+        {
             let stored: Vec<Counted> = counted
                 .iter()
                 .enumerate()
@@ -1629,9 +1691,10 @@ impl Store {
                 })
                 .collect();
             self.cache_put(launch.id, &key, generation, &serde_json::to_value(&stored)?)
-                .await?;
+                .await;
         }
         let mut node = root.into_node(String::new(), Vec::new(), true, &inline);
+        node.partial = partial;
         if let GroupBy::Labels(levels) = by {
             node.levels = Some(levels);
         }
@@ -1646,7 +1709,8 @@ impl Store {
         conn: &mut sqlx::PgConnection,
         launch: &Launch,
         o: &TreeOptions,
-    ) -> anyhow::Result<Vec<Counted>> {
+    ) -> anyhow::Result<(Vec<Counted>, bool)> {
+        let limit = self.tree_limits.0;
         let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(
             "select r.suite_tree as st, coalesce(r.suite_titled, false) as stt, r.status, r.flaky_in_run, \
              r.muted, count(*) as n, least(sum(greatest(r.duration_ms, 0)), 9223372036854775807)::bigint as d, ",
@@ -1664,7 +1728,8 @@ impl Store {
         qb.push(" as rv from results r");
         launch_scope(&mut qb, launch);
         push_tree_filter(&mut qb, &o.filter);
-        qb.push(" group by 1, 2, 3, 4, 5");
+        qb.push(" group by 1, 2, 3, 4, 5 limit ")
+            .push_bind(limit as i64 + 1);
         sqlx::query("set local enable_sort = off")
             .execute(&mut *conn)
             .await?;
@@ -1672,8 +1737,11 @@ impl Store {
         sqlx::query("set local enable_sort = on")
             .execute(&mut *conn)
             .await?;
-        Ok(rows?
+        let rows = rows?;
+        let partial = rows.len() > limit;
+        let counted = rows
             .iter()
+            .take(limit)
             .map(|r| {
                 let status: String = r.try_get("status")?;
                 let path: Option<Vec<String>> = r.try_get("st")?;
@@ -1696,7 +1764,8 @@ impl Store {
                     ids: None,
                 })
             })
-            .collect::<Result<_, sqlx::Error>>()?)
+            .collect::<Result<_, sqlx::Error>>()?;
+        Ok((counted, partial))
     }
 
     /// The results of a launch counted per [`PlaceKey`], status and flags, with their ids
@@ -1707,10 +1776,11 @@ impl Store {
         launch: &Launch,
         o: &TreeOptions,
         with_ids: bool,
-    ) -> anyhow::Result<Vec<Counted>> {
+    ) -> anyhow::Result<(Vec<Counted>, bool)> {
         if matches!(o.by, GroupBy::Suite) && !with_ids {
             return self.count_stored_suites(conn, launch, o).await;
         }
+        let limit = self.tree_limits.0;
         let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(format!(
             "select {PLACE_KEY}, status, flaky_in_run, muted, count(*) as n, \
              least(sum(greatest(duration_ms, 0)), 9223372036854775807)::bigint as d, "
@@ -1741,11 +1811,14 @@ impl Store {
             .push_bind(launch.created_at);
         push_tree_filter(&mut qb, &o.filter);
         qb.push(format!(
-            ") k group by {PLACE_KEY}, status, flaky_in_run, muted"
-        ));
+            ") k group by {PLACE_KEY}, status, flaky_in_run, muted limit "
+        ))
+        .push_bind(limit as i64 + 1);
         let rows = qb.build().fetch_all(&mut *conn).await?;
-        Ok(rows
+        let partial = rows.len() > limit;
+        let counted: Vec<Counted> = rows
             .iter()
+            .take(limit)
             .map(|r| {
                 let status: String = r.try_get("status")?;
                 Ok(Counted {
@@ -1762,7 +1835,8 @@ impl Store {
                     ids: r.try_get("ids")?,
                 })
             })
-            .collect::<Result<_, sqlx::Error>>()?)
+            .collect::<Result<_, sqlx::Error>>()?;
+        Ok((counted, partial))
     }
 
     /// A page of the results directly in the group `path` of the tree, in full name order.
@@ -1805,6 +1879,7 @@ impl Store {
                 let row = tree_row(r)?;
                 after = Some((row.full_name.clone(), row.id));
                 let key = PlaceKey::of(by, &row.suite_path, &row.labels, &row.full_name);
+                let key = row.with_stored(by, key);
                 let Some(titled) = place(by, &key)
                     .into_iter()
                     .find(|(p, _)| p.as_slice() == path)
@@ -2154,7 +2229,7 @@ fn push_bounded(qb: &mut QueryBuilder<Postgres>, launch: &Launch, f: &TreeFilter
 
 /// The cache key part of the filters of the label names and facets (`None` when more than
 /// the environment is set: such counts are not cached).
-fn env_only(f: &TreeFilter) -> Option<String> {
+fn env_only(f: &TreeFilter) -> Option<serde_json::Value> {
     let rest = TreeFilter {
         env: None,
         ..f.clone()
@@ -2211,7 +2286,7 @@ impl Store {
                 read.generation,
                 &serde_json::to_value(value)?,
             )
-            .await?;
+            .await;
         }
         Ok(())
     }
@@ -2222,7 +2297,7 @@ impl Store {
         launch: &Launch,
         f: &TreeFilter,
     ) -> anyhow::Result<LaunchLabels> {
-        let key = env_only(f).map(|e| format!("labels1:{e}"));
+        let key = env_only(f).map(|e| format!("labels2:{e}"));
         let (mut read, hit) = self.cached_read(launch, key).await?;
         if let Some(v) = hit.and_then(|v| serde_json::from_value::<LaunchLabels>(v).ok()) {
             read.tx.commit().await?;
@@ -2275,11 +2350,11 @@ impl Store {
         if let Some(e) = env_only(f).filter(|_| launch.status != "running") {
             let base = match baseline.launch {
                 Some((id, _)) => {
-                    format!("{id}.{}", crate::explorer::gen_of(&mut read.tx, id).await?)
+                    serde_json::json!([id, crate::explorer::gen_of(&mut read.tx, id).await?])
                 }
-                None => "none".into(),
+                None => serde_json::Value::Null,
             };
-            let key = format!("facets1:{e}:{base}");
+            let key = format!("facets2:{}", serde_json::json!([e, base]));
             read.generation = crate::explorer::gen_of(&mut read.tx, launch.id).await?;
             hit =
                 crate::explorer::cache_get(&mut read.tx, launch.id, &key, read.generation).await?;
@@ -2300,7 +2375,7 @@ impl Store {
         &self,
         launch: &Launch,
     ) -> anyhow::Result<Vec<EnvironmentCounts>> {
-        let (mut read, hit) = self.cached_read(launch, Some("envs1".into())).await?;
+        let (mut read, hit) = self.cached_read(launch, Some("envs2".into())).await?;
         if let Some(v) = hit.and_then(|v| serde_json::from_value::<Vec<EnvironmentCounts>>(v).ok())
         {
             read.tx.commit().await?;
@@ -2567,6 +2642,42 @@ mod tests {
             )
             .0,
             vec!["e2e", "shop", "cart.spec.ts"]
+        );
+    }
+
+    #[test]
+    fn cache_keys_tell_groupings_and_environments_apart() {
+        let none = TreeFilter::default();
+        let env = |k: &str| TreeFilter {
+            env: Some(EnvFilter::Key(k.into())),
+            ..TreeFilter::default()
+        };
+        let a = tree_cache_key(&GroupBy::Labels(vec!["a:k".into()]), &none).unwrap();
+        let b = tree_cache_key(&GroupBy::Labels(vec!["a".into()]), &env("all")).unwrap();
+        let c = tree_cache_key(&GroupBy::Labels(vec!["a".into()]), &env("k:all")).unwrap();
+        let d = tree_cache_key(
+            &GroupBy::Labels(vec!["a".into()]),
+            &TreeFilter {
+                env: Some(EnvFilter::None),
+                ..TreeFilter::default()
+            },
+        )
+        .unwrap();
+        let e = tree_cache_key(&GroupBy::Labels(vec!["a".into()]), &env("none")).unwrap();
+        let f = tree_cache_key(&GroupBy::Labels(vec!["a,b".into()]), &none).unwrap();
+        let g = tree_cache_key(&GroupBy::Labels(vec!["a".into(), "b".into()]), &none).unwrap();
+        let all = [&a, &b, &c, &d, &e, &f, &g];
+        let distinct: HashSet<&&String> = all.iter().collect();
+        assert_eq!(distinct.len(), all.len(), "{all:?}");
+        assert!(
+            tree_cache_key(
+                &GroupBy::Suite,
+                &TreeFilter {
+                    retried: true,
+                    ..TreeFilter::default()
+                }
+            )
+            .is_none()
         );
     }
 

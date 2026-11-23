@@ -20139,6 +20139,10 @@
           "name": {
             "type": "string"
           },
+          "partial": {
+            "type": "boolean",
+            "description": "On the root: the launch has more groups than one tree holds, and the counts cover only\nthe groups listed."
+          },
           "path": {
             "type": "array",
             "items": {

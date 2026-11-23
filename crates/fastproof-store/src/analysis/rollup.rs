@@ -428,14 +428,17 @@ impl Store {
                 .bind(at_midnight(end))
                 .execute(&mut *tx)
                 .await?;
-                sqlx::query(
+                let kept: Vec<Uuid> = sqlx::query_scalar(
                     "update launches set rolled_up_at = coalesce(rolled_up_at, now()) \
-                     where created_at >= $1 and created_at < $2 and manual_state is not null",
+                     where created_at >= $1 and created_at < $2 and manual_state is not null \
+                     returning id",
                 )
                 .bind(at_midnight(start))
                 .bind(at_midnight(end))
-                .execute(&mut *tx)
+                .fetch_all(&mut *tx)
                 .await?;
+                // Their results went with the partition, which fires no results trigger.
+                crate::explorer::touch(&mut tx, &kept).await?;
                 Ok::<_, sqlx::Error>(())
             }
             .await;

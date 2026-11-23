@@ -4,12 +4,15 @@
 //! of launches that do not run, and the background job that fills `label_values` and
 //! `attachment_kinds` for results stored before they existed.
 //!
-//! The cache is checked against `explorer_gen`, a counter per launch that every write to the
-//! launch's results raises in its own transaction ([`touch`], as the last write before the
-//! commit). A reader takes the counter and the data in one snapshot and stores the counter
-//! with its payload, so an entry built before a write commits is never served after it.
+//! The cache is checked against `explorer_gen`, a counter per launch that every transaction
+//! writing the launch's results raises when it commits (the deferred trigger
+//! `results_explorer_gen`, so writers of earlier versions and hand-written SQL count too; the
+//! counter row is locked last, so it adds no lock cycle; [`touch`] for changes without a results
+//! write, such as dropped partitions). A reader takes the
+//! counter and the data in one snapshot and stores the counter with its payload, so an entry
+//! built before a write commits is never served after it.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
@@ -40,8 +43,8 @@ pub fn label_values(labels: &Value) -> Value {
     Value::Object(m)
 }
 
-/// Marks the explorer data of the launches changed. Call it in the transaction that changed
-/// their results, after its other writes (the counter row stays locked until the commit).
+/// Marks the explorer data of the launches changed, for changes the results triggers do not
+/// see (a dropped partition). The counter rows stay locked until the commit.
 pub async fn touch(conn: &mut PgConnection, launches: &[Uuid]) -> sqlx::Result<()> {
     if launches.is_empty() {
         return Ok(());
@@ -56,6 +59,16 @@ pub async fn touch(conn: &mut PgConnection, launches: &[Uuid]) -> sqlx::Result<(
     .bind(&ids)
     .execute(conn)
     .await?;
+    Ok(())
+}
+
+/// Marks the caller's transaction as one that writes `label_values` and `suite_tree` itself:
+/// the trigger `results_explorer_keys` recomputes or clears them only for writers that do not
+/// (replicas of earlier versions, hand-written SQL).
+pub async fn app_writes_keys(conn: &mut PgConnection) -> sqlx::Result<()> {
+    sqlx::query("select set_config('fastproof.explorer_keys', 'app', true)")
+        .execute(conn)
+        .await?;
     Ok(())
 }
 
@@ -92,21 +105,23 @@ pub const MAX_CACHE_ENTRIES: i64 = 32;
 /// Bytes of one cached payload, at most (larger ones are not cached).
 pub const MAX_CACHE_BYTES: usize = 2 * 1024 * 1024;
 
-/// The cache key part of a free-form value (an environment key, a label list).
-pub(crate) fn key_part(s: &str) -> String {
-    use sha2::Digest;
-    if s.len() <= 64
-        && s.chars()
-            .all(|c| c.is_ascii_alphanumeric() || "_-.,:@/".contains(c))
-    {
-        return s.to_string();
-    }
-    format!("#{}", hex::encode(sha2::Sha256::digest(s.as_bytes())))
-}
-
 impl Store {
-    /// Stores a payload computed at the counter `generation` (a newer entry is kept).
+    /// Stores a payload computed at the counter `generation` (a newer entry is kept). Best
+    /// effort: a failure is logged and counted, and the caller still answers with its value.
     pub(crate) async fn cache_put(
+        &self,
+        launch: Uuid,
+        key: &str,
+        generation: i64,
+        payload: &Value,
+    ) {
+        if let Err(e) = self.try_cache_put(launch, key, generation, payload).await {
+            metrics::counter!("fastproof_explorer_cache_write_errors_total").increment(1);
+            tracing::warn!(launch = %launch, error = %format!("{e:#}"), "storing explorer aggregates failed");
+        }
+    }
+
+    async fn try_cache_put(
         &self,
         launch: Uuid,
         key: &str,
@@ -179,6 +194,12 @@ pub struct BackfillProgress {
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 struct BackfillState {
     cursor: Option<Uuid>,
+    /// The walk by id reached the end.
+    #[serde(default)]
+    walked: bool,
+    /// Rows another transaction held when the walk passed them.
+    #[serde(default)]
+    skipped: Vec<(Uuid, DateTime<Utc>)>,
     #[serde(default)]
     scanned: u64,
     #[serde(default)]
@@ -230,7 +251,8 @@ impl Store {
     /// Fills `label_values`, `suite_tree` and, for results of launches created before migration 600,
     /// `attachment_kinds` of stored results: `batch` results per transaction in id order from
     /// a cursor kept in `analysis_state`, until `budget` is spent or every result was seen.
-    /// Each transaction locks only the rows it changes. Idempotent and resumable.
+    /// Each transaction locks only the rows it changes, in id order, and skips rows other
+    /// transactions hold (they are tried again after the walk). Idempotent and resumable.
     pub async fn backfill_explorer(
         &self,
         batch: i64,
@@ -252,135 +274,63 @@ impl Store {
                 out.total_updated = state.updated;
                 return Ok(out);
             }
-            type Row = (Uuid, DateTime<Utc>, Uuid, bool, bool, bool);
-            let rows: Vec<Row> = sqlx::query_as(
+            // The walk by id first, then the rows another transaction held when the walk passed.
+            let retry = state.walked;
+            let mut qb = sqlx::QueryBuilder::new(
                 "select id, launch_created_at, launch_id, label_values is null, \
-                   attachment_kinds = 0 and launch_created_at <= coalesce($3, '-infinity'::timestamptz), \
-                   suite_tree is null \
-                 from results where ($1::uuid is null or id > $1) order by id limit $2",
-            )
-            .bind(state.cursor)
-            .bind(batch)
-            .bind(cutoff)
-            .fetch_all(&self.pool)
-            .await?;
-            let mut tx = self.pool.begin().await?;
-            let mut updated: BTreeSet<Uuid> = BTreeSet::new();
-            let mut touched: BTreeSet<Uuid> = BTreeSet::new();
-            let (lid, lat): (Vec<Uuid>, Vec<DateTime<Utc>>) =
-                rows.iter().filter(|r| r.3).map(|r| (r.0, r.1)).unzip();
-            if !lid.is_empty() {
-                let done: Vec<Uuid> = sqlx::query_scalar(
-                    "update results r set label_values = fastproof_label_values(r.labels) \
-                     from unnest($1::uuid[], $2::timestamptz[]) as t(i, c) \
-                     where r.id = t.i and r.launch_created_at = t.c and r.label_values is null \
-                     returning r.id",
-                )
-                .bind(&lid)
-                .bind(&lat)
-                .fetch_all(&mut *tx)
-                .await?;
-                updated.extend(done);
+                   attachment_kinds = 0 and launch_created_at <= coalesce(",
+            );
+            qb.push_bind(cutoff)
+                .push(", '-infinity'::timestamptz), suite_tree is null from results r where ");
+            if retry {
+                let (ids, ats): (Vec<Uuid>, Vec<DateTime<Utc>>) =
+                    state.skipped.iter().take(batch as usize).copied().unzip();
+                qb.push("(r.id, r.launch_created_at) in (select * from unnest(")
+                    .push_bind(ids)
+                    .push("::uuid[], ")
+                    .push_bind(ats)
+                    .push("::timestamptz[])) order by id");
+            } else {
+                qb.push("(")
+                    .push_bind(state.cursor)
+                    .push("::uuid is null or id > ")
+                    .push_bind(state.cursor)
+                    .push(") order by id limit ")
+                    .push_bind(batch);
             }
-            let (sid, sat): (Vec<Uuid>, Vec<DateTime<Utc>>) =
-                rows.iter().filter(|r| r.5).map(|r| (r.0, r.1)).unzip();
-            if !sid.is_empty() {
-                type Suite = (Uuid, DateTime<Utc>, Vec<String>, Value, String);
-                let found: Vec<Suite> = sqlx::query_as(
-                    "select r.id, r.launch_created_at, r.suite_path, r.labels, r.full_name from results r \
-                     join unnest($1::uuid[], $2::timestamptz[]) as t(i, c) \
-                       on r.id = t.i and r.launch_created_at = t.c",
-                )
-                .bind(&sid)
-                .bind(&sat)
-                .fetch_all(&mut *tx)
-                .await?;
-                let mut ids = Vec::with_capacity(found.len());
-                let mut ats = Vec::with_capacity(found.len());
-                let mut paths = Vec::with_capacity(found.len());
-                let mut titled = Vec::with_capacity(found.len());
-                for (id, at, suite_path, labels, full_name) in found {
-                    let (p, t) = crate::results::suite_place_json(&suite_path, &labels, &full_name);
-                    ids.push(id);
-                    ats.push(at);
-                    paths.push(crate::json_no_nul(serde_json::to_value(p)?));
-                    titled.push(t);
-                }
-                let done: Vec<Uuid> = sqlx::query_scalar(
-                    "update results r set suite_tree = array(select jsonb_array_elements_text(t.p)), \
-                       suite_titled = t.s \
-                     from unnest($1::uuid[], $2::timestamptz[], $3::jsonb[], $4::bool[]) as t(i, c, p, s) \
-                     where r.id = t.i and r.launch_created_at = t.c and r.suite_tree is null \
-                     returning r.id",
-                )
-                .bind(&ids)
-                .bind(&ats)
-                .bind(&paths)
-                .bind(&titled)
-                .fetch_all(&mut *tx)
-                .await?;
-                updated.extend(done);
-            }
-            let (kid, kat): (Vec<Uuid>, Vec<DateTime<Utc>>) =
-                rows.iter().filter(|r| r.4).map(|r| (r.0, r.1)).unzip();
-            if !kid.is_empty() {
-                type Attempt = (Uuid, Value, Option<Vec<u8>>);
-                let attempts: Vec<Attempt> = sqlx::query_as(
-                    "select a.result_id, a.detail, a.steps_z from attempts a \
-                     join unnest($1::uuid[], $2::timestamptz[]) as t(i, c) \
-                       on a.result_id = t.i and a.launch_created_at = t.c",
-                )
-                .bind(&kid)
-                .bind(&kat)
-                .fetch_all(&mut *tx)
-                .await?;
-                let mut kinds: HashMap<Uuid, i32> = HashMap::new();
-                for (result, detail, steps) in attempts {
-                    let d: AttemptDetail = serde_json::from_value(detail).unwrap_or_default();
-                    let steps: Vec<Step> = match steps {
-                        Some(z) => crate::codec::decode(&z).unwrap_or_default(),
-                        None => Vec::new(),
-                    };
-                    let m = attempt_kinds(&d.attachments, &steps);
-                    if m != 0 {
-                        *kinds.entry(result).or_default() |= m;
+            let rows: Vec<BackfillRow> = qb.build_query_as().fetch_all(&self.pool).await?;
+            match self.backfill_batch(&rows).await {
+                Ok((updated, skipped)) => {
+                    if retry {
+                        let n = state.skipped.len().min(batch as usize);
+                        state.skipped.drain(..n);
+                        state.skipped.extend(skipped);
+                    } else {
+                        state.scanned += rows.len() as u64;
+                        match rows.last() {
+                            Some(r) => state.cursor = Some(r.0),
+                            None => state.walked = true,
+                        }
+                        let room = MAX_SKIPPED.saturating_sub(state.skipped.len());
+                        state.skipped.extend(skipped.into_iter().take(room));
                     }
+                    state.updated += updated;
+                    state.done = state.walked && state.skipped.is_empty();
+                    out.scanned += rows.len() as u64;
+                    out.updated += updated;
+                    metrics::counter!("fastproof_explorer_backfill_scanned_total")
+                        .increment(rows.len() as u64);
+                    metrics::counter!("fastproof_explorer_backfill_updated_total")
+                        .increment(updated);
                 }
-                let at: HashMap<Uuid, DateTime<Utc>> = kid.iter().copied().zip(kat).collect();
-                let mut ids = Vec::with_capacity(kinds.len());
-                let mut ats = Vec::with_capacity(kinds.len());
-                let mut masks = Vec::with_capacity(kinds.len());
-                for (id, m) in kinds {
-                    ids.push(id);
-                    ats.push(at[&id]);
-                    masks.push(m);
+                Err(e) if is_lock_timeout(&e) => {
+                    metrics::counter!("fastproof_explorer_backfill_lock_timeouts_total")
+                        .increment(1);
+                    out.total_scanned = state.scanned;
+                    out.total_updated = state.updated;
+                    return Ok(out);
                 }
-                if !ids.is_empty() {
-                    let done: Vec<(Uuid, Uuid)> = sqlx::query_as(
-                        "update results r set attachment_kinds = r.attachment_kinds | t.k \
-                         from unnest($1::uuid[], $2::timestamptz[], $3::int[]) as t(i, c, k) \
-                         where r.id = t.i and r.launch_created_at = t.c \
-                           and r.attachment_kinds | t.k <> r.attachment_kinds \
-                         returning r.id, r.launch_id",
-                    )
-                    .bind(&ids)
-                    .bind(&ats)
-                    .bind(&masks)
-                    .fetch_all(&mut *tx)
-                    .await?;
-                    for (id, launch) in done {
-                        updated.insert(id);
-                        touched.insert(launch);
-                    }
-                }
-            }
-            let touched: Vec<Uuid> = touched.into_iter().collect();
-            touch(&mut tx, &touched).await?;
-            state.scanned += rows.len() as u64;
-            state.updated += updated.len() as u64;
-            match rows.last() {
-                Some(r) => state.cursor = Some(r.0),
-                None => state.done = true,
+                Err(e) => return Err(e),
             }
             sqlx::query(
                 "insert into analysis_state (name, value, updated_at) values ($1, $2, now()) \
@@ -388,23 +338,180 @@ impl Store {
             )
             .bind(BACKFILL_STATE)
             .bind(serde_json::to_value(&state)?)
-            .execute(&mut *tx)
+            .execute(&self.pool)
             .await?;
-            tx.commit().await?;
-            out.scanned += rows.len() as u64;
-            out.updated += updated.len() as u64;
             out.total_scanned = state.scanned;
             out.total_updated = state.updated;
             out.done = state.done;
-            metrics::counter!("fastproof_explorer_backfill_scanned_total")
-                .increment(rows.len() as u64);
-            metrics::counter!("fastproof_explorer_backfill_updated_total")
-                .increment(updated.len() as u64);
             if state.done || started.elapsed() > budget {
                 return Ok(out);
             }
         }
     }
+
+    /// One transaction of the backfill: locks the rows that need work in id order, skipping
+    /// those another transaction holds (returned to be tried again), and with a short
+    /// `lock_timeout` for the rest, so the backfill never waits in a lock cycle with a writer.
+    /// Returns how many rows changed and the rows skipped.
+    async fn backfill_batch(
+        &self,
+        rows: &[BackfillRow],
+    ) -> anyhow::Result<(u64, Vec<(Uuid, DateTime<Utc>)>)> {
+        let need: Vec<&BackfillRow> = rows.iter().filter(|r| r.3 || r.4 || r.5).collect();
+        if need.is_empty() {
+            return Ok((0, Vec::new()));
+        }
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("set local lock_timeout = '500ms'")
+            .execute(&mut *tx)
+            .await?;
+        let (nid, nat): (Vec<Uuid>, Vec<DateTime<Utc>>) = need.iter().map(|r| (r.0, r.1)).unzip();
+        let locked: HashSet<Uuid> = sqlx::query_scalar::<_, Uuid>(
+            "select r.id from results r join unnest($1::uuid[], $2::timestamptz[]) as t(i, c) \
+               on r.id = t.i and r.launch_created_at = t.c \
+             order by r.id for update of r skip locked",
+        )
+        .bind(&nid)
+        .bind(&nat)
+        .fetch_all(&mut *tx)
+        .await?
+        .into_iter()
+        .collect();
+        let skipped: Vec<(Uuid, DateTime<Utc>)> = need
+            .iter()
+            .filter(|r| !locked.contains(&r.0))
+            .map(|r| (r.0, r.1))
+            .collect();
+        let mine = |f: fn(&BackfillRow) -> bool| {
+            need.iter()
+                .filter(|r| f(r) && locked.contains(&r.0))
+                .map(|r| (r.0, r.1))
+                .unzip::<Uuid, DateTime<Utc>, Vec<Uuid>, Vec<DateTime<Utc>>>()
+        };
+        let mut updated: BTreeSet<Uuid> = BTreeSet::new();
+        let (lid, lat) = mine(|r| r.3);
+        if !lid.is_empty() {
+            let done: Vec<Uuid> = sqlx::query_scalar(
+                "update results r set label_values = fastproof_label_values(r.labels) \
+                 from unnest($1::uuid[], $2::timestamptz[]) as t(i, c) \
+                 where r.id = t.i and r.launch_created_at = t.c and r.label_values is null \
+                 returning r.id",
+            )
+            .bind(&lid)
+            .bind(&lat)
+            .fetch_all(&mut *tx)
+            .await?;
+            updated.extend(done);
+        }
+        let (sid, sat) = mine(|r| r.5);
+        if !sid.is_empty() {
+            // The rows are locked, so the values read here are those the update writes beside.
+            type Suite = (Uuid, DateTime<Utc>, Vec<String>, Value, String);
+            let found: Vec<Suite> = sqlx::query_as(
+                "select r.id, r.launch_created_at, r.suite_path, r.labels, r.full_name from results r \
+                 join unnest($1::uuid[], $2::timestamptz[]) as t(i, c) \
+                   on r.id = t.i and r.launch_created_at = t.c",
+            )
+            .bind(&sid)
+            .bind(&sat)
+            .fetch_all(&mut *tx)
+            .await?;
+            let mut ids = Vec::with_capacity(found.len());
+            let mut ats = Vec::with_capacity(found.len());
+            let mut paths = Vec::with_capacity(found.len());
+            let mut titled = Vec::with_capacity(found.len());
+            for (id, at, suite_path, labels, full_name) in found {
+                let (p, t) = crate::results::suite_place_json(&suite_path, &labels, &full_name);
+                ids.push(id);
+                ats.push(at);
+                paths.push(crate::json_no_nul(serde_json::to_value(p)?));
+                titled.push(t);
+            }
+            let done: Vec<Uuid> = sqlx::query_scalar(
+                "update results r set suite_tree = array(select jsonb_array_elements_text(t.p)), \
+                   suite_titled = t.s \
+                 from unnest($1::uuid[], $2::timestamptz[], $3::jsonb[], $4::bool[]) as t(i, c, p, s) \
+                 where r.id = t.i and r.launch_created_at = t.c and r.suite_tree is null \
+                 returning r.id",
+            )
+            .bind(&ids)
+            .bind(&ats)
+            .bind(&paths)
+            .bind(&titled)
+            .fetch_all(&mut *tx)
+            .await?;
+            updated.extend(done);
+        }
+        let (kid, kat) = mine(|r| r.4);
+        if !kid.is_empty() {
+            type Attempt = (Uuid, Value, Option<Vec<u8>>);
+            let attempts: Vec<Attempt> = sqlx::query_as(
+                "select a.result_id, a.detail, a.steps_z from attempts a \
+                 join unnest($1::uuid[], $2::timestamptz[]) as t(i, c) \
+                   on a.result_id = t.i and a.launch_created_at = t.c",
+            )
+            .bind(&kid)
+            .bind(&kat)
+            .fetch_all(&mut *tx)
+            .await?;
+            let mut kinds: HashMap<Uuid, i32> = HashMap::new();
+            for (result, detail, steps) in attempts {
+                let d: AttemptDetail = serde_json::from_value(detail).unwrap_or_default();
+                let steps: Vec<Step> = match steps {
+                    Some(z) => crate::codec::decode(&z).unwrap_or_default(),
+                    None => Vec::new(),
+                };
+                let m = attempt_kinds(&d.attachments, &steps);
+                if m != 0 {
+                    *kinds.entry(result).or_default() |= m;
+                }
+            }
+            let at: HashMap<Uuid, DateTime<Utc>> = kid.iter().copied().zip(kat).collect();
+            let mut ids = Vec::with_capacity(kinds.len());
+            let mut ats = Vec::with_capacity(kinds.len());
+            let mut masks = Vec::with_capacity(kinds.len());
+            let mut sorted: Vec<(Uuid, i32)> = kinds.into_iter().collect();
+            sorted.sort();
+            for (id, m) in sorted {
+                ids.push(id);
+                ats.push(at[&id]);
+                masks.push(m);
+            }
+            if !ids.is_empty() {
+                let done: Vec<Uuid> = sqlx::query_scalar(
+                    "update results r set attachment_kinds = r.attachment_kinds | t.k \
+                     from unnest($1::uuid[], $2::timestamptz[], $3::int[]) as t(i, c, k) \
+                     where r.id = t.i and r.launch_created_at = t.c \
+                       and r.attachment_kinds | t.k <> r.attachment_kinds \
+                     returning r.id",
+                )
+                .bind(&ids)
+                .bind(&ats)
+                .bind(&masks)
+                .fetch_all(&mut *tx)
+                .await?;
+                updated.extend(done);
+            }
+        }
+        tx.commit().await?;
+        Ok((updated.len() as u64, skipped))
+    }
+}
+
+/// A result the backfill looks at: id, launch time, launch, and whether `label_values`,
+/// `attachment_kinds` and `suite_tree` need filling.
+type BackfillRow = (Uuid, DateTime<Utc>, Uuid, bool, bool, bool);
+
+/// Rows a transaction held while the backfill walked past them, kept to be tried again.
+pub const MAX_SKIPPED: usize = 10_000;
+
+fn is_lock_timeout(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| {
+        c.downcast_ref::<sqlx::Error>()
+            .and_then(|e| e.as_database_error())
+            .and_then(|d| d.code())
+            .is_some_and(|c| c == "55P03")
+    })
 }
 
 #[cfg(test)]
@@ -426,14 +533,5 @@ mod tests {
             json!({"tag": ["b", "", "a"], "owner": ["ann"], "severity": [""]})
         );
         assert_eq!(label_values(&json!("not a list")), json!({}));
-    }
-
-    #[test]
-    fn key_parts_are_short_and_distinct() {
-        assert_eq!(key_part("staging"), "staging");
-        let a = key_part("a b");
-        assert!(a.starts_with('#'));
-        assert_ne!(a, key_part("a  b"));
-        assert_eq!(key_part(&"x".repeat(300)).len(), 65);
     }
 }

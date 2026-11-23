@@ -346,8 +346,7 @@ pub async fn apply_launch_changes(
             .await?;
         }
     }
-    crate::analysis::rules::add_hits(&mut *conn, rule_hits).await?;
-    crate::explorer::touch(conn, &[launch.id]).await?;
+    crate::analysis::rules::add_hits(conn, rule_hits).await?;
     Ok(true)
 }
 
@@ -410,6 +409,7 @@ pub async fn project_run_items(
     if item_ids.is_empty() {
         return Ok(out);
     }
+    crate::explorer::app_writes_keys(&mut *conn).await?;
     let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
         "select ri.id, ri.case_id, ri.case_version, ri.series_id, s.test_case_id, ri.status, ri.execution_no, \
            ri.executed_by, ri.comment, ri.started_at, ri.finished_at, ri.defect, c.number, \

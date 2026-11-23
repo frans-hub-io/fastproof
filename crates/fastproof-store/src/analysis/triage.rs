@@ -369,7 +369,6 @@ impl Store {
         if req.mute.is_some() || req.unmute == Some(true) {
             recount_muted(&mut tx, &launches).await?;
         }
-        crate::explorer::touch(&mut tx, &launches).await?;
         crate::events::emit(
             &mut tx,
             "results.triaged",

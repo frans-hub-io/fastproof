@@ -135,7 +135,8 @@ export function LogConsole({ project, launchId, live: running, resultId, attempt
     queryFn: ({ pageParam }) => fetchLogs(project, launchId, filters, pageParam, PAGE),
     getNextPageParam: (last) => last.next ?? undefined,
     staleTime: running ? 0 : 60_000,
-    refetchInterval: running && env ? ENV_POLL_MS : false,
+    // Re-read only while just the newest page is loaded: every refetch reads every loaded page.
+    refetchInterval: (q) => (running && env && (q.state.data?.pages.length ?? 0) <= 1 ? ENV_POLL_MS : false),
     retry: false,
   });
   const unsupported = stored.error instanceof ApiError && stored.error.status === 404 && stored.error.message === 'resource not found';

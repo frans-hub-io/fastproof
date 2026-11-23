@@ -27,7 +27,11 @@ sits directly under its epic. Levels that no result of the launch has are droppe
 When a result has a label more than once with different values (two `owner` labels, two `feature` labels), it
 appears in the group of each value, as in Allure 3; with several such levels, in each combination. A repeated
 identical value counts once. Every group above counts the result once, so the counts of a parent can be less
-than the sum of its children. A result is placed by at most 20 values of one label and in at most 64 groups.
+than the sum of its children. A result is placed by at most 20 values of one label and in at most 64 groups. A
+filter by a label value matches any value of the result, so a result with more than 20 values of a label can
+match a filter by its 21st value and still show only in the groups of its first 20. A tree holds at most
+200 000 groups (and reads at most 200 000 distinct placements); beyond that the root says `partial` and the
+counts cover the groups listed.
 
 The grouping is in the page address (`view=owner`, or `view=custom&by=team,component`), so a link opens the
 same tree.

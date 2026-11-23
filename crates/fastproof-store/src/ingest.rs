@@ -579,6 +579,7 @@ pub async fn persist_attempts_in(
             .bind(launch.id)
             .fetch_one(&mut *conn)
             .await?;
+    crate::explorer::app_writes_keys(&mut *conn).await?;
 
     let mut seen: HashMap<String, usize> = HashMap::new();
     let mut prepared: Vec<Prepared> = Vec::with_capacity(attempts.len());
@@ -1221,7 +1222,6 @@ pub async fn persist_attempts_in(
         Some(seq0 + prepared.len() as i64),
     )
     .await?;
-    crate::explorer::touch(&mut *conn, &[launch.id]).await?;
     // The outbox rows last: their ids are taken at insert, and the outbox reader waits at the
     // first id whose transaction is still open, so they go in right before the commit.
     crate::events::emit_many(

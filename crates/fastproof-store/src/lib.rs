@@ -158,6 +158,8 @@ pub async fn check_schema(pool: &PgPool) -> anyhow::Result<()> {
 pub struct Store {
     pool: PgPool,
     purge_batch: i64,
+    /// Counted keys and groups of one launch tree, at most.
+    tree_limits: (usize, usize),
 }
 
 impl Store {
@@ -165,7 +167,14 @@ impl Store {
         Self {
             pool,
             purge_batch: purge::PURGE_BATCH,
+            tree_limits: (results::MAX_TREE_KEYS, results::MAX_TREE_NODES),
         }
+    }
+
+    /// Lower limits of the launch tree (counted keys, groups), for tests.
+    pub fn with_tree_limits(mut self, keys: usize, nodes: usize) -> Self {
+        self.tree_limits = (keys.max(1), nodes.max(1));
+        self
     }
 
     /// Sets how many rows one statement of a large delete may touch (default

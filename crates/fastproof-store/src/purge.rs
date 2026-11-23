@@ -299,12 +299,10 @@ impl<'c> Purge<'c> {
         for l in LAUNCH_LEAVES {
             self.leaves(l, "launch_id", launches).await?;
         }
-        // Explorer aggregates computed before this purge must not be stored after it.
-        self.exec(
-            "update explorer_gen set gen = gen + 1 where launch_id = any($1)".into(),
-            launches,
-        )
-        .await?;
+        // Explorer aggregates computed before this purge must not be stored after it (a dropped
+        // partition fires no results trigger).
+        self.tick()?;
+        crate::explorer::touch(&mut *self.conn, launches).await?;
         self.run_items("launch_id", launches).await
     }
 

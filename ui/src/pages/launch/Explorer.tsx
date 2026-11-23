@@ -724,6 +724,7 @@ export function Explorer({ project, launch, counts }: { project: string; launch:
       <Text size="xs" c="dimmed" className="fh-truncate">
         {anyFilter ? `${total.toLocaleString()} of ${c.total.toLocaleString()} tests` : `${c.total.toLocaleString()} tests`}
         {typeof tree?.durationMs === 'number' ? ` · ${formatDuration(tree.durationMs)} in total` : ''}
+        {tree?.partial ? ' · partial: the launch has more groups than one tree shows' : ''}
       </Text>
       <Text size="xs" c="dimmed" visibleFrom="sm" className="fh-truncate" title="↑ ↓ move, → ← open and close groups, Enter shows a test, Esc closes it">
         Keys: ↑↓ → ← Enter Esc

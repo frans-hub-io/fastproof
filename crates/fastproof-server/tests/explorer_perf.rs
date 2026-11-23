@@ -859,3 +859,517 @@ async fn clusters_and_logs_follow_the_environment() {
     let (_, none) = s.get(&format!("{logs}?env=%2500"), ADMIN_TOKEN).await;
     assert!(messages(&none).is_empty(), "{none}");
 }
+
+async fn launch_gen(db: &TestDb, launch: &str) -> i64 {
+    sqlx::query_scalar::<_, i64>(
+        "select coalesce(max(gen), 0) from explorer_gen where launch_id = $1::uuid",
+    )
+    .bind(launch)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap()
+}
+
+/// Writes that do not come from this version (a replica of the previous one during a rolling
+/// update, SQL by hand) still invalidate the cache, and changed labels or names recompute
+/// `label_values` and clear `suite_tree`.
+#[tokio::test]
+async fn writes_from_other_code_invalidate_the_cache_and_stored_keys() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = Server::start(&db).await;
+    s.project("old").await;
+    let launch = s.launch("old", None).await;
+    let lid = launch["id"].as_str().unwrap();
+    let base = format!("/api/v1/projects/old/launches/{lid}");
+    post_results(
+        &s,
+        "old",
+        lid,
+        &[
+            result("a", "o.T#a", "failed", json!([l("owner", "ann")])),
+            result("b", "o.T#b", "passed", json!([l("owner", "bob")])),
+        ],
+    )
+    .await;
+    finish(&s, "old", lid).await;
+    let stored: i64 = sqlx::query_scalar(
+        "select count(*) from results where launch_id = $1::uuid and suite_tree is not null and label_values is not null",
+    )
+    .bind(lid)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(stored, 2, "ingest stores both keys");
+    let (_, f) = s.get(&format!("{base}/facets"), ADMIN_TOKEN).await;
+    assert_eq!(f["counts"]["muted"], 0);
+    let (_, t) = s
+        .get(
+            &format!("{base}/tree?includeTests=true&groupBy=owner"),
+            ADMIN_TOKEN,
+        )
+        .await;
+    assert_eq!(t["children"].as_array().unwrap().len(), 2);
+    let g0 = launch_gen(&db, lid).await;
+
+    sqlx::query("update results set muted = true where launch_id = $1::uuid and name = 'a'")
+        .bind(lid)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    assert!(
+        launch_gen(&db, lid).await > g0,
+        "the statement trigger counts the write"
+    );
+    let (_, f) = s.get(&format!("{base}/facets"), ADMIN_TOKEN).await;
+    assert_eq!(f["counts"]["muted"], 1, "{f}");
+
+    sqlx::query(
+        "update results set labels = '[{\"name\": \"owner\", \"value\": \"cid\"}, {\"name\": \"parentSuite\", \"value\": \"Web\"}]' \
+         where launch_id = $1::uuid and name = 'b'",
+    )
+    .bind(lid)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let (lv, tree): (Value, Option<Vec<String>>) = sqlx::query_as(
+        "select label_values, suite_tree from results where launch_id = $1::uuid and name = 'b'",
+    )
+    .bind(lid)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(lv, json!({"owner": ["cid"], "parentSuite": ["Web"]}));
+    assert_eq!(tree, None, "the stored suite path is cleared");
+    let (_, t) = s
+        .get(
+            &format!("{base}/tree?includeTests=true&groupBy=owner"),
+            ADMIN_TOKEN,
+        )
+        .await;
+    let names: Vec<&str> = t["children"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, vec!["ann", "cid"]);
+    let (_, scan) = s.get(&format!("{base}/tree"), ADMIN_TOKEN).await;
+    let (_, counted) = s
+        .get(&format!("{base}/tree?includeTests=true"), ADMIN_TOKEN)
+        .await;
+    assert_eq!(
+        nodes(&scan, &|_| None).keys().collect::<Vec<_>>(),
+        nodes(&counted, &|_| None).keys().collect::<Vec<_>>(),
+        "the Suites tree follows the new labels: {counted}"
+    );
+}
+
+/// A tree with more groups than the limit says `partial` and is not cached.
+#[tokio::test]
+async fn large_trees_are_bounded_and_partial() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = Server::start(&db).await;
+    s.project("big").await;
+    let launch = s.launch("big", None).await;
+    let lid = launch["id"].as_str().unwrap();
+    let rs: Vec<Value> = (0..12)
+        .map(|i| {
+            result(
+                &format!("t{i}"),
+                &format!("b.C{i}#t"),
+                "passed",
+                json!([l("owner", &format!("o{i}"))]),
+            )
+        })
+        .collect();
+    post_results(&s, "big", lid, &rs).await;
+    finish(&s, "big", lid).await;
+    let store = fastproof_store::Store::new(db.pool.clone());
+    let project_id: uuid::Uuid =
+        sqlx::query_scalar("select project_id from launches where id = $1::uuid")
+            .bind(lid)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    let l = store
+        .launch(project_id, lid.parse().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    let opts = |by: fastproof_store::results::GroupBy| fastproof_store::results::TreeOptions {
+        include_tests: true,
+        ..fastproof_store::results::TreeOptions::groups(by)
+    };
+    let owner = || fastproof_store::results::GroupBy::Labels(vec!["owner".into()]);
+    let few_keys = store.clone().with_tree_limits(5, 1000);
+    let t = few_keys.tree_with(&l, &opts(owner())).await.unwrap();
+    assert!(t.partial);
+    assert_eq!(t.children.len(), 5);
+    assert!(
+        cache_rows(&db, lid).await.is_empty(),
+        "partial trees are not cached"
+    );
+    let full = store.tree_with(&l, &opts(owner())).await.unwrap();
+    assert!(!full.partial);
+    assert_eq!(full.children.len(), 12);
+    sqlx::query("delete from explorer_cache")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let few_nodes = store.clone().with_tree_limits(1000, 4);
+    let t = few_nodes
+        .tree_with(&l, &opts(fastproof_store::results::GroupBy::Suite))
+        .await
+        .unwrap();
+    assert!(t.partial, "{t:?}");
+    let t = few_nodes
+        .tree_with(&l, &fastproof_store::results::TreeOptions::groups(owner()))
+        .await
+        .unwrap();
+    assert!(t.partial, "the result-id tree is bounded too");
+}
+
+/// A launch with more one-test suites than one `or` list holds reads them by a hashed list,
+/// cold and from the cache, and its pages agree with the stored paths.
+#[tokio::test]
+async fn many_small_suites_and_their_pages() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = Server::start(&db).await;
+    s.project("many").await;
+    let launch = s.launch("many", None).await;
+    let lid = launch["id"].as_str().unwrap();
+    let base = format!("/api/v1/projects/many/launches/{lid}");
+    let rs: Vec<Value> = (0..90)
+        .map(|i| {
+            result(
+                &format!("t{i}"),
+                &format!("m.C{i:02}#t"),
+                if i % 9 == 0 { "failed" } else { "passed" },
+                json!([]),
+            )
+        })
+        .collect();
+    post_results(&s, "many", lid, &rs).await;
+    finish(&s, "many", lid).await;
+    let (_, scan) = s.get(&format!("{base}/tree"), ADMIN_TOKEN).await;
+    for round in 0..2 {
+        let (_, t) = s
+            .get(&format!("{base}/tree?includeTests=true"), ADMIN_TOKEN)
+            .await;
+        let a = nodes(&scan, &|n| ids(&n["resultIds"], ""));
+        let b = nodes(&t, &|n| ids(&n["tests"], "id"));
+        assert_eq!(a.keys().collect::<Vec<_>>(), b.keys().collect::<Vec<_>>());
+        for (path, (counts, _, want)) in &a {
+            assert_eq!(counts, &b[path].0, "round {round} {path:?}");
+            assert_eq!(
+                want.clone().unwrap_or_default(),
+                b[path].2.clone().unwrap_or_default(),
+                "round {round} {path:?}"
+            );
+        }
+    }
+    // A stored path that differs from the one computed from the row is used by the tree and its
+    // pages alike.
+    sqlx::query(
+        "update results set suite_tree = '{elsewhere}' where launch_id = $1::uuid and name = 't1'",
+    )
+    .bind(lid)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let (_, t) = s
+        .get(&format!("{base}/tree?includeTests=true"), ADMIN_TOKEN)
+        .await;
+    assert_eq!(
+        counted_node(&t, &["elsewhere".into()])["counts"]["total"],
+        1,
+        "{t}"
+    );
+    let (_, page) = s
+        .get(
+            &format!("{base}/tree/tests?path={}", enc("[\"elsewhere\"]")),
+            ADMIN_TOKEN,
+        )
+        .await;
+    assert_eq!(page["items"][0]["name"], "t1", "{page}");
+    let (_, ids_tree) = s.get(&format!("{base}/tree"), ADMIN_TOKEN).await;
+    assert_eq!(
+        counted_node(&ids_tree, &["elsewhere".into()])["counts"]["total"],
+        1
+    );
+}
+
+/// The cache is best effort, keys of different groupings and environments never meet, and a
+/// deep link outside the inlined groups does not rewrite the entry.
+#[tokio::test]
+async fn cache_keys_writes_and_deep_links() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = Server::start(&db).await;
+    s.project("ck").await;
+    let launch = s.launch("ck", None).await;
+    let lid = launch["id"].as_str().unwrap();
+    let base = format!("/api/v1/projects/ck/launches/{lid}");
+    // Groups y (4999), w (10) and z (1): the plain tree inlines z and w; a deep link into y
+    // inlines y and z instead.
+    let mut rs: Vec<Value> = (0..4999)
+        .map(|i| {
+            result(
+                &format!("t{i}"),
+                &format!("k.T#t{i:04}"),
+                "passed",
+                json!([l("a:k", "x"), l("a", "y")]),
+            )
+        })
+        .collect();
+    rs.extend((0..10).map(|i| {
+        result(
+            &format!("w{i}"),
+            &format!("k.W#w{i}"),
+            "passed",
+            json!([l("a", "w")]),
+        )
+    }));
+    rs.push(result("z0", "k.Z#z0", "passed", json!([l("a", "z")])));
+    for chunk in rs.chunks(1000) {
+        post_results(&s, "ck", lid, chunk).await;
+    }
+    finish(&s, "ck", lid).await;
+    let (_, one) = s
+        .get(
+            &format!("{base}/tree?includeTests=true&groupBy=a:k"),
+            ADMIN_TOKEN,
+        )
+        .await;
+    let (_, two) = s
+        .get(
+            &format!("{base}/tree?includeTests=true&groupBy=a&env=all"),
+            ADMIN_TOKEN,
+        )
+        .await;
+    assert_ne!(one["children"], two["children"], "different entries");
+    let (_, two_again) = s
+        .get(
+            &format!("{base}/tree?includeTests=true&groupBy=a&env=all"),
+            ADMIN_TOKEN,
+        )
+        .await;
+    assert_eq!(two, two_again);
+
+    let deep = s.results("ck", lid, "&q=t0042").await;
+    let deep_id = deep[0]["id"].as_str().unwrap().to_string();
+    let (_, plain) = s
+        .get(
+            &format!("{base}/tree?includeTests=true&groupBy=a"),
+            ADMIN_TOKEN,
+        )
+        .await;
+    let before: chrono::DateTime<chrono::Utc> =
+        sqlx::query_scalar("select max(created_at) from explorer_cache where launch_id = $1::uuid")
+            .bind(lid)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    let _ = plain;
+    for _ in 0..2 {
+        let (st, t) = s
+            .get(
+                &format!("{base}/tree?includeTests=true&groupBy=a&reveal={deep_id}"),
+                ADMIN_TOKEN,
+            )
+            .await;
+        assert_eq!(st, StatusCode::OK, "{t}");
+        let found = nodes(&t, &|n| ids(&n["tests"], "id"))
+            .values()
+            .any(|(_, _, tests)| tests.as_ref().is_some_and(|x| x.contains(&deep_id)));
+        assert!(found, "the deep-linked result is inline");
+    }
+    let after: chrono::DateTime<chrono::Utc> =
+        sqlx::query_scalar("select max(created_at) from explorer_cache where launch_id = $1::uuid")
+            .bind(lid)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(before, after, "deep links do not rewrite the entry");
+
+    sqlx::query("delete from explorer_cache")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "alter table explorer_cache add constraint explorer_cache_refuse check (false) not valid",
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    for p in [
+        format!("{base}/tree?includeTests=true"),
+        format!("{base}/labels"),
+        format!("{base}/facets"),
+        format!("{base}/environments"),
+    ] {
+        let (st, b) = s.get(&p, ADMIN_TOKEN).await;
+        assert_eq!(
+            st,
+            StatusCode::OK,
+            "a failed cache write still answers: {p} {b}"
+        );
+    }
+}
+
+/// The backfill skips rows another transaction holds, never waits for them, and fills them
+/// after the walk.
+#[tokio::test]
+async fn backfill_skips_locked_rows_and_comes_back() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = Server::start(&db).await;
+    db.hold_jobs(&["explorer.backfill"]).await;
+    s.project("lk").await;
+    let launch = s.launch("lk", None).await;
+    let lid = launch["id"].as_str().unwrap();
+    let rs: Vec<Value> = (0..6)
+        .map(|i| {
+            result(
+                &format!("t{i}"),
+                &format!("l.T#t{i}"),
+                "passed",
+                json!([l("owner", "ann")]),
+            )
+        })
+        .collect();
+    post_results(&s, "lk", lid, &rs).await;
+    sqlx::query("update results set label_values = null")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    sqlx::query("delete from analysis_state where name = 'explorer.results.backfill'")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let mut holder = db.pool.begin().await.unwrap();
+    let held: uuid::Uuid = sqlx::query_scalar(
+        "select id from results where id = (select id from results where launch_id = $1::uuid \
+         order by id limit 1 offset 2) for update",
+    )
+    .bind(lid)
+    .fetch_one(&mut *holder)
+    .await
+    .unwrap();
+    let state = &s.running.as_ref().unwrap().state;
+    let started = std::time::Instant::now();
+    let p = state
+        .store
+        .backfill_explorer(500, Duration::ZERO)
+        .await
+        .unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "never waits for the held row"
+    );
+    assert_eq!(p.updated, 5, "{p:?}");
+    let p = state
+        .store
+        .backfill_explorer(500, Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert!(!p.done, "the held row is still to do: {p:?}");
+    holder.rollback().await.unwrap();
+    let p = state
+        .store
+        .backfill_explorer(500, Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert!(p.done, "{p:?}");
+    let left: Option<Value> = sqlx::query_scalar("select label_values from results where id = $1")
+        .bind(held)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(left, Some(json!({"owner": ["ann"]})));
+}
+
+/// A launch kept by the rollup (a manual run) loses its results with the dropped partition;
+/// its cached aggregates are invalidated with them.
+#[tokio::test]
+async fn rollup_invalidates_the_cache_of_kept_launches() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = Server::start(&db).await;
+    let store = fastproof_store::Store::new(db.pool.clone());
+    db.hold_jobs(&[
+        "history.rollup",
+        "retention.apply",
+        "analysis.indexes",
+        "partitions.ensure",
+        "explorer.backfill",
+    ])
+    .await;
+    store.ensure_partitions(6, 1).await.unwrap();
+    s.project("ru").await;
+    let (st, _) = s
+        .call(
+            Method::PUT,
+            "/api/v1/projects/ru/settings",
+            Some(ADMIN_TOKEN),
+            Some(json!({"retention": {"rawDays": 60, "keepImportant": true}, "rollup": {"afterDays": 30}})),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK);
+    let mut ids = Vec::new();
+    for kept in [false, true] {
+        let launch = s.launch("ru", None).await;
+        let lid = launch["id"].as_str().unwrap().to_string();
+        sqlx::query(
+            "update launches set created_at = now() - interval '125 days', \
+             started_at = now() - interval '125 days' where id = $1::uuid",
+        )
+        .bind(&lid)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        post_results(
+            &s,
+            "ru",
+            &lid,
+            &[result("a", "r.T#a", "failed", json!([l("owner", "ann")]))],
+        )
+        .await;
+        finish(&s, "ru", &lid).await;
+        if kept {
+            sqlx::query("update launches set manual_state = 'closed' where id = $1::uuid")
+                .bind(&lid)
+                .execute(&db.pool)
+                .await
+                .unwrap();
+        }
+        ids.push(lid);
+    }
+    let kept = &ids[1];
+    let base = format!("/api/v1/projects/ru/launches/{kept}");
+    let (_, f) = s.get(&format!("{base}/facets"), ADMIN_TOKEN).await;
+    assert_eq!(f["counts"]["total"], 1);
+    assert!(!cache_rows(&db, kept).await.is_empty());
+    let g0 = launch_gen(&db, kept).await;
+    let report = store.rollup_due(Duration::from_secs(60)).await.unwrap();
+    assert!(!report.partitions_dropped.is_empty(), "{report:?}");
+    assert!(
+        launch_gen(&db, kept).await > g0,
+        "the kept launch's counter went up"
+    );
+    let (st, f) = s.get(&format!("{base}/facets"), ADMIN_TOKEN).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(
+        f["counts"]["total"], 0,
+        "no cached counts of dropped results: {f}"
+    );
+}

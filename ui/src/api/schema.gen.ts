@@ -4742,6 +4742,11 @@ export interface components {
              */
             levels?: string[] | null;
             name: string;
+            /**
+             * @description On the root: the launch has more groups than one tree holds, and the counts cover only
+             *     the groups listed.
+             */
+            partial?: boolean;
             path: string[];
             resultIds?: string[] | null;
             /**

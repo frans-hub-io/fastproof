@@ -113,6 +113,7 @@ pub async fn ingest(
 ) -> ApiResult<(StatusCode, Json<LogIngestSummary>)> {
     let project = s.project_for(&auth, &key, &s.perms.launches_write).await?;
     let launch = s.launch_of(&project, id).await?;
+    s.refuse_merged(&launch)?;
     identity_encoding(&req)?;
     let ct = req
         .headers()

@@ -1,13 +1,15 @@
-import { Anchor, Autocomplete, Badge, Button, Card, Group, Select, SimpleGrid, Stack, Switch, Text, TextInput, Tooltip } from '@mantine/core';
-import { EmptyState } from '@franshub/ui-shell';
+import { Affix, Anchor, Autocomplete, Badge, Button, Card, Checkbox, Group, Paper, Select, SimpleGrid, Stack, Switch, Text, TextInput, Tooltip } from '@mantine/core';
+import { EmptyState, useCan } from '@franshub/ui-shell';
 import { useDebouncedValue } from '@mantine/hooks';
-import { IconGitBranch, IconGitCommit, IconHandFinger, IconSearch, IconServer2, IconX } from '@tabler/icons-react';
+import { IconArrowMerge, IconGitBranch, IconGitCommit, IconHandFinger, IconSearch, IconServer2, IconX } from '@tabler/icons-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
 import { useProjectEvents, type LiveState } from '../api/events';
 import { flatItems, useLaunches, useProject } from '../api/hooks';
 import type { Launch, LaunchFilters } from '../api/types';
 import { LoadMore } from '../components/LoadMore';
+import { MergeLaunchesModal } from '../components/MergeLaunches';
+import { MAX_MERGE_LAUNCHES } from '../api/merges';
 import { PageHeader } from '../components/PageHeader';
 import { passRate } from '../lib/counts';
 import { QueryState } from '../components/QueryState';
@@ -55,7 +57,23 @@ export function ManualBadge({ manual }: { manual: NonNullable<Launch['manual']> 
   );
 }
 
-function LaunchRow({ project, launch, index, selected, onSelect }: { project: string; launch: Launch; index: number; selected: boolean; onSelect: (i: number) => void }) {
+function LaunchRow({
+  project,
+  launch,
+  index,
+  selected,
+  onSelect,
+  checked,
+  onCheck,
+}: {
+  project: string;
+  launch: Launch;
+  index: number;
+  selected: boolean;
+  onSelect: (i: number) => void;
+  checked?: boolean;
+  onCheck?: (launch: Launch, on: boolean) => void;
+}) {
   const to = `/p/${project}/launches/${launch.id}`;
   return (
     <Card
@@ -71,6 +89,16 @@ function LaunchRow({ project, launch, index, selected, onSelect }: { project: st
       <SimpleGrid cols={{ base: 1, md: 2 }} spacing="sm" verticalSpacing={8}>
         <Stack gap={4} style={{ minWidth: 0 }}>
           <Group gap="xs" wrap="nowrap" style={{ minWidth: 0 }}>
+            {onCheck && (
+              <Checkbox
+                size="xs"
+                checked={!!checked}
+                onChange={(e) => onCheck(launch, e.currentTarget.checked)}
+                aria-label={`Select launch #${String(launch.number)} to merge`}
+                data-testid="launch-select"
+                style={{ flex: 'none' }}
+              />
+            )}
             <Anchor component={Link} to={to} fw={700} className="fh-truncate" c="inherit" underline="hover">
               #{launch.number} {launch.name}
             </Anchor>
@@ -166,6 +194,17 @@ export default function LaunchesPage() {
   const launches = useLaunches(key, filters);
   const items = flatItems(launches.data);
   const [selected, setSelected] = useState(-1);
+  const canMerge = useCan('launches:write', key);
+  const [picked, setPicked] = useState<Map<string, Launch>>(new Map());
+  const [mergeOpen, setMergeOpen] = useState(false);
+  const pick = useCallback((l: Launch, on: boolean) => {
+    setPicked((prev) => {
+      const next = new Map(prev);
+      if (on) next.set(l.id, l);
+      else next.delete(l.id);
+      return next;
+    });
+  }, []);
 
   const set = useCallback(
     (k: string, v: string | null) => {
@@ -263,9 +302,18 @@ export default function LaunchesPage() {
                   <EmptyState title="No launches yet" description="Upload test results from CI with the fastproof CLI or the upload API, and the launches show up here." />
                 )
               ) : (
-                <Stack gap="xs" data-testid="launch-list">
+                <Stack gap="xs" data-testid="launch-list" pb={picked.size > 0 ? 72 : undefined}>
                   {items.map((l, i) => (
-                    <LaunchRow key={l.id} project={key} launch={l} index={i} selected={i === selected} onSelect={setSelected} />
+                    <LaunchRow
+                      key={l.id}
+                      project={key}
+                      launch={l}
+                      index={i}
+                      selected={i === selected}
+                      onSelect={setSelected}
+                      checked={picked.has(l.id)}
+                      onCheck={canMerge ? pick : undefined}
+                    />
                   ))}
                   <LoadMore hasMore={launches.hasNextPage} loading={launches.isFetchingNextPage} onLoad={() => void launches.fetchNextPage()} label="Load older launches" />
                   <Text size="xs" c="dimmed" ta="center" visibleFrom="sm">
@@ -277,6 +325,35 @@ export default function LaunchesPage() {
           </QueryState>
         )}
       </QueryState>
+      {picked.size > 0 && (
+        <Affix position={{ bottom: 16, left: 16, right: 16 }} zIndex={150}>
+          <Paper withBorder shadow="md" radius="md" p="xs" maw={560} mx="auto" data-testid="merge-bar">
+            <Group justify="space-between" gap="xs" wrap="wrap">
+              <Text size="sm">
+                {picked.size} selected
+                {picked.size > MAX_MERGE_LAUNCHES ? ` (at most ${String(MAX_MERGE_LAUNCHES)})` : ''}
+              </Text>
+              <Group gap="xs">
+                <Button size="xs" variant="subtle" onClick={() => setPicked(new Map())}>
+                  Clear
+                </Button>
+                <Tooltip label="Select at least two launches" disabled={picked.size >= 2}>
+                  <Button
+                    size="xs"
+                    leftSection={<IconArrowMerge size={14} />}
+                    disabled={picked.size < 2 || picked.size > MAX_MERGE_LAUNCHES}
+                    onClick={() => setMergeOpen(true)}
+                    data-testid="merge-open"
+                  >
+                    Merge…
+                  </Button>
+                </Tooltip>
+              </Group>
+            </Group>
+          </Paper>
+        </Affix>
+      )}
+      {mergeOpen && <MergeLaunchesModal project={key} launches={[...picked.values()]} opened={mergeOpen} onClose={() => setMergeOpen(false)} onMerged={() => setPicked(new Map())} />}
     </>
   );
 }

@@ -235,6 +235,7 @@ pub async fn finish(
         serde_json::from_slice(&body)
             .map_err(|e| ApiError::bad_request(format!("invalid JSON body: {e}")))?
     };
+    s.refuse_merged(&s.launch_of(&project, id).await?)?;
     let status = body.status.unwrap_or_else(|| "finished".to_string());
     if !matches!(status.as_str(), "finished" | "interrupted") {
         return Err(ApiError::bad_request(

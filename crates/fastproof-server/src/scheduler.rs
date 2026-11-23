@@ -350,6 +350,7 @@ pub fn standard_jobs() -> anyhow::Result<Scheduler> {
     analysis_jobs(&mut sch)?;
     case_jobs(&mut sch)?;
     media_jobs(&mut sch)?;
+    crate::merges::register_jobs(&mut sch)?;
     Ok(sch)
 }
 

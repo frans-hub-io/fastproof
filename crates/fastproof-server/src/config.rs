@@ -171,6 +171,11 @@ pub struct Config {
     pub limits: Limits,
     /// Days of outbox events kept (`FASTPROOF_OUTBOX_RETENTION_DAYS`).
     pub outbox_retention_days: i64,
+    /// Hours a launch merge can be undone (`FASTPROOF_MERGE_UNDO_HOURS`, 0 to 720; 0: merges
+    /// are final at once).
+    pub merge_undo_hours: i64,
+    /// Attempts of the launches one merge takes, at most (`FASTPROOF_MERGE_MAX_ATTEMPTS`).
+    pub merge_max_attempts: i64,
     /// Gates, notifications, VCS, secrets, egress (`crate::integrations::config`).
     pub integrations: crate::integrations::config::IntegrationsConfig,
     pub ingest_mode: IngestMode,
@@ -362,6 +367,8 @@ impl fmt::Debug for Config {
             .field("retain_uploads", &self.retain_uploads)
             .field("testops_allow_http", &self.testops_allow_http)
             .field("outbox_retention_days", &self.outbox_retention_days)
+            .field("merge_undo_hours", &self.merge_undo_hours)
+            .field("merge_max_attempts", &self.merge_max_attempts)
             .field("integrations", &self.integrations)
             .field("ingest_mode", &self.ingest_mode)
             .field("roles", &self.roles)
@@ -376,6 +383,15 @@ impl fmt::Debug for Config {
             .field("tm_backfill_delay", &self.tm_backfill_delay)
             .finish_non_exhaustive()
     }
+}
+
+/// An integer variable within `min..=max`.
+fn bounded_env(env: &Env<'_>, k: &str, default: i64, min: i64, max: i64) -> anyhow::Result<i64> {
+    let v: i64 = env.parse(k, default)?;
+    if !(min..=max).contains(&v) {
+        anyhow::bail!("{k}: must be {min} to {max}, got {v}");
+    }
+    Ok(v)
 }
 
 /// Reads environment variables through a lookup function (tests pass a map).
@@ -752,6 +768,14 @@ impl Config {
             retain_uploads: env.bool("FASTPROOF_RETAIN_UPLOADS", false)?,
             limits,
             outbox_retention_days: env.parse("FASTPROOF_OUTBOX_RETENTION_DAYS", 7)?,
+            merge_undo_hours: bounded_env(&env, "FASTPROOF_MERGE_UNDO_HOURS", 24, 0, 720)?,
+            merge_max_attempts: bounded_env(
+                &env,
+                "FASTPROOF_MERGE_MAX_ATTEMPTS",
+                200_000,
+                1,
+                5_000_000,
+            )?,
             integrations: crate::integrations::config::IntegrationsConfig::from_env(&env)?,
             ingest_mode,
             roles,

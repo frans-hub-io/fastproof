@@ -122,6 +122,8 @@ the start is refused. After copying the attachments to a new store on purpose, s
 | `FASTPROOF_INGEST_WORKERS` | `2` | Uploads processed at the same time per replica |
 | `FASTPROOF_RETAIN_UPLOADS` | `false` | Keep the raw uploaded files in blob storage after processing (for re-parsing) |
 | `FASTPROOF_OUTBOX_RETENTION_DAYS` | `7` | Days that ingest events stay in the PostgreSQL outbox for optional consumers |
+| `FASTPROOF_MERGE_UNDO_HOURS` | `24` | Hours a [launch merge](../guide/merging-launches.md) can be undone (0 to 720; `0` makes every merge final and needs `settings:write`) |
+| `FASTPROOF_MERGE_MAX_ATTEMPTS` | `200000` | Attempts of the launches one merge takes, at most (1 to 5 000 000) |
 
 Give the spool directory room for `FASTPROOF_INGEST_WORKERS` uploads plus the ones being received. The other
 ingest limits are listed on [Limits](limits.md).

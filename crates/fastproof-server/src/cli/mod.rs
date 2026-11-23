@@ -8,6 +8,7 @@ pub mod cases;
 pub mod ci;
 pub mod client;
 pub mod gate;
+pub mod merge;
 pub mod watch;
 
 use std::path::PathBuf;
@@ -98,6 +99,11 @@ pub enum LaunchCommand {
     Start(LaunchArgs),
     /// Finish a launch.
     Finish(FinishArgs),
+    /// Merge launches (CI shards, re-runs) into a new launch or into one of them; a test run
+    /// in several becomes one result with more attempts.
+    Merge(merge::MergeArgs),
+    /// Undo a merge within its undo window.
+    UndoMerge(merge::UndoMergeArgs),
 }
 
 /// Server connection.
@@ -153,6 +159,11 @@ pub struct LaunchArgs {
     /// variables of GitLab CI, GitHub Actions or Jenkins.
     #[arg(long, env = "FASTPROOF_NO_CI", value_parser = clap::builder::BoolishValueParser::new())]
     pub no_ci: bool,
+    /// Add the results to this existing launch (id or number) instead of starting one: a
+    /// re-run joins the original launch, and a test run again becomes a new attempt of its
+    /// result. A launch merged into another resolves to that one.
+    #[arg(long, env = "FASTPROOF_RERUN_OF", conflicts_with = "launch")]
+    pub rerun_of: Option<String>,
 }
 
 impl LaunchArgs {
@@ -212,6 +223,9 @@ impl LaunchArgs {
     }
 
     pub async fn resolve(&self, client: &Client) -> anyhow::Result<Launch> {
+        if let Some(r) = &self.rerun_of {
+            return merge::find_launch(client, &self.conn.project, r).await;
+        }
         client
             .start_launch(&self.conn.project, &self.start()?)
             .await
@@ -341,8 +355,11 @@ pub async fn run(cli: Cli) -> anyhow::Result<i32> {
             let id = match f.id {
                 Some(id) => id,
                 None => {
-                    if f.launch.launch.is_none() && f.launch.ci().is_none() {
-                        bail!("give --id, --launch (FASTPROOF_LAUNCH) or run in CI");
+                    if f.launch.launch.is_none()
+                        && f.launch.rerun_of.is_none()
+                        && f.launch.ci().is_none()
+                    {
+                        bail!("give --id, --launch (FASTPROOF_LAUNCH), --rerun-of or run in CI");
                     }
                     f.launch.resolve(&client).await?.id
                 }
@@ -371,6 +388,12 @@ pub async fn run(cli: Cli) -> anyhow::Result<i32> {
             }
             Ok(0)
         }
+        Command::Launch {
+            command: LaunchCommand::Merge(m),
+        } => merge::merge(m).await,
+        Command::Launch {
+            command: LaunchCommand::UndoMerge(m),
+        } => merge::undo(m).await,
         Command::Upload(u) => upload(u).await,
         Command::Gate(g) => Ok(gate::run(g).await),
         Command::Testplan(t) => testplan(t).await,
@@ -430,9 +453,9 @@ async fn upload(u: UploadArgs) -> anyhow::Result<i32> {
     let start = u.launch.start()?;
     // A launch without an external id belongs to this command alone, so it is finished here;
     // one with an external id is shared (CI jobs, shards, `launch start`) and stays open.
-    let shared = start.external_id.is_some();
+    let shared = start.external_id.is_some() || u.launch.rerun_of.is_some();
     let finish = u.finish || (!shared && !u.no_finish);
-    let launch = client.start_launch(&project, &start).await?;
+    let launch = u.launch.resolve(&client).await?;
     eprintln!("launch #{} {} ({})", launch.number, launch.name, launch.id);
     let (body, file_name) = if meta.is_dir() {
         (archive::stream_dir(u.path.clone()), None)

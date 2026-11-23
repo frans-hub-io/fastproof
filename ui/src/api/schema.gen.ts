@@ -703,6 +703,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{key}/launches/merge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Merges launches (CI shards, re-runs) into a new launch or into one of them (`into`). A test run in several of them becomes one result with more attempts (the latest is the result, mixed outcomes are flaky in the run); counters, transitions, flakiness, defects and the series statistics are recomputed. The other launches are hidden (`mergedInto`) and refuse further results with 409 `launch_merged`; they come back on undo, which is possible until `undoUntil` (`FASTPROOF_MERGE_UNDO_HOURS`), and are deleted afterwards. Repeating the same merge returns it (200) and copies what reached the launches since. Launches to merge must be finished with no upload in progress (409 `launch_running`, `launch_busy`); the target may run. Also 409 `launch_merged`, `launch_manual`, `merge_mixed` (debug or branch differ), `launch_rolled_up`; 413 `merge_too_large`. `dryRun` answers counts (status `preview`) without merging. */
+        post: operations["launches_merge"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{key}/launches/{a}/compare/{b}": {
         parameters: {
             query?: never;
@@ -935,6 +952,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{key}/launches/{id}/merges": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description The merges the launch took part in, as the target or as a source, newest first (at most 50). */
+        get: operations["launches_merges"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{key}/launches/{id}/results": {
         parameters: {
             query?: never;
@@ -1047,6 +1081,39 @@ export interface paths {
         put?: never;
         /** @description Renders Markdown as cases show it (at most 64 KiB; raw HTML becomes text). */
         post: operations["markdown_preview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/merges/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["merges_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/merges/{id}/undo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Undoes a merge before `undoUntil`: a launch the merge created is deleted, or the copied attempts leave the launch merged into; the merged launches come back. 409 `merge_not_active`, `merge_final`, `merge_expired`, `merge_target_changed` (results were added to a created launch: delete it instead), `merge_target_merged`, `merge_target_rolled_up`, `merge_target_gone`. */
+        post: operations["merges_undo"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2938,6 +3005,11 @@ export interface components {
             /** @description Kept by retention. */
             important: boolean;
             manual?: components["schemas"]["LaunchManual"] | null;
+            /**
+             * Format: uuid
+             * @description The launch this one was merged into: it is hidden from lists and takes no more results.
+             */
+            mergedInto?: string | null;
             name: string;
             /** Format: int64 */
             number: number;
@@ -3046,6 +3118,58 @@ export interface components {
             total: number;
             /** Format: int64 */
             untested: number;
+        };
+        /** @description A merge of launches. */
+        LaunchMerge: {
+            counts: components["schemas"]["MergeCounts"];
+            /** Format: date-time */
+            createdAt?: string | null;
+            createdBy?: string | null;
+            /** @description The merge created the target (else it merged into one of the launches). */
+            createdTarget: boolean;
+            /** @description Merged without undo. */
+            final: boolean;
+            /** Format: date-time */
+            finalizedAt?: string | null;
+            /**
+             * Format: uuid
+             * @description Absent in a preview.
+             */
+            id?: string | null;
+            sources: components["schemas"]["MergeSource"][];
+            /**
+             * @description `preview`, `active` (can be undone until `undoUntil`), `undone`, `final` (the sources
+             *     are deleted) or `deleted` (the target was deleted, and the sources with it).
+             */
+            status: string;
+            /**
+             * Format: uuid
+             * @description Absent in a preview of a merge into a new launch.
+             */
+            targetId?: string | null;
+            /** Format: int64 */
+            targetNumber?: number | null;
+            /** Format: date-time */
+            undoUntil?: string | null;
+            /** Format: date-time */
+            undoneAt?: string | null;
+            undoneBy?: string | null;
+        };
+        /** @description Body of `POST /api/v1/projects/{key}/launches/merge`. */
+        LaunchMergeRequest: {
+            /** @description Check and count without merging (status `preview`). */
+            dryRun?: boolean;
+            /** @description No undo: the sources are deleted right after the merge (needs `settings:write`). */
+            final?: boolean;
+            /**
+             * Format: uuid
+             * @description Merge into this launch (one of `launchIds`) instead of a new launch.
+             */
+            into?: string | null;
+            /** @description The launches to merge, 2 to 20, the target included when `into` is given. */
+            launchIds: string[];
+            /** @description Name of the new launch (default: the name of the earliest source). */
+            name?: string | null;
         };
         /** @description Body of `PATCH .../launches/{id}`. */
         LaunchPatch: {
@@ -3246,6 +3370,60 @@ export interface components {
             expiresAt: string;
             /** @description Path of the URL, relative to the server: `/api/v1/media/<token>`. */
             url: string;
+        };
+        /** @description What a merge did. */
+        MergeCounts: {
+            /**
+             * Format: int64
+             * @description Attempts copied into the target (in a preview: attempts of the sources).
+             * @default 0
+             */
+            attempts?: number;
+            /**
+             * Format: int64
+             * @description Attempts the target had already (same client key, test and start), not copied again.
+             * @default 0
+             */
+            duplicates?: number;
+            /**
+             * Format: int64
+             * @description Attempts that reached a source after the merge and were copied later.
+             * @default 0
+             */
+            lateAttempts?: number;
+            /**
+             * Format: int64
+             * @description Attempts whose client key another test of the target used, copied under a new key.
+             * @default 0
+             */
+            rekeyed?: number;
+            /**
+             * Format: int64
+             * @description Results of the target created or recomputed.
+             * @default 0
+             */
+            results?: number;
+            /**
+             * Format: int64
+             * @description Tests run in more than one of the merged launches: their results got more attempts.
+             * @default 0
+             */
+            sharedSeries?: number;
+        };
+        /** @description Merges of a launch. */
+        MergeList: {
+            items: components["schemas"]["LaunchMerge"][];
+        };
+        /** @description A launch a merge took. */
+        MergeSource: {
+            /** Format: uuid */
+            id: string;
+            name?: string | null;
+            /**
+             * Format: int64
+             * @description Absent once the launch is deleted.
+             */
+            number?: number | null;
         };
         /**
          * @description A metric a gate rule checks.
@@ -3497,6 +3675,11 @@ export interface components {
                 /** @description Kept by retention. */
                 important: boolean;
                 manual?: components["schemas"]["LaunchManual"] | null;
+                /**
+                 * Format: uuid
+                 * @description The launch this one was merged into: it is hidden from lists and takes no more results.
+                 */
+                mergedInto?: string | null;
                 name: string;
                 /** Format: int64 */
                 number: number;
@@ -7938,6 +8121,81 @@ export interface operations {
             };
         };
     };
+    launches_merge: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LaunchMergeRequest"];
+            };
+        };
+        responses: {
+            /** @description a preview, or the same merge made before */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LaunchMerge"];
+                };
+            };
+            /** @description merged */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LaunchMerge"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     analysis_compare: {
         parameters: {
             query?: never;
@@ -8866,6 +9124,44 @@ export interface operations {
             };
         };
     };
+    launches_merges: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MergeList"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     results_list: {
         parameters: {
             query?: {
@@ -9555,6 +9851,90 @@ export interface operations {
                 };
             };
             429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    merges_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LaunchMerge"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    merges_undo: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LaunchMerge"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

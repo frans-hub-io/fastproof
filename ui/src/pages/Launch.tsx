@@ -16,6 +16,7 @@ import { GateBadge } from '../components/GateBadge';
 import { LoadMore } from '../components/LoadMore';
 import { LogConsole } from '../components/LogConsole';
 import { PageHeader } from '../components/PageHeader';
+import { MergeBanner } from '../components/MergeLaunches';
 import { passRate } from '../lib/counts';
 import { QueryState } from '../components/QueryState';
 import { LaunchStatusBadge, StatusBadge, StatusBar, StatusDot } from '../components/Status';
@@ -495,7 +496,7 @@ export default function LaunchPage() {
                   {l.status === 'running' && <LiveBadge state={live} />}
                   <GateBadge project={key} launch={l} />
                   <ImportantToggle project={key} launch={l} />
-                  {l.debug && (
+                  {l.debug && !l.mergedInto && (
                     <Badge variant="outline" color="gray" size="sm">
                       debug
                     </Badge>
@@ -518,6 +519,7 @@ export default function LaunchPage() {
             />
             {planOpen && <TestPlanModal project={key} launch={l} opened={planOpen} onClose={() => setPlanOpen(false)} initialStatuses={(sp.get('status') ?? '').split(',').filter((x): x is ResultStatus => (RESULT_STATUSES as readonly string[]).includes(x))} />}
             <Stack gap="md">
+              <MergeBanner project={key} launch={l} canUndo={canPlan} />
               <Chips launch={l} />
               <EnvironmentSwitch launch={l} scope={scope} />
               <Summary launch={l} counts={scope.counts} env={scope.env} />

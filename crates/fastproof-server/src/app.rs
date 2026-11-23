@@ -122,6 +122,7 @@ pub fn api_router() -> (Router<AppState>, utoipa::openapi::OpenApi) {
         .merge(api::runs::router())
         .merge(api::imports::router())
         .merge(api::exports::router())
+        .merge(api::merges::router())
         .split_for_parts();
     api::type_project_settings(&mut doc);
     api::admin::document_platform(&mut doc);

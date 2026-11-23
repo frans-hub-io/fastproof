@@ -162,6 +162,9 @@ pub struct Launch {
     /// Progress of the manual run, when the launch has one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manual: Option<crate::tm::LaunchManual>,
+    /// The launch this one was merged into: it is hidden from lists and takes no more results.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merged_into: Option<Uuid>,
     #[serde(skip)]
     pub project_id: Uuid,
     #[serde(skip)]

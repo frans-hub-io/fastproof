@@ -25,6 +25,7 @@ import {
 } from './fixtures';
 import { stageCHandlers } from './handlersC';
 import { mediaHandlers } from './media';
+import { mergeHandlers, resetMerges } from './merges';
 import { analyze, analyzeDetail, isImportant, resetStageC } from './stageC';
 import { resetTm, subscribeTmEvents, tmHandlers, tmLaunchList } from './tm';
 
@@ -63,6 +64,7 @@ export function resetMockState(): void {
   roleOverride = null;
   resetStageC();
   resetTm();
+  resetMerges();
 }
 
 function error(status: number, code: string, message: string, details?: unknown) {
@@ -513,6 +515,7 @@ export const handlers = [
 
   ...stageCHandlers({ role: currentRole, error, audit }),
   ...mediaHandlers(error),
+  ...mergeHandlers(error),
 
   http.all(`${API}/*`, () => error(404, 'not_found', 'no such endpoint')),
 ];

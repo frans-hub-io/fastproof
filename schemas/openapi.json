@@ -4444,6 +4444,102 @@
         }
       }
     },
+    "/api/v1/projects/{key}/launches/merge": {
+      "post": {
+        "tags": [
+          "launches"
+        ],
+        "description": "Merges launches (CI shards, re-runs) into a new launch or into one of them (`into`). A test run in several of them becomes one result with more attempts (the latest is the result, mixed outcomes are flaky in the run); counters, transitions, flakiness, defects and the series statistics are recomputed. The other launches are hidden (`mergedInto`) and refuse further results with 409 `launch_merged`; they come back on undo, which is possible until `undoUntil` (`FASTPROOF_MERGE_UNDO_HOURS`), and are deleted afterwards. Repeating the same merge returns it (200) and copies what reached the launches since. Launches to merge must be finished with no upload in progress (409 `launch_running`, `launch_busy`); the target may run. Also 409 `launch_merged`, `launch_manual`, `merge_mixed` (debug or branch differ), `launch_rolled_up`; 413 `merge_too_large`. `dryRun` answers counts (status `preview`) without merging.",
+        "operationId": "launches_merge",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LaunchMergeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "a preview, or the same merge made before",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LaunchMerge"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "merged",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LaunchMerge"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{key}/launches/{a}/compare/{b}": {
       "get": {
         "tags": [
@@ -5835,6 +5931,63 @@
         }
       }
     },
+    "/api/v1/projects/{key}/launches/{id}/merges": {
+      "get": {
+        "tags": [
+          "launches"
+        ],
+        "description": "The merges the launch took part in, as the target or as a source, newest first (at most 50).",
+        "operationId": "launches_merges",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MergeList"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{key}/launches/{id}/results": {
       "get": {
         "tags": [
@@ -7196,6 +7349,128 @@
             }
           },
           "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/merges/{id}": {
+      "get": {
+        "tags": [
+          "launches"
+        ],
+        "operationId": "merges_get",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LaunchMerge"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/merges/{id}/undo": {
+      "post": {
+        "tags": [
+          "launches"
+        ],
+        "description": "Undoes a merge before `undoUntil`: a launch the merge created is deleted, or the copied attempts leave the launch merged into; the merged launches come back. 409 `merge_not_active`, `merge_final`, `merge_expired`, `merge_target_changed` (results were added to a created launch: delete it instead), `merge_target_merged`, `merge_target_rolled_up`, `merge_target_gone`.",
+        "operationId": "merges_undo",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LaunchMerge"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
             "content": {
               "application/json": {
                 "schema": {
@@ -14754,6 +15029,14 @@
               }
             ]
           },
+          "mergedInto": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "The launch this one was merged into: it is hidden from lists and takes no more results."
+          },
           "name": {
             "type": "string"
           },
@@ -15016,6 +15299,144 @@
             "format": "int64"
           }
         }
+      },
+      "LaunchMerge": {
+        "type": "object",
+        "description": "A merge of launches.",
+        "required": [
+          "createdTarget",
+          "sources",
+          "status",
+          "final",
+          "counts"
+        ],
+        "properties": {
+          "counts": {
+            "$ref": "#/components/schemas/MergeCounts"
+          },
+          "createdAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "createdBy": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "createdTarget": {
+            "type": "boolean",
+            "description": "The merge created the target (else it merged into one of the launches)."
+          },
+          "final": {
+            "type": "boolean",
+            "description": "Merged without undo."
+          },
+          "finalizedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Absent in a preview."
+          },
+          "sources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MergeSource"
+            }
+          },
+          "status": {
+            "type": "string",
+            "description": "`preview`, `active` (can be undone until `undoUntil`), `undone`, `final` (the sources\nare deleted) or `deleted` (the target was deleted, and the sources with it)."
+          },
+          "targetId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Absent in a preview of a merge into a new launch."
+          },
+          "targetNumber": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "undoUntil": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "undoneAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "undoneBy": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "LaunchMergeRequest": {
+        "type": "object",
+        "description": "Body of `POST /api/v1/projects/{key}/launches/merge`.",
+        "required": [
+          "launchIds"
+        ],
+        "properties": {
+          "dryRun": {
+            "type": "boolean",
+            "description": "Check and count without merging (status `preview`)."
+          },
+          "final": {
+            "type": "boolean",
+            "description": "No undo: the sources are deleted right after the merge (needs `settings:write`)."
+          },
+          "into": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Merge into this launch (one of `launchIds`) instead of a new launch."
+          },
+          "launchIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "The launches to merge, 2 to 20, the target included when `into` is given."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Name of the new launch (default: the name of the earliest source)."
+          }
+        },
+        "additionalProperties": false
       },
       "LaunchPatch": {
         "type": "object",
@@ -15620,6 +16041,90 @@
           "url": {
             "type": "string",
             "description": "Path of the URL, relative to the server: `/api/v1/media/<token>`."
+          }
+        }
+      },
+      "MergeCounts": {
+        "type": "object",
+        "description": "What a merge did.",
+        "properties": {
+          "attempts": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Attempts copied into the target (in a preview: attempts of the sources).",
+            "default": 0
+          },
+          "duplicates": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Attempts the target had already (same client key, test and start), not copied again.",
+            "default": 0
+          },
+          "lateAttempts": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Attempts that reached a source after the merge and were copied later.",
+            "default": 0
+          },
+          "rekeyed": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Attempts whose client key another test of the target used, copied under a new key.",
+            "default": 0
+          },
+          "results": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Results of the target created or recomputed.",
+            "default": 0
+          },
+          "sharedSeries": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Tests run in more than one of the merged launches: their results got more attempts.",
+            "default": 0
+          }
+        }
+      },
+      "MergeList": {
+        "type": "object",
+        "description": "Merges of a launch.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LaunchMerge"
+            }
+          }
+        }
+      },
+      "MergeSource": {
+        "type": "object",
+        "description": "A launch a merge took.",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "number": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Absent once the launch is deleted."
           }
         }
       },
@@ -16412,6 +16917,14 @@
                       "type": "null"
                     }
                   ]
+                },
+                "mergedInto": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "uuid",
+                  "description": "The launch this one was merged into: it is hidden from lists and takes no more results."
                 },
                 "name": {
                   "type": "string"

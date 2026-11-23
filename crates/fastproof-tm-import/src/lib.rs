@@ -224,6 +224,101 @@ pub enum Item {
     FieldDefs(Vec<ImportedFieldDef>),
 }
 
+fn steps_bytes(s: &[ImportedStep]) -> usize {
+    s.iter()
+        .map(|x| {
+            std::mem::size_of::<ImportedStep>()
+                + x.id.len()
+                + x.action.len()
+                + x.expected.len()
+                + x.data.len()
+                + strings_bytes(&x.attachments)
+                + steps_bytes(&x.steps)
+        })
+        .sum()
+}
+
+fn strings_bytes(v: &[String]) -> usize {
+    v.iter()
+        .map(|x| std::mem::size_of::<String>() + x.len())
+        .sum()
+}
+
+impl Item {
+    /// About how much memory the item holds (text plus the size of its parts), for bounding
+    /// the queue between the parser and the importer.
+    pub fn approx_bytes(&self) -> usize {
+        match self {
+            Item::Case(c) => {
+                let fields: usize = c
+                    .fields
+                    .iter()
+                    .map(|(k, v)| {
+                        64 + k.len()
+                            + match v {
+                                ImportedValue::Text(t) => t.len(),
+                                ImportedValue::Many(m) => strings_bytes(m),
+                                ImportedValue::Number(_) => 8,
+                            }
+                    })
+                    .sum();
+                std::mem::size_of::<ImportedCase>()
+                    + c.keys
+                        .iter()
+                        .map(|k| 48 + k.kind.len() + k.value.len())
+                        .sum::<usize>()
+                    + c.name.len()
+                    + strings_bytes(&c.folder)
+                    + c.status.as_ref().map_or(0, String::len)
+                    + c.description.len()
+                    + c.preconditions.len()
+                    + steps_bytes(&c.steps)
+                    + c.links
+                        .iter()
+                        .map(|l| 72 + l.name.len() + l.url.len() + l.kind.len())
+                        .sum::<usize>()
+                    + strings_bytes(&c.tags)
+                    + fields
+                    + strings_bytes(&c.full_names)
+                    + c.attachments
+                        .iter()
+                        .map(|a| {
+                            72 + a.name.len()
+                                + a.source.len()
+                                + a.old_id.as_ref().map_or(0, String::len)
+                        })
+                        .sum::<usize>()
+            }
+            Item::Error(e) => std::mem::size_of::<RowError>() + e.code.len() + e.message.len(),
+            Item::FieldDefs(d) => d
+                .iter()
+                .map(|f| {
+                    std::mem::size_of::<ImportedFieldDef>()
+                        + f.key.len()
+                        + f.name.len()
+                        + f.field_type.len()
+                        + strings_bytes(&f.options)
+                        + f.source_label.as_ref().map_or(0, String::len)
+                })
+                .sum(),
+        }
+    }
+}
+
+/// A folder (suite) name cut to at most one character past `max` bytes (see
+/// [`ParseLimits::max_name_bytes`]).
+pub(crate) fn cap_name(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let end = s
+        .char_indices()
+        .map(|(i, c)| i + c.len_utf8())
+        .find(|&e| e > max)
+        .unwrap_or(s.len());
+    s[..end].to_string()
+}
+
 /// An error that stops the import.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum ImportError {
@@ -289,6 +384,12 @@ pub struct ParseLimits {
     pub max_step_depth: usize,
     /// Tags of one case.
     pub max_tags: usize,
+    /// Bytes of a folder (suite) name. Longer names are cut while reading to one character
+    /// past this, so the importer still reports the row, and memory stays bounded.
+    pub max_name_bytes: usize,
+    /// Levels of a folder path. Suite parent chains are followed at most one level past it
+    /// (the importer reports deeper paths).
+    pub max_folder_depth: usize,
 }
 
 impl Default for ParseLimits {
@@ -301,6 +402,8 @@ impl Default for ParseLimits {
             max_steps: 500,
             max_step_depth: 3,
             max_tags: 50,
+            max_name_bytes: 500,
+            max_folder_depth: 10,
         }
     }
 }
@@ -468,4 +571,37 @@ pub fn folder_path(s: &str, sep: &str) -> Vec<String> {
         .map(|p| p.trim().to_string())
         .filter(|p| !p.is_empty())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn approx_bytes_grows_with_the_text_of_a_case() {
+        let small = Item::Case(Box::default());
+        let mut c = ImportedCase {
+            description: "d".repeat(10_000),
+            folder: vec!["f".repeat(1000); 3],
+            ..Default::default()
+        };
+        c.steps.push(ImportedStep {
+            action: "a".repeat(5000),
+            steps: vec![ImportedStep {
+                expected: "e".repeat(2000),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        let big = Item::Case(Box::new(c)).approx_bytes();
+        assert!(big >= small.approx_bytes() + 20_000, "{big}");
+        assert!(big < small.approx_bytes() + 21_000, "{big}");
+    }
+
+    #[test]
+    fn cap_name_keeps_one_character_past_the_limit() {
+        assert_eq!(cap_name("abc", 3), "abc");
+        assert_eq!(cap_name("abcd", 2), "abc");
+        assert_eq!(cap_name("ééé", 3), "éé");
+    }
 }

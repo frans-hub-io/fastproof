@@ -16,7 +16,8 @@ use franshub_http::{ApiError, ApiResult};
 use crate::limits::caller_key;
 use crate::state::AppState;
 
-/// Callers remembered per replica; beyond it, callers whose bucket refilled are forgotten.
+/// Callers remembered per replica; beyond it, callers whose bucket refilled are forgotten,
+/// then the tenth that was used longest ago.
 const MAX_CALLERS: usize = 10_000;
 
 #[derive(Debug)]
@@ -40,7 +41,10 @@ impl WriteRate {
         if m.len() >= MAX_CALLERS && !m.contains_key(key) {
             m.retain(|_, b| b.tokens + now.duration_since(b.at).as_secs_f64() * per_sec < cap);
             if m.len() >= MAX_CALLERS {
-                m.clear();
+                let mut ats: Vec<Instant> = m.values().map(|b| b.at).collect();
+                ats.sort_unstable();
+                let cut = ats[ats.len() / 10];
+                m.retain(|_, b| b.at > cut);
             }
         }
         let b = m.entry(key.to_string()).or_insert(Bucket {
@@ -108,5 +112,22 @@ mod tests {
             let _ = r.take(&format!("c{i}"), 5, t);
         }
         assert!(r.buckets.lock().unwrap().len() <= MAX_CALLERS);
+    }
+
+    #[test]
+    fn a_full_map_keeps_recent_exhausted_buckets() {
+        let r = WriteRate::default();
+        let t = Instant::now();
+        for i in 0..MAX_CALLERS {
+            let at = t + Duration::from_millis(i as u64);
+            let _ = r.take(&format!("c{i}"), 1, at);
+        }
+        let late = t + Duration::from_millis(MAX_CALLERS as u64);
+        assert!(r.take("new", 1, late).is_ok());
+        assert!(
+            r.take(&format!("c{}", MAX_CALLERS - 1), 1, late).is_err(),
+            "the newest exhausted bucket is not forgiven"
+        );
+        assert!(r.buckets.lock().unwrap().len() < MAX_CALLERS);
     }
 }

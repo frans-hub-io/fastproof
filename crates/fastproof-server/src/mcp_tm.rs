@@ -368,6 +368,28 @@ pub(crate) async fn project_any(
     project(s, auth, key, perm).await
 }
 
+/// Whether the caller is an AI agent in the project: it holds `ai:propose` but not
+/// `cases:write` (the `agent` role). Its triage is always recorded with `source: ai`.
+pub(crate) fn is_agent(s: &AppState, auth: &Auth, key: &str) -> bool {
+    auth.allowed(&s.perms.ai_propose, Some(key)) && !auth.allowed(&s.perms.cases_write, Some(key))
+}
+
+/// Refuses a triage that mutes or unmutes without `results:mute` (403 with the permission).
+pub(crate) fn check_mute(
+    s: &AppState,
+    auth: &Auth,
+    key: &str,
+    mute: bool,
+) -> Result<(), franshub_http::ApiError> {
+    if mute && !auth.allowed(&s.perms.results_mute, Some(key)) {
+        return Err(franshub_http::ApiError::forbidden(
+            "muting needs results:mute; an agent proposes a mute as a disabled rule (create_rule_draft)",
+        )
+        .with_details(json!({"required": s.perms.results_mute.as_str(), "scope": key})));
+    }
+    Ok(())
+}
+
 /// Drafts and suggestions: `cases:write` or the agents' `ai:propose`.
 async fn draft_project(
     s: &AppState,
@@ -524,6 +546,7 @@ async fn run_tool(s: &AppState, name: &str, a: &Value, auth: &Auth) -> ToolResul
         "draft_case_from_result" => {
             let x: DraftFromResultArgs = args(a)?;
             let p = draft_project(s, auth, &x.project).await?;
+            crate::tm_rate::admit(s, auth)?;
             franshub_auth::require(auth, &s.perms.launches_read, Some(&p.key))
                 .map_err(ToolError::from)?;
             let agent = agent_of(&x.agent)?;
@@ -604,6 +627,7 @@ async fn run_tool(s: &AppState, name: &str, a: &Value, auth: &Auth) -> ToolResul
         "create_case_draft" => {
             let x: CreateDraftArgs = args(a)?;
             let p = draft_project(s, auth, &x.project).await?;
+            crate::tm_rate::admit(s, auth)?;
             let agent = agent_of(&x.agent)?;
             let w = CaseWrite {
                 name: x.name.clone(),
@@ -635,6 +659,7 @@ async fn run_tool(s: &AppState, name: &str, a: &Value, auth: &Auth) -> ToolResul
         "propose_case_update" => {
             let x: ProposeArgs = args(a)?;
             let p = draft_project(s, auth, &x.project).await?;
+            crate::tm_rate::admit(s, auth)?;
             let agent = agent_of(&x.agent)?;
             if x.rationale.trim().is_empty() || x.rationale.len() > MAX_RATIONALE {
                 return Err(ToolError(format!(
@@ -717,6 +742,8 @@ async fn run_tool(s: &AppState, name: &str, a: &Value, auth: &Auth) -> ToolResul
         "add_cases_to_plan" => {
             let x: AddToPlanArgs = args(a)?;
             let p = project(s, auth, &x.project, &s.perms.plans_write).await?;
+            crate::tm_rate::admit(s, auth)?;
+            let _permit = s.guards.heavy(auth).await?;
             let agent = agent_of(&x.agent)?;
             if x.numbers.is_empty() || x.numbers.len() > 1000 {
                 return Err(ToolError("numbers: 1 to 1000 case numbers".into()));

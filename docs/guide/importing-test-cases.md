@@ -239,8 +239,13 @@ Qase JSON is read in the shape of the Qase API v1: `{"suites": [{"title", "cases
 steps, shared_step_hash}`) and `attachments`. A root `code` (or `project_code`) makes keys `CODE-45`.
 The file is read as a stream, one case at a time, so its size does not decide the memory an import needs; one
 case may hold at most 8 MiB of JSON (larger ones become a `limit_reached` row error). For that, a root `code`
-and a flat suite list (`suites_flat`, `suiteList`) must come before the cases they apply to, as in Qase's own
-exports; a file that has them after such cases fails with `invalid_file`.
+must come before the cases it applies to and a flat suite list (`suites_flat`, `suiteList`) before every case,
+as in Qase's own exports; a file that has them later fails with `invalid_file`. Entries of flat suite lists count
+toward the row limit together with the cases. A suite's `title` should come before its `cases`: cases that wait
+for a later title may hold at most 32 MiB in all, beyond which the file fails with `invalid_file`. Suite names
+longer than the name limit are cut while reading (such cases are then reported as having a too long folder
+name), and a suite path follows parents at most one level past the folder depth limit and stops at a cycle.
+A JSON string counts toward the cell limit with its decoded length (`\u` escapes as 3 bytes).
 
 Not confirmed on real exports: the V2 step encoding beyond the quotes and tabs, the column with a suite's title,
 whether case rows name their suite in `suite_id` or `suite_parent_id`, and the JSON export schema (Qase does not

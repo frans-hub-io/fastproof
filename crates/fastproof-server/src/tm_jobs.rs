@@ -206,6 +206,8 @@ fn parse_options(s: &AppState, p: &ImportParams) -> ParseOptions {
             max_steps: l.max_steps,
             max_step_depth: l.max_step_depth,
             max_tags: l.max_tags,
+            max_name_bytes: l.max_name_bytes,
+            max_folder_depth: l.max_folder_depth,
         },
     }
 }
@@ -222,23 +224,51 @@ fn plan_options(p: &ImportParams) -> PlanOptions {
     }
 }
 
-/// Parses a file on a blocking thread; items arrive on the channel.
+/// KiB of parsed items that wait for the importer (queued, plus the one being applied).
+const PARSE_QUEUE_KIB: usize = 64 * 1024;
+
+/// KiB an item takes from the parse queue's budget (at least 1, at most the whole budget).
+fn queue_kib(item: &Item) -> u32 {
+    (item.approx_bytes() / 1024 + 1).min(PARSE_QUEUE_KIB) as u32
+}
+
+/// Parsed items: the parser waits while [`PARSE_QUEUE_KIB`] of them are queued or being
+/// applied; an item's share is released when the next one is taken.
+pub struct ParseRx {
+    rx: mpsc::Receiver<(Item, tokio::sync::OwnedSemaphorePermit)>,
+    held: Option<tokio::sync::OwnedSemaphorePermit>,
+}
+
+impl ParseRx {
+    pub async fn recv(&mut self) -> Option<Item> {
+        self.held = None;
+        let (item, permit) = self.rx.recv().await?;
+        self.held = Some(permit);
+        Some(item)
+    }
+}
+
+/// Parses a file on a blocking thread; items arrive on the channel, bounded by count and by
+/// [`PARSE_QUEUE_KIB`].
 fn spawn_parse(
     path: PathBuf,
     format: Format,
     opts: ParseOptions,
-) -> (
-    mpsc::Receiver<Item>,
-    tokio::task::JoinHandle<Result<(), ImportError>>,
-) {
-    let (tx, rx) = mpsc::channel::<Item>(512);
+) -> (ParseRx, tokio::task::JoinHandle<Result<(), ImportError>>) {
+    let (tx, rx) = mpsc::channel(512);
+    let budget = Arc::new(Semaphore::new(PARSE_QUEUE_KIB));
+    let rt = tokio::runtime::Handle::current();
     let h = tokio::task::spawn_blocking(move || {
         let f = std::fs::File::open(&path).map_err(ImportError::from)?;
         fastproof_tm_import::parse(format, std::io::BufReader::new(f), &opts, &mut |item| {
-            tx.blocking_send(item).is_ok()
+            let Ok(permit) = rt.block_on(budget.clone().acquire_many_owned(queue_kib(&item)))
+            else {
+                return false;
+            };
+            tx.blocking_send((item, permit)).is_ok()
         })
     });
-    (rx, h)
+    (ParseRx { rx, held: None }, h)
 }
 
 fn by_of(job: &ClaimedJob) -> String {
@@ -887,4 +917,29 @@ pub fn file_params(
         ..Default::default()
     })
     .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn queue_share_is_at_least_one_and_at_most_the_budget() {
+        let small = Item::Error(fastproof_tm_import::RowError::new(1, "x", "y"));
+        assert_eq!(queue_kib(&small), 1);
+        let big = Item::Case(Box::new(fastproof_tm_import::ImportedCase {
+            description: "d".repeat(300 * 1024),
+            ..Default::default()
+        }));
+        assert!(
+            (300..=302).contains(&queue_kib(&big)),
+            "{}",
+            queue_kib(&big)
+        );
+        let huge = Item::Case(Box::new(fastproof_tm_import::ImportedCase {
+            description: "d".repeat((PARSE_QUEUE_KIB + 10) * 1024),
+            ..Default::default()
+        }));
+        assert_eq!(queue_kib(&huge) as usize, PARSE_QUEUE_KIB);
+    }
 }

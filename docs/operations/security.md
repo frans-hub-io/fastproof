@@ -27,7 +27,8 @@ Permissions are `resource:action` strings:
 | `projects:write` | Create and delete projects (global only) |
 | `launches:read` | See launches, results, attachments and history |
 | `launches:write` | Create launches, upload reports, finish and delete launches |
-| `results:triage` | Set defect types, comments, issue links and mutes |
+| `results:triage` | Set defect types, comments and issue links |
+| `results:mute` | Mute and unmute results (quality gates ignore muted failures); also needs `results:triage` |
 | `rules:write` | Manage triage rules |
 | `settings:write` | Change project and server settings |
 | `audit:read` | Read the audit log |
@@ -47,8 +48,8 @@ Built-in roles:
 | `viewer` | `projects:read`, `launches:read`, `cases:read` |
 | `tester` | `projects:read`, `launches:read`, `cases:read`, `runs:execute` |
 | `uploader` | `projects:read`, `launches:read`, `launches:write`, `cases:read`, `cases:sync` |
-| `editor` | everything of `uploader`, plus `results:triage`, `rules:write`, `cases:write`, `cases:import`, `plans:write`, `runs:execute` |
-| `agent` | `projects:read`, `launches:read`, `cases:read`, `results:triage`, `ai:propose` (tokens of AI agents; no direct changes to cases) |
+| `editor` | everything of `uploader`, plus `results:triage`, `results:mute`, `rules:write`, `cases:write`, `cases:import`, `plans:write`, `runs:execute` |
+| `agent` | `projects:read`, `launches:read`, `cases:read`, `results:triage`, `ai:propose` (tokens of AI agents; no mutes, no direct changes to cases; their triage is recorded as `source: ai`) |
 | `admin` | `*` (every permission) |
 
 A **binding** gives a role to a user, an OIDC group or a token, scoped globally, to a list of projects, or to

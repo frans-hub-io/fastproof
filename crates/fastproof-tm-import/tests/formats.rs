@@ -265,10 +265,10 @@ fn qase_json_streaming_rules() {
         r#"{"cases": [{"id": 1, "title": "A", "suite_id": 6}], "suiteList": [{"id": 6, "title": "Leaf"}]}"#,
     ));
     assert!(m.contains("suites_flat"), "{m}");
-    let (cases, _) =
-        qase(r#"{"cases": [{"id": 1, "title": "A"}], "suiteList": [{"id": 6, "title": "Leaf"}]}"#)
-            .unwrap();
-    assert!(cases[0].folder.is_empty());
+    let m = invalid(qase(
+        r#"{"cases": [{"id": 1, "title": "A"}], "suiteList": [{"id": 6, "title": "Leaf"}]}"#,
+    ));
+    assert!(m.contains("suites_flat"), "a flat list after any case: {m}");
 
     let m = invalid(qase(
         r#"{"cases": [{"id": 1, "title": "A"}], "code": "LATE"}"#,
@@ -542,4 +542,101 @@ fn limits() {
         parse_all(Format::TestopsCsv, &fixture("testops-tom.csv")[..], &deep).unwrap();
     assert_eq!(cases.len(), 2);
     assert_eq!(errors.len(), 1);
+}
+
+/// Round 2 of the Qase JSON reader: flat suite lists only before the cases (a second one
+/// too) and counted with the cases, suite cycles and long suite names bounded, string length
+/// counted decoded.
+#[test]
+fn qase_json_bounds_suites_and_strings() {
+    let m = invalid(qase(
+        r#"{"suites_flat": [{"id": 1, "title": "A"}], "cases": [{"id": 1, "title": "x", "suite_id": 1}],
+            "suiteList": [{"id": 1, "title": "B"}]}"#,
+    ));
+    assert!(m.contains("suites_flat"), "{m}");
+    let m = invalid(qase(
+        r#"{"suites": [{"title": "S", "cases": [{"id": 1, "title": "x"}]}], "suites_flat": []}"#,
+    ));
+    assert!(m.contains("suites_flat"), "{m}");
+    let three = ParseOptions {
+        limits: ParseLimits {
+            max_rows: 3,
+            ..ParseLimits::default()
+        },
+        ..ParseOptions::default()
+    };
+    let doc = r#"{"suites_flat": [{"id": 1, "title": "A"}, {"id": 2, "title": "B"}],
+        "cases": [{"id": 1, "title": "x"}, {"id": 2, "title": "y"}]}"#;
+    assert!(matches!(
+        parse_all(Format::QaseJson, doc.as_bytes(), &three),
+        Err(ImportError::Limit {
+            limit: "maxImportRows",
+            max: 3
+        })
+    ));
+
+    let long = "t".repeat(60_000);
+    let doc = format!(
+        r#"{{"suites_flat": [{{"id": 1, "title": "{long}", "parent_id": 2}}, {{"id": 2, "title": "{long}", "parent_id": 1}}],
+            "cases": [{{"id": 1, "title": "a", "suite_id": 1}}, {{"id": 2, "title": "b", "suite_id": 2}}]}}"#
+    );
+    let (cases, _) = qase(&doc).unwrap();
+    let max = ParseLimits::default();
+    for c in &cases {
+        assert!(
+            c.folder.len() <= max.max_folder_depth + 1,
+            "{}",
+            c.folder.len()
+        );
+        assert!(c.folder.len() >= 2, "both suites of the cycle");
+        assert!(c.folder.iter().all(|n| n.len() == max.max_name_bytes + 1));
+    }
+
+    let at = format!(
+        r#"{{"cases": [{{"id": 1, "title": "{}"}}]}}"#,
+        "x".repeat(65_536)
+    );
+    assert_eq!(qase(&at).unwrap().0.len(), 1);
+    let over = format!(
+        r#"{{"cases": [{{"id": 1, "title": "{}"}}]}}"#,
+        "x".repeat(65_537)
+    );
+    assert!(matches!(
+        qase(&over),
+        Err(ImportError::Limit {
+            limit: "maxImportCellBytes",
+            ..
+        })
+    ));
+    let escaped = format!(
+        r#"{{"cases": [{{"id": 1, "title": "{}"}}]}}"#,
+        "\\u00e9".repeat(21_846)
+    );
+    assert!(
+        matches!(
+            qase(&escaped),
+            Err(ImportError::Limit {
+                limit: "maxImportCellBytes",
+                ..
+            })
+        ),
+        "a \\u escape counts as 3 decoded bytes"
+    );
+}
+
+/// Round 2: a cycle of Qase CSV suites ends the path, which has at most
+/// `maxFolderDepth + 1` levels, and long suite names are cut.
+#[test]
+fn qase_csv_suite_cycle_is_bounded() {
+    let long = "s".repeat(2000);
+    let csv = format!(
+        "id,title,suite,suite_id,suite_parent_id,suite_without_cases\n\
+         ,{long},{long},1,2,1\n,S2,S2,2,1,1\n5,Case,,1,,0\n"
+    );
+    let (cases, errors) =
+        parse_all(Format::QaseCsv, csv.as_bytes(), &ParseOptions::default()).unwrap();
+    assert!(errors.is_empty(), "{errors:?}");
+    let f = &cases[0].folder;
+    assert_eq!(f.len(), 2, "{f:?}");
+    assert_eq!(f[1].len(), ParseLimits::default().max_name_bytes + 1);
 }

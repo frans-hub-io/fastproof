@@ -1,5 +1,6 @@
 //! People who signed in through the identity provider (`tm_people`): the principal name, the
-//! display name from the provider's claims and the groups at the last sign-in. The assignee
+//! display name from the provider's claims and those of their groups at the last request that
+//! the access policy binds (other groups are not stored). The assignee
 //! picker (`GET /people`) uses them to list members of bound groups and to show display names.
 //! Rows not seen for [`PEOPLE_KEEP_DAYS`] are deleted.
 
@@ -8,7 +9,7 @@ use std::collections::HashMap;
 use crate::{Store, no_nul};
 
 /// Days a person is remembered after the last request.
-pub const PEOPLE_KEEP_DAYS: i32 = 180;
+pub const PEOPLE_KEEP_DAYS: i32 = 90;
 /// Groups kept per person.
 pub const MAX_PERSON_GROUPS: usize = 256;
 /// Bytes of a display name.
@@ -46,6 +47,15 @@ impl Store {
         .bind(&groups)
         .execute(&self.pool)
         .await?;
+        Ok(())
+    }
+
+    /// Forgets a person (their last request showed no bound group).
+    pub async fn forget_person(&self, principal: &str) -> anyhow::Result<()> {
+        sqlx::query("delete from tm_people where principal = $1")
+            .bind(no_nul(principal))
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 

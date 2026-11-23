@@ -471,14 +471,19 @@ pub fn case_jobs(sch: &mut Scheduler) -> anyhow::Result<()> {
         Ok(())
     })?;
     sch.register("cases.versions.prune", "1h", |s: AppState| async move {
-        let n = s
+        let hour = (chrono::Utc::now().timestamp() / 3600) as usize;
+        let versions = s
             .store
-            .prune_case_versions(Duration::from_secs(300), 1000)
-            .await?;
-        if n > 0 {
+            .prune_case_versions(Duration::from_secs(300), 1000, hour)
+            .await;
+        let people = s.store.prune_people().await;
+        if let Ok(n) = &versions
+            && *n > 0
+        {
             tracing::info!(versions = n, "case versions pruned");
         }
-        s.store.prune_people().await?;
+        versions?;
+        people?;
         Ok(())
     })?;
     Ok(())

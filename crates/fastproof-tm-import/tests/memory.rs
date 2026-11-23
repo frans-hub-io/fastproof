@@ -148,8 +148,8 @@ fn qase_json_skipped_values_take_no_memory() {
 #[test]
 fn qase_json_oversized_case_is_a_row_error() {
     let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-    let big = format!("\"{}\"", "x".repeat(300_000));
-    let strings = vec![big; 30].join(",");
+    let big = format!("\"{}\"", "x".repeat(60_000));
+    let strings = vec![big; 150].join(",");
     let zeros = format!("0{}", ",0".repeat(4_000_000));
     let doc = format!(
         r#"{{"cases": [{{"id": 1, "title": "Big", "x": [{strings}]}}, {{"id": 2, "title": "Many", "n": [{zeros}]}},
@@ -219,6 +219,91 @@ fn qase_json_cases_and_suites_still_parse() {
             ("C".to_string(), vec![], "PRJ-3".to_string()),
         ]
     );
+}
+
+/// Q1: two flat suites that are each other's parent, with long titles, named by many cases:
+/// every path is built once, ends at the cycle and holds names cut to the name limit, so the
+/// memory does not grow with the titles times the cases (it was 64 titles per case).
+#[test]
+fn qase_json_suite_cycle_takes_little_memory() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let long = "t".repeat(60_000);
+    let mut doc = format!(
+        r#"{{"suites_flat":[{{"id":1,"title":"{long}","parent_id":2}},{{"id":2,"title":"{long}","parent_id":1}}],"cases":["#
+    );
+    for i in 0..20_000 {
+        if i > 0 {
+            doc.push(',');
+        }
+        doc.push_str(&format!(
+            r#"{{"id":{i},"title":"c","suite_id":{}}}"#,
+            1 + i % 2
+        ));
+    }
+    doc.push_str("]}");
+    let mut longest = 0;
+    let (r, grown) = peak_of(|| {
+        parse(
+            Format::QaseJson,
+            doc.as_bytes(),
+            &ParseOptions::default(),
+            &mut |i| {
+                if let Item::Case(c) = i {
+                    longest = longest.max(c.folder.iter().map(String::len).sum::<usize>());
+                }
+                true
+            },
+        )
+    });
+    r.unwrap();
+    assert!(longest <= 2 * 501, "{longest}");
+    assert!(grown < 4 * MIB, "grew {grown} bytes");
+
+    let huge = "t".repeat(384 * 1024);
+    let doc = format!(
+        r#"{{"suites_flat":[{{"id":1,"title":"{huge}","parent_id":2}},{{"id":2,"title":"{huge}","parent_id":1}}],"cases":[{{"id":1,"title":"a","suite_id":1}}]}}"#
+    );
+    let ((r, cases, _), grown) = qase_counts(doc.as_bytes());
+    assert!(
+        matches!(
+            r,
+            Err(ImportError::Limit {
+                limit: "maxImportCellBytes",
+                ..
+            })
+        ),
+        "{r:?}"
+    );
+    assert_eq!(cases, 0);
+    assert!(grown < 4 * MIB, "grew {grown} bytes");
+}
+
+/// Q2: cases of a suite whose title never comes wait for it only up to
+/// `MAX_DEFERRED_BYTES`; then the file fails, holding at most about that much.
+#[test]
+fn qase_json_deferred_cases_are_bounded() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let max = fastproof_tm_import::qase::MAX_DEFERRED_BYTES;
+    let body = "d".repeat(1000);
+    let mut doc = String::from(r#"{"suites":[{"cases":["#);
+    let mut i = 0;
+    while doc.len() < max + 2 * MIB {
+        if i > 0 {
+            doc.push(',');
+        }
+        doc.push_str(&format!(
+            r#"{{"id":{i},"title":"c","description":"{body}"}}"#
+        ));
+        i += 1;
+    }
+    doc.push_str(r#"],"title":"late"}]}"#);
+    let ((r, cases, _), grown) = qase_counts(doc.as_bytes());
+    match r {
+        Err(ImportError::Invalid(m)) => assert!(m.contains("title"), "{m}"),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(cases, 0);
+    assert!(grown < max + 16 * MIB, "grew {grown} bytes");
 }
 
 /// M4: nested lists of a 64 KiB cell stay linear in size and memory.

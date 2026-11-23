@@ -460,7 +460,10 @@ async fn every_status_transition_changes_the_counters_by_its_delta() {
         .await
         .unwrap_err();
     assert_eq!(code(&e), "manual_run_closed");
-    store.reopen_manual_run(&p, launch.id).await.unwrap();
+    store
+        .reopen_manual_run(&p, launch.id, &TmLimits::default())
+        .await
+        .unwrap();
     store
         .close_manual_run(&p, launch.id, ManualUntestedTo::Skipped)
         .await
@@ -732,7 +735,10 @@ async fn concurrent_testers_ingest_mutes_and_close_keep_counters_exact() {
     // reopen) with `leave`; writers that lose the race get `manual_run_closed`.
     for mode in [ManualUntestedTo::Skipped, ManualUntestedTo::Leave] {
         if mode == ManualUntestedTo::Leave {
-            store.reopen_manual_run(&p, launch.id).await.unwrap();
+            store
+                .reopen_manual_run(&p, launch.id, &TmLimits::default())
+                .await
+                .unwrap();
         }
         let executions: i64 = sqlx::query_scalar(
             "select sum(execution_no)::bigint from run_items where launch_id = $1",

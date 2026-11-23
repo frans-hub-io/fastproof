@@ -382,7 +382,14 @@ pub async fn run_item_defect(
             url: Some(i.url.clone()),
             key: i.key.clone(),
         }),
-        source: Some("user".into()),
+        source: Some(
+            if crate::mcp_tm::is_agent(&s, &auth, &p.key) {
+                "ai"
+            } else {
+                "user"
+            }
+            .into(),
+        ),
         ..Default::default()
     };
     let (out, req) = super::analysis::apply_triage(&s, &p, me, req).await?;
@@ -705,10 +712,10 @@ pub const MAX_PEOPLE: usize = 100;
 
 #[utoipa::path(get, path = "/api/v1/projects/{key}/people", tag = "runs", operation_id = "list_project_people",
     description = "Principals to assign run items to: users and managed tokens with `runs:execute` in the project (from \
-        the role bindings), members of bound groups who opened test management in the last 180 days (with the groups \
+        the role bindings), members of bound groups who opened test management in the last 90 days (with the groups \
         of their last sign-in; members who never signed in are not known), and the names already used as assignees or \
-        executors in the project. `display` is the `name` claim of the identity provider when known. `q` matches the \
-        name or the display name. Sorted by name, at most 100. Assignees are free text; names that are not in this \
+        executors in the project. `display` is the `name` claim of the identity provider of those members, shown only \
+        to callers with `cases:read` or `runs:execute` (never for token names); `q` then matches it too. Sorted by name, at most 100. Assignees are free text; names that are not in this \
         list are allowed.",
     params(("key" = String, Path), PeopleQuery),
     responses((status = 200, body = People), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),
@@ -742,6 +749,7 @@ pub async fn project_people(
             names.insert(name.clone());
         }
     }
+    let mut token_names: std::collections::HashSet<String> = std::collections::HashSet::new();
     if let Some(tokens) = s.platform.tokens() {
         let now = chrono::Utc::now();
         for t in tokens.store().list().await? {
@@ -753,21 +761,29 @@ pub async fn project_people(
             {
                 names.insert(t.name.clone());
             }
+            token_names.insert(t.name.clone());
         }
     }
+    let show = auth.allowed(&s.perms.cases_read, Some(&p.key))
+        || auth.allowed(&s.perms.runs_execute, Some(&p.key));
     let mut displays: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     for k in s.store.known_people(MAX_KNOWN_PEOPLE).await? {
-        let shown = k.display.as_deref().unwrap_or(&k.principal);
-        if (wanted(&k.principal) || wanted(shown))
-            && policy
-                .user_principal(&k.principal, &k.groups)
-                .is_some_and(|pr| pr.allowed(&s.perms.runs_execute, Some(&p.key)))
-        {
+        let eligible = policy
+            .user_principal(&k.principal, &k.groups)
+            .is_some_and(|pr| pr.allowed(&s.perms.runs_execute, Some(&p.key)));
+        if !eligible {
+            continue;
+        }
+        let display = k.display.filter(|_| show);
+        if wanted(&k.principal) || display.as_deref().is_some_and(wanted) {
             names.insert(k.principal.clone());
         }
-        if let Some(d) = k.display {
+        if let Some(d) = display {
             displays.insert(k.principal, d);
         }
+    }
+    for t in &token_names {
+        displays.remove(t);
     }
     for n in s
         .store
@@ -834,7 +850,10 @@ pub async fn reopen_manual_run(
     P((key, id)): P<(String, Uuid)>,
 ) -> ApiResult<Json<Launch>> {
     let p = s.project_for(&auth, &key, &s.perms.plans_write).await?;
-    s.store.reopen_manual_run(&p, id).await.map_err(tm_error)?;
+    s.store
+        .reopen_manual_run(&p, id, &s.cfg.tm)
+        .await
+        .map_err(tm_error)?;
     s.audit(
         &auth,
         "manualRun.reopen",

@@ -913,20 +913,33 @@ pub async fn reserve_numbers(
 /// Takes the next case number of a project in a statement of its own on a connection that is
 /// not in a transaction: the project row is locked only for that statement, so concurrent
 /// creates do not wait for each other's transactions. Numbers stay unique; a create that fails
-/// afterwards leaves a gap.
-pub async fn next_number(
-    conn: &mut PgConnection,
-    project_id: Uuid,
-    limits: &TmLimits,
-) -> TmResult<i64> {
-    let seq: i64 = sqlx::query_scalar(
+/// afterwards leaves a gap. The create transaction then calls [`check_count_in_tx`].
+pub async fn next_number(conn: &mut PgConnection, project_id: Uuid) -> TmResult<i64> {
+    Ok(sqlx::query_scalar(
         "update projects set case_seq = case_seq + 1 where id = $1 returning case_seq",
     )
     .bind(project_id)
     .fetch_one(&mut *conn)
-    .await?;
-    check_case_count(conn, project_id, seq, limits, 1).await?;
-    Ok(seq)
+    .await?)
+}
+
+/// `maxCases` for a create that took number `seq` with [`next_number`], inside its
+/// transaction: below the limit nothing is locked; at or above it the project row is locked
+/// until the commit, so creates near the limit count one after another and never exceed it.
+pub async fn check_count_in_tx(
+    tx: &mut PgConnection,
+    project_id: Uuid,
+    seq: i64,
+    limits: &TmLimits,
+) -> TmResult<()> {
+    if (seq.max(0) as usize) < limits.max_cases {
+        return Ok(());
+    }
+    sqlx::query("select 1 from projects where id = $1 for update")
+        .bind(project_id)
+        .execute(&mut *tx)
+        .await?;
+    check_case_count(tx, project_id, seq, limits, 1).await
 }
 
 /// Inserts a validated case with its version 1 (all content keys changed), the `allure_id`
@@ -1637,8 +1650,9 @@ impl Store {
         let mut conn = self.pool.acquire().await?;
         let defs = field_defs(&mut conn, ctx.project_id, false).await?;
         let snap = prepare_write(&mut conn, ctx, w, None, &defs).await?;
-        let n = next_number(&mut conn, ctx.project_id, ctx.limits).await?;
+        let n = next_number(&mut conn, ctx.project_id).await?;
         let mut tx = sqlx::Connection::begin(&mut *conn).await?;
+        check_count_in_tx(&mut tx, ctx.project_id, n, ctx.limits).await?;
         let meta = NewCaseMeta {
             number: Some((n, true)),
             ..NewCaseMeta::ui()

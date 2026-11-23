@@ -67,7 +67,9 @@ POST /api/v1/projects/{key}/triage
 | `mute` | `{until?, reason}`: hide the test from gates and failure counts until a date (at most 10 years), or until unmuted |
 | `unmute` | `true` lifts the mute |
 
-Triage needs `results:triage` (the `editor` and `admin` roles) and answers `{"updated": n}`. A mute applies to
+Triage needs `results:triage` (the `editor`, `agent` and `admin` roles); `mute` and `unmute` also need
+`results:mute` (`editor`, `admin`), otherwise `403` with `details.required`. Triage by an AI agent token is
+recorded with `source: ai` whatever the request says. It answers `{"updated": n}`. A mute applies to
 the test, so its later results stay muted until it ends. Every change is written to the audit log.
 
 ## Rules

@@ -593,9 +593,22 @@ async fn case_versions_are_pruned_by_retention() {
     .await;
     assert_eq!(r.status.as_u16() / 100, 4, "{}", r.body);
 
+    let fresh = new_case(&s, "ver", "Fresh").await;
+    for i in 2..=3 {
+        save("ver", fresh, format!("f{i}")).await;
+    }
+    sqlx::query(
+        "update case_versions set created_at = created_at - interval '2 hours' \
+         where case_id = (select c.id from cases c join projects p on p.id = c.project_id \
+           where p.key = 'ver' and c.number = $1)",
+    )
+    .bind(n)
+    .execute(&db.pool)
+    .await
+    .unwrap();
     let store = fastproof_store::Store::new(db.pool.clone());
     let deleted = store
-        .prune_case_versions(Duration::from_secs(60), 1)
+        .prune_case_versions(Duration::from_secs(60), 1, 7)
         .await
         .unwrap();
     assert_eq!(deleted, 4, "versions 1, 3, 4, 5 of 7");
@@ -623,8 +636,13 @@ async fn case_versions_are_pruned_by_retention() {
     );
     assert_eq!(versions("all", keep_all).await.len(), 6, "no retention set");
     assert_eq!(
+        versions("ver", fresh).await,
+        [3, 2, 1],
+        "versions replaced less than an hour ago are kept"
+    );
+    assert_eq!(
         store
-            .prune_case_versions(Duration::from_secs(60), 1000)
+            .prune_case_versions(Duration::from_secs(60), 1000, 0)
             .await
             .unwrap(),
         0
@@ -642,7 +660,7 @@ async fn people_lists_members_of_bound_groups() {
     let file = dir.path().join("access.yaml");
     std::fs::write(
         &file,
-        "bindings:\n  - subject: group:qa\n    role: tester\n    scopes: [pp]\n  - subject: group:ops\n    role: viewer\n    scopes: [pp]\n",
+        "roles:\n  - name: reader\n    permissions: [\"projects:read\"]\nbindings:\n  - subject: group:qa\n    role: tester\n    scopes: [pp]\n  - subject: group:ops\n    role: viewer\n    scopes: [pp]\n",
     )
     .unwrap();
     let s = Server::start_with(&db, &[("FASTPROOF_ACCESS_FILE", file.to_str().unwrap())]).await;
@@ -682,6 +700,66 @@ async fn people_lists_members_of_bound_groups() {
     assert_eq!(
         b["items"],
         json!([{"principal": "ann", "display": "Ann Example"}])
+    );
+
+    // P1: display names only for eligible members, never for token names, and only to
+    // callers who read cases or execute runs.
+    store
+        .note_person("ci-runner", Some("Not A Token"), &["qa".into()])
+        .await
+        .unwrap();
+    s.project("other").await;
+    store
+        .note_person("carl", Some("Carl Elsewhere"), &["ops".into()])
+        .await
+        .unwrap();
+    let (st, plan) = s
+        .post(
+            "/api/v1/projects/pp/test-plans",
+            ADMIN_TOKEN,
+            json!({"kind": "managed", "name": "P"}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{plan}");
+    let n = new_case(&s, "pp", "Manual").await;
+    let pid = plan["id"].as_str().unwrap();
+    let (st, b) = s
+        .post(
+            &format!("/api/v1/projects/pp/test-plans/{pid}/items"),
+            ADMIN_TOKEN,
+            json!({"add": [n], "assign": [{"number": n, "assignee": "carl"}]}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{b}");
+    let (_, b) = s.get("/api/v1/projects/pp/people", ADMIN_TOKEN).await;
+    assert_eq!(
+        b["items"],
+        json!([
+            {"principal": "ann", "display": "Ann Example"},
+            {"principal": "bob"},
+            {"principal": "carl"},
+            {"principal": "ci-runner"}
+        ]),
+        "carl is only a name in a plan, ci-runner is a token: {b}"
+    );
+    let viewer = s.token("val", "viewer", &["pp"]).await;
+    let (_, b) = s.get("/api/v1/projects/pp/people", &viewer).await;
+    assert!(
+        b.to_string().contains("Ann Example"),
+        "cases:read shows display names: {b}"
+    );
+    let reader = s.token("rea", "reader", &["pp"]).await;
+    let (st, b) = s.get("/api/v1/projects/pp/people", &reader).await;
+    assert_eq!(st, StatusCode::OK, "{b}");
+    assert!(
+        !b.to_string().contains("Ann Example"),
+        "projects:read alone gets no display names: {b}"
+    );
+    let (_, b) = s.get("/api/v1/projects/pp/people?q=example", &reader).await;
+    assert_eq!(
+        b["items"],
+        json!([]),
+        "q does not match display names for them"
     );
 }
 
@@ -859,4 +937,344 @@ async fn wait_job(s: &Server, key: &str, id: &str, want: &str) -> Value {
         assert!(Instant::now() < deadline, "job {id} stuck: {b}");
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+}
+
+async fn triage_rest(s: &Server, token: &str, key: &str, body: Value) -> Reply {
+    send(
+        s,
+        Method::POST,
+        &format!("/api/v1/projects/{key}/triage"),
+        token,
+        None,
+        Some(body),
+    )
+    .await
+}
+
+async fn failed_result(s: &Server, key: &str) -> String {
+    let l = s.launch(key, None).await;
+    let launch = l["id"].as_str().unwrap().to_string();
+    let (st, b) = s
+        .post(
+            &format!("/api/v1/projects/{key}/launches/{launch}/results"),
+            ADMIN_TOKEN,
+            json!([{"id": "r1", "name": "adds", "fullName": "shop.Cart#adds", "status": "failed",
+                "start": 1795249075967i64, "stop": 1795249076967i64, "error": {"message": "boom"}}]),
+        )
+        .await;
+    assert!(st.is_success() && b["accepted"] == 1, "{b}");
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let r = s.results(key, &launch, "").await;
+        if let Some(id) = r.first().and_then(|x| x["id"].as_str()) {
+            return id.to_string();
+        }
+        assert!(Instant::now() < deadline, "no result");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// M1: an agent's triage is recorded as AI triage whatever it sends, and muting needs
+/// `results:mute`, which agents lack (they propose a mute as a disabled rule); editors keep
+/// muting.
+#[tokio::test]
+async fn agents_cannot_mute_and_their_triage_is_ai() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = Server::start(&db).await;
+    s.project("mu").await;
+    let agent = s.token("copilot", "agent", &["mu"]).await;
+    let editor = s.token("ed", "editor", &["mu"]).await;
+    let rid = failed_result(&s, "mu").await;
+    let until = (chrono::Utc::now() + chrono::Duration::days(3000)).to_rfc3339();
+    let r = triage_rest(
+        &s,
+        &agent,
+        "mu",
+        json!({"resultIds": [rid], "mute": {"until": until, "reason": "x"}, "source": "user"}),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN, "{}", r.body);
+    assert_eq!(r.body["details"]["required"], "results:mute", "{}", r.body);
+    let r = triage_rest(
+        &s,
+        &agent,
+        "mu",
+        json!({"resultIds": [rid], "unmute": true}),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN, "{}", r.body);
+    let r = triage_rest(
+        &s,
+        &agent,
+        "mu",
+        json!({"resultIds": [rid], "comment": "flaky network", "source": "user"}),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let (_, d) = s
+        .get(&format!("/api/v1/projects/mu/results/{rid}"), ADMIN_TOKEN)
+        .await;
+    assert_eq!(d["defect"]["source"], "ai", "{d}");
+    let (err, e) = mcp_tool(
+        &s,
+        &agent,
+        "triage",
+        json!({"project": "mu", "resultIds": [rid], "mute": {"until": until, "reason": "x"}}),
+    )
+    .await;
+    assert!(err && e.to_string().contains("results:mute"), "{e}");
+    let (err, rule) = mcp_tool(
+        &s,
+        &agent,
+        "create_rule_draft",
+        json!({"project": "mu", "name": "Mute boom", "match": {"messageRegex": "boom"},
+            "action": {"mute": {"days": 7}}}),
+    )
+    .await;
+    assert!(!err, "a mute is proposed as a disabled rule: {rule}");
+    let r = triage_rest(
+        &s,
+        &editor,
+        "mu",
+        json!({"resultIds": [rid], "mute": {"until": until, "reason": "known"}}),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK, "editors mute: {}", r.body);
+    let (_, d) = s
+        .get(&format!("/api/v1/projects/mu/results/{rid}"), ADMIN_TOKEN)
+        .await;
+    assert_eq!(d["muted"], true, "{d}");
+}
+
+/// R1: agents' unreviewed drafts are capped per principal (cases and rule drafts), and MCP
+/// write tools share the rate of multiplying writes.
+#[tokio::test]
+async fn agent_drafts_are_capped() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = Server::start_with(
+        &db,
+        &[("FASTPROOF_TM_MULTIPLYING_WRITES_PER_MINUTE", "1000")],
+    )
+    .await;
+    s.project("dr").await;
+    let agent = s.token("copilot", "agent", &["dr"]).await;
+    for i in 0..20 {
+        let (err, r) = mcp_tool(
+            &s,
+            &agent,
+            "create_rule_draft",
+            json!({"project": "dr", "name": format!("Rule {i}"), "match": {"messageRegex": "boom"},
+                "action": {"comment": "x"}}),
+        )
+        .await;
+        assert!(!err, "{i}: {r}");
+    }
+    let (err, e) = mcp_tool(
+        &s,
+        &agent,
+        "create_rule_draft",
+        json!({"project": "dr", "name": "One more", "match": {"messageRegex": "boom"},
+            "action": {"comment": "x"}}),
+    )
+    .await;
+    assert!(err && e.to_string().contains("maxRuleDrafts"), "{e}");
+
+    for i in 0..200 {
+        new_case(&s, "dr", &format!("C{i}")).await;
+    }
+    sqlx::query(
+        "update cases set origin = 'ai', ai_unreviewed = true, created_by = 'copilot' \
+         where project_id = (select id from projects where key = 'dr')",
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let (err, e) = mcp_tool(
+        &s,
+        &agent,
+        "create_case_draft",
+        json!({"project": "dr", "name": "Draft 201"}),
+    )
+    .await;
+    assert!(
+        err && e.to_string().contains("maxUnreviewedAiDrafts"),
+        "{e}"
+    );
+    let other = s.token("copilot-2", "agent", &["dr"]).await;
+    let (err, d) = mcp_tool(
+        &s,
+        &other,
+        "create_case_draft",
+        json!({"project": "dr", "name": "Another agent"}),
+    )
+    .await;
+    assert!(!err, "the cap is per principal: {d}");
+}
+
+/// L1 / R1: MCP writes count against the caller's rate, `add_cases_to_plan` too.
+#[tokio::test]
+async fn mcp_writes_are_rate_limited() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = Server::start_with(&db, &[("FASTPROOF_TM_MULTIPLYING_WRITES_PER_MINUTE", "2")]).await;
+    s.project("rl").await;
+    let editor = s.token("ed", "editor", &["rl"]).await;
+    let n = new_case(&s, "rl", "Manual").await;
+    let (st, plan) = s
+        .post(
+            "/api/v1/projects/rl/test-plans",
+            ADMIN_TOKEN,
+            json!({"kind": "managed", "name": "P"}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{plan}");
+    let pid = plan["id"].as_str().unwrap();
+    for _ in 0..2 {
+        let (err, r) = mcp_tool(
+            &s,
+            &editor,
+            "add_cases_to_plan",
+            json!({"project": "rl", "planId": pid, "numbers": [n]}),
+        )
+        .await;
+        assert!(!err, "{r}");
+    }
+    let (err, e) = mcp_tool(
+        &s,
+        &editor,
+        "create_case_draft",
+        json!({"project": "rl", "name": "Third write"}),
+    )
+    .await;
+    assert!(err && e.to_string().contains("rate_limited"), "{e}");
+}
+
+/// L1: the open plan launch cap holds for concurrent starts and for reopening a closed run.
+#[tokio::test]
+async fn open_plan_launch_cap_holds_under_concurrency_and_reopen() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = Server::start_with(
+        &db,
+        &[
+            ("FASTPROOF_TM_MAX_OPEN_PLAN_LAUNCHES", "2"),
+            ("FASTPROOF_TM_MULTIPLYING_WRITES_PER_MINUTE", "1000"),
+            ("FASTPROOF_HEAVY_QUERIES_PER_CALLER", "20"),
+        ],
+    )
+    .await;
+    s.project("ol").await;
+    let base = "/api/v1/projects/ol";
+    let n = new_case(&s, "ol", "Manual").await;
+    let (_, plan) = s
+        .post(
+            &format!("{base}/test-plans"),
+            ADMIN_TOKEN,
+            json!({"kind": "managed", "name": "P", "caseNumbers": [n]}),
+        )
+        .await;
+    let pid = plan["id"].as_str().unwrap().to_string();
+    let mut tasks = Vec::new();
+    for i in 0..6 {
+        let http = s.http.clone();
+        let url = format!("{}{base}/test-plans/{pid}/launches", s.base);
+        tasks.push(tokio::spawn(async move {
+            http.post(url)
+                .bearer_auth(ADMIN_TOKEN)
+                .json(&json!({"name": "run", "externalId": format!("p{i}")}))
+                .send()
+                .await
+                .unwrap()
+                .status()
+        }));
+    }
+    let mut created = 0;
+    for t in tasks {
+        let st = t.await.unwrap();
+        if st == StatusCode::CREATED {
+            created += 1;
+        } else {
+            assert_eq!(st, StatusCode::CONFLICT);
+        }
+    }
+    assert_eq!(created, 2, "concurrent starts never exceed the cap");
+    let (_, launches) = s
+        .get(&format!("{base}/test-plans/{pid}/launches"), ADMIN_TOKEN)
+        .await;
+    let first = launches["items"][0]["id"].as_str().unwrap().to_string();
+    let (st, b) = s
+        .post(
+            &format!("{base}/launches/{first}/manual/close"),
+            ADMIN_TOKEN,
+            json!({}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{b}");
+    let (st, b) = s
+        .post(
+            &format!("{base}/test-plans/{pid}/launches"),
+            ADMIN_TOKEN,
+            json!({"name": "run", "externalId": "again"}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{b}");
+    let (st, b) = s
+        .post(
+            &format!("{base}/launches/{first}/manual/reopen"),
+            ADMIN_TOKEN,
+            json!({}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::CONFLICT, "{b}");
+    assert_eq!(b["details"]["limit"], "maxOpenPlanLaunches", "{b}");
+}
+
+/// N1: parallel creates near `maxCases` never exceed it.
+#[tokio::test]
+async fn parallel_creates_never_exceed_max_cases() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = Server::start_with(&db, &[("FASTPROOF_TM_MAX_CASES", "5")]).await;
+    s.project("mx").await;
+    for i in 0..3 {
+        new_case(&s, "mx", &format!("C{i}")).await;
+    }
+    let mut tasks = Vec::new();
+    for i in 0..10 {
+        let http = s.http.clone();
+        let url = format!("{}/api/v1/projects/mx/cases", s.base);
+        tasks.push(tokio::spawn(async move {
+            http.post(url)
+                .bearer_auth(ADMIN_TOKEN)
+                .json(&json!({"name": format!("P{i}")}))
+                .send()
+                .await
+                .unwrap()
+                .status()
+        }));
+    }
+    let mut ok = 0;
+    for t in tasks {
+        let st = t.await.unwrap();
+        if st == StatusCode::CREATED {
+            ok += 1;
+        } else {
+            assert_eq!(st, StatusCode::CONFLICT);
+        }
+    }
+    assert_eq!(ok, 2);
+    let n: i64 = sqlx::query_scalar(
+        "select count(*) from cases where project_id = (select id from projects where key = 'mx')",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(n, 5);
 }

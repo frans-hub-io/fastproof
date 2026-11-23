@@ -272,13 +272,13 @@ const TOOLS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "triage",
-        description: "Set the defect type, comment, issue link or mute of results or of a whole failure cluster. Recorded as AI triage and audited. Needs results:triage.",
+        description: "Set the defect type, comment, issue link or mute of results or of a whole failure cluster. Recorded as AI triage and audited. Needs results:triage; mute and unmute also need results:mute (agents propose a mute with create_rule_draft instead).",
         schema: schema::<TriageArgs>,
         write: true,
     },
     ToolSpec {
         name: "create_rule_draft",
-        description: "Create a disabled triage rule for people to review and enable; audited as AI-created. Needs rules:write or ai:propose (the agent role).",
+        description: "Create a disabled triage rule for people to review and enable (a way to propose a mute); audited as AI-created. Needs rules:write or ai:propose (the agent role); at most 20 disabled rules per author.",
         schema: schema::<RuleDraftArgs>,
         write: true,
     },
@@ -513,6 +513,13 @@ impl McpServer {
                 let p = self
                     .project(auth, &x.project, &s.perms.results_triage)
                     .await?;
+                crate::mcp_tm::check_mute(
+                    s,
+                    auth,
+                    &p.key,
+                    x.mute.is_some() || x.unmute == Some(true),
+                )?;
+                crate::tm_rate::admit(s, auth)?;
                 let defect_type_id = match &x.defect_type_id {
                     Some(v) => Some(defect_type_ref(s, &p, v).await?),
                     None => None,
@@ -576,6 +583,17 @@ impl McpServer {
                     &[&s.perms.rules_write, &s.perms.ai_propose],
                 )
                 .await?;
+                crate::tm_rate::admit(s, auth)?;
+                let max = fastproof_store::tm::ai::MAX_RULE_DRAFTS;
+                if s.store
+                    .disabled_rules_by(p.id, &auth.principal.name)
+                    .await?
+                    >= max
+                {
+                    return Err(ToolError(format!(
+                        "limit_reached: at most {max} disabled rules of yours wait for review in this project (maxRuleDrafts)"
+                    )));
+                }
                 if x.name.trim().is_empty() || x.name.len() > 200 {
                     return Err(ToolError("name must have 1 to 200 bytes".into()));
                 }

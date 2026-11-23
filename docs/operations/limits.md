@@ -102,8 +102,8 @@ over their size `400 invalid_markdown` with the field's `path`, and names `400`.
 | `FASTPROOF_TM_MAX_IMPORT_CELL_BYTES` | `65536` (64 KiB) | 16 MiB | One cell of an imported CSV file |
 | `FASTPROOF_TM_MAX_TAGS` | `50` | 1000 | Tags of one case (each at most 100 bytes) |
 | `FASTPROOF_TM_MAX_NAME_BYTES` | `500` | 4096 | Names of cases, folders, fields and plans |
-| `FASTPROOF_TM_MULTIPLYING_WRITES_PER_MINUTE` | `30` | 100 000 | Writes that multiply work, per caller and minute on one replica: starting a plan launch, adding run items, changing plan items, plan sync, creating a plan with a filter, bulk case changes, deleting a folder with a `mode`. Over it they answer `429 rate_limited` with `Retry-After` |
-| `FASTPROOF_TM_MAX_OPEN_PLAN_LAUNCHES` | `20` | 100 000 | Launches with an open manual run that one caller started from plans, per project; one more answers `409 limit_reached` (`maxOpenPlanLaunches`) until one is closed |
+| `FASTPROOF_TM_MULTIPLYING_WRITES_PER_MINUTE` | `30` | 100 000 | Writes that multiply work, per caller and minute on one replica: starting a plan launch, adding run items, changing plan items, plan sync, creating a plan with a filter, bulk case changes, deleting a folder with a `mode`, and every MCP write tool. Over it they answer `429 rate_limited` with `Retry-After` |
+| `FASTPROOF_TM_MAX_OPEN_PLAN_LAUNCHES` | `20` | 100 000 | Launches with an open manual run that one caller started from plans, per project; one more, or reopening a closed one, answers `409 limit_reached` (`maxOpenPlanLaunches`) until one is closed |
 
 Fixed caps that are not settings:
 
@@ -111,6 +111,8 @@ Fixed caps that are not settings:
 |---|---|---|
 | Zip export jobs queued or running | 2 per caller and project, 4 per project | `409 export_busy` (`details.limit`: `exportsPerCaller` or `exportsPerProject`) |
 | Pending AI suggestions per case | 20 | `409 limit_reached` (`maxPendingSuggestions`) |
+| Unreviewed AI draft cases per principal and project | 200 | `409 limit_reached` (`maxUnreviewedAiDrafts`) |
+| Disabled rules per principal and project before `create_rule_draft` refuses | 20 | tool error `limit_reached` (`maxRuleDrafts`) |
 | One line of a Playwright trace read by `trace_actions` | 1 MiB | longer lines are skipped |
 
 Zip exports run in worker slots of their own, so a queue of exports never delays imports. Zip export

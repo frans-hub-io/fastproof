@@ -248,13 +248,26 @@ impl Store {
     /// in chunks of 500 and deleting at most `batch` versions per statement, until `budget`
     /// is spent (the next run goes on). Never deleted: the current version of a case, versions
     /// a run item or an earlier execution was run against, and on cases made from code the
-    /// newest version that was not written by code (code sync checks for it). Returns the
-    /// number of versions deleted.
-    pub async fn prune_case_versions(&self, budget: Duration, batch: i64) -> anyhow::Result<u64> {
+    /// newest version that was not written by code (code sync checks for it), and a version
+    /// replaced less than an hour ago (a launch that is being started may still record it for
+    /// its run items). Projects are visited starting at `start` (modulo their number), so a
+    /// run that spends its budget on the first projects does not starve the others. Returns
+    /// the number of versions deleted.
+    pub async fn prune_case_versions(
+        &self,
+        budget: Duration,
+        batch: i64,
+        start: usize,
+    ) -> anyhow::Result<u64> {
         const CHUNK: i64 = 500;
         let started = Instant::now();
         let mut deleted = 0u64;
-        for (project_id, _, settings) in self.all_project_settings().await? {
+        let mut projects = self.all_project_settings().await?;
+        if !projects.is_empty() {
+            let k = start % projects.len();
+            projects.rotate_left(k);
+        }
+        for (project_id, _, settings) in projects {
             let r = &settings.retention;
             if r.case_versions_keep == 0 && r.case_versions_days == 0 {
                 continue;
@@ -310,6 +323,8 @@ const PRUNE_SQL: &str = "with d as (\
          and not exists (select 1 from run_items r where r.case_id = v.case_id and r.case_version = v.version) \
          and not exists (select 1 from run_items r join run_item_executions e on e.run_item_id = r.id \
            where r.case_id = v.case_id and e.case_version = v.version) \
+         and not exists (select 1 from case_versions n where n.case_id = v.case_id and n.version > v.version \
+           and n.created_at > now() - interval '1 hour') \
          and not (c.origin = 'code' and v.source <> 'code' and v.version = \
            (select max(w.version) from case_versions w where w.case_id = v.case_id and w.source <> 'code')) \
        limit $5) \

@@ -1786,17 +1786,30 @@ impl Store {
         Ok(Some(out))
     }
 
-    /// Reopens a closed manual run.
-    pub async fn reopen_manual_run(&self, project: &Project, launch_id: Uuid) -> TmResult<()> {
+    /// Reopens a closed manual run. A launch started from a plan counts again toward its
+    /// creator's `maxOpenPlanLaunches`.
+    pub async fn reopen_manual_run(
+        &self,
+        project: &Project,
+        launch_id: Uuid,
+        limits: &TmLimits,
+    ) -> TmResult<()> {
         let mut tx = self.pool.begin().await?;
-        let state: Option<Option<String>> = sqlx::query_scalar(
-            "select manual_state from launches where id = $1 and project_id = $2 for update",
+        let row: Option<(Option<String>, Option<Uuid>, Option<String>)> = sqlx::query_as(
+            "select manual_state, test_plan_id, created_by from launches where id = $1 and project_id = $2 for update",
         )
         .bind(launch_id)
         .bind(project.id)
         .fetch_optional(&mut *tx)
         .await?;
-        match state.ok_or(TmError::NotFound("launch"))?.as_deref() {
+        let (state, plan, creator) = row.ok_or(TmError::NotFound("launch"))?;
+        if state.as_deref() == Some("closed")
+            && plan.is_some()
+            && let Some(c) = creator.as_deref()
+        {
+            super::plans::check_open_plan_launches(&mut tx, project.id, c, limits).await?;
+        }
+        match state.as_deref() {
             Some("closed") => {}
             Some(_) => {
                 return Err(TmError::conflict(

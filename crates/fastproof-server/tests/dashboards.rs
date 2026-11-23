@@ -7,6 +7,8 @@ mod common;
 use std::time::Duration;
 
 use common::{ADMIN_TOKEN, Server, TestDb};
+use fastproof_store::Store;
+use fastproof_store::analysis::boards::BoardLimits;
 use reqwest::{Method, StatusCode};
 use serde_json::{Value, json};
 
@@ -53,12 +55,35 @@ async fn put(
     body: Value,
 ) -> (StatusCode, Value) {
     let mut rb = s.req(Method::PUT, p, Some(token)).json(&body);
+    let rev = match (rev, p.strip_suffix("/lock")) {
+        (None, Some(board)) => Some(revision_of(s, board).await),
+        (r, _) => r,
+    };
     if let Some(r) = rev {
         rb = rb.header("If-Match", format!("\"r{r}\""));
     }
     let r = rb.send().await.unwrap();
     let st = r.status();
     (st, r.json().await.unwrap_or(Value::Null))
+}
+
+async fn revision_of(s: &Server, board_path: &str) -> i64 {
+    let (st, b) = s.get(board_path, ADMIN_TOKEN).await;
+    assert_eq!(st, StatusCode::OK, "{b}");
+    b["revision"].as_i64().unwrap()
+}
+
+async fn delete(s: &Server, token: &str, p: &str, rev: Option<i64>) -> StatusCode {
+    let rev = match rev {
+        Some(r) => r,
+        None => revision_of(s, p).await,
+    };
+    s.req(Method::DELETE, p, Some(token))
+        .header("If-Match", format!("\"r{rev}\""))
+        .send()
+        .await
+        .unwrap()
+        .status()
 }
 
 async fn create(s: &Server, token: &str, project: &str, name: &str, widgets: Vec<Value>) -> Value {
@@ -195,7 +220,10 @@ async fn dashboards_crud_permissions_lock_clone_and_limits() {
     assert_eq!(out["widgets"].as_array().unwrap().len(), 2);
     let (st, out) = put(&s, &editor, &p, Some(1), board("Stale", vec![])).await;
     assert_eq!(st, StatusCode::PRECONDITION_FAILED, "{out}");
-    assert_eq!(out["details"]["changedBy"], "editor-1");
+    assert!(
+        out["details"]["changedBy"].is_null(),
+        "only managers see who changed it"
+    );
     let (st, _) = put(&s, &viewer, &p, Some(2), board("Viewer", vec![])).await;
     assert_eq!(st, StatusCode::FORBIDDEN);
 
@@ -245,7 +273,7 @@ async fn locked_dashboards_belong_to_their_owner_and_managers() {
     let (st, out) = put(&s, &other, &p, Some(rev), board("Changed", vec![])).await;
     assert_eq!(st, StatusCode::FORBIDDEN, "{out}");
     assert_eq!(out["code"], "dashboard_locked");
-    let (st, _) = s.call(Method::DELETE, &p, Some(&other), None).await;
+    let st = delete(&s, &other, &p, None).await;
     assert_eq!(st, StatusCode::FORBIDDEN);
     let (st, _) = put(
         &s,
@@ -306,11 +334,11 @@ async fn locked_dashboards_belong_to_their_owner_and_managers() {
     .await;
     assert!(st.is_client_error());
 
-    let (st, _) = s.call(Method::DELETE, &p, Some(&other), None).await;
+    let st = delete(&s, &other, &p, None).await;
     assert_eq!(st, StatusCode::NO_CONTENT);
     let (st, _) = s.get(&p, &owner).await;
     assert_eq!(st, StatusCode::NOT_FOUND);
-    let (st, _) = s.call(Method::DELETE, &p, Some(&owner), None).await;
+    let st = delete(&s, &owner, &p, Some(1)).await;
     assert_eq!(st, StatusCode::NOT_FOUND);
 
     let (st, audit) = s.get("/api/v1/audit?action=dashboard.*", ADMIN_TOKEN).await;
@@ -620,4 +648,425 @@ async fn widgets_read_aggregates_and_one_failing_widget_does_not_hide_the_rest()
         )
         .await;
     assert_eq!(st, StatusCode::FORBIDDEN);
+}
+
+fn widget_with(id: &str, kind: &str, settings: Value) -> Value {
+    let mut w = widget(id, kind);
+    w["settings"] = settings;
+    w
+}
+
+#[tokio::test]
+async fn grid_arithmetic_cannot_overflow_and_expensive_computations_are_capped() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = Server::start(&db).await;
+    s.project("cap").await;
+    let wrap = json!({"id": "a", "type": "durations", "x": 2147483647, "y": 0, "w": 1, "h": 4});
+    let (st, out) = s
+        .post(&path("cap", ""), ADMIN_TOKEN, board("x", vec![wrap]))
+        .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "{out}");
+    let big = json!({"id": "a", "type": "durations", "x": 0, "y": 0, "w": 2147483647, "h": 4});
+    let (st, _) = s
+        .post(&path("cap", ""), ADMIN_TOKEN, board("x", vec![big]))
+        .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST);
+
+    let trends = |n: u32| -> Vec<Value> {
+        (0..n)
+            .map(|i| {
+                widget_with(
+                    &format!("t{i}"),
+                    "pass-rate-trend",
+                    json!({"days": 100 + i}),
+                )
+            })
+            .collect()
+    };
+    let (st, out) = s
+        .post(&path("cap", ""), ADMIN_TOKEN, board("four", trends(4)))
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{out}");
+    let (st, out) = s
+        .post(&path("cap", ""), ADMIN_TOKEN, board("five", trends(5)))
+        .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "{out}");
+    let (st, _) = s
+        .post(
+            "/api/v1/projects/cap/dashboard-preview",
+            ADMIN_TOKEN,
+            json!({"widgets": trends(5)}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "preview applies the same cap");
+
+    let mut same: Vec<Value> = (0..8)
+        .map(|i| {
+            widget(
+                &format!("s{i}"),
+                [
+                    "pass-rate-trend",
+                    "durations",
+                    "defect-trend",
+                    "flaky-tests",
+                ][i % 4],
+            )
+        })
+        .collect();
+    same.extend((0..4).map(|i| widget(&format!("l{i}"), "launches-table")));
+    let (st, out) = s
+        .post(&path("cap", ""), ADMIN_TOKEN, board("shared", same))
+        .await;
+    assert_eq!(
+        st,
+        StatusCode::CREATED,
+        "widgets with one filter share one computation: {out}"
+    );
+
+    let comps = |n: usize| -> Vec<Value> {
+        (0..n)
+            .map(|i| {
+                widget_with(
+                    &format!("c{i}"),
+                    "component-health",
+                    json!({"groupBy": format!("g{i}")}),
+                )
+            })
+            .collect()
+    };
+    let (st, _) = s
+        .post(&path("cap", ""), ADMIN_TOKEN, board("three", comps(3)))
+        .await;
+    assert_eq!(st, StatusCode::CREATED);
+    let (st, out) = s
+        .post(&path("cap", ""), ADMIN_TOKEN, board("four scans", comps(4)))
+        .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "{out}");
+}
+
+#[tokio::test]
+async fn data_is_shared_between_viewers_and_preview_needs_write() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = Server::start(&db).await;
+    s.project("shr").await;
+    let viewer = s.token("viewer-a", "viewer", &["shr"]).await;
+    let viewer2 = s.token("viewer-b", "viewer", &["shr"]).await;
+    let editor = s.token("editor-a", "editor", &["shr"]).await;
+    let b = create(
+        &s,
+        &editor,
+        "shr",
+        "Shared",
+        vec![widget("w1", "launches-table")],
+    )
+    .await;
+    let id = b["id"].as_str().unwrap().to_string();
+    let data = path("shr", &format!("/{id}/data"));
+    let (st, first) = s.get(&data, &viewer).await;
+    assert_eq!(st, StatusCode::OK, "{first}");
+    let (st, second) = s.get(&data, &viewer2).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(
+        first["generatedAt"], second["generatedAt"],
+        "the second viewer gets the cached data"
+    );
+
+    let (st, third) = put(
+        &s,
+        &editor,
+        &path("shr", &format!("/{id}")),
+        Some(1),
+        board(
+            "Shared",
+            vec![widget("w1", "launches-table"), widget("w2", "durations")],
+        ),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{third}");
+    let (_, fresh) = s.get(&data, &viewer).await;
+    assert_ne!(
+        fresh["generatedAt"], first["generatedAt"],
+        "a new revision is computed again"
+    );
+    assert!(fresh["widgets"]["w2"].is_object());
+
+    let body = json!({"widgets": [widget("w1", "launches-table")]});
+    let (st, _) = s
+        .post(
+            "/api/v1/projects/shr/dashboard-preview",
+            &viewer,
+            body.clone(),
+        )
+        .await;
+    assert_eq!(
+        st,
+        StatusCode::FORBIDDEN,
+        "viewers read saved dashboards but do not preview"
+    );
+    let (st, _) = s
+        .post("/api/v1/projects/shr/dashboard-preview", &editor, body)
+        .await;
+    assert_eq!(st, StatusCode::OK);
+    let (st, _) = s.get(&path("shr", &format!("/{id}")), &viewer).await;
+    assert_eq!(st, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn widget_queries_run_with_a_statement_timeout_and_a_time_budget() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let store = Store::new(db.pool.clone()).with_board_limits(BoardLimits {
+        total: Duration::from_secs(25),
+        per_widget: Duration::from_secs(7),
+        cache_ttl: Duration::from_secs(60),
+    });
+    assert_eq!(store.board_statement_timeout().await.unwrap(), "7s");
+    let main: String = sqlx::query_scalar("show statement_timeout")
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_ne!(main, "7s", "the main pool keeps its own timeout");
+
+    let s = Server::start(&db).await;
+    s.project("bud").await;
+    let (st, p) = s.get("/api/v1/projects/bud", ADMIN_TOKEN).await;
+    assert_eq!(st, StatusCode::OK, "{p}");
+    let pid: uuid::Uuid = sqlx::query_scalar("select id from projects where key = 'bud'")
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    let spent = Store::new(db.pool.clone()).with_board_limits(BoardLimits {
+        total: Duration::ZERO,
+        per_widget: Duration::from_secs(7),
+        cache_ttl: Duration::from_secs(60),
+    });
+    let widgets: Vec<fastproof_store::analysis::boards::BoardWidget> =
+        serde_json::from_value(json!([
+            widget("a", "launches-table"),
+            widget("b", "pass-rate-trend")
+        ]))
+        .unwrap();
+    let settings = spent.project_settings(pid).await.unwrap();
+    let d = spent.board_data(pid, &settings, &widgets).await;
+    for id in ["a", "b"] {
+        let r = serde_json::to_value(&d.widgets[id]).unwrap();
+        assert_eq!(r["status"], "error", "{r}");
+        assert!(r["message"].as_str().unwrap().contains("too long"));
+    }
+}
+
+#[tokio::test]
+async fn the_owner_is_a_stable_identity_not_a_name() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = Server::start(&db).await;
+    s.project("own").await;
+    let a = s.token("owner-a", "editor", &["own"]).await;
+    let b = s.token("owner-b", "editor", &["own"]).await;
+    let viewer = s.token("watcher", "viewer", &["own"]).await;
+    let made = create(&s, &a, "own", "Mine", vec![]).await;
+    let id = made["id"].as_str().unwrap().to_string();
+    let p = path("own", &format!("/{id}"));
+    assert_eq!(made["owned"], true);
+    assert_eq!(made["owner"], "owner-a");
+    let lock = format!("{p}/lock");
+    let (st, _) = put(&s, &a, &lock, None, json!({"locked": true})).await;
+    assert_eq!(st, StatusCode::OK);
+
+    sqlx::query("update dashboards set owner = 'owner-b' where id = $1")
+        .bind(uuid::Uuid::parse_str(&id).unwrap())
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let (st, out) = put(&s, &b, &lock, None, json!({"locked": false})).await;
+    assert_eq!(
+        st,
+        StatusCode::FORBIDDEN,
+        "carrying the owner's name does not make an owner: {out}"
+    );
+    let (st, out) = put(&s, &a, &lock, None, json!({"locked": false})).await;
+    assert_eq!(st, StatusCode::OK, "{out}");
+
+    let (_, seen_by_viewer) = s.get(&p, &viewer).await;
+    assert_eq!(seen_by_viewer["owner"], "another user");
+    assert_eq!(seen_by_viewer["owned"], false);
+    let (_, list) = s.get(&path("own", ""), &viewer).await;
+    assert_eq!(list["items"][0]["owner"], "another user");
+    let (_, seen_by_owner) = s.get(&p, &a).await;
+    assert_eq!(
+        seen_by_owner["owner"], "owner-b",
+        "the display name column is what was stored"
+    );
+    assert_eq!(seen_by_owner["owned"], true);
+    let (_, seen_by_manager) = s.get(&p, ADMIN_TOKEN).await;
+    assert_eq!(seen_by_manager["owner"], "owner-b");
+    assert_eq!(seen_by_manager["owned"], false);
+
+    let rev = seen_by_owner["revision"].as_i64().unwrap();
+    let (st, out) = put(&s, &b, &p, Some(rev - 1), board("Stale", vec![])).await;
+    assert_eq!(st, StatusCode::PRECONDITION_FAILED, "{out}");
+    assert!(
+        out["details"]["changedBy"].is_null(),
+        "who changed it is shown to managers only: {out}"
+    );
+    let (st, out) = put(&s, ADMIN_TOKEN, &p, Some(rev - 1), board("Stale", vec![])).await;
+    assert_eq!(st, StatusCode::PRECONDITION_FAILED);
+    assert!(out["details"]["changedBy"].is_string(), "{out}");
+}
+
+#[tokio::test]
+async fn existing_rows_get_an_owner_identity_from_the_migration() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = Server::start(&db).await;
+    s.project("mig").await;
+    let pid: uuid::Uuid = sqlx::query_scalar("select id from projects where key = 'mig'")
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    sqlx::query("insert into dashboards (id, project_id, name, owner, owner_key) values (gen_random_uuid(), $1, 'old', 'old-owner', '')")
+        .bind(pid)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    sqlx::raw_sql(include_str!(
+        "../../fastproof-store/migrations/0782_dashboards_owner_key.sql"
+    ))
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let key: String = sqlx::query_scalar("select owner_key from dashboards where name = 'old'")
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(key, "user:old-owner");
+}
+
+#[tokio::test]
+async fn parallel_creates_cannot_pass_the_limit() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = std::sync::Arc::new(Server::start(&db).await);
+    s.project("race").await;
+    let mut tasks = Vec::new();
+    for i in 0..60 {
+        let s = s.clone();
+        tasks.push(tokio::spawn(async move {
+            s.post(
+                &path("race", ""),
+                ADMIN_TOKEN,
+                board(&format!("b{i}"), vec![]),
+            )
+            .await
+            .0
+        }));
+    }
+    let mut created = 0;
+    for t in tasks {
+        if t.await.unwrap() == StatusCode::CREATED {
+            created += 1;
+        }
+    }
+    assert_eq!(created, 50);
+    let n: i64 = sqlx::query_scalar("select count(*) from dashboards")
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 50);
+}
+
+#[tokio::test]
+async fn delete_and_lock_need_if_match_and_clones_are_audited_in_both_projects() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = Server::start(&db).await;
+    s.project("ifm").await;
+    s.project("ifm2").await;
+    let b = create(
+        &s,
+        ADMIN_TOKEN,
+        "ifm",
+        "Board",
+        vec![widget("w1", "durations")],
+    )
+    .await;
+    let p = path("ifm", &format!("/{}", b["id"].as_str().unwrap()));
+    let (st, _) = s.call(Method::DELETE, &p, Some(ADMIN_TOKEN), None).await;
+    assert_eq!(st, StatusCode::PRECONDITION_REQUIRED);
+    assert_eq!(
+        delete(&s, ADMIN_TOKEN, &p, Some(9)).await,
+        StatusCode::PRECONDITION_FAILED
+    );
+    let (st, _) = s
+        .call(
+            Method::PUT,
+            &format!("{p}/lock"),
+            Some(ADMIN_TOKEN),
+            Some(json!({"locked": true})),
+        )
+        .await;
+    assert_eq!(st, StatusCode::PRECONDITION_REQUIRED);
+    let (st, _) = put(
+        &s,
+        ADMIN_TOKEN,
+        &format!("{p}/lock"),
+        Some(9),
+        json!({"locked": true}),
+    )
+    .await;
+    assert_eq!(st, StatusCode::PRECONDITION_FAILED);
+    let (st, _) = s.get(&p, ADMIN_TOKEN).await;
+    assert_eq!(st, StatusCode::OK, "nothing was deleted or locked");
+
+    let (st, out) = s
+        .post(
+            &format!("{p}/clone"),
+            ADMIN_TOKEN,
+            json!({"targetProject": "ifm2"}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{out}");
+    let (st, _) = s.post(&format!("{p}/clone"), ADMIN_TOKEN, json!({})).await;
+    assert_eq!(st, StatusCode::CREATED);
+    let (_, in_source) = s
+        .get(
+            "/api/v1/audit?scope=ifm&action=dashboard.clone*",
+            ADMIN_TOKEN,
+        )
+        .await;
+    let actions: Vec<&str> = in_source["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e["action"].as_str())
+        .collect();
+    assert!(actions.contains(&"dashboard.clone.out"), "{actions:?}");
+    assert_eq!(
+        actions
+            .iter()
+            .filter(|a| **a == "dashboard.clone.out")
+            .count(),
+        1,
+        "only the cross-project copy"
+    );
+    let (_, in_target) = s
+        .get(
+            "/api/v1/audit?scope=ifm2&action=dashboard.clone",
+            ADMIN_TOKEN,
+        )
+        .await;
+    assert_eq!(in_target["items"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        delete(&s, ADMIN_TOKEN, &p, None).await,
+        StatusCode::NO_CONTENT
+    );
 }

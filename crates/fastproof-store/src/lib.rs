@@ -157,6 +157,9 @@ pub async fn check_schema(pool: &PgPool) -> anyhow::Result<()> {
 pub struct Store {
     pool: PgPool,
     purge_batch: i64,
+    board_pool: analysis::boards::BoardPool,
+    board_cache: analysis::boards::BoardCache,
+    board_limits: analysis::boards::BoardLimits,
 }
 
 impl Store {
@@ -164,6 +167,9 @@ impl Store {
         Self {
             pool,
             purge_batch: purge::PURGE_BATCH,
+            board_pool: Default::default(),
+            board_cache: Default::default(),
+            board_limits: Default::default(),
         }
     }
 

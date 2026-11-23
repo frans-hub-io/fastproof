@@ -9,7 +9,8 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use fastproof_store::Project;
 use fastproof_store::analysis::boards::{
-    Board, BoardData, BoardError, BoardSummary, BoardWidget, BoardWrite, MAX_WIDGETS, validate,
+    Actor, Board, BoardData, BoardError, BoardSummary, BoardWidget, BoardWrite, MAX_WIDGETS,
+    validate,
 };
 use franshub_auth::Auth;
 use franshub_http::{ApiError, ApiJson, ApiResult};
@@ -21,6 +22,7 @@ use uuid::Uuid;
 
 use super::plans::etag;
 use super::{ErrorBody, P, if_match};
+use crate::limits::caller_key;
 use crate::state::AppState;
 
 /// `{items}` of dashboards.
@@ -40,6 +42,11 @@ pub fn router() -> OpenApiRouter<AppState> {
 }
 
 fn board_error(e: BoardError) -> ApiError {
+    board_error_for(e, false)
+}
+
+/// `manager`: the caller may see who changed the dashboard last.
+fn board_error_for(e: BoardError, manager: bool) -> ApiError {
     match e {
         BoardError::NotFound => ApiError::not_found("dashboard"),
         BoardError::Locked => ApiError::new(
@@ -64,7 +71,7 @@ fn board_error(e: BoardError) -> ApiError {
             "the resource changed since it was read",
         )
         .with_details(serde_json::json!({"currentRevision": current_revision,
-            "changedBy": changed_by, "source": "ui"})),
+            "changedBy": changed_by.filter(|_| manager), "source": "ui"})),
         BoardError::Invalid(m) => ApiError::bad_request(m),
         BoardError::Other(e) => ApiError::from(e),
     }
@@ -81,6 +88,25 @@ async fn manager(s: &AppState, auth: &Auth, key: &str) -> bool {
     auth.principal.allowed(&s.perms.settings_write, Some(key))
 }
 
+const HIDDEN_OWNER: &str = "another user";
+
+/// Marks what the caller owns and shows owners' names only to the owner and to managers.
+fn present(mut b: Board, me: &str, manager: bool) -> Board {
+    b.owned = b.owner_key == me;
+    if !b.owned && !manager {
+        b.owner = HIDDEN_OWNER.into();
+    }
+    b
+}
+
+fn present_summary(mut b: BoardSummary, me: &str, manager: bool) -> BoardSummary {
+    b.owned = b.owner_key == me;
+    if !b.owned && !manager {
+        b.owner = HIDDEN_OWNER.into();
+    }
+    b
+}
+
 #[utoipa::path(get, path = "/api/v1/projects/{key}/dashboards", tag = "dashboards", operation_id = "list_dashboards",
     params(("key" = String, Path)),
     responses((status = 200, body = BoardList), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
@@ -90,8 +116,15 @@ pub async fn list_boards(
     P(key): P<String>,
 ) -> ApiResult<Json<BoardList>> {
     let p = s.project_for(&auth, &key, &s.perms.launches_read).await?;
+    let (me, mgr) = (caller_key(&auth), manager(&s, &auth, &key).await);
     Ok(Json(BoardList {
-        items: s.store.list_boards(p.id).await?,
+        items: s
+            .store
+            .list_boards(p.id)
+            .await?
+            .into_iter()
+            .map(|b| present_summary(b, &me, mgr))
+            .collect(),
     }))
 }
 
@@ -109,11 +142,22 @@ pub async fn create_board(
     let p = s
         .project_for(&auth, &key, &s.perms.dashboards_write)
         .await?;
+    let me = caller_key(&auth);
+    let mgr = manager(&s, &auth, &key).await;
     let b = s
         .store
-        .create_board(p.id, &auth.principal.name, &body)
+        .create_board(
+            p.id,
+            Actor {
+                key: &me,
+                name: &auth.principal.name,
+                manager: mgr,
+            },
+            &body,
+        )
         .await
         .map_err(board_error)?;
+    let b = present(b, &me, mgr);
     s.audit(
         &auth,
         "dashboard.create",
@@ -142,7 +186,11 @@ pub async fn get_board(
     P((key, id)): P<(String, Uuid)>,
 ) -> ApiResult<Response> {
     let p = s.project_for(&auth, &key, &s.perms.launches_read).await?;
-    let b = find(&s, &p, id).await?;
+    let b = present(
+        find(&s, &p, id).await?,
+        &caller_key(&auth),
+        manager(&s, &auth, &key).await,
+    );
     Ok(with_etag(StatusCode::OK, b.revision, b))
 }
 
@@ -163,11 +211,23 @@ pub async fn update_board(
         .await?;
     let revision = if_match(&headers)?;
     let mgr = manager(&s, &auth, &key).await;
+    let me = caller_key(&auth);
     let b = s
         .store
-        .update_board(p.id, id, revision, &auth.principal.name, mgr, &body)
+        .update_board(
+            p.id,
+            id,
+            revision,
+            Actor {
+                key: &me,
+                name: &auth.principal.name,
+                manager: mgr,
+            },
+            &body,
+        )
         .await
-        .map_err(board_error)?;
+        .map_err(|e| board_error_for(e, mgr))?;
+    let b = present(b, &me, mgr);
     s.audit(
         &auth,
         "dashboard.update",
@@ -179,21 +239,34 @@ pub async fn update_board(
 }
 
 #[utoipa::path(delete, path = "/api/v1/projects/{key}/dashboards/{id}", tag = "dashboards", operation_id = "delete_dashboard",
-    params(("key" = String, Path), ("id" = Uuid, Path)),
-    responses((status = 204), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
+    params(("key" = String, Path), ("id" = Uuid, Path), ("If-Match" = String, Header, description = "ETag of the dashboard")),
+    responses((status = 204), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody),
+        (status = 412, body = ErrorBody), (status = 428, body = ErrorBody)))]
 pub async fn delete_board(
     State(s): State<AppState>,
     auth: Auth,
     P((key, id)): P<(String, Uuid)>,
+    headers: HeaderMap,
 ) -> ApiResult<StatusCode> {
     let p = s
         .project_for(&auth, &key, &s.perms.dashboards_write)
         .await?;
+    let revision = if_match(&headers)?;
     let mgr = manager(&s, &auth, &key).await;
+    let me = caller_key(&auth);
     s.store
-        .delete_board(p.id, id, &auth.principal.name, mgr)
+        .delete_board(
+            p.id,
+            id,
+            revision,
+            Actor {
+                key: &me,
+                name: &auth.principal.name,
+                manager: mgr,
+            },
+        )
         .await
-        .map_err(board_error)?;
+        .map_err(|e| board_error_for(e, mgr))?;
     s.audit(
         &auth,
         "dashboard.delete",
@@ -213,23 +286,38 @@ pub struct LockBody {
 #[utoipa::path(put, path = "/api/v1/projects/{key}/dashboards/{id}/lock", tag = "dashboards", operation_id = "lock_dashboard",
     description = "Locks or unlocks a dashboard; only its owner or a holder of `settings:write` may.",
     request_body = LockBody,
-    params(("key" = String, Path), ("id" = Uuid, Path)),
-    responses((status = 200, body = Board), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
+    params(("key" = String, Path), ("id" = Uuid, Path), ("If-Match" = String, Header, description = "ETag of the dashboard")),
+    responses((status = 200, body = Board), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody),
+        (status = 412, body = ErrorBody), (status = 428, body = ErrorBody)))]
 pub async fn lock_board(
     State(s): State<AppState>,
     auth: Auth,
     P((key, id)): P<(String, Uuid)>,
+    headers: HeaderMap,
     ApiJson(body): ApiJson<LockBody>,
 ) -> ApiResult<Response> {
     let p = s
         .project_for(&auth, &key, &s.perms.dashboards_write)
         .await?;
+    let revision = if_match(&headers)?;
     let mgr = manager(&s, &auth, &key).await;
+    let me = caller_key(&auth);
     let b = s
         .store
-        .set_board_lock(p.id, id, body.locked, &auth.principal.name, mgr)
+        .set_board_lock(
+            p.id,
+            id,
+            revision,
+            body.locked,
+            Actor {
+                key: &me,
+                name: &auth.principal.name,
+                manager: mgr,
+            },
+        )
         .await
-        .map_err(board_error)?;
+        .map_err(|e| board_error_for(e, mgr))?;
+    let b = present(b, &me, mgr);
     s.audit(
         &auth,
         if body.locked {
@@ -290,11 +378,16 @@ pub async fn clone_board(
     let name = body
         .name
         .unwrap_or_else(|| format!("{} (copy)", src.name).chars().take(120).collect());
+    let me = caller_key(&auth);
     let b = s
         .store
         .create_board(
             target.id,
-            &auth.principal.name,
+            Actor {
+                key: &me,
+                name: &auth.principal.name,
+                manager: false,
+            },
             &BoardWrite {
                 name,
                 description: src.description.clone(),
@@ -310,6 +403,16 @@ pub async fn clone_board(
         serde_json::json!({"from": src.id, "fromProject": src_project.key, "id": b.id}),
     )
     .await;
+    if cross {
+        s.audit(
+            &auth,
+            "dashboard.clone.out",
+            Some(&src_project.key),
+            serde_json::json!({"id": src.id, "toProject": target.key, "copy": b.id}),
+        )
+        .await;
+    }
+    let b = present(b, &me, true);
     let rev = b.revision;
     Ok(with_etag(
         StatusCode::CREATED,
@@ -333,9 +436,16 @@ pub async fn board_data(
 ) -> ApiResult<Json<BoardData>> {
     let p = s.project_for(&auth, &key, &s.perms.launches_read).await?;
     let b = find(&s, &p, id).await?;
+    if let Some(d) = s.store.cached_board_data(b.id, b.revision) {
+        return Ok(Json((*d).clone()));
+    }
     let _permit = s.guards.heavy(&auth).await?;
     let settings = s.store.project_settings(p.id).await?;
-    Ok(Json(s.store.board_data(p.id, &settings, &b.widgets).await))
+    let d = s
+        .store
+        .board_data_cached(p.id, b.id, b.revision, &settings, &b.widgets)
+        .await;
+    Ok(Json((*d).clone()))
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -345,7 +455,7 @@ pub struct PreviewBody {
 }
 
 #[utoipa::path(post, path = "/api/v1/projects/{key}/dashboard-preview", tag = "dashboards", operation_id = "dashboard_preview",
-    description = "The data of widgets that are not stored yet (the editor's draft). Reading only; same limits as a dashboard.",
+    description = "The data of widgets that are not stored yet (the editor's draft). Needs `dashboards:write`; same limits as a dashboard, never cached.",
     request_body = PreviewBody,
     params(("key" = String, Path)),
     responses((status = 200, body = BoardData), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),
@@ -356,7 +466,9 @@ pub async fn preview(
     P(key): P<String>,
     ApiJson(body): ApiJson<PreviewBody>,
 ) -> ApiResult<Json<BoardData>> {
-    let p = s.project_for(&auth, &key, &s.perms.launches_read).await?;
+    let p = s
+        .project_for(&auth, &key, &s.perms.dashboards_write)
+        .await?;
     if body.widgets.len() > MAX_WIDGETS {
         return Err(ApiError::bad_request(format!(
             "a dashboard has at most {MAX_WIDGETS} widgets"

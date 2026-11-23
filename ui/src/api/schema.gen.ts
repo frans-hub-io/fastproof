@@ -563,7 +563,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description The data of widgets that are not stored yet (the editor's draft). Reading only; same limits as a dashboard. */
+        /** @description The data of widgets that are not stored yet (the editor's draft). Needs `dashboards:write`; same limits as a dashboard, never cached. */
         post: operations["dashboard_preview"];
         delete?: never;
         options?: never;
@@ -1900,6 +1900,9 @@ export interface components {
             id: string;
             locked: boolean;
             name: string;
+            /** @description The caller owns this dashboard. */
+            owned?: boolean;
+            /** @description Display name of the owner; the API shows it only to the owner and to project managers. */
             owner: string;
             /** Format: int64 */
             revision: number;
@@ -1926,6 +1929,7 @@ export interface components {
             id: string;
             locked: boolean;
             name: string;
+            owned?: boolean;
             owner: string;
             /** Format: int64 */
             revision: number;
@@ -7851,7 +7855,10 @@ export interface operations {
     delete_dashboard: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                /** @description ETag of the dashboard */
+                "If-Match": string;
+            };
             path: {
                 key: string;
                 id: string;
@@ -7875,6 +7882,22 @@ export interface operations {
                 };
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            428: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7999,7 +8022,10 @@ export interface operations {
     lock_dashboard: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                /** @description ETag of the dashboard */
+                "If-Match": string;
+            };
             path: {
                 key: string;
                 id: string;
@@ -8029,6 +8055,22 @@ export interface operations {
                 };
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            428: {
                 headers: {
                     [name: string]: unknown;
                 };

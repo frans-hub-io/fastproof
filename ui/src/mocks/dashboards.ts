@@ -8,7 +8,7 @@ import { dashboard, flakyOf } from './stageC';
 const DAY = 86_400_000;
 export const MAX_DASHBOARDS = 50;
 
-interface Stored extends DashboardDoc {
+interface Stored extends Omit<DashboardDoc, 'owned'> {
   project: string;
 }
 
@@ -47,9 +47,9 @@ export function resetDashboards(): void {
 }
 resetDashboards();
 
-const summary = (d: Stored): DashboardSummary => ({ id: d.id, name: d.name, description: d.description, owner: d.owner, locked: d.locked, revision: d.revision, widgetCount: d.widgets.length, createdAt: d.createdAt, updatedAt: d.updatedAt });
+const summary = (d: Stored): DashboardSummary => ({ id: d.id, name: d.name, description: d.description, owner: d.owner, owned: d.owner === 'alex@example.com', locked: d.locked, revision: d.revision, widgetCount: d.widgets.length, createdAt: d.createdAt, updatedAt: d.updatedAt });
 const doc = (d: Stored): DashboardDoc => {
-  return { id: d.id, name: d.name, description: d.description, owner: d.owner, locked: d.locked, revision: d.revision, createdAt: d.createdAt, updatedAt: d.updatedAt, widgets: d.widgets };
+  return { id: d.id, name: d.name, description: d.description, owner: d.owner, owned: d.owner === 'alex@example.com', locked: d.locked, revision: d.revision, createdAt: d.createdAt, updatedAt: d.updatedAt, widgets: d.widgets };
 };
 
 export function listDashboards(project: string): DashboardSummary[] {
@@ -95,18 +95,21 @@ export function saveDashboard(project: string, id: string, revision: number, b: 
   return doc(d);
 }
 
-export function lockDashboard(project: string, id: string, locked: boolean): DashboardDoc | undefined {
+export function lockDashboard(project: string, id: string, revision: number, locked: boolean): DashboardDoc | 'missing' | 'stale' {
   const d = store.find((x) => x.project === project && x.id === id);
-  if (!d) return undefined;
+  if (!d) return 'missing';
+  if (d.revision !== revision) return 'stale';
   d.locked = locked;
   d.revision++;
   return doc(d);
 }
 
-export function deleteDashboard(project: string, id: string): boolean {
-  const n = store.length;
-  store = store.filter((d) => !(d.project === project && d.id === id));
-  return store.length < n;
+export function deleteDashboard(project: string, id: string, revision: number): 'ok' | 'missing' | 'stale' {
+  const d = store.find((x) => x.project === project && x.id === id);
+  if (!d) return 'missing';
+  if (d.revision !== revision) return 'stale';
+  store = store.filter((x) => x !== d);
+  return 'ok';
 }
 
 export function cloneDashboard(project: string, id: string, owner: string, name: string | undefined, target: string): DashboardDoc | 'missing' | 'limit' {

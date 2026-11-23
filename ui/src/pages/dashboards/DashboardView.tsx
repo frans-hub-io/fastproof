@@ -1,4 +1,4 @@
-import { EmptyState, useCan, useMe } from '@franshub/ui-shell';
+import { EmptyState, useCan } from '@franshub/ui-shell';
 import { ActionIcon, Alert, Badge, Button, Card, Group, Menu, Modal, NumberInput, Select, Stack, Text, TextInput, Textarea, Tooltip } from '@mantine/core';
 import { useMediaQuery } from '@mantine/hooks';
 import { notifications } from '@mantine/notifications';
@@ -168,11 +168,10 @@ function CloneModal({ project, id, name, onClose }: { project: string; id: strin
 function View({ project, doc, etag }: { project: string; doc: DashboardDoc; etag: string }) {
   const [sp, setSp] = useSearchParams();
   const navigate = useNavigate();
-  const { me } = useMe();
   const canWrite = useCan('dashboards:write', project);
   const isManager = useCan('settings:write', project);
   const wide = useMediaQuery('(min-width: 62em)', true);
-  const owner = me?.name === doc.owner;
+  const owner = doc.owned;
   const canEdit = canWrite && (!doc.locked || owner || isManager);
   const canLock = canWrite && (owner || isManager);
   const editing = sp.get('edit') === '1' && canEdit;
@@ -289,7 +288,7 @@ function View({ project, doc, etag }: { project: string; doc: DashboardDoc; etag
                   </Button>
                 )}
                 {canLock && (
-                  <Button variant="default" leftSection={doc.locked ? <IconLockOpen size={16} /> : <IconLock size={16} />} loading={lock.isPending} onClick={() => lock.mutate(!doc.locked, { onError: (e) => notifications.show({ color: 'red', message: errorMessage(e) }) })}>
+                  <Button variant="default" leftSection={doc.locked ? <IconLockOpen size={16} /> : <IconLock size={16} />} loading={lock.isPending} onClick={() => lock.mutate({ locked: !doc.locked, etag }, { onError: (e) => notifications.show({ color: 'red', message: errorMessage(e) }) })}>
                     {doc.locked ? 'Unlock' : 'Lock'}
                   </Button>
                 )}
@@ -305,7 +304,7 @@ function View({ project, doc, etag }: { project: string; doc: DashboardDoc; etag
                     leftSection={<IconTrash size={16} />}
                     loading={del.isPending}
                     onClick={() => {
-                      if (window.confirm(`Delete the dashboard "${doc.name}"?`)) del.mutate(doc.id, { onSuccess: () => void navigate(`/p/${project}/dashboards`), onError: (e) => notifications.show({ color: 'red', message: errorMessage(e) }) });
+                      if (window.confirm(`Delete the dashboard "${doc.name}"?`)) del.mutate({ id: doc.id, etag }, { onSuccess: () => void navigate(`/p/${project}/dashboards`), onError: (e) => notifications.show({ color: 'red', message: errorMessage(e) }) });
                     }}
                   >
                     Delete

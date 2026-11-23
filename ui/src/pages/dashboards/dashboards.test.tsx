@@ -1,10 +1,13 @@
-import { screen, waitFor, within } from '@testing-library/react';
+import { renderHook, screen, waitFor, within } from '@testing-library/react';
+import { http, HttpResponse } from 'msw';
+import type { ReactNode } from 'react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
-import { WIDGET_CATALOG, WIDGET_TYPES, newWidget, packWidgets, templateOverview, type DashboardWidget } from '../../api/dashboards';
+import { WIDGET_CATALOG, WIDGET_TYPES, newWidget, packWidgets, templateOverview, useWidgetPreview, type DashboardWidget } from '../../api/dashboards';
 import { dashboardData } from '../../mocks/dashboards';
 import { setMockRole } from '../../mocks/handlers';
-import { renderApp, renderWith } from '../../test/render';
+import { server } from '../../mocks/node';
+import { Providers, renderApp, renderWith } from '../../test/render';
 import { WidgetBody } from './widgets';
 
 const SEEDED = 'd0000000-0000-4000-8000-000000000001';
@@ -114,5 +117,24 @@ describe('dashboard pages', () => {
     expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Clone' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Unlock' })).not.toBeInTheDocument();
+  });
+});
+
+describe('preview', () => {
+  it('asks once for the first draft and once for the settled one, not for every change', async () => {
+    const calls: number[] = [];
+    server.use(
+      http.post('/api/v1/projects/web-shop/dashboard-preview', () => {
+        calls.push(Date.now());
+        return HttpResponse.json({ generatedAt: new Date().toISOString(), widgets: {} });
+      }),
+    );
+    const wrapper = ({ children }: { children: ReactNode }) => <Providers>{children}</Providers>;
+    const base = newWidget('launches-table', []);
+    const { rerender } = renderHook(({ ws }: { ws: DashboardWidget[] }) => useWidgetPreview('web-shop', ws, true), { wrapper, initialProps: { ws: [base] } });
+    for (let i = 1; i <= 4; i++) rerender({ ws: [{ ...base, settings: { limit: i } }] });
+    await waitFor(() => expect(calls.length).toBeGreaterThan(0), { timeout: 3000 });
+    await new Promise((r) => setTimeout(r, 800));
+    expect(calls.length).toBeLessThanOrEqual(2);
   });
 });

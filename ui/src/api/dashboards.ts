@@ -1,3 +1,4 @@
+import { useDebouncedValue } from '@mantine/hooks';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { projectPath, request } from './client';
 import { getVersioned, writeVersioned, type Versioned } from './tm';
@@ -60,6 +61,7 @@ export interface DashboardSummary {
   name: string;
   description: string;
   owner: string;
+  owned: boolean;
   locked: boolean;
   revision: number;
   widgetCount: number;
@@ -164,6 +166,7 @@ export const WIDGET_CATALOG: Record<WidgetType, WidgetInfo> = {
   'launches-per-day': { type: 'launches-per-day', title: 'Launches per bucket', description: 'How many launches started per bucket.', w: 6, h: 3, settings: [...TREND_SETTINGS], group: 'Trends' },
 };
 
+export const PREVIEW_DEBOUNCE_MS = 500;
 export const GRID_COLUMNS = 12;
 export const MAX_WIDGETS = 24;
 
@@ -195,10 +198,11 @@ export function useDashboardData(key: string, id: string, enabled = true) {
 
 export function useWidgetPreview(key: string, widgets: DashboardWidget[], enabled: boolean) {
   const sig = JSON.stringify(widgets.map((w) => [w.id, w.type, w.settings]));
+  const [settled] = useDebouncedValue({ sig, widgets }, PREVIEW_DEBOUNCE_MS);
   return useQuery({
-    queryKey: dk.preview(key, sig),
-    queryFn: () => request<DashboardData>(`${projectPath(key)}/dashboard-preview`, { method: 'POST', json: { widgets } }),
-    enabled: enabled && widgets.length > 0,
+    queryKey: dk.preview(key, settled.sig),
+    queryFn: () => request<DashboardData>(`${projectPath(key)}/dashboard-preview`, { method: 'POST', json: { widgets: settled.widgets } }),
+    enabled: enabled && settled.widgets.length > 0,
     placeholderData: (prev) => prev,
   });
 }
@@ -226,7 +230,7 @@ export function useSaveDashboard(key: string, id: string) {
 export function useDeleteDashboard(key: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) => request<unknown>(`${base(key)}/${enc(id)}`, { method: 'DELETE' }),
+    mutationFn: ({ id, etag }: { id: string; etag: string }) => request<unknown>(`${base(key)}/${enc(id)}`, { method: 'DELETE', headers: { 'If-Match': etag } }),
     onSuccess: () => qc.invalidateQueries({ queryKey: dk.list(key) }),
   });
 }
@@ -234,7 +238,7 @@ export function useDeleteDashboard(key: string) {
 export function useLockDashboard(key: string, id: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (locked: boolean) => request<DashboardDoc>(`${base(key)}/${enc(id)}/lock`, { method: 'PUT', json: { locked } }),
+    mutationFn: ({ locked, etag }: { locked: boolean; etag: string }) => request<DashboardDoc>(`${base(key)}/${enc(id)}/lock`, { method: 'PUT', json: { locked }, headers: { 'If-Match': etag } }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: dk.doc(key, id) });
       void qc.invalidateQueries({ queryKey: dk.list(key) });

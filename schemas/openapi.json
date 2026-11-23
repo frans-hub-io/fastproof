@@ -3459,7 +3459,7 @@
         "tags": [
           "dashboards"
         ],
-        "description": "The data of widgets that are not stored yet (the editor's draft). Reading only; same limits as a dashboard.",
+        "description": "The data of widgets that are not stored yet (the editor's draft). Needs `dashboards:write`; same limits as a dashboard, never cached.",
         "operationId": "dashboard_preview",
         "parameters": [
           {
@@ -3837,6 +3837,15 @@
               "type": "string",
               "format": "uuid"
             }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "description": "ETag of the dashboard",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -3851,6 +3860,24 @@
             }
           },
           "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "428": {
             "content": {
               "application/json": {
                 "schema": {
@@ -4046,6 +4073,15 @@
               "type": "string",
               "format": "uuid"
             }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "description": "ETag of the dashboard",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -4078,6 +4114,24 @@
             }
           },
           "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "428": {
             "content": {
               "application/json": {
                 "schema": {
@@ -11876,8 +11930,13 @@
           "name": {
             "type": "string"
           },
+          "owned": {
+            "type": "boolean",
+            "description": "The caller owns this dashboard."
+          },
           "owner": {
-            "type": "string"
+            "type": "string",
+            "description": "Display name of the owner; the API shows it only to the owner and to project managers."
           },
           "revision": {
             "type": "integer",
@@ -11962,6 +12021,9 @@
           },
           "name": {
             "type": "string"
+          },
+          "owned": {
+            "type": "boolean"
           },
           "owner": {
             "type": "string"

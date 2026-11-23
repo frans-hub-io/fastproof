@@ -74,6 +74,15 @@ All optional; unknown fields are rejected.
 
 ## Cost and limits
 
+- Every query of a widget runs with a 10 second statement timeout on a small dedicated connection pool (3 connections
+  per replica), and one data request has 25 seconds in total; widgets that do not finish answer "took too long"
+  while the others still render.
+- Saved dashboards share their data between viewers: it is computed once per revision and kept for 60 seconds, so
+  open tabs polling every minute cost one computation a minute, not one per viewer. Preview is never cached.
+- A dashboard may use at most 4 different (days, bucket, branch, environment) combinations for its trend and test
+  list widgets, and at most 3 different per-launch widgets (launch execution and component health); widgets that
+  differ only in how they draw share one query.
+
 - A dashboard has at most 24 widgets; titles 120 characters, names 120, descriptions 2000; a project 50 dashboards.
 - Launch widgets read at most 50 launches. Trend widgets with the same filters share one computation per request.
 - `launch-execution` and `component-health` read the results of a single launch (grouped in the database, at most
@@ -86,12 +95,13 @@ All optional; unknown fields are rejected.
 
 | Permission | Allows | Roles |
 | --- | --- | --- |
-| `launches:read` | list, open, read widget data, preview, clone from | `viewer` and up |
-| `dashboards:write` | create, change, delete, lock, unlock, clone into | `editor`, `admin` |
-| `settings:write` | change, unlock or delete a dashboard that someone else locked | `admin` |
+| `launches:read` | list, open, read widget data, clone from | `viewer` and up |
+| `dashboards:write` | create, change, delete, lock, unlock, clone into, preview unsaved widgets | `editor`, `admin` |
+| `settings:write` | change, unlock or delete a dashboard that someone else locked; see who owns dashboards and who changed one last | `admin` |
 
 Every write is an audit entry: `dashboard.create`, `dashboard.update`, `dashboard.delete`, `dashboard.lock`,
-`dashboard.unlock`, `dashboard.clone`.
+`dashboard.unlock`, `dashboard.clone` (in the target project), and `dashboard.clone.out` (in the source project of a
+copy into another project).
 
 ## API
 
@@ -103,11 +113,17 @@ All under `/api/v1/projects/{key}`:
 | `POST /dashboards` | `{name, description, widgets}`; 201; 409 `dashboard_limit` at 50 |
 | `GET /dashboards/{id}` | with `ETag: "r<revision>"` |
 | `PUT /dashboards/{id}` | needs `If-Match`; 412 with `{currentRevision, changedBy}`; 403 `dashboard_locked` |
-| `DELETE /dashboards/{id}` | 204 |
-| `PUT /dashboards/{id}/lock` | `{locked}` |
+| `DELETE /dashboards/{id}` | `If-Match`; 204 |
+| `PUT /dashboards/{id}/lock` | `If-Match`; `{locked}` |
 | `POST /dashboards/{id}/clone` | `{name?, targetProject?}`; 201 with the copy and its `project` |
 | `GET /dashboards/{id}/data` | `{generatedAt, widgets: {id: {status: "ok", data} or {status: "error", message}}}` |
-| `POST /dashboard-preview` | `{widgets}`; the data of widgets that are not stored yet |
+| `POST /dashboard-preview` | `{widgets}`; the data of widgets that are not stored yet; needs `dashboards:write` |
+
+`PUT .../lock` and `DELETE` need `If-Match` like `PUT`. An owner is the caller's identity (managed token id, or
+kind and name), not a display name. Owners' names are shown to the owner and to holders of `settings:write`; everyone
+else sees "another user" (`owned` tells you whether the caller owns it). Dashboards that existed before this
+identity was stored were assigned to `user:<name>`, so one made with a token has no owner any more and is changed
+by project managers.
 
 A widget is `{id, type, title, settings, x, y, w, h}`: `id` is 1 to 32 characters of `a-z`, `0-9` and `-`;
 `x + w` at most 12; `h` at most 12 rows; `y` at most 1000.

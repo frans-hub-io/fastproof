@@ -344,7 +344,7 @@ impl AnalysisOps for Full {
         _project: &Project,
         launch: &Launch,
     ) -> anyhow::Result<Value> {
-        Ok(json!({ "items": s.store.clusters(launch).await? }))
+        Ok(json!({ "items": s.store.clusters(launch, None).await? }))
     }
 
     async fn similar(

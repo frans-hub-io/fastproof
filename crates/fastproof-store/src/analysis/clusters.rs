@@ -131,19 +131,30 @@ impl Store {
     }
 
     /// Failed and broken results of a launch grouped by fingerprint, largest first.
-    pub async fn clusters(&self, launch: &Launch) -> anyhow::Result<Vec<Cluster>> {
-        let rows: Vec<ClusterRow> = sqlx::query_as(
+    pub async fn clusters(
+        &self,
+        launch: &Launch,
+        env: Option<&crate::results::EnvFilter>,
+    ) -> anyhow::Result<Vec<Cluster>> {
+        let (mode, key) = crate::results::EnvFilter::args(env);
+        let rows: Vec<ClusterRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "select fingerprint, count(*)::bigint, count(*) filter (where status = 'failed')::bigint, \
                count(*) filter (where status = 'broken')::bigint, (array_agg(id order by full_name, id))[1], \
                (array_agg(defect order by (defect->>'source' in ('user', 'ai')) desc, \
                  (defect->>'ruleId') is not null desc, full_name, id) filter (where defect is not null))[1] \
              from results where launch_id = $1 and launch_created_at = $2 and status in ('failed', 'broken') \
                and fingerprint is not null \
+               and ($4::int = 0 or exists (select 1 from series se where se.id = results.series_id and {})) \
              group by fingerprint order by 2 desc, 1 limit $3",
-        )
+            crate::results::ENV_MATCH
+                .replace("$m", "$4")
+                .replace("$k", "$5::text")
+        )))
         .bind(launch.id)
         .bind(launch.created_at)
         .bind(MAX_CLUSTERS)
+        .bind(mode)
+        .bind(key)
         .fetch_all(&self.pool)
         .await?;
         if rows.is_empty() {

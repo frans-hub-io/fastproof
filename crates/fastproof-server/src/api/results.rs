@@ -551,7 +551,7 @@ pub(crate) async fn result_filter(
 
 #[utoipa::path(get, path = "/api/v1/projects/{key}/launches/{id}/results", tag = "results", operation_id = "results_list",
     params(("key" = String, Path), ("id" = Uuid, Path), ResultQuery, ExplorerQuery),
-    responses((status = 200, body = Page<ResultSummary>), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
+    responses((status = 200, body = Page<ResultSummary>), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody), (status = 429, body = ErrorBody), (status = 503, body = ErrorBody)))]
 pub async fn list(
     State(s): State<AppState>,
     auth: Auth,
@@ -561,8 +561,11 @@ pub async fn list(
 ) -> ApiResult<Json<Page<ResultSummary>>> {
     let project = s.project_for(&auth, &key, &s.perms.launches_read).await?;
     let launch = s.launch_of(&project, id).await?;
+    let _permit = s.guards.heavy(&auth).await?;
     let f = result_filter(&s, &launch, q, &explorer).await?;
-    Ok(Json(s.store.results(&launch, &f).await?))
+    Ok(Json(
+        s.store.results(&launch, &f).await.map_err(heavy_error)?,
+    ))
 }
 
 /// The explorer filters shared by the tree, its pages, the result list and the label list.
@@ -677,6 +680,21 @@ fn millis(v: Option<&str>, name: &str) -> ApiResult<Option<i64>> {
     }
 }
 
+/// The `env` filter: an environment key (`%2C` for a comma, `%25` for a percent sign), or
+/// `%00` for results without one.
+pub(crate) fn env_filter(v: Option<&str>) -> ApiResult<Option<EnvFilter>> {
+    match v.map(str::trim).filter(|e| !e.is_empty()) {
+        None => Ok(None),
+        Some(e) if e.len() > MAX_Q_BYTES => Err(ApiError::bad_request(format!(
+            "env has at most {MAX_Q_BYTES} bytes"
+        ))),
+        Some(e) => Ok(Some(match list_item(e) {
+            k if k == NO_LABEL => EnvFilter::None,
+            k => EnvFilter::Key(k),
+        })),
+    }
+}
+
 impl ExplorerQuery {
     /// The filters, after validation; `newFailures` resolves the baseline launch.
     async fn filter(&self, s: &AppState, launch: &Launch) -> ApiResult<TreeFilter> {
@@ -719,18 +737,7 @@ impl ExplorerQuery {
                 })?;
             attachments |= bit;
         }
-        let env = match self.env.as_deref().map(str::trim).filter(|e| !e.is_empty()) {
-            None => None,
-            Some(e) if e.len() > MAX_Q_BYTES => {
-                return Err(ApiError::bad_request(format!(
-                    "env has at most {MAX_Q_BYTES} bytes"
-                )));
-            }
-            Some(e) => match list_item(e) {
-                k if k == NO_LABEL => Some(EnvFilter::None),
-                k => Some(EnvFilter::Key(k)),
-            },
-        };
+        let env = env_filter(self.env.as_deref())?;
         let min = millis(self.min_duration_ms.as_deref(), "minDurationMs")?;
         let max = millis(self.max_duration_ms.as_deref(), "maxDurationMs")?;
         let new_failures = if flag(self.new_failures.as_deref(), "newFailures")? == Some(true) {
@@ -989,6 +996,8 @@ pub async fn tree_tests(
 pub struct LabelNameList {
     /// Most used first, at most 200.
     pub items: Vec<LabelName>,
+    /// Only the first results of a very large launch were read.
+    pub partial: bool,
 }
 
 /// Query of the label names and the facets of a launch.
@@ -1022,12 +1031,14 @@ pub async fn labels(
     let launch = s.launch_of(&project, id).await?;
     let _permit = s.guards.heavy(&auth).await?;
     let f = q.explorer().filter(&s, &launch).await?;
+    let l = s
+        .store
+        .launch_labels(&launch, &f)
+        .await
+        .map_err(heavy_error)?;
     Ok(Json(LabelNameList {
-        items: s
-            .store
-            .launch_labels(&launch, &f)
-            .await
-            .map_err(heavy_error)?,
+        items: l.items,
+        partial: l.partial,
     }))
 }
 

@@ -24,7 +24,7 @@ import type {
   TriageRequest,
 } from '../api/types-next';
 import { LOG_LEVELS } from '../api/types-next';
-import { clientIdOf, launchDef, launchResults, launchView, NOW, projectLaunches, resultDetail, testKind } from './fixtures';
+import { clientIdOf, launchDef, launchResults, launchView, NOW, projectLaunches, resultDetail, resultEnv, testKind } from './fixtures';
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
@@ -341,8 +341,21 @@ export function triage(project: string, body: TriageRequest): number {
   return targets.length;
 }
 
-export function clustersOf(project: string, launchId: string): Cluster[] {
-  const results = launchResults(launchId).map((r) => analyze(project, r));
+/** The `env` query value as the server reads it: `%00` is no environment. */
+export function envParam(v: string | null): string | undefined {
+  if (v === null || !v.trim()) return undefined;
+  return v.trim().replace(/%(2C|25|00)/gi, (_, h: string) => (h === '00' ? '\u0000' : h === '25' ? '%' : ','));
+}
+
+/** Whether a result is in the environment of an `env` query value. */
+export function inEnv(r: ResultSummary, env: string | undefined): boolean {
+  return env === undefined || (resultEnv(r) ?? '\u0000') === env;
+}
+
+export function clustersOf(project: string, launchId: string, env?: string): Cluster[] {
+  const results = launchResults(launchId)
+    .filter((r) => inEnv(r, env))
+    .map((r) => analyze(project, r));
   const defs = projectLaunches(project);
   const idx = defs.findIndex((d) => d.launch.id === launchId);
   const older = idx >= 0 ? defs.slice(idx + 1) : [];

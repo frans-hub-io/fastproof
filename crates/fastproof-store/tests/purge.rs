@@ -118,6 +118,8 @@ begin
         insert into attempt_log_chunks (project_id, launch_id, result_key, attempt, first_seq, last_seq, line_count, bytes, lines_z)
             values (p, l, 'r', 1, 1, 2, 2, 2, '\x00'), (p, l, 'r', 1, 3, 4, 2, 2, '\x00');
         insert into launch_log_bytes (launch_id, bytes) values (l, 4);
+        insert into explorer_gen (launch_id, gen) values (l, 1) on conflict do nothing;
+        insert into explorer_cache (launch_id, key, gen, payload) values (l, 'k1', 1, '{}'), (l, 'k2', 1, '{}');
         insert into launch_gates (launch_id, project_id) values (l, p);
         insert into case_sync_queue (launch_id) values (l);
         insert into launch_reruns (id, project_id, source_launch_id, external_id, provider, mode, requested_by)
@@ -256,20 +258,25 @@ async fn audit_on(db: &TestDb) {
 }
 
 /// The audit: rows per statement (deletes, and anything a cascade did), and cascaded rows.
+/// The explorer counter the results trigger raises at commit is no cascade.
 async fn audit(db: &TestDb, tables: &[&str]) -> (i64, i64, i64) {
     let (max, statements): (Option<i64>, i64) = sqlx::query_as(
         "select max(n), count(*) from (select count(*) n from purge_audit \
-         where (op = 'DELETE' or depth > 1) and (cardinality($1::text[]) = 0 or tbl = any($1)) \
+         where (op = 'DELETE' or depth > 1) and not (tbl = 'explorer_gen' and op <> 'DELETE') \
+           and (cardinality($1::text[]) = 0 or tbl = any($1)) \
          group by xid, ts) s",
     )
     .bind(tables)
     .fetch_one(&db.pool)
     .await
     .unwrap();
-    let cascaded: i64 = sqlx::query_scalar("select count(*) from purge_audit where depth > 1")
-        .fetch_one(&db.pool)
-        .await
-        .unwrap();
+    let cascaded: i64 = sqlx::query_scalar(
+        "select count(*) from purge_audit where depth > 1 \
+         and not (tbl = 'explorer_gen' and op <> 'DELETE')",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
     (max.unwrap_or(0), statements, cascaded)
 }
 

@@ -963,6 +963,7 @@ pub async fn persist_attempts_in(
         .bind(launch.id)
         .fetch_one(&mut *conn)
         .await?;
+    crate::explorer::app_writes_keys(&mut *conn).await?;
 
     let mut seen: HashMap<String, usize> = HashMap::new();
     let mut prepared: Vec<Prepared> = Vec::with_capacity(attempts.len());
@@ -1461,6 +1462,9 @@ pub async fn persist_attempts_in(
     );
     let mut partial = (Vec::<Uuid>::new(), Vec::<i32>::new(), Vec::<bool>::new());
     let mut full_kinds = Vec::<i32>::new();
+    let mut full_label_values = Vec::<serde_json::Value>::new();
+    let mut full_suite_tree = Vec::<serde_json::Value>::new();
+    let mut full_suite_titled = Vec::<bool>::new();
     let mut partial_kinds = Vec::<i32>::new();
     let mut events = Vec::new();
     for g in &groups {
@@ -1505,12 +1509,19 @@ pub async fn persist_attempts_in(
             times
                 .3
                 .push(opt_no_nul(r.status_details.message.as_deref()));
-            times.4.push(json_no_nul(serde_json::to_value(
+            let labels = json_no_nul(serde_json::to_value(
                 r.labels
                     .iter()
                     .map(|l: &Label| serde_json::json!({"name": l.name, "value": l.value}))
                     .collect::<Vec<_>>(),
-            )?));
+            )?);
+            full_label_values.push(crate::explorer::label_values(&labels));
+            let stored_path: Vec<String> = suite_path(r).iter().map(|x| no_nul(x)).collect();
+            let (tree, titled) =
+                crate::results::suite_place_json(&stored_path, &labels, &no_nul(&r.full_name));
+            full_suite_tree.push(json_no_nul(serde_json::to_value(tree)?));
+            full_suite_titled.push(titled);
+            times.4.push(labels);
             events.push(serde_json::json!({"id": result_id, "launchId": launch.id, "seriesId": series_id,
                     "testCaseId": test_case_id, "status": status_text(r), "flakyInRun": g.flaky_in_run,
                     "attemptCount": count, "startedAt": ts_ms(r.start), "durationMs": duration(r),
@@ -1536,18 +1547,21 @@ pub async fn persist_attempts_in(
         let stored: Vec<(Uuid, Uuid)> = sqlx::query_as(
                 "insert into results (id, launch_created_at, project_id, launch_id, test_case_id, series_id, name, \
                    full_name, suite_path, status, flaky_in_run, attempt_count, started_at, stopped_at, duration_ms, \
-                   message, labels, attachment_kinds) \
+                   message, labels, attachment_kinds, label_values, suite_tree, suite_titled) \
                  select i, $1, $2, $3, tc, se, n, f, array(select jsonb_array_elements_text(sp)), st, fl, ac, sa, so, \
-                   d, m, lb, ak \
+                   d, m, lb, ak, lv, array(select jsonb_array_elements_text(tr)), tt \
                  from unnest($4::uuid[], $5::uuid[], $6::uuid[], $7::text[], $8::text[], $9::jsonb[], $10::text[], \
                    $11::bool[], $12::int[], $13::timestamptz[], $14::timestamptz[], $15::bigint[], $16::text[], \
-                   $17::jsonb[], $18::int[]) as t(i, tc, se, n, f, sp, st, fl, ac, sa, so, d, m, lb, ak) \
+                   $17::jsonb[], $18::int[], $19::jsonb[], $20::jsonb[], $21::bool[]) \
+                   as t(i, tc, se, n, f, sp, st, fl, ac, sa, so, d, m, lb, ak, lv, tr, tt) \
                  on conflict (launch_id, series_id, launch_created_at) do update set name = excluded.name, \
                    full_name = excluded.full_name, suite_path = excluded.suite_path, status = excluded.status, \
                    flaky_in_run = excluded.flaky_in_run, attempt_count = excluded.attempt_count, \
                    started_at = excluded.started_at, stopped_at = excluded.stopped_at, \
                    duration_ms = excluded.duration_ms, message = excluded.message, labels = excluded.labels, \
-                   attachment_kinds = results.attachment_kinds | excluded.attachment_kinds, updated_at = now() \
+                   attachment_kinds = results.attachment_kinds | excluded.attachment_kinds, \
+                   label_values = excluded.label_values, suite_tree = excluded.suite_tree, \
+                   suite_titled = excluded.suite_titled, updated_at = now() \
                  returning id, series_id",
             )
             .bind(launch.created_at)
@@ -1568,6 +1582,9 @@ pub async fn persist_attempts_in(
             .bind(&times.3)
             .bind(&times.4)
             .bind(&full_kinds)
+            .bind(&full_label_values)
+            .bind(&full_suite_tree)
+            .bind(&full_suite_titled)
             .fetch_all(&mut *conn)
             .await?;
         // A result this transaction meant to create that another writer created meanwhile:

@@ -76,7 +76,7 @@ export function compareLines(a: LogLine, b: LogLine): number {
 }
 
 function query(f: LogFilters) {
-  return { resultId: f.resultId, attempt: f.attempt, level: f.level, q: f.q };
+  return { resultId: f.resultId, attempt: f.attempt, level: f.level, q: f.q, env: f.env };
 }
 
 export function logsUrl(key: string, launchId: string): string {

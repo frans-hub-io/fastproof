@@ -194,17 +194,6 @@ function addTest(c: Counts, t: TreeTest): void {
   if (t.muted) c.muted++;
 }
 
-function addCounts(a: Counts, b: Counts): void {
-  a.total += b.total;
-  a.passed += b.passed;
-  a.failed += b.failed;
-  a.broken += b.broken;
-  a.skipped += b.skipped;
-  a.unknown += b.unknown;
-  a.flaky += b.flaky;
-  a.muted += b.muted;
-}
-
 /** Tests directly in the node that are not in the response (read page by page). */
 export function lazyCount(n: TreeNode): number {
   const count = n.testCount ?? 0;
@@ -226,30 +215,35 @@ function matches(t: TreeTest, f: ExplorerFilter, needle: string, ancestorMatched
 
 /**
  * The tree with only the tests that match: groups stay when a test under them matches (or, for
- * the text, when their own name does), with counts and durations of what is left.
+ * the text, when their own name does), with counts and durations of what is left. A result in
+ * several groups (a label with several values) counts once in each group above it.
  */
 export function filterTree(root: TreeNode, f: ExplorerFilter): TreeNode {
   if (!filterActive(f)) return root;
   const needle = f.text.trim().toLowerCase();
-  const walk = (n: TreeNode, ancestorMatched: boolean, isRoot: boolean): TreeNode | null => {
+  const walk = (n: TreeNode, ancestorMatched: boolean, isRoot: boolean): [TreeNode, Map<string, TreeTest>] | null => {
     const own = !isRoot && !!needle && n.name.toLowerCase().includes(needle);
     const matched = ancestorMatched || own;
-    const children = n.children.map((c) => walk(c, matched, false)).filter((c): c is TreeNode => c !== null);
+    const under = new Map<string, TreeTest>();
+    const children: TreeNode[] = [];
+    for (const c of n.children) {
+      const w = walk(c, matched, false);
+      if (!w) continue;
+      children.push(w[0]);
+      for (const [id, t] of w[1]) under.set(id, t);
+    }
     const tests = (n.tests ?? []).filter((t) => matches(t, f, needle, matched));
     if (!isRoot && !children.length && !tests.length) return null;
+    for (const t of tests) under.set(t.id, t);
     const counts = empty();
     let duration: number | null = null;
-    for (const c of children) {
-      addCounts(counts, c.counts);
-      if (typeof c.durationMs === 'number') duration = (duration ?? 0) + c.durationMs;
-    }
-    for (const t of tests) {
+    for (const t of under.values()) {
       addTest(counts, t);
       if (typeof t.durationMs === 'number') duration = (duration ?? 0) + t.durationMs;
     }
-    return { ...n, children, tests: n.tests ? tests : n.tests, testCount: n.tests ? tests.length : n.testCount, counts, durationMs: duration };
+    return [{ ...n, children, tests: n.tests ? tests : n.tests, testCount: n.tests ? tests.length : n.testCount, counts, durationMs: duration }, under];
   };
-  return walk(root, false, true) ?? root;
+  return walk(root, false, true)?.[0] ?? root;
 }
 
 /** Keys of the groups on the way to a failed or broken result. */
@@ -403,7 +397,7 @@ export function flattenTree(root: TreeNode, o: FlattenOptions): Row[] {
     const key = nodeKey(n.path);
     const lazy = n.tests ? null : (o.lazy?.get(key) ?? null);
     const tests = n.tests ?? lazy?.items ?? [];
-    for (const t of [...tests].sort(byTest)) rows.push({ kind: 'test', key: t.id, test: t, depth, parent });
+    for (const t of [...tests].sort(byTest)) rows.push({ kind: 'test', key: `${key}|${t.id}`, test: t, depth, parent });
     const total = n.testCount ?? tests.length;
     if (!n.tests && total > 0 && (!lazy?.loaded || lazy.next !== null)) {
       rows.push({ kind: 'more', key: `${key}:more`, nodeKey: key, path: n.path, depth, remaining: Math.max(0, total - tests.length), loading: lazy?.loading ?? false, error: lazy?.error ?? null, parent });

@@ -13,6 +13,7 @@ pub mod attachments;
 pub mod blob_identity;
 pub mod codec;
 pub mod events;
+pub mod explorer;
 pub mod history;
 pub mod ingest;
 pub mod integrations;
@@ -164,6 +165,8 @@ pub struct Store {
     board_cache: analysis::boards::BoardCache,
     board_limits: analysis::boards::BoardLimits,
     log_chunk_events: logs::LogChunkEvents,
+    /// Counted keys and groups of one launch tree, at most.
+    tree_limits: (usize, usize),
 }
 
 impl Store {
@@ -175,6 +178,7 @@ impl Store {
             board_cache: Default::default(),
             board_limits: Default::default(),
             log_chunk_events: logs::LogChunkEvents::default(),
+            tree_limits: (results::MAX_TREE_KEYS, results::MAX_TREE_NODES),
         }
     }
 
@@ -187,6 +191,12 @@ impl Store {
     /// How stored log chunks are announced in the outbox.
     pub fn log_chunk_events(&self) -> logs::LogChunkEvents {
         self.log_chunk_events
+    }
+
+    /// Lower limits of the launch tree (counted keys, groups), for tests.
+    pub fn with_tree_limits(mut self, keys: usize, nodes: usize) -> Self {
+        self.tree_limits = (keys.max(1), nodes.max(1));
+        self
     }
 
     /// Sets how many rows one statement of a large delete may touch (default

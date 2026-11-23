@@ -494,6 +494,9 @@ pub struct LogFilter {
     /// Cursor `chunkId:seq`: lines before it.
     pub before: Option<String>,
     pub limit: i64,
+    /// Only lines of the attempts of results in this environment (lines whose attempt is not
+    /// stored yet have none).
+    pub env: Option<crate::results::EnvFilter>,
 }
 
 impl LogFilter {
@@ -704,18 +707,30 @@ impl Store {
             f.q.as_deref()
                 .map(|q| q.to_lowercase())
                 .filter(|q| !q.is_empty());
-        let mut rows = sqlx::query(
+        let (env_mode, env_key) = crate::results::EnvFilter::args(f.env.as_ref());
+        let sql = format!(
             "select id, result_key, attempt, bytes, lines_z from attempt_log_chunks where launch_id = $1 \
              and (cardinality($2::text[]) = 0 or result_key = any($2)) and ($3::int is null or attempt = $3) \
-             and (levels & $4) <> 0 and ($5::bigint is null or id <= $5) order by id desc limit $6",
-        )
-        .bind(launch_id)
-        .bind(&f.result_ids)
-        .bind(f.attempt.map(|a| a as i32))
-        .bind(mask)
-        .bind(cursor.map(|c| c.0))
-        .bind(MAX_SCAN_CHUNKS)
-        .fetch(&self.pool);
+             and (levels & $4) <> 0 and ($5::bigint is null or id <= $5) \
+             and ($7::int = 0 or result_key in (select substr(a.client_key, 3) from attempts a \
+               join series se on se.id = a.series_id where a.launch_id = $1 \
+               and a.launch_created_at = (select l.created_at from launches l where l.id = $1) \
+               and a.client_key like 'r:%' and {})) \
+             order by id desc limit $6",
+            crate::results::ENV_MATCH
+                .replace("$m", "$7")
+                .replace("$k", "$8::text")
+        );
+        let mut rows = sqlx::query(sqlx::AssertSqlSafe(sql))
+            .bind(launch_id)
+            .bind(&f.result_ids)
+            .bind(f.attempt.map(|a| a as i32))
+            .bind(mask)
+            .bind(cursor.map(|c| c.0))
+            .bind(MAX_SCAN_CHUNKS)
+            .bind(env_mode)
+            .bind(env_key)
+            .fetch(&self.pool);
         let limit = f.limit.max(1) as usize;
         let mut picked: Vec<(i64, LogLine)> = Vec::new();
         let mut decoded = 0usize;

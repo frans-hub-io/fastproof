@@ -107,16 +107,24 @@ export interface LogConsoleProps {
   results?: { id: string; name: string; clientIds?: string[] }[];
   fileName?: string;
   height?: string;
+  /** Environment key picked on the launch page: only lines of results in it (stored lines,
+   * read again every few seconds while the launch runs, since a line belongs to an environment
+   * only once its result is stored). */
+  env?: string;
 }
 
-export function LogConsole({ project, launchId, live, resultId, attempt, results = [], fileName = 'logs.txt', height = 'min(62vh, 640px)' }: LogConsoleProps) {
+/** How often the stored lines of one environment are read again while the launch runs. */
+export const ENV_POLL_MS = 10_000;
+
+export function LogConsole({ project, launchId, live: running, resultId, attempt, results = [], fileName = 'logs.txt', height = 'min(62vh, 640px)', env }: LogConsoleProps) {
+  const live = running && !env;
   const [pickedResult, setPickedResult] = useState<string | null>(null);
   const [level, setLevel] = useState('');
   const [text, setText] = useState('');
   const [q] = useDebouncedValue(text.trim(), 350);
   const filters: LogFilters = useMemo(
-    () => ({ resultId: resultId ?? pickedResult ?? undefined, attempt, level: (level || undefined) as LogLevel | undefined, q: q || undefined }),
-    [resultId, pickedResult, attempt, level, q],
+    () => ({ resultId: resultId ?? pickedResult ?? undefined, attempt, level: (level || undefined) as LogLevel | undefined, q: q || undefined, env }),
+    [resultId, pickedResult, attempt, level, q, env],
   );
   const names = useMemo(() => resultNames(results), [results]);
   const showResult = !resultId;
@@ -126,7 +134,9 @@ export function LogConsole({ project, launchId, live, resultId, attempt, results
     initialPageParam: undefined as string | undefined,
     queryFn: ({ pageParam }) => fetchLogs(project, launchId, filters, pageParam, PAGE),
     getNextPageParam: (last) => last.next ?? undefined,
-    staleTime: live ? 0 : 60_000,
+    staleTime: running ? 0 : 60_000,
+    // Re-read only while just the newest page is loaded: every refetch reads every loaded page.
+    refetchInterval: (q) => (running && env && (q.state.data?.pages.length ?? 0) <= 1 ? ENV_POLL_MS : false),
     retry: false,
   });
   const unsupported = stored.error instanceof ApiError && stored.error.status === 404 && stored.error.message === 'resource not found';
@@ -314,6 +324,11 @@ export function LogConsole({ project, launchId, live, resultId, attempt, results
             {lineCount.toLocaleString()} line{lineCount === 1 ? '' : 's'}
             {entries.trimmed ? ` · ${entries.trimmed.toLocaleString()} oldest dropped from view` : ''}
           </Text>
+          {running && env && (
+            <Text size="xs" c="dimmed" data-testid="log-env-note">
+              Lines of finished tests in this environment, refreshed every {ENV_POLL_MS / 1000} s
+            </Text>
+          )}
           {skipped > 0 && (
             <Tooltip label="The server dropped lines because this browser could not keep up; they are in the stored logs once the launch finishes">
               <Badge size="sm" variant="light" color="yellow" style={{ textTransform: 'none' }} data-testid="log-gaps">

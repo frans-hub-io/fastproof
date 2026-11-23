@@ -96,10 +96,10 @@ export function useTriage(key: string) {
   });
 }
 
-export function useClusters(key: string, launchId: string, enabled = true) {
+export function useClusters(key: string, launchId: string, enabled = true, env?: string) {
   return useQuery({
-    queryKey: qc2.clusters(key, launchId),
-    queryFn: () => request<ItemList<Cluster>>(`${projectPath(key)}/launches/${enc(launchId)}/clusters`).then((r) => r.items),
+    queryKey: env ? [...qc2.clusters(key, launchId), env] : qc2.clusters(key, launchId),
+    queryFn: () => request<ItemList<Cluster>>(withQuery(`${projectPath(key)}/launches/${enc(launchId)}/clusters`, { env })).then((r) => r.items),
     enabled,
   });
 }

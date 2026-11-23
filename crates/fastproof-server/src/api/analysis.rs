@@ -261,17 +261,19 @@ pub async fn create_rule_draft(
 // Clusters and similar failures.
 
 #[utoipa::path(get, path = "/api/v1/projects/{key}/launches/{id}/clusters", tag = "analysis", operation_id = "analysis_clusters",
-    params(("key" = String, Path), ("id" = Uuid, Path)),
-    responses((status = 200, body = ClusterList), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
+    params(("key" = String, Path), ("id" = Uuid, Path), super::results::EnvQuery),
+    responses((status = 200, body = ClusterList), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
 pub async fn clusters(
     State(s): State<AppState>,
     auth: Auth,
     P((key, id)): P<(String, Uuid)>,
+    Q(q): Q<super::results::EnvQuery>,
 ) -> ApiResult<Json<ClusterList>> {
     let p = s.project_for(&auth, &key, &s.perms.launches_read).await?;
     let l = s.launch_of(&p, id).await?;
+    let env = super::results::env_filter(q.env.as_deref())?;
     Ok(Json(ClusterList {
-        items: s.store.clusters(&l).await?,
+        items: s.store.clusters(&l, env.as_ref()).await?,
     }))
 }
 

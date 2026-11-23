@@ -436,6 +436,10 @@ pub struct TreeNode {
     /// result has (pass them as `groupBy` to `.../tree/tests`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub levels: Option<Vec<String>>,
+    /// On the root: the launch has more groups than one tree holds, and the counts cover only
+    /// the groups listed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub partial: bool,
 }
 
 /// A result as a leaf of the launch tree.

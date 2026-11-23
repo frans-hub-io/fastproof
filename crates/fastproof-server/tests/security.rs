@@ -243,6 +243,7 @@ async fn explorer_aggregates_take_heavy_slots() {
         format!("{base}/environments"),
         format!("{base}/tree"),
         format!("{base}/tree/tests?path=%5B%5D"),
+        format!("{base}/results"),
     ];
     let other = s.token("other", "viewer", &["agg"]).await;
     let held = state(&s).guards.heavy(&auth).await.unwrap();

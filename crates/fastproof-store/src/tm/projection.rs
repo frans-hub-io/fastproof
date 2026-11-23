@@ -409,6 +409,7 @@ pub async fn project_run_items(
     if item_ids.is_empty() {
         return Ok(out);
     }
+    crate::explorer::app_writes_keys(&mut *conn).await?;
     let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
         "select ri.id, ri.case_id, ri.case_version, ri.series_id, s.test_case_id, ri.status, ri.execution_no, \
            ri.executed_by, ri.comment, ri.started_at, ri.finished_at, ri.defect, c.number, \
@@ -543,6 +544,7 @@ pub async fn project_run_items(
             Vec::<Uuid>::new(),
             Vec::<Option<serde_json::Value>>::new(),
         );
+        let mut suite_tree: (Vec<serde_json::Value>, Vec<bool>) = (Vec::new(), Vec::new());
         for i in &finals {
             let snap = &snapshots[&(i.case_id, i.case_version)];
             let empty = HashMap::new();
@@ -598,11 +600,13 @@ pub async fn project_run_items(
             r.4.push(format!("TC-{}", i.number));
             r.5.push(json_no_nul(serde_json::to_value(&i.folder_path)?));
             r.6.push(status.as_str().to_string());
-            r.7.push(manual_labels(
-                i.number,
-                i.executed_by.as_deref(),
-                i.status.as_str(),
-            ));
+            let labels = manual_labels(i.number, i.executed_by.as_deref(), i.status.as_str());
+            let folder: Vec<String> = i.folder_path.iter().map(|x| no_nul(x)).collect();
+            let (tree, titled) =
+                crate::results::suite_place_json(&folder, &labels, &format!("TC-{}", i.number));
+            suite_tree.0.push(json_no_nul(serde_json::to_value(tree)?));
+            suite_tree.1.push(titled);
+            r.7.push(labels);
             r.8.push(i.id);
             r.9.push(i.defect.clone().map(json_no_nul));
             result_of.push((i.id, Some(result_id)));
@@ -674,17 +678,19 @@ pub async fn project_run_items(
         sqlx::query(
             "insert into results (id, launch_created_at, project_id, launch_id, test_case_id, series_id, name, \
                full_name, suite_path, status, flaky_in_run, attempt_count, started_at, stopped_at, duration_ms, \
-               message, labels, run_item_id, defect) \
+               message, labels, run_item_id, defect, label_values, suite_tree, suite_titled) \
              select i, $1, $2, $3, tc, se, n, f, array(select jsonb_array_elements_text(sp)), st, false, ac, sa, so, \
-               d, m, lb, ri, df \
+               d, m, lb, ri, df, fastproof_label_values(lb), array(select jsonb_array_elements_text(tr)), tt \
              from unnest($4::uuid[], $5::uuid[], $6::uuid[], $7::text[], $8::text[], $9::jsonb[], $10::text[], \
                $11::int[], $12::timestamptz[], $13::timestamptz[], $14::bigint[], $15::text[], $16::jsonb[], \
-               $17::uuid[], $18::jsonb[]) as t(i, tc, se, n, f, sp, st, ac, sa, so, d, m, lb, ri, df) \
+               $17::uuid[], $18::jsonb[], $19::jsonb[], $20::bool[]) \
+               as t(i, tc, se, n, f, sp, st, ac, sa, so, d, m, lb, ri, df, tr, tt) \
              on conflict (launch_id, series_id, launch_created_at) do update set name = excluded.name, \
                full_name = excluded.full_name, suite_path = excluded.suite_path, status = excluded.status, \
                flaky_in_run = false, attempt_count = excluded.attempt_count, started_at = excluded.started_at, \
                stopped_at = excluded.stopped_at, duration_ms = excluded.duration_ms, message = excluded.message, \
-               labels = excluded.labels, run_item_id = excluded.run_item_id, \
+               labels = excluded.labels, label_values = excluded.label_values, suite_tree = excluded.suite_tree, \
+               suite_titled = excluded.suite_titled, run_item_id = excluded.run_item_id, \
                defect = coalesce(excluded.defect, results.defect), updated_at = now()",
         )
         .bind(launch.created_at)
@@ -705,6 +711,8 @@ pub async fn project_run_items(
         .bind(&r.7)
         .bind(&r.8)
         .bind(&r.9)
+        .bind(&suite_tree.0)
+        .bind(&suite_tree.1)
         .execute(&mut *conn)
         .await?;
     }
@@ -755,7 +763,8 @@ pub async fn project_run_items(
                     let n: i32 = row.try_get("n")?;
                     sqlx::query(
                         "update results set status = $3, started_at = $4, stopped_at = $5, duration_ms = $6, \
-                           message = $7, attempt_count = $8, labels = $9, updated_at = now() \
+                           message = $7, attempt_count = $8, labels = $9, \
+                           label_values = fastproof_label_values($9), updated_at = now() \
                          where id = $1 and launch_created_at = $2",
                     )
                     .bind(result_id)

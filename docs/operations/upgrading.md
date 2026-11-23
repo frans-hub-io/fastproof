@@ -56,6 +56,45 @@ and wait until the sinks have caught up (`fastproof_sink_lag_seconds`, or the ou
 lag at 0): an earlier sink skips `log.chunks` events and moves past them, and those log lines never reach
 ClickHouse or OpenSearch.
 
+## Next release: faster launch explorer
+
+The tree of a launch is counted in the database and the explorer keeps the aggregates of finished launches
+(see [Launch explorer](../guide/launch-explorer.md#large-launches)). What to know:
+
+- Migration `0770_explorer_perf` adds the nullable columns `results.label_values` (each label name with its
+  values) and `results.suite_tree`, `suite_titled` (the group path of the result in the Suites tree). Adding them
+  rewrites no rows, but the `alter table` needs an exclusive lock on `results` and all its partitions: while it
+  waits behind a long read, new queries on results queue behind it. The migration gives up after 5 seconds of
+  waiting and runs again at the next start. It also adds the function `fastproof_label_values`, the tables
+  `explorer_gen` and `explorer_cache`, and triggers on `results`:
+  - a deferred trigger raises the explorer counter of every launch whose results a transaction changed, once
+    per launch when the transaction commits, which invalidates the cached aggregates of that launch. This holds
+    for writes by replicas of the previous version during the rolling update and for SQL run by hand, so the
+    cache stays correct with mixed versions. The counter row is locked only at commit, after every other lock of
+    the transaction. In a bench of 100 000 results no difference in ingest speed showed above the run-to-run
+    noise;
+  - when a row's labels, suite path or full name change without this version's code (an old replica, manual
+    SQL), `label_values` is recomputed and `suite_tree` is cleared, so the explorer computes the suite path from
+    the row again.
+- The scheduled job `explorer.backfill` (every minute, 30 seconds of work per run, 500 results per transaction)
+  walks the results once in id order: it fills `label_values`, `suite_tree`, and `attachment_kinds` of results of launches
+  created before migration `0600` (which had none, so the attachment filter missed them). Progress is kept in
+  `analysis_state` (`explorer.results.backfill`), so the job resumes after a restart. Metrics:
+  `fastproof_explorer_backfill_scanned_total`, `fastproof_explorer_backfill_updated_total`, and the gauges
+  `fastproof_explorer_backfill_results_scanned` and `fastproof_explorer_backfill_done` (1 when finished).
+- Results that replicas of the previous version store during the rolling update have no `label_values` or
+  `suite_tree`, and rows they update lose `suite_tree`; the explorer computes these when it reads them, which is
+  slower but gives the same tree. The backfill does not revisit them once it has finished. It rewrites every
+  older result once, so expect the results table to grow until autovacuum reuses the space. It locks rows in id
+  order, skips rows another transaction holds (retried after the walk) and waits at most half a second for a
+  lock, so it does not deadlock with triage or ingest.
+- The job `explorer.cache.prune` (hourly) removes cached aggregates older than 7 days.
+- `GET .../labels` and `GET .../facets` gain `partial`; `GET .../clusters` and `GET .../logs` take `env`.
+- `GET .../launches/{id}/results` now takes a heavy-query slot, like the tree (429 or 503 with `Retry-After`
+  when the caller or the server is busy).
+- A result with several values of a grouping label is now in the group of each value (it was placed by its first
+  value), and an empty label value counts as no value in the filters and the **(none)** groups.
+
 ## Next release: video serving and S3 by default
 
 The content route of attachments now answers byte ranges and conditional requests, and `<video>` elements load

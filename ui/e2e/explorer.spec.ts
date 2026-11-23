@@ -254,6 +254,29 @@ test('an environment switcher scopes the summary, the tree and the results', asy
   await expect(page).not.toHaveURL(/env=/);
 });
 
+test('the environment switcher scopes the Failures and Logs tabs too', async ({ page }) => {
+  await openRichLaunch(page);
+  await page.getByRole('tab', { name: /^Failures/ }).click();
+  const summary = page.getByTestId('cluster-summary');
+  const all = Number(/^(\d+) cluster/.exec((await summary.textContent()) ?? '')?.[1]);
+  expect(all).toBeGreaterThan(0);
+  const box = page.getByTestId('environments');
+  await box.locator('label').filter({ hasText: /^staging-firefox/ }).click();
+  await expect(page).toHaveURL(/env=staging-firefox/);
+  await expect(summary).toBeVisible();
+  const one = Number(/^(\d+) cluster/.exec((await summary.textContent()) ?? '')?.[1]);
+  expect(one).toBeLessThanOrEqual(all);
+  await page.getByTestId('tab-logs').click();
+  await expect(page.getByTestId('log-count')).toBeVisible();
+  const url = new URL(page.url());
+  url.searchParams.set('env', 'nowhere');
+  await page.goto(url.toString());
+  await page.getByRole('tab', { name: /^Failures/ }).click();
+  await expect(page.getByText('No failures')).toBeVisible();
+  await page.getByTestId('tab-logs').click();
+  await expect(page.getByTestId('log-count')).toHaveText(/^0 lines/);
+});
+
 
 test('a group page the server refuses as busy loads by itself after a short wait', async ({ page }) => {
   await page.addInitScript(() => window.localStorage.setItem('fastproof.mock.treeBudget', '30'));

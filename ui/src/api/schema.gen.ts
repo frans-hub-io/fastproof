@@ -3204,6 +3204,8 @@ export interface components {
         LabelNameList: {
             /** @description Most used first, at most 200. */
             items: components["schemas"]["LabelName"][];
+            /** @description Only the first results of a very large launch were read. */
+            partial: boolean;
         };
         /** @description A label of a result. */
         LabelView: {
@@ -3358,6 +3360,8 @@ export interface components {
              * @description Failed or broken, not muted results whose series did not fail in the baseline launch.
              */
             newFailures: number;
+            /** @description Only the first results of a very large launch were counted. */
+            partial?: boolean;
             /** Format: int64 */
             retried: number;
         };
@@ -5250,6 +5254,11 @@ export interface components {
              */
             levels?: string[] | null;
             name: string;
+            /**
+             * @description On the root: the launch has more groups than one tree holds, and the counts cover only
+             *     the groups listed.
+             */
+            partial?: boolean;
             path: string[];
             resultIds?: string[] | null;
             /**
@@ -9241,7 +9250,10 @@ export interface operations {
     };
     analysis_clusters: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description An environment key (`%2C` for a comma, `%25` for a percent sign); `%00` for results without one. */
+                env?: string;
+            };
             header?: never;
             path: {
                 key: string;
@@ -9257,6 +9269,14 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ClusterList"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
                 };
             };
             403: {
@@ -9776,6 +9796,12 @@ export interface operations {
                 before?: string;
                 /** @description 1..=5000, default 500. */
                 limit?: number;
+                /**
+                 * @description Only lines of results in this environment key (`%2C` for a comma, `%25` for a percent
+                 *     sign; `%00` for results without one). Lines of an attempt whose result is not stored
+                 *     yet are in none.
+                 */
+                env?: string;
             };
             header?: never;
             path: {
@@ -10336,6 +10362,22 @@ export interface operations {
                 };
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

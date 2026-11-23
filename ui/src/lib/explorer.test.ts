@@ -122,6 +122,23 @@ describe('explorer tree', () => {
     expect(describe?.durationMs).toBe(300);
   });
 
+  it('counts a result in several groups once above them and keys its rows per group', () => {
+    const both = t('both', 'failed', 200);
+    const ann = group(['smoke', 'ann'], [], [both, t('solo', 'passed', 10)]);
+    const bob = group(['smoke', 'bob'], [], [both]);
+    const smoke = group(['smoke'], [ann, bob]);
+    const root = group([], [smoke]);
+    const f = filterTree(root, { statuses: ['failed'], flaky: false, text: '' });
+    expect(f.counts.total).toBe(1);
+    expect(f.children[0]?.counts.failed).toBe(1);
+    expect(f.children[0]?.durationMs).toBe(200);
+    expect(f.children[0]?.children.map((c) => c.counts.total)).toEqual([1, 1]);
+    const rows = flattenTree(root, { expanded: new Set([k('smoke'), k('smoke', 'ann'), k('smoke', 'bob')]), sort: 'name' });
+    const keys = rows.filter((r) => r.kind === 'test').map((r) => r.key);
+    expect(new Set(keys).size).toBe(keys.length);
+    expect(rows.filter((r) => r.kind === 'test' && r.test.id === 'both')).toHaveLength(2);
+  });
+
   it('searches test names and group names; a matching group keeps its subtree', () => {
     const byTest = filterTree(sample(), { statuses: [], flaky: false, text: 'REFUND' });
     expect(byTest.counts.total).toBe(1);

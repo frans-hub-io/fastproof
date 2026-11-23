@@ -223,3 +223,47 @@ def test_hint_when_results_also_go_to_alluredir(pytester, env):
         env.setenv("FASTPROOF_URL", fake.url)
         res = pytester.runpytest_inprocess("-p", "no:cacheprovider", "-p", "no:fastproof_allure_pytest", "-p", "no:allure_pytest", "--alluredir", "allure-results", "-k", "test_pass")
         res.stdout.fnmatch_lines(["*also written to --alluredir*FASTPROOF_ENABLED=false*"])
+
+
+DIRECT_SAMPLE = """
+import pytest_fastproof as fastproof
+
+
+def test_video(tmp_path):
+    p = tmp_path / "video.webm"
+    p.write_bytes(bytes(range(256)) * 20)
+    fastproof.attach_file(p)
+    fastproof.attach(b"tiny", "small.bin")
+
+
+def test_again(tmp_path):
+    p = tmp_path / "video.webm"
+    p.write_bytes(bytes(range(256)) * 20)
+    fastproof.attach_file(p)
+"""
+
+
+def test_direct_uploads_go_to_the_store_and_fall_back(pytester, env):
+    pytester.makepyfile(test_sample=DIRECT_SAMPLE)
+    env.setenv("FASTPROOF_DIRECT_UPLOAD_MIN_BYTES", "1000")
+    with FakeServer(token=TOKEN, direct=True) as fake:
+        env.setenv("FASTPROOF_URL", fake.url)
+        res = pytester.runpytest_inprocess("-p", "no:cacheprovider")
+        assert res.parseoutcomes().get("passed") == 2
+        assert fake.direct_puts == 1, "the video went to the store once"
+        assert fake.uploads == 1, "the small file went through the server"
+        d = next(iter(fake.direct.values()))
+        assert d["auth"] is None, "the FastProof token is never sent to the store"
+        assert len(d["body"]) == 5120
+        assert all(len(r["attachments"]) >= 1 for r in fake.finals())
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        dead = f"http://127.0.0.1:{s.getsockname()[1]}"
+    for kw in ({"direct": True, "store_url": dead}, {"direct": False}):
+        with FakeServer(token=TOKEN, **kw) as fake:
+            env.setenv("FASTPROOF_URL", fake.url)
+            res = pytester.runpytest_inprocess("-p", "no:cacheprovider")
+            assert res.parseoutcomes().get("passed") == 2
+            assert fake.direct_puts == 0
+            assert fake.uploads == 2, kw
+            assert all(len(r["attachments"]) >= 1 for r in fake.finals()), kw

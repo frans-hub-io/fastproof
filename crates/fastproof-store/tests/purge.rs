@@ -169,6 +169,8 @@ begin
     update results r set run_item_id = (select ri.id from run_items ri where ri.launch_id = ml limit 1)
         where r.project_id = p and r.full_name = 'T1';
     insert into tm_jobs (id, project_id, kind, params) values (gen_random_uuid(), p, 'import', '{}'), (gen_random_uuid(), p, 'export', '{}');
+    insert into direct_uploads (id, project_id, launch_id, sha256, size, content_type, created_by, expires_at)
+        select gen_random_uuid(), p, gen_random_uuid(), k || 'd' || gs, 1, 'text/plain', 'ci', now() from generate_series(1, 4) gs;
     return ml;
 end
 $f$;

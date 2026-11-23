@@ -19,6 +19,7 @@ fn s3_config() -> Option<S3Config> {
         ca_file: None,
         access_key: var("ACCESS_KEY").map(Secret::new),
         secret_key: var("SECRET_KEY").map(Secret::new),
+        public_endpoint: None,
     })
 }
 
@@ -75,4 +76,104 @@ async fn s3_round_trip_multipart_presign_and_prefix_delete() {
         .unwrap();
     assert_eq!(n, 2);
     assert_eq!(store.head(&key).await.unwrap(), None);
+}
+
+async fn put(url: &str, headers: &[(String, String)], body: &[u8]) -> reqwest::StatusCode {
+    let mut rb = reqwest::Client::new().put(url).body(body.to_vec());
+    for (k, v) in headers {
+        rb = rb.header(k, v);
+    }
+    rb.send().await.unwrap().status()
+}
+
+#[tokio::test]
+async fn s3_direct_put_is_bound_to_its_headers_and_copied_by_the_server() {
+    let Some(cfg) = s3_config() else { return };
+    let store = BlobStore::open(&BlobConfig::S3(cfg)).unwrap();
+    let id = format!("{:032x}", rand::random::<u128>());
+    let incoming = BlobKey::direct_incoming(&id).unwrap();
+    let check = BlobKey::direct_check(&id).unwrap();
+    let body = b"direct upload body".to_vec();
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("b");
+    std::fs::write(&f, &body).unwrap();
+    let (sha, _) = sha256_file(&f).unwrap();
+    let p = store
+        .presign_direct_put(&incoming, Duration::from_secs(300), Some(&sha))
+        .await
+        .unwrap()
+        .expect("S3 signs URLs");
+    assert!(p.url.contains("X-Amz-SignedHeaders="), "{}", p.url);
+    assert!(
+        p.headers
+            .iter()
+            .any(|(k, v)| k == "content-type" && v == fastproof_blob::DIRECT_CONTENT_TYPE)
+    );
+
+    let without: Vec<(String, String)> = p
+        .headers
+        .iter()
+        .filter(|(k, _)| k != "content-type")
+        .cloned()
+        .collect();
+    assert!(
+        !put(&p.url, &without, &body).await.is_success(),
+        "a PUT without the signed content type is refused"
+    );
+    let other_type: Vec<(String, String)> = p
+        .headers
+        .iter()
+        .map(|(k, v)| {
+            if k == "content-type" {
+                (k.clone(), "text/html".into())
+            } else {
+                (k.clone(), v.clone())
+            }
+        })
+        .collect();
+    assert!(!put(&p.url, &other_type, &body).await.is_success());
+    let tampered = put(&p.url, &p.headers, b"other content").await;
+    eprintln!("a PUT of other content with the signed checksum answered {tampered}");
+    assert!(
+        put(&p.url, &p.headers, &body).await.is_success(),
+        "the declared body is accepted"
+    );
+    assert_eq!(
+        store.head(&incoming).await.unwrap(),
+        Some(body.len() as u64)
+    );
+    store.copy(&incoming, &check).await.unwrap();
+    let out = dir.path().join("out");
+    store.get_to_file(&check, &out).await.unwrap();
+    assert_eq!(sha256_file(&out).unwrap().0, sha);
+    assert_eq!(
+        BlobKey::parse(check.as_str()).unwrap(),
+        check,
+        "direct keys parse back"
+    );
+    assert!(
+        store
+            .delete_prefix(&BlobKey::direct_prefix())
+            .await
+            .unwrap()
+            >= 2
+    );
+}
+
+#[tokio::test]
+async fn s3_public_endpoint_is_used_for_signing_only() {
+    let Some(mut cfg) = s3_config() else { return };
+    cfg.public_endpoint = Some("https://s3.example.com".into());
+    let store = BlobStore::open(&BlobConfig::S3(cfg)).unwrap();
+    store.check().await.unwrap();
+    let p = store
+        .presign_direct_put(
+            &BlobKey::direct_incoming("abc").unwrap(),
+            Duration::from_secs(60),
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(p.url.starts_with("https://s3.example.com/"), "{}", p.url);
 }

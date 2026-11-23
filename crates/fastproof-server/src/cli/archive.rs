@@ -1,5 +1,6 @@
 //! tar.gz of result files for uploads: streamed for a directory, in memory for watch batches.
 
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -42,11 +43,29 @@ pub fn files_under(dir: &Path, max: usize) -> std::io::Result<Vec<(PathBuf, Stri
 
 /// Writes a tar.gz of `files` into `w`.
 pub fn write_tar_gz<W: Write>(files: &[(PathBuf, String)], w: W) -> std::io::Result<W> {
+    write_tar_gz_with(files, &HashMap::new(), w)
+}
+
+/// Writes a tar.gz of `files` into `w`; a file named in `replace` (by relative path) gets
+/// those bytes instead of its content.
+pub fn write_tar_gz_with<W: Write>(
+    files: &[(PathBuf, String)],
+    replace: &HashMap<String, Vec<u8>>,
+    w: W,
+) -> std::io::Result<W> {
     let gz = GzEncoder::new(w, Compression::fast());
     let mut tar = tar::Builder::new(gz);
     tar.mode(tar::HeaderMode::Deterministic);
     tar.follow_symlinks(false);
     for (abs, rel) in files {
+        if let Some(bytes) = replace.get(rel) {
+            let mut h = tar::Header::new_gnu();
+            h.set_size(bytes.len() as u64);
+            h.set_mode(0o644);
+            h.set_cksum();
+            tar.append_data(&mut h, rel, bytes.as_slice())?;
+            continue;
+        }
         let mut f = match std::fs::File::open(abs) {
             Ok(f) => f,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
@@ -87,13 +106,32 @@ impl Write for ChannelWriter {
     }
 }
 
+/// Most files of a directory upload.
+pub const MAX_FILES: usize = 1_000_000;
+
 /// A tar.gz of a directory produced while it is sent.
 pub fn stream_dir(dir: PathBuf) -> reqwest::Body {
+    stream_tar_gz(move || files_under(&dir, MAX_FILES), HashMap::new())
+}
+
+/// A tar.gz of listed files (see [`write_tar_gz_with`]) produced while it is sent.
+pub fn stream_files(
+    files: Vec<(PathBuf, String)>,
+    replace: HashMap<String, Vec<u8>>,
+) -> reqwest::Body {
+    stream_tar_gz(move || Ok(files), replace)
+}
+
+fn stream_tar_gz(
+    list: impl FnOnce() -> std::io::Result<Vec<(PathBuf, String)>> + Send + 'static,
+    replace: HashMap<String, Vec<u8>>,
+) -> reqwest::Body {
     let (tx, rx) = mpsc::channel::<Result<Bytes, std::io::Error>>(8);
     tokio::task::spawn_blocking(move || {
-        let r = files_under(&dir, 1_000_000).and_then(|files| {
-            let mut w = write_tar_gz(
+        let r = list().and_then(|files| {
+            let mut w = write_tar_gz_with(
                 &files,
+                &replace,
                 ChannelWriter {
                     tx: tx.clone(),
                     buf: Vec::new(),

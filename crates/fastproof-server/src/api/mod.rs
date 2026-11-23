@@ -6,6 +6,7 @@ pub mod attachments;
 pub mod case_fields;
 pub mod case_folders;
 pub mod cases;
+pub mod direct_uploads;
 pub mod events;
 pub mod exports;
 pub mod imports;

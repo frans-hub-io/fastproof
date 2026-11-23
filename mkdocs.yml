@@ -101,6 +101,7 @@ nav:
   - Reports:
       - guide/formats.md
       - guide/reporters.md
+      - guide/direct-uploads.md
       - guide/live-logs.md
       - guide/launch-explorer.md
       - guide/migrating-from-allure.md

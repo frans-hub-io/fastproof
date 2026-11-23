@@ -26,6 +26,7 @@ project (role `uploader`). JSON is camelCase. Errors have the body `{code, messa
 | `FASTPROOF_SECRET_ENV`, `FASTPROOF_SECRET_PATTERNS` | comma lists: extra env names/globs whose values are masked, extra regular expressions |
 | `FASTPROOF_TESTPLAN` (or `ALLURE_TESTPLAN_PATH`) | Allure-format `testplan.json` |
 | `FASTPROOF_QUIET=true` | only warnings |
+| `FASTPROOF_DIRECT_UPLOAD_MODE=off`, `FASTPROOF_DIRECT_UPLOAD_MIN_BYTES` | no direct uploads to S3; smallest attachment sent directly (default 1 MiB), see 5a |
 
 Options in the runner's configuration override the environment, except `FASTPROOF_ENABLED=false`, which
 always wins.
@@ -153,6 +154,43 @@ Response `201 {id, sha256, size}`. Then the attachment is referenced by `id` in 
   pytest: `pytest_fastproof.attach(body, name, content_type)` and `attach_file(path)`.
 - `400`/`413`/`415` or an unreadable file: the attachment is skipped with a warning; network errors and `5xx`:
   the attempt goes to the spool with its files.
+
+## 5a. Direct uploads
+
+A server with an S3 store can take attachments straight into the bucket through pre-signed URLs. The
+Playwright reporter, pytest-fastproof and `fastproof upload <dir>` do it for attachments of at least
+`FASTPROOF_DIRECT_UPLOAD_MIN_BYTES` (default 1 MiB) unless `FASTPROOF_DIRECT_UPLOAD_MODE=off`. Other reporters
+may implement it; the server path of section 5 keeps working everywhere.
+
+```
+POST /api/v1/projects/{key}/launches/{id}/attachments/direct
+{"items": [{"sha256": "<hex>", "size": 5242880, "contentType": "video/webm", "name": "video.webm"}]}
+
+200 {"items": [{"sha256": "...", "status": "upload", "uploadId": "<uuid>", "method": "PUT", "url": "https://...",
+                "headers": {"content-type": "application/octet-stream", "x-amz-checksum-sha256": "<base64>"},
+                "expiresAt": "..."}]}
+```
+
+1. Hash the file (after masking, for text attachments), then ask with 1 to 100 items. Answers come in request
+   order: `exists` (use `id` at once), `upload`, or `refused` (`code`, `limit`: use section 5 for that file).
+2. `PUT` the bytes to `url` with exactly `headers` plus `Content-Length`; send **no** `Authorization` header and
+   never log the URL (it is a credential until `expiresAt`). Stream from disk.
+3. `POST .../attachments/direct/{uploadId}/complete` (no body): `201 {id, sha256, size}`, or `200` with the same
+   body when it was completed before. Reference `id` in the result as usual.
+
+Fallbacks, all silent except one warning per run:
+
+- `404`, `405` or `501` on the first call: the server has no direct uploads; use section 5 for the rest of the
+  run.
+- The PUT gets no answer (DNS, connection, TLS, timeout): the bucket is not reachable from this runner; use
+  section 5 for this file and the rest of the run.
+- The PUT answers an error, the completion answers `410` or `422`, or the item is `refused`: use section 5 for
+  this file.
+- `409 not_uploaded` or `409 verification_in_progress`: retry the completion a few times with backoff; `5xx`
+  and network errors of the FastProof calls are handled like those of section 5 (retries, then the spool).
+
+The spool format does not change: spooled attachments are sent by the flush like any other, directly when the
+flushing tool supports it.
 
 ## 6. Retries, backoff and the circuit breaker
 

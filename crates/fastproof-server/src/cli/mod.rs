@@ -7,6 +7,7 @@ pub mod bench_tm;
 pub mod cases;
 pub mod ci;
 pub mod client;
+pub mod direct;
 pub mod gate;
 pub mod watch;
 
@@ -260,6 +261,22 @@ pub struct UploadArgs {
     /// Keep the launch open even when this command created it for itself.
     #[arg(long)]
     pub no_finish: bool,
+    /// Attachment files of a directory go straight to the server's S3 store when it offers
+    /// that (`auto`), or always inside the archive (`off`).
+    #[arg(
+        long,
+        value_enum,
+        env = "FASTPROOF_DIRECT_UPLOAD_MODE",
+        default_value = "auto"
+    )]
+    pub direct_uploads: direct::Mode,
+    /// Smallest file sent directly, in bytes.
+    #[arg(
+        long,
+        env = "FASTPROOF_DIRECT_UPLOAD_MIN_BYTES",
+        default_value_t = 1_048_576
+    )]
+    pub direct_min_bytes: u64,
 }
 
 #[derive(Args, Debug)]
@@ -434,7 +451,37 @@ async fn upload(u: UploadArgs) -> anyhow::Result<i32> {
     let finish = u.finish || (!shared && !u.no_finish);
     let launch = client.start_launch(&project, &start).await?;
     eprintln!("launch #{} {} ({})", launch.number, launch.name, launch.id);
-    let (body, file_name) = if meta.is_dir() {
+    let (body, file_name) = if meta.is_dir() && u.direct_uploads == direct::Mode::Auto {
+        let dir = u.path.clone();
+        let files =
+            tokio::task::spawn_blocking(move || archive::files_under(&dir, archive::MAX_FILES))
+                .await??;
+        let min = u.direct_min_bytes;
+        let list = files.clone();
+        let cands = tokio::task::spawn_blocking(move || direct::candidates(&list, min)).await?;
+        let d = direct::upload(&client, &project, launch.id, cands).await?;
+        for w in &d.warnings {
+            eprintln!("  warning: {w}");
+        }
+        if !d.stubs.is_empty() {
+            eprintln!(
+                "{} attachments ({} bytes) uploaded directly to the store{}",
+                d.stubs.len(),
+                d.bytes,
+                if d.kept > 0 {
+                    format!(", {} sent in the archive", d.kept)
+                } else {
+                    String::new()
+                }
+            );
+        }
+        let stubs = d
+            .stubs
+            .into_iter()
+            .map(|(rel, id)| (rel, crate::direct_uploads::stub(id)))
+            .collect();
+        (archive::stream_files(files, stubs), None)
+    } else if meta.is_dir() {
         (archive::stream_dir(u.path.clone()), None)
     } else {
         let f = tokio::fs::File::open(&u.path).await?;

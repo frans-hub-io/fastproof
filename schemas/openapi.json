@@ -4787,6 +4787,215 @@
         }
       }
     },
+    "/api/v1/projects/{key}/launches/{id}/attachments/direct": {
+      "post": {
+        "tags": [
+          "attachments"
+        ],
+        "description": "Pre-signed S3 PUT URLs for attachments of the launch. Content the project already stores is linked at once (`exists`, only for callers who may read the launch). URLs are bound to `content-type: application/octet-stream` and, unless turned off, to `x-amz-checksum-sha256`; the object is verified on completion. 501 when the server has no S3 store or direct uploads are off: use POST .../attachments.",
+        "operationId": "attachments_direct_create",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DirectUploadRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DirectUploadResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "501": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/launches/{id}/attachments/direct/{uploadId}/complete": {
+      "post": {
+        "tags": [
+          "attachments"
+        ],
+        "description": "Verifies the object PUT to the upload URL (size and SHA-256, read back from a copy the URL cannot change) and records it as an attachment of the launch. Idempotent: a completed upload answers 200 with the same attachment.",
+        "operationId": "attachments_direct_complete",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "uploadId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "completed before",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AttachmentCreated"
+                }
+              }
+            }
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AttachmentCreated"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`not_uploaded` (PUT first) or `verification_in_progress` (retry)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "`upload_expired`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`verification_failed`: the object was deleted; upload through POST .../attachments",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "501": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{key}/launches/{id}/clusters": {
       "get": {
         "tags": [
@@ -13497,6 +13706,165 @@
           "status": {
             "type": "string",
             "description": "`pending`, `sending`, `delivered` or `failed`."
+          }
+        }
+      },
+      "DirectUploadItem": {
+        "type": "object",
+        "description": "One attachment the client wants to upload.",
+        "required": [
+          "sha256",
+          "size"
+        ],
+        "properties": {
+          "contentType": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`type/subtype`; anything else is stored as `application/octet-stream`."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "File name shown for the attachment."
+          },
+          "sha256": {
+            "type": "string",
+            "description": "SHA-256 of the content, lowercase hex."
+          },
+          "size": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Size in bytes.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "DirectUploadRequest": {
+        "type": "object",
+        "description": "Body of `POST .../launches/{id}/attachments/direct`.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DirectUploadItem"
+            },
+            "description": "1 to 100 attachments."
+          }
+        },
+        "additionalProperties": false
+      },
+      "DirectUploadResponse": {
+        "type": "object",
+        "description": "Answer of `POST .../launches/{id}/attachments/direct`, an item per requested attachment.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DirectUploadTarget"
+            }
+          }
+        }
+      },
+      "DirectUploadStatus": {
+        "type": "string",
+        "description": "What to do with one attachment.",
+        "enum": [
+          "exists",
+          "upload",
+          "refused"
+        ]
+      },
+      "DirectUploadTarget": {
+        "type": "object",
+        "description": "The answer for one attachment, in request order.",
+        "required": [
+          "sha256",
+          "status"
+        ],
+        "properties": {
+          "code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`refused`: `too_large`, `launch_bytes`, `launch_open` or `project_open`."
+          },
+          "expiresAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "`upload`: when the URL stops working."
+          },
+          "headers": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "`upload`: headers the PUT must carry with exactly these values (they are signed).",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "The attachment id to reference in results (`exists`)."
+          },
+          "limit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "`refused`: the limit that applied.",
+            "minimum": 0
+          },
+          "method": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`upload`: always `PUT`."
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/DirectUploadStatus"
+          },
+          "uploadId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "`upload`: the id to complete."
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`upload`: the pre-signed URL (a secret until it expires: do not log it)."
           }
         }
       },

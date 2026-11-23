@@ -195,6 +195,8 @@ pub struct Config {
     /// How long a stop may take (`FASTPROOF_SHUTDOWN_TIMEOUT_SECONDS`, default 25 s): requests
     /// in flight finish and background work stops within it, then the process exits.
     pub shutdown_timeout: std::time::Duration,
+    /// Attachments uploaded straight to S3 (`FASTPROOF_DIRECT_UPLOAD*`).
+    pub direct_uploads: crate::direct_uploads::DirectSettings,
 }
 
 /// Default of `FASTPROOF_SHUTDOWN_TIMEOUT_SECONDS`: below the 30 s Kubernetes gives by default.
@@ -380,6 +382,7 @@ impl fmt::Debug for Config {
             .field("guards", &self.guards)
             .field("tm", &self.tm)
             .field("tm_backfill_delay", &self.tm_backfill_delay)
+            .field("direct_uploads", &self.direct_uploads)
             .finish_non_exhaustive()
     }
 }
@@ -519,6 +522,21 @@ impl Config {
                     ca_file: env.path("FASTPROOF_S3_CA_FILE"),
                     access_key,
                     secret_key,
+                    public_endpoint: match env.var("FASTPROOF_S3_PUBLIC_ENDPOINT") {
+                        Some(v) => {
+                            let v = v.trim().to_string();
+                            let u = url::Url::parse(&v).map_err(|err| {
+                                anyhow!("FASTPROOF_S3_PUBLIC_ENDPOINT: not a URL: {err}")
+                            })?;
+                            if !matches!(u.scheme(), "http" | "https") || u.host_str().is_none() {
+                                bail!(
+                                    "FASTPROOF_S3_PUBLIC_ENDPOINT: expected an http(s) URL with a host"
+                                );
+                            }
+                            Some(v)
+                        }
+                        None => None,
+                    },
                 })
             }
             Some(v) => bail!("FASTPROOF_BLOB_BACKEND: expected fs or s3, got {v:?}"),
@@ -777,6 +795,7 @@ impl Config {
                 DEFAULT_TM_BACKFILL_DELAY,
             )?,
             shutdown_timeout,
+            direct_uploads: crate::direct_uploads::DirectSettings::from_env(&env)?,
         })
     }
 }

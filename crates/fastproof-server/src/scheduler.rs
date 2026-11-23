@@ -350,6 +350,7 @@ pub fn standard_jobs() -> anyhow::Result<Scheduler> {
     analysis_jobs(&mut sch)?;
     case_jobs(&mut sch)?;
     media_jobs(&mut sch)?;
+    direct_upload_jobs(&mut sch)?;
     Ok(sch)
 }
 
@@ -450,6 +451,25 @@ pub fn media_jobs(sch: &mut Scheduler) -> anyhow::Result<()> {
                 skipped = r.skipped,
                 failed = r.failed,
                 "videos prepared"
+            );
+        }
+        Ok(())
+    })
+}
+
+/// Expiry and cleanup of direct uploads (`crate::direct_uploads`).
+pub fn direct_upload_jobs(sch: &mut Scheduler) -> anyhow::Result<()> {
+    sch.register("direct_uploads.sweep", "5m", |s: AppState| async move {
+        if s.blobs.backend() != "s3" {
+            return Ok(());
+        }
+        let st = crate::direct_uploads::sweep(&s, crate::direct_uploads::ORPHAN_AGE).await?;
+        if st != crate::direct_uploads::SweepStats::default() {
+            tracing::info!(
+                expired = st.expired,
+                orphans = st.orphans,
+                pruned = st.pruned,
+                "direct uploads swept"
             );
         }
         Ok(())

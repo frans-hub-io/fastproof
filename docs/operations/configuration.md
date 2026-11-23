@@ -78,6 +78,8 @@ PostgreSQL 14 to 18 is supported; 18 is recommended. PostgreSQL 14 reached end o
 | `FASTPROOF_MEDIA_PREPARE` | `true` | Make [seekable copies of videos](../reference/api.md#seekable-videos) in the background (`media.prepare` job) |
 | `FASTPROOF_MEDIA_PREPARE_MAX_BYTES` | `1073741824` | Larger videos keep only their original (at least 1024) |
 | `FASTPROOF_MEDIA_PREPARE_TIMEOUT_SECONDS` | `300` | Time for one video, download and upload included, 10 to 3600; a video that takes longer keeps its original |
+| `FASTPROOF_S3_PUBLIC_ENDPOINT` | none | Endpoint written into [direct upload](../guide/direct-uploads.md) URLs when CI reaches the bucket under another address than the server |
+| `FASTPROOF_DIRECT_UPLOADS` | `true` | Offer [direct uploads](../guide/direct-uploads.md) of attachments to S3 (`FASTPROOF_DIRECT_UPLOAD_*` tune them) |
 
 Attachments are content-addressed by SHA-256 and stored once per project. There is no key prefix setting:
 FastProof uses the whole bucket, so give every installation its own bucket.

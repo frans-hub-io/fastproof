@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
-from .api import Api, ApiError, VERSION
+from .api import Api, ApiError, VERSION, put_presigned
 from .config import Config
 from .mask import Masker
 from .spool import BLOB_PREFIX, SPOOL_VERSION, SpoolSession, flush_spool
@@ -70,6 +70,7 @@ class Client:
         self._inflight: Dict[str, Dict[str, Any]] = {}
         self._uploads: Dict[str, str] = {}
         self._upload_locks: Dict[str, threading.Lock] = {}
+        self._direct_off = ""
         self._warned: set = set()
         self._stop = False
         self._thread: Optional[threading.Thread] = None
@@ -251,6 +252,12 @@ class Client:
         if self.offline or not self.launch_id:
             return "retry"
         try:
+            direct = self._direct(p)
+            if direct:
+                self.failures = 0
+                self.stats["attachments"] += 1
+                self._uploads[p["sha256"]] = direct
+                return direct
             r = self.api.upload_attachment(
                 self.launch_id, p["name"], p["contentType"], path=p["path"], body=p["body"], retries=2
             )
@@ -264,6 +271,46 @@ class Client:
         self.stats["attachments"] += 1
         self._uploads[p["sha256"]] = r["id"]
         return r["id"]
+
+    def _direct(self, p: Dict[str, Any]) -> Optional[str]:
+        """Sends an attachment straight to the S3 store (PROTOCOL.md, "Direct uploads"). ``None`` means "use the
+        server path"; server errors other than a refusal are raised like those of the server path."""
+        cfg = self.cfg
+        if self._direct_off or cfg.direct_uploads == "off" or p["size"] < cfg.direct_upload_min_bytes:
+            return None
+        launch = self.launch_id or ""
+        try:
+            t = self.api.direct_upload(launch, p["sha256"], p["size"], p["name"], p["contentType"], retries=2)
+        except ApiError as e:
+            if not e.fatal:
+                raise
+            if e.status in (404, 405, 501):
+                self._direct_off = "the server does not offer direct uploads"
+            else:
+                self.warn_once(f"direct:a{e.status}", f"direct upload of {p['name']} refused ({e}); sent through the server")
+            return None
+        if t.get("status") == "exists" and isinstance(t.get("id"), str):
+            return t["id"]
+        if t.get("status") != "upload" or not t.get("url") or not t.get("uploadId"):
+            return None
+        status = put_presigned(
+            t["url"], dict(t.get("headers") or {}), p["size"], path=p["path"], body=p["body"],
+            timeout=120.0 + p["size"] / (512 * 1024),
+        )
+        if status == 0:
+            self._direct_off = "the S3 store is not reachable"
+            self.warn_once("direct:unreachable", "direct uploads off: the S3 store is not reachable; attachments go through the server")
+            return None
+        if not 200 <= status < 300:
+            self.warn_once(f"direct:{status}", f"the S3 store answered {status} to a direct upload; sent through the server")
+            return None
+        try:
+            return self.api.complete_direct(launch, t["uploadId"], retries=2)
+        except ApiError as e:
+            if not e.fatal:
+                raise
+            self.warn_once(f"direct:c{e.status}", f"direct upload of {p['name']} not accepted ({e}); sent through the server")
+            return None
 
     def probe_logs(self) -> None:
         """Feature detection: an empty logs request tells whether the server takes live logs."""

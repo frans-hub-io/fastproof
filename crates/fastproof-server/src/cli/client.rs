@@ -260,6 +260,42 @@ impl Client {
         self.send(rb).await
     }
 
+    /// Asks for direct upload URLs (`POST .../attachments/direct`).
+    pub async fn direct_uploads(
+        &self,
+        project: &str,
+        launch: Uuid,
+        items: &[serde_json::Value],
+    ) -> anyhow::Result<crate::api::direct_uploads::DirectUploadResponse> {
+        let rb = self
+            .request(
+                Method::POST,
+                &format!(
+                    "api/v1/projects/{}/launches/{launch}/attachments/direct",
+                    Self::enc(project)
+                ),
+            )?
+            .json(&serde_json::json!({ "items": items }));
+        self.send(rb).await
+    }
+
+    /// Completes a direct upload; returns the attachment id.
+    pub async fn complete_direct_upload(
+        &self,
+        project: &str,
+        launch: Uuid,
+        upload: Uuid,
+    ) -> anyhow::Result<crate::api::attachments::AttachmentCreated> {
+        let rb = self.request(
+            Method::POST,
+            &format!(
+                "api/v1/projects/{}/launches/{launch}/attachments/direct/{upload}/complete",
+                Self::enc(project)
+            ),
+        )?;
+        self.send(rb).await
+    }
+
     pub async fn uploads(&self, project: &str, launch: Uuid) -> anyhow::Result<Vec<Upload>> {
         let rb = self.request(
             Method::GET,

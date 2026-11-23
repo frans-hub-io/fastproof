@@ -1,6 +1,17 @@
 import { Http, type HttpResult, backoffMs, ok, retryable, sleep } from './http';
 import type { IngestSummary, Launch, LaunchStart, LogLine, ReportResult } from './types';
 
+/** One answer of `POST .../attachments/direct`. */
+export interface DirectTarget {
+  sha256: string;
+  status: 'exists' | 'upload' | 'refused';
+  id?: string;
+  uploadId?: string;
+  url?: string;
+  headers?: Record<string, string>;
+  code?: string;
+}
+
 export const VERSION = '0.1.0';
 export const USER_AGENT = `fastproof-playwright/${VERSION}`;
 
@@ -101,6 +112,55 @@ export class Api {
     const b = r.body as { id?: string; sha256?: string; size?: number };
     if (!b || typeof b.id !== 'string') throw new ApiError('unexpected attachment response', r.status, true);
     return { id: b.id, sha256: b.sha256 ?? '', size: b.size ?? 0 };
+  }
+
+  /**
+   * Asks for a pre-signed URL for one attachment (`POST .../attachments/direct`). Throws `ApiError` with status
+   * 404, 405 or 501 when the server has no direct uploads.
+   */
+  async directUpload(
+    launchId: string,
+    a: { sha256: string; size: number; name: string; contentType: string },
+    retries?: number,
+  ): Promise<DirectTarget> {
+    const r = await this.call(
+      () =>
+        this.http.request('POST', `${this.base(launchId)}/attachments/direct`, {
+          json: { items: [{ sha256: a.sha256, size: a.size, name: a.name, contentType: a.contentType }] },
+        }),
+      retries,
+    );
+    const t = (r.body as { items?: DirectTarget[] } | undefined)?.items?.[0];
+    if (!t || typeof t.status !== 'string') throw new ApiError('unexpected direct upload response', r.status, true);
+    return t;
+  }
+
+  /** Completes a direct upload; retries `409 verification_in_progress` and `not_uploaded` a few times. */
+  async completeDirect(launchId: string, uploadId: string, retries?: number): Promise<string> {
+    let last: ApiError | undefined;
+    for (let i = 0; i < 4; i++) {
+      try {
+        const r = await this.call(
+          () =>
+            this.http.request(
+              'POST',
+              `${this.base(launchId)}/attachments/direct/${encodeURIComponent(uploadId)}/complete`,
+              undefined,
+              {},
+              120_000,
+            ),
+          retries,
+        );
+        const b = r.body as { id?: string };
+        if (!b || typeof b.id !== 'string') throw new ApiError('unexpected completion response', r.status, true);
+        return b.id;
+      } catch (e) {
+        if (!(e instanceof ApiError) || e.status !== 409) throw e;
+        last = e;
+        await sleep(backoffMs(i, 500));
+      }
+    }
+    throw last!;
   }
 
   async finishLaunch(launchId: string, status: 'finished' | 'interrupted', retries?: number): Promise<void> {

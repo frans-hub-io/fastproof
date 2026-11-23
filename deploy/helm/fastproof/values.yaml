@@ -212,6 +212,11 @@ blob:
       existingSecret: ""
       existingConfigMap: ""
       key: ca.crt
+  directUploads:
+    enabled: true
+    publicEndpoint: ""
+    urlTtlSeconds: 900
+    maxBytes: 1073741824
 
 spool:
   sizeLimit: 4Gi

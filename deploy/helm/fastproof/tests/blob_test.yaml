@@ -66,6 +66,61 @@ tests:
           count: 0
         template: templates/garage.yaml
 
+  - it: keeps direct uploads off for the bundled Garage without a public endpoint
+    template: templates/configmap.yaml
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: data.FASTPROOF_DIRECT_UPLOADS
+          value: "false"
+      - notExists:
+          path: data.FASTPROOF_S3_PUBLIC_ENDPOINT
+
+  - it: offers direct uploads through the public endpoint of the bundled Garage
+    template: templates/configmap.yaml
+    documentIndex: 0
+    set:
+      blob.directUploads.publicEndpoint: https://s3.example.com
+      blob.directUploads.urlTtlSeconds: 600
+    asserts:
+      - equal:
+          path: data.FASTPROOF_DIRECT_UPLOADS
+          value: "true"
+      - equal:
+          path: data.FASTPROOF_S3_PUBLIC_ENDPOINT
+          value: https://s3.example.com
+      - equal:
+          path: data.FASTPROOF_DIRECT_UPLOAD_URL_TTL_SECONDS
+          value: "600"
+      - equal:
+          path: data.FASTPROOF_DIRECT_UPLOAD_MAX_BYTES
+          value: "1073741824"
+
+  - it: offers direct uploads with an external S3 unless turned off
+    template: templates/configmap.yaml
+    documentIndex: 0
+    set:
+      blob.s3.endpoint: https://s3.example.com
+      blob.s3.bucket: reports
+      blob.s3.credentials.existingSecret: s3-creds
+    asserts:
+      - equal:
+          path: data.FASTPROOF_DIRECT_UPLOADS
+          value: "true"
+
+  - it: turns direct uploads off when asked
+    template: templates/configmap.yaml
+    documentIndex: 0
+    set:
+      blob.s3.endpoint: https://s3.example.com
+      blob.s3.bucket: reports
+      blob.s3.credentials.existingSecret: s3-creds
+      blob.directUploads.enabled: false
+    asserts:
+      - equal:
+          path: data.FASTPROOF_DIRECT_UPLOADS
+          value: "false"
+
   - it: keeps the filesystem when it is chosen explicitly
     set:
       blob.backend: fs

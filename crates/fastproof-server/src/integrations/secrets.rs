@@ -173,7 +173,13 @@ fn decode_key(line: &str) -> anyhow::Result<Vec<u8>> {
     Ok(b)
 }
 
-fn aad(project_id: Uuid, name: &str, purpose: Option<&str>, origin: Option<&str>) -> Vec<u8> {
+fn aad(
+    project_id: Uuid,
+    name: &str,
+    purpose: Option<&str>,
+    origin: Option<&str>,
+    scope: Option<&str>,
+) -> Vec<u8> {
     let mut a = b"fastproof-secret\0".to_vec();
     a.extend_from_slice(project_id.as_bytes());
     a.extend_from_slice(name.as_bytes());
@@ -182,6 +188,10 @@ fn aad(project_id: Uuid, name: &str, purpose: Option<&str>, origin: Option<&str>
         a.extend_from_slice(p.as_bytes());
         a.extend_from_slice(b"\0origin=");
         a.extend_from_slice(origin.unwrap_or_default().as_bytes());
+        if let Some(sc) = scope {
+            a.extend_from_slice(b"\0scope=");
+            a.extend_from_slice(sc.as_bytes());
+        }
     }
     a
 }
@@ -237,6 +247,7 @@ impl SecretKeys {
         name: &str,
         purpose: Option<&str>,
         origin: Option<&str>,
+        scope: Option<&str>,
         value: &str,
     ) -> anyhow::Result<SealedSecret> {
         let k = &self.keys[0];
@@ -248,7 +259,7 @@ impl SecretKeys {
         k.key
             .seal_in_place_append_tag(
                 Nonce::assume_unique_for_key(nonce),
-                Aad::from(aad(project_id, name, purpose, origin)),
+                Aad::from(aad(project_id, name, purpose, origin, scope)),
                 &mut buf,
             )
             .map_err(|_| anyhow!("encryption failed"))?;
@@ -258,6 +269,7 @@ impl SecretKeys {
             ciphertext: buf,
             purpose: purpose.map(str::to_string),
             origin: origin.map(str::to_string),
+            scope: scope.map(str::to_string),
         })
     }
 
@@ -288,6 +300,7 @@ impl SecretKeys {
                     name,
                     sealed.purpose.as_deref(),
                     sealed.origin.as_deref(),
+                    sealed.scope.as_deref(),
                 )),
                 &mut buf,
             )
@@ -323,6 +336,7 @@ mod tests {
                 "slack",
                 Some("slack"),
                 None,
+                None,
                 "https://hooks.example.com/x",
             )
             .unwrap();
@@ -348,6 +362,7 @@ mod tests {
                 "gl",
                 Some("vcs"),
                 Some("https://gitlab.example.com"),
+                None,
                 "t",
             )
             .unwrap();
@@ -359,18 +374,37 @@ mod tests {
         );
         assert_eq!(keys.open(p, "gl", &vcs).unwrap().expose(), "t");
         assert!(!format!("{keys:?}").contains("0001020304"));
+        let ci = keys
+            .seal(
+                p,
+                "ci",
+                Some("ci"),
+                Some("https://api.github.com"),
+                Some("github:acme/app:tests.yml"),
+                "t",
+            )
+            .unwrap();
+        let mut other = ci.clone();
+        other.scope = Some("github:acme/app:deploy.yml".into());
+        assert!(
+            keys.open(p, "ci", &other).is_err(),
+            "the scope is authenticated"
+        );
+        other.scope = None;
+        assert!(keys.open(p, "ci", &other).is_err());
+        assert_eq!(keys.open(p, "ci", &ci).unwrap().expose(), "t");
     }
 
     #[test]
     fn rotation_keeps_old_keys_readable() {
         let old = SecretKeys::parse(K1).unwrap();
         let p = Uuid::now_v7();
-        let s = old.seal(p, "t", Some("webhook"), None, "v").unwrap();
+        let s = old.seal(p, "t", Some("webhook"), None, None, "v").unwrap();
         let k2 = base64::engine::general_purpose::STANDARD.encode([7u8; 32]);
         let both = SecretKeys::parse(&format!("{k2}\n{K1}\n")).unwrap();
         assert_ne!(both.active_id(), old.active_id());
         assert_eq!(both.open(p, "t", &s).unwrap().expose(), "v");
-        let resealed = both.seal(p, "t", Some("webhook"), None, "v").unwrap();
+        let resealed = both.seal(p, "t", Some("webhook"), None, None, "v").unwrap();
         assert_eq!(resealed.key_id, both.active_id());
         let only_new = SecretKeys::parse(&k2).unwrap();
         assert!(only_new.open(p, "t", &s).is_err());

@@ -210,7 +210,9 @@ pub struct FastMockSettings {
 pub struct RerunSettings {
     /// `github` (Actions `workflow_dispatch`), `gitlab` (pipeline trigger) or `webhook`.
     pub provider: String,
-    /// GitHub API URL (`https://api.github.com`), GitLab base URL, or the webhook URL.
+    /// GitHub API URL (`https://api.github.com`, or `https://host/api/v3` for GitHub
+    /// Enterprise), GitLab base URL (origin only), or the webhook URL. No user info, query or
+    /// fragment; GitHub and GitLab take no other path.
     pub url: String,
     /// `owner/repo` (GitHub) or `group/sub/app` (GitLab); not used by a webhook.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -218,15 +220,20 @@ pub struct RerunSettings {
     /// GitHub: the workflow file name (`tests.yml`) or id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workflow: Option<String>,
-    /// The branch or tag the workflow or pipeline runs on (GitHub, GitLab); by default the
-    /// branch of the launch, else `main`.
+    /// The branch or tag the workflow or pipeline runs on (GitHub, GitLab); `main` when absent.
+    /// It is never taken from the launch, whose branch comes from the uploader.
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "ref")]
     pub git_ref: Option<String>,
     /// A secret with purpose `ci` bound to the origin of `url`: a GitHub token that may
     /// dispatch workflows, a GitLab pipeline trigger token, or an optional bearer token of
-    /// the webhook.
+    /// the webhook. The secret is also bound to the provider, repository and workflow (the
+    /// webhook: its URL) it was written for.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_secret_ref: Option<String>,
+    /// Webhook only: a secret (purpose `ci`, same scope) used as the key of the HMAC-SHA256
+    /// signature in `X-FastProof-Signature` (see the Rerun guide).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signing_secret_ref: Option<String>,
 }
 
 /// The integration keys of the settings document.
@@ -523,12 +530,44 @@ impl IntegrationSettings {
 }
 
 impl RerunSettings {
+    /// What a `ci` secret is bound to: provider, repository and workflow (the webhook: its
+    /// URL). A settings change that alters it needs the secret written again.
+    pub fn scope(&self) -> String {
+        match self.provider.as_str() {
+            "github" => format!(
+                "github:{}:{}",
+                self.repository.as_deref().unwrap_or_default(),
+                self.workflow.as_deref().unwrap_or_default()
+            ),
+            "gitlab" => format!("gitlab:{}", self.repository.as_deref().unwrap_or_default()),
+            _ => format!("webhook:{}", self.url.trim_end_matches('/')),
+        }
+    }
+
     fn check(&self) -> Result<(), String> {
         if !matches!(self.provider.as_str(), "github" | "gitlab" | "webhook") {
             return Err("rerun.provider must be github, gitlab or webhook".into());
         }
-        http_url("rerun.url", &self.url)?;
+        let u = http_url("rerun.url", &self.url)?;
+        if !u.username().is_empty()
+            || u.password().is_some()
+            || u.query().is_some()
+            || u.fragment().is_some()
+        {
+            return Err("rerun.url takes no user info, query or fragment".into());
+        }
+        match (self.provider.as_str(), u.path().trim_end_matches('/')) {
+            ("github", "" | "/api/v3") | ("gitlab", "") | ("webhook", _) => {}
+            ("github", _) => {
+                return Err("rerun.url for github is the API origin, or <origin>/api/v3".into());
+            }
+            _ => return Err("rerun.url for gitlab is the origin only".into()),
+        }
         secret_ref("rerun.tokenSecretRef", &self.token_secret_ref)?;
+        secret_ref("rerun.signingSecretRef", &self.signing_secret_ref)?;
+        if self.signing_secret_ref.is_some() && self.provider != "webhook" {
+            return Err("rerun.signingSecretRef is for webhook".into());
+        }
         let word = |what: &str, v: &Option<String>, max: usize| match v {
             Some(v)
                 if v.is_empty()
@@ -603,18 +642,23 @@ pub struct SecretUse {
     pub name: String,
     pub purpose: SecretPurpose,
     pub destination: Option<String>,
+    pub scope: Option<String>,
 }
 
 impl IntegrationSettings {
     /// Every secret reference with its purpose and destination.
     pub fn secret_uses(&self) -> Vec<SecretUse> {
         let mut out = Vec::new();
-        let mut add = |name: &str, purpose, destination: Option<String>| {
+        let mut add_scoped = |name: &str, purpose, destination: Option<String>, scope| {
             out.push(SecretUse {
                 name: name.to_string(),
                 purpose,
                 destination,
+                scope,
             })
+        };
+        let mut add = |name: &str, purpose, destination: Option<String>| {
+            add_scoped(name, purpose, destination, None)
         };
         for n in &self.notifications {
             let purpose = match n.kind.as_str() {
@@ -641,10 +685,13 @@ impl IntegrationSettings {
         {
             add(t, SecretPurpose::Fastmock, Some(f.url.clone()));
         }
-        if let Some(r) = &self.rerun
-            && let Some(t) = &r.token_secret_ref
-        {
-            add(t, SecretPurpose::Ci, Some(r.url.clone()));
+        if let Some(r) = &self.rerun {
+            for t in [&r.token_secret_ref, &r.signing_secret_ref]
+                .into_iter()
+                .flatten()
+            {
+                add_scoped(t, SecretPurpose::Ci, Some(r.url.clone()), Some(r.scope()));
+            }
         }
         out
     }
@@ -770,6 +817,8 @@ pub async fn check_secret_uses(
             u.destination.as_deref(),
         )
         .map_err(|e| e.0)?;
+        super::check_scope(&u.name, u.purpose, m.scope.as_deref(), u.scope.as_deref())
+            .map_err(|e| e.0)?;
     }
     Ok(())
 }

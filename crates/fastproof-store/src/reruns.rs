@@ -9,7 +9,8 @@ use uuid::Uuid;
 
 use crate::{Store, no_nul};
 
-/// Reruns of one launch, at most.
+/// Reruns of one launch that did not fail, at most (a failed attempt, such as one during a CI
+/// outage, does not use them up; the hourly limit counts every attempt).
 pub const MAX_RERUNS_PER_LAUNCH: i64 = 20;
 /// Reruns per project per hour, at most.
 pub const MAX_RERUNS_PER_HOUR: i64 = 60;
@@ -96,6 +97,10 @@ impl Store {
         by: &str,
     ) -> anyhow::Result<Result<(Uuid, String), RerunRefusal>> {
         let mut tx = self.pool.begin().await?;
+        sqlx::query("select pg_advisory_xact_lock(hashtextextended('rerun:' || $1::text, 0))")
+            .bind(project_id)
+            .execute(&mut *tx)
+            .await?;
         let known: Option<Uuid> = sqlx::query_scalar(
             "select id from launches where project_id = $1 and id = $2 for update",
         )
@@ -107,7 +112,8 @@ impl Store {
             return Ok(Err(RerunRefusal::UnknownLaunch));
         }
         let (recent, total): (i64, i64) = sqlx::query_as(
-            "select count(*) filter (where created_at > now() - make_interval(secs => $2)), count(*) \
+            "select count(*) filter (where created_at > now() - make_interval(secs => $2)), \
+             count(*) filter (where status <> 'failed') \
              from launch_reruns where source_launch_id = $1",
         )
         .bind(source_launch_id)
@@ -187,7 +193,7 @@ impl Store {
     pub async fn reruns_of(&self, project_id: Uuid, launch_id: Uuid) -> anyhow::Result<Vec<Rerun>> {
         let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
             "{SELECT} where r.project_id = $1 and r.source_launch_id = $2 \
-             order by r.created_at desc limit {MAX_RERUNS_PER_LAUNCH}"
+             order by r.created_at desc limit 50"
         )))
         .bind(project_id)
         .bind(launch_id)

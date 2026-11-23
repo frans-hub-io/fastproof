@@ -364,6 +364,7 @@ async fn reseal(s: &AppState) {
                 name,
                 sealed.purpose.as_deref(),
                 sealed.origin.as_deref(),
+                sealed.scope.as_deref(),
                 v.expose(),
             ) else {
                 continue;

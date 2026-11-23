@@ -600,6 +600,15 @@ pub async fn put_settings(
         )
         .await;
     }
+    if old_doc.get("rerun") != new_doc.get("rerun") {
+        s.audit(
+            &auth,
+            "project.settings.rerun",
+            Some(&p.key),
+            serde_json::json!({"old": old_doc.get("rerun"), "new": new_doc.get("rerun")}),
+        )
+        .await;
+    }
     if areas.iter().any(|a| a == "caseSync") {
         s.audit(
             &auth,

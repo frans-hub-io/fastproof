@@ -27,6 +27,7 @@ Permissions are `resource:action` strings:
 | `projects:write` | Create and delete projects (global only) |
 | `launches:read` | See launches, results, attachments and history |
 | `launches:write` | Create launches, upload reports, finish and delete launches |
+| `launches:rerun` | Rerun tests of a launch in the project's CI ([Rerun](../guide/rerun.md)); starts pipelines with the stored CI token, so the `uploader` role (CI report tokens) does not have it |
 | `results:triage` | Set defect types, comments, issue links and mutes |
 | `rules:write` | Manage triage rules |
 | `settings:write` | Change project and server settings |
@@ -46,7 +47,7 @@ Built-in roles:
 | `viewer` | `projects:read`, `launches:read`, `cases:read` |
 | `tester` | `projects:read`, `launches:read`, `cases:read`, `runs:execute` |
 | `uploader` | `projects:read`, `launches:read`, `launches:write`, `cases:read`, `cases:sync` |
-| `editor` | everything of `uploader`, plus `results:triage`, `rules:write`, `cases:write`, `cases:import`, `plans:write`, `runs:execute` |
+| `editor` | everything of `uploader`, plus `launches:rerun`, `results:triage`, `rules:write`, `cases:write`, `cases:import`, `plans:write`, `runs:execute` |
 | `admin` | `*` (every permission) |
 
 A **binding** gives a role to a user, an OIDC group or a token, scoped globally, to a list of projects, or to

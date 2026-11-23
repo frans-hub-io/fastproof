@@ -23,6 +23,8 @@ pub struct SealedSecret {
     pub ciphertext: Vec<u8>,
     pub purpose: Option<String>,
     pub origin: Option<String>,
+    /// What else the secret is bound to (the `ci` purpose: provider, repository and workflow).
+    pub scope: Option<String>,
 }
 
 impl std::fmt::Debug for SealedSecret {
@@ -31,6 +33,7 @@ impl std::fmt::Debug for SealedSecret {
             .field("key_id", &self.key_id)
             .field("purpose", &self.purpose)
             .field("origin", &self.origin)
+            .field("scope", &self.scope)
             .finish_non_exhaustive()
     }
 }
@@ -45,6 +48,8 @@ pub struct SecretMeta {
     pub purpose: Option<String>,
     /// The only origin (`https://host[:port]`) the secret may be sent to, when bound to one.
     pub origin: Option<String>,
+    /// For `ci` secrets: the provider, repository and workflow the token may be used for.
+    pub scope: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub updated_by: Option<String>,
@@ -133,6 +138,7 @@ type SecretMetaRow = (
     String,
     Option<String>,
     Option<String>,
+    Option<String>,
     DateTime<Utc>,
     DateTime<Utc>,
     Option<String>,
@@ -143,6 +149,7 @@ type SealedRow = (
     String,
     Vec<u8>,
     Vec<u8>,
+    Option<String>,
     Option<String>,
     Option<String>,
 );
@@ -187,11 +194,11 @@ impl Store {
         by: &str,
     ) -> anyhow::Result<bool> {
         let created: bool = sqlx::query_scalar(
-            "insert into project_secrets (project_id, name, key_id, nonce, ciphertext, updated_by, purpose, origin) \
-             values ($1, $2, $3, $4, $5, $6, $7, $8) \
+            "insert into project_secrets (project_id, name, key_id, nonce, ciphertext, updated_by, purpose, origin, scope) \
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
              on conflict (project_id, name) do update set key_id = excluded.key_id, nonce = excluded.nonce, \
              ciphertext = excluded.ciphertext, updated_by = excluded.updated_by, purpose = excluded.purpose, \
-             origin = excluded.origin, updated_at = now() \
+             origin = excluded.origin, scope = excluded.scope, updated_at = now() \
              returning (xmax = 0)",
         )
         .bind(project_id)
@@ -202,6 +209,7 @@ impl Store {
         .bind(no_nul(by))
         .bind(sealed.purpose.as_deref().map(no_nul))
         .bind(sealed.origin.as_deref().map(no_nul))
+        .bind(sealed.scope.as_deref().map(no_nul))
         .fetch_one(&self.pool)
         .await?;
         Ok(created)
@@ -212,9 +220,16 @@ impl Store {
         project_id: Uuid,
         name: &str,
     ) -> anyhow::Result<Option<SealedSecret>> {
-        type Row = (String, Vec<u8>, Vec<u8>, Option<String>, Option<String>);
+        type Row = (
+            String,
+            Vec<u8>,
+            Vec<u8>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        );
         let r: Option<Row> = sqlx::query_as(
-            "select key_id, nonce, ciphertext, purpose, origin from project_secrets \
+            "select key_id, nonce, ciphertext, purpose, origin, scope from project_secrets \
              where project_id = $1 and name = $2",
         )
         .bind(project_id)
@@ -222,19 +237,20 @@ impl Store {
         .fetch_optional(&self.pool)
         .await?;
         Ok(r.map(
-            |(key_id, nonce, ciphertext, purpose, origin)| SealedSecret {
+            |(key_id, nonce, ciphertext, purpose, origin, scope)| SealedSecret {
                 key_id,
                 nonce,
                 ciphertext,
                 purpose,
                 origin,
+                scope,
             },
         ))
     }
 
     pub async fn secret_names(&self, project_id: Uuid) -> anyhow::Result<Vec<SecretMeta>> {
         let rows: Vec<SecretMetaRow> = sqlx::query_as(
-            "select name, purpose, origin, created_at, updated_at, updated_by from project_secrets \
+            "select name, purpose, origin, scope, created_at, updated_at, updated_by from project_secrets \
              where project_id = $1 order by name",
         )
         .bind(project_id)
@@ -243,10 +259,11 @@ impl Store {
         Ok(rows
             .into_iter()
             .map(
-                |(name, purpose, origin, created_at, updated_at, updated_by)| SecretMeta {
+                |(name, purpose, origin, scope, created_at, updated_at, updated_by)| SecretMeta {
                     name,
                     purpose,
                     origin,
+                    scope,
                     created_at,
                     updated_at,
                     updated_by,
@@ -271,7 +288,7 @@ impl Store {
         limit: i64,
     ) -> anyhow::Result<Vec<(Uuid, String, SealedSecret)>> {
         let rows: Vec<SealedRow> = sqlx::query_as(
-            "select project_id, name, key_id, nonce, ciphertext, purpose, origin from project_secrets \
+            "select project_id, name, key_id, nonce, ciphertext, purpose, origin, scope from project_secrets \
              where key_id <> $1 limit $2",
         )
         .bind(key_id)
@@ -280,19 +297,22 @@ impl Store {
         .await?;
         Ok(rows
             .into_iter()
-            .map(|(p, n, key_id, nonce, ciphertext, purpose, origin)| {
-                (
-                    p,
-                    n,
-                    SealedSecret {
-                        key_id,
-                        nonce,
-                        ciphertext,
-                        purpose,
-                        origin,
-                    },
-                )
-            })
+            .map(
+                |(p, n, key_id, nonce, ciphertext, purpose, origin, scope)| {
+                    (
+                        p,
+                        n,
+                        SealedSecret {
+                            key_id,
+                            nonce,
+                            ciphertext,
+                            purpose,
+                            origin,
+                            scope,
+                        },
+                    )
+                },
+            )
             .collect())
     }
 

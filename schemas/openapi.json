@@ -5840,7 +5840,7 @@
         "tags": [
           "integrations"
         ],
-        "description": "Makes a test plan of the failed (or selected) tests and triggers the CI configured in the project settings (`rerun`) with the plan and the external id the new launch must use (`launches:write`). The CI is called once, without retries. The new launch is linked to this one when it starts with that external id.",
+        "description": "Makes a test plan of the failed (or selected) tests and triggers the CI configured in the project settings (`rerun`) with the plan and the external id the new launch must use (`launches:rerun`, held by editor and admin, not by uploader). The CI is called once, without retries. The new launch is linked to this one when it starts with that external id. Every outcome, also a refusal, is written to the audit log (`launch.rerun`).",
         "operationId": "integrations_rerun",
         "parameters": [
           {
@@ -5946,7 +5946,7 @@
         "tags": [
           "integrations"
         ],
-        "description": "The reruns requested from the launch with the launches they started, and the rerun that started this launch.",
+        "description": "The reruns requested from the launch with the launches they started, and the rerun that started this launch. Callers without `settings:write` get generic error texts and only the pipeline id in `ciRef`, as the CI host and the secret names are settings details.",
         "operationId": "integrations_reruns",
         "parameters": [
           {
@@ -18199,7 +18199,7 @@
               "string",
               "null"
             ],
-            "description": "The branch or tag the workflow or pipeline runs on (GitHub, GitLab); by default the\nbranch of the launch, else `main`."
+            "description": "The branch or tag the workflow or pipeline runs on (GitHub, GitLab); `main` when absent.\nIt is never taken from the launch, whose branch comes from the uploader."
           },
           "repository": {
             "type": [
@@ -18208,16 +18208,23 @@
             ],
             "description": "`owner/repo` (GitHub) or `group/sub/app` (GitLab); not used by a webhook."
           },
+          "signingSecretRef": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Webhook only: a secret (purpose `ci`, same scope) used as the key of the HMAC-SHA256\nsignature in `X-FastProof-Signature` (see the Rerun guide)."
+          },
           "tokenSecretRef": {
             "type": [
               "string",
               "null"
             ],
-            "description": "A secret with purpose `ci` bound to the origin of `url`: a GitHub token that may\ndispatch workflows, a GitLab pipeline trigger token, or an optional bearer token of\nthe webhook."
+            "description": "A secret with purpose `ci` bound to the origin of `url`: a GitHub token that may\ndispatch workflows, a GitLab pipeline trigger token, or an optional bearer token of\nthe webhook. The secret is also bound to the provider, repository and workflow (the\nwebhook: its URL) it was written for."
           },
           "url": {
             "type": "string",
-            "description": "GitHub API URL (`https://api.github.com`), GitLab base URL, or the webhook URL."
+            "description": "GitHub API URL (`https://api.github.com`, or `https://host/api/v3` for GitHub\nEnterprise), GitLab base URL (origin only), or the webhook URL. No user info, query or\nfragment; GitHub and GitLab take no other path."
           },
           "workflow": {
             "type": [
@@ -19416,6 +19423,13 @@
             ],
             "description": "What the secret may be used for: `vcs`, `fastmock`, `slack`, `telegram`, `webhook` or\n`smtp` (absent for a secret stored before purposes existed; it must be stored again)."
           },
+          "scope": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For `ci` secrets: the provider, repository and workflow the token may be used for."
+          },
           "updatedAt": {
             "type": "string",
             "format": "date-time"
@@ -19461,6 +19475,13 @@
           "purpose": {
             "$ref": "#/components/schemas/SecretPurpose",
             "description": "What the secret is for; it is refused for anything else."
+          },
+          "scope": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Required for `ci`, refused for the other purposes: what the token may be used for,\n`github:<owner/repo>:<workflow>`, `gitlab:<group/project>` or `webhook:<URL>`. The\n`rerun` settings must name exactly this target; changing the provider, repository or\nworkflow needs the secret written again."
           },
           "value": {
             "type": "string",

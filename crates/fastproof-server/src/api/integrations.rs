@@ -62,6 +62,12 @@ pub struct SecretValue {
     /// Changing the URL in the settings needs the secret written again for the new origin.
     #[serde(default)]
     pub origin: Option<String>,
+    /// Required for `ci`, refused for the other purposes: what the token may be used for,
+    /// `github:<owner/repo>:<workflow>`, `gitlab:<group/project>` or `webhook:<URL>`. The
+    /// `rerun` settings must name exactly this target; changing the provider, repository or
+    /// workflow needs the secret written again.
+    #[serde(default)]
+    pub scope: Option<String>,
 }
 
 impl std::fmt::Debug for SecretValue {
@@ -143,6 +149,24 @@ pub async fn put_secret(
             ));
         }
     }
+    let scope = match (body.purpose, body.scope.as_deref()) {
+        (SecretPurpose::Ci, Some(sc))
+            if sc.len() <= 600
+                && sc.chars().all(|c| !c.is_control())
+                && (sc.starts_with("github:")
+                    || sc.starts_with("gitlab:")
+                    || sc.starts_with("webhook:")) =>
+        {
+            Some(sc.to_string())
+        }
+        (SecretPurpose::Ci, _) => {
+            return Err(ApiError::bad_request(
+                "a ci secret needs scope: github:<owner/repo>:<workflow>, gitlab:<group/project> or webhook:<URL>",
+            ));
+        }
+        (_, None) => None,
+        (_, Some(_)) => return Err(ApiError::bad_request("scope is only for ci secrets")),
+    };
     let Some(keys) = &s.cfg.integrations.secrets else {
         return Err(ApiError::unavailable(
             "secrets need FASTPROOF_SECRETS_KEY_FILE on the server",
@@ -154,6 +178,7 @@ pub async fn put_secret(
             &name,
             Some(body.purpose.as_str()),
             origin.as_deref(),
+            scope.as_deref(),
             &body.value,
         )
         .map_err(|_| ApiError::internal())?;
@@ -170,7 +195,7 @@ pub async fn put_secret(
         },
         Some(&project.key),
         serde_json::json!({"name": name, "keyId": sealed.key_id, "purpose": body.purpose.as_str(),
-            "origin": origin}),
+            "origin": origin, "scope": scope}),
     )
     .await;
     Ok(if created {

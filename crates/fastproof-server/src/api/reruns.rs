@@ -12,7 +12,7 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 use super::{ErrorBody, P};
-use crate::integrations::rerun::{self, Job};
+use crate::integrations::rerun::{self, Job, generic_ci_ref, generic_error};
 use crate::integrations::settings::IntegrationSettings;
 use crate::state::AppState;
 
@@ -69,7 +69,7 @@ async fn settings_of(s: &AppState, project_id: Uuid) -> ApiResult<IntegrationSet
 }
 
 #[utoipa::path(get, path = "/api/v1/projects/{key}/launches/{id}/reruns", tag = "integrations", operation_id = "integrations_reruns",
-    description = "The reruns requested from the launch with the launches they started, and the rerun that started this launch.",
+    description = "The reruns requested from the launch with the launches they started, and the rerun that started this launch. Callers without `settings:write` get generic error texts and only the pipeline id in `ciRef`, as the CI host and the secret names are settings details.",
     params(("key" = String, Path), ("id" = Uuid, Path)),
     responses((status = 200, body = RerunList), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
 pub async fn list(
@@ -80,16 +80,40 @@ pub async fn list(
     let project = s.project_for(&auth, &key, &s.perms.launches_read).await?;
     let launch = s.launch_of(&project, id).await?;
     let settings = settings_of(&s, project.id).await.unwrap_or_default();
+    let admin = can_see_ci(&s, &auth, &project.key);
+    let hide = |mut r: Rerun| {
+        if !admin {
+            r.error = r.error.as_deref().map(generic_error);
+            r.ci_ref = r.ci_ref.as_deref().map(generic_ci_ref);
+        }
+        r
+    };
     Ok(Json(RerunList {
         configured: settings.rerun.is_some(),
         provider: settings.rerun.map(|r| r.provider),
-        items: s.store.reruns_of(project.id, launch.id).await?,
-        rerun_of: s.store.rerun_that_started(project.id, launch.id).await?,
+        items: s
+            .store
+            .reruns_of(project.id, launch.id)
+            .await?
+            .into_iter()
+            .map(hide)
+            .collect(),
+        rerun_of: s
+            .store
+            .rerun_that_started(project.id, launch.id)
+            .await?
+            .map(hide),
     }))
 }
 
+fn can_see_ci(s: &AppState, auth: &Auth, project: &str) -> bool {
+    auth.principal
+        .denial(&s.perms.settings_write, Some(project))
+        .is_none()
+}
+
 #[utoipa::path(post, path = "/api/v1/projects/{key}/launches/{id}/rerun", tag = "integrations", operation_id = "integrations_rerun", request_body = RerunRequest,
-    description = "Makes a test plan of the failed (or selected) tests and triggers the CI configured in the project settings (`rerun`) with the plan and the external id the new launch must use (`launches:write`). The CI is called once, without retries. The new launch is linked to this one when it starts with that external id.",
+    description = "Makes a test plan of the failed (or selected) tests and triggers the CI configured in the project settings (`rerun`) with the plan and the external id the new launch must use (`launches:rerun`, held by editor and admin, not by uploader). The CI is called once, without retries. The new launch is linked to this one when it starts with that external id. Every outcome, also a refusal, is written to the audit log (`launch.rerun`).",
     params(("key" = String, Path), ("id" = Uuid, Path)),
     responses((status = 201, body = Rerun), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),
         (status = 404, body = ErrorBody),
@@ -102,14 +126,39 @@ pub async fn create(
     P((key, id)): P<(String, Uuid)>,
     ApiJson(body): ApiJson<RerunRequest>,
 ) -> ApiResult<(StatusCode, Json<Rerun>)> {
-    let project = s.project_for(&auth, &key, &s.perms.launches_write).await?;
-    let launch = s.launch_of(&project, id).await?;
-    let settings = settings_of(&s, project.id).await?;
+    let project = s.project_for(&auth, &key, &s.perms.launches_rerun).await?;
+    let mut audit = serde_json::json!({"launchId": id, "mode": body.mode.as_str()});
+    let out = run(&s, &auth, &project, id, &body, &mut audit).await;
+    match &out {
+        Ok(_) => audit["ok"] = true.into(),
+        Err(e) => {
+            audit["ok"] = false.into();
+            audit["status"] = e.status().as_u16().into();
+            audit["error"] = serde_json::json!(e.body().message);
+        }
+    }
+    s.audit(&auth, "launch.rerun", Some(&project.key), audit)
+        .await;
+    out.map(|r| (StatusCode::CREATED, Json(r)))
+}
+
+async fn run(
+    s: &AppState,
+    auth: &Auth,
+    project: &fastproof_store::Project,
+    id: Uuid,
+    body: &RerunRequest,
+    audit: &mut serde_json::Value,
+) -> ApiResult<Rerun> {
+    let admin = can_see_ci(s, auth, &project.key);
+    let launch = s.launch_of(project, id).await?;
+    let settings = settings_of(s, project.id).await?;
     let Some(cfg) = settings.rerun else {
         return Err(ApiError::conflict(
             "the project has no rerun settings (integrations: rerun)",
         ));
     };
+    audit["target"] = rerun::target(&cfg);
     let mut plan_req = NewTestPlan {
         name: format!("Rerun of #{}", launch.number),
         from_launch_id: None,
@@ -177,6 +226,7 @@ pub async fn create(
             ));
         }
     };
+    audit["rerunId"] = serde_json::json!(rerun_id);
     let fail = |msg: String| async {
         let _ = s.store.rerun_done(rerun_id, Some(&msg), None).await;
         msg
@@ -200,6 +250,8 @@ pub async fn create(
             ));
         }
     };
+    audit["planId"] = serde_json::json!(created.id);
+    audit["tests"] = serde_json::json!(created.test_count);
     if created.test_count == 0 {
         return Err(ApiError::conflict(
             fail("no tests to run: the launch has no such results".into()).await,
@@ -223,33 +275,31 @@ pub async fn create(
         mode: body.mode.as_str(),
         plan: &plan,
     };
-    let outcome = rerun::dispatch(&s, project.id, &cfg, &job).await;
+    let outcome = rerun::dispatch(s, project.id, &cfg, &job).await;
     let (error, ci_ref) = match &outcome {
         Ok(r) => (None, r.as_deref()),
         Err(e) => (Some(e.as_str()), None),
     };
     s.store.rerun_done(rerun_id, error, ci_ref).await?;
-    s.audit(
-        &auth,
-        "launch.rerun",
-        Some(&project.key),
-        serde_json::json!({"rerunId": rerun_id, "launchId": launch.id, "mode": body.mode.as_str(),
-            "provider": cfg.provider, "planId": created.id, "tests": created.test_count,
-            "ok": error.is_none(), "error": error}),
-    )
-    .await;
-    let rerun = s
+    if let Some(e) = error {
+        audit["detail"] = serde_json::json!(e);
+        let shown = if admin {
+            e.to_string()
+        } else {
+            generic_error(e)
+        };
+        return Err(ApiError::new(StatusCode::BAD_GATEWAY, "ci_failed", shown)
+            .with_details(serde_json::json!({"rerunId": rerun_id})));
+    }
+    let mut rerun = s
         .store
         .reruns_of(project.id, launch.id)
         .await?
         .into_iter()
         .find(|r| r.id == rerun_id)
         .ok_or_else(ApiError::internal)?;
-    if let Some(e) = error {
-        return Err(
-            ApiError::new(StatusCode::BAD_GATEWAY, "ci_failed", e.to_string())
-                .with_details(serde_json::json!({"rerunId": rerun_id})),
-        );
+    if !admin {
+        rerun.ci_ref = rerun.ci_ref.as_deref().map(generic_ci_ref);
     }
-    Ok((StatusCode::CREATED, Json(rerun)))
+    Ok(rerun)
 }

@@ -24,6 +24,9 @@ struct Rec {
     auth: String,
     private_token: String,
     content_type: String,
+    timestamp: String,
+    signature: String,
+    event: String,
     body: String,
 }
 
@@ -79,6 +82,9 @@ async fn handle(
         auth: h("authorization"),
         private_token: h("private-token"),
         content_type: h("content-type"),
+        timestamp: h("x-fastproof-timestamp"),
+        signature: h("x-fastproof-signature"),
+        event: h("x-fastproof-event"),
         body: String::from_utf8_lossy(&body).to_string(),
     });
     let forced = st.force_status.load(Ordering::SeqCst);
@@ -127,13 +133,13 @@ async fn start(db: &TestDb, ci: &Ci, public: bool) -> (Server, tempfile::TempDir
     (Server::start_with(db, &extra).await, dir)
 }
 
-async fn put_secret(s: &Server, name: &str, value: &str, purpose: &str, origin: &str) {
+async fn put_secret(s: &Server, name: &str, value: &str, purpose: &str, origin: &str, scope: &str) {
     let (st, b) = s
         .call(
             Method::PUT,
             &format!("/api/v1/projects/shop/secrets/{name}"),
             Some(ADMIN_TOKEN),
-            Some(json!({"value": value, "purpose": purpose, "origin": origin})),
+            Some(json!({"value": value, "purpose": purpose, "origin": origin, "scope": (!scope.is_empty()).then_some(scope)})),
         )
         .await;
     assert!(st.is_success(), "{st} {b}");
@@ -206,7 +212,15 @@ async fn github_dispatch_carries_the_plan_and_links_the_new_launch() {
     let ci = Ci::start().await;
     let (s, _d) = start(&db, &ci, true).await;
     s.project("shop").await;
-    put_secret(&s, "gh", "ghp_secret_value_1", "ci", &ci.url()).await;
+    put_secret(
+        &s,
+        "gh",
+        "ghp_secret_value_1",
+        "ci",
+        &ci.url(),
+        "github:acme/shop:tests.yml",
+    )
+    .await;
     let (st, b) = put_settings(
         &s,
         json!({"rerun": {"provider": "github", "url": ci.url(), "repository": "acme/shop",
@@ -304,7 +318,15 @@ async fn gitlab_trigger_and_webhook() {
     let ci = Ci::start().await;
     let (s, _d) = start(&db, &ci, false).await;
     s.project("shop").await;
-    put_secret(&s, "gl", "glptt-trigger-1", "ci", &ci.url()).await;
+    put_secret(
+        &s,
+        "gl",
+        "glptt-trigger-1",
+        "ci",
+        &ci.url(),
+        "gitlab:group/app",
+    )
+    .await;
     let (st, b) = put_settings(
         &s,
         json!({"rerun": {"provider": "gitlab", "url": ci.url(), "repository": "group/app",
@@ -348,11 +370,28 @@ async fn gitlab_trigger_and_webhook() {
     );
 
     tokio::time::sleep(std::time::Duration::from_secs(11)).await;
-    put_secret(&s, "hook", "hook-bearer-1", "ci", &ci.url()).await;
+    put_secret(
+        &s,
+        "hook",
+        "hook-bearer-1",
+        "ci",
+        &ci.url(),
+        &format!("webhook:{}/hook", ci.url()),
+    )
+    .await;
+    put_secret(
+        &s,
+        "hook-key",
+        "hook-signing-key-1",
+        "ci",
+        &ci.url(),
+        &format!("webhook:{}/hook", ci.url()),
+    )
+    .await;
     let (st, b) = put_settings(
         &s,
         json!({"rerun": {"provider": "webhook", "url": format!("{}/hook", ci.url()),
-            "tokenSecretRef": "hook"}}),
+            "tokenSecretRef": "hook", "signingSecretRef": "hook-key"}}),
     )
     .await;
     assert!(st.is_success(), "{st} {b}");
@@ -375,6 +414,18 @@ async fn gitlab_trigger_and_webhook() {
     let r = ci.requests().pop().unwrap();
     assert_eq!(r.path, "/hook");
     assert_eq!(r.auth, "Bearer hook-bearer-1");
+    assert_eq!(r.event, "rerun");
+    let ts: i64 = r.timestamp.parse().unwrap();
+    assert!((chrono::Utc::now().timestamp() - ts).abs() < 120);
+    assert_eq!(
+        r.signature,
+        fastproof_server::integrations::notify::signature(
+            b"hook-signing-key-1",
+            ts,
+            r.body.as_bytes()
+        ),
+        "the body is signed with the stored key and the timestamp"
+    );
     let sent: Value = serde_json::from_str(&r.body).unwrap();
     assert_eq!(sent["event"], "rerun");
     assert_eq!(sent["newLaunchExternalId"], b["externalId"]);
@@ -418,9 +469,25 @@ async fn refusals_limits_and_permissions() {
     let (st, b) = s.post(&path, ADMIN_TOKEN, json!({"mode": "failed"})).await;
     assert_eq!(st, StatusCode::CONFLICT, "{b}");
 
-    put_secret(&s, "gh", "ghp_secret_value_2", "ci", &ci.url()).await;
-    put_secret(&s, "wrong", "x", "vcs", &ci.url()).await;
-    put_secret(&s, "elsewhere", "x", "ci", "https://other.example.com").await;
+    put_secret(
+        &s,
+        "gh",
+        "ghp_secret_value_2",
+        "ci",
+        &ci.url(),
+        "github:acme/shop:tests.yml",
+    )
+    .await;
+    put_secret(&s, "wrong", "x", "vcs", &ci.url(), "").await;
+    put_secret(
+        &s,
+        "elsewhere",
+        "x",
+        "ci",
+        "https://other.example.com",
+        "github:acme/shop:tests.yml",
+    )
+    .await;
     for bad in ["wrong", "elsewhere"] {
         let (st, b) = put_settings(
             &s,
@@ -533,7 +600,15 @@ async fn egress_policy_applies() {
     )
     .await;
     s.project("shop").await;
-    put_secret(&s, "gh", "ghp_secret_value_3", "ci", &ci.url()).await;
+    put_secret(
+        &s,
+        "gh",
+        "ghp_secret_value_3",
+        "ci",
+        &ci.url(),
+        "github:acme/shop:tests.yml",
+    )
+    .await;
     let (st, b) = put_settings(
         &s,
         json!({"rerun": {"provider": "github", "url": ci.url(), "repository": "acme/shop",
@@ -552,4 +627,296 @@ async fn egress_policy_applies() {
     assert_eq!(st, StatusCode::BAD_GATEWAY, "{b}");
     assert!(ci.requests().is_empty());
     assert!(!b.to_string().contains(&ci.url()));
+}
+
+fn audit_items(audit: &Value, action: &str) -> Vec<Value> {
+    audit["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|i| i["action"] == action)
+        .cloned()
+        .collect()
+}
+
+#[tokio::test]
+async fn url_scope_and_settings_audit() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let ci = Ci::start().await;
+    let (s, _d) = start(&db, &ci, false).await;
+    s.project("shop").await;
+    put_secret(
+        &s,
+        "gh",
+        "ghp_secret_value_4",
+        "ci",
+        &ci.url(),
+        "github:acme/shop:tests.yml",
+    )
+    .await;
+    let base = ci.url();
+    let gh = |url: String, extra: Value| {
+        let mut r = json!({"provider": "github", "url": url, "repository": "acme/shop",
+            "workflow": "tests.yml", "tokenSecretRef": "gh"});
+        for (k, v) in extra.as_object().unwrap() {
+            r[k] = v.clone();
+        }
+        json!({"rerun": r})
+    };
+    for bad in [
+        gh(format!("{base}?x=1"), json!({})),
+        gh(format!("{base}#frag"), json!({})),
+        gh(format!("http://user:pw@{}", ci.addr), json!({})),
+        gh(
+            format!("{base}/repos/acme/shop/actions/runs/1/approve"),
+            json!({}),
+        ),
+        gh(format!("{base}/api/v4"), json!({})),
+        json!({"rerun": {"provider": "gitlab", "url": format!("{base}/sub"), "repository": "g/a", "tokenSecretRef": "gh"}}),
+        json!({"rerun": {"provider": "webhook", "url": format!("{base}/hook?token=1"), "tokenSecretRef": "gh"}}),
+        gh(base.clone(), json!({"workflow": "deploy.yml"})),
+        gh(base.clone(), json!({"repository": "acme/other"})),
+        json!({"rerun": {"provider": "gitlab", "url": base, "repository": "acme/shop", "tokenSecretRef": "gh"}}),
+        json!({"rerun": {"provider": "webhook", "url": format!("{base}/hook"), "tokenSecretRef": "gh"}}),
+        gh(base.clone(), json!({"signingSecretRef": "gh"})),
+    ] {
+        let (st, b) = put_settings(&s, bad.clone()).await;
+        assert_eq!(st, StatusCode::BAD_REQUEST, "{bad}: {b}");
+    }
+    let (st, b) = put_settings(&s, gh(format!("{base}/api/v3"), json!({}))).await;
+    assert!(st.is_success(), "{b}");
+    let (st, b) = put_settings(&s, gh(base.clone(), json!({}))).await;
+    assert!(st.is_success(), "{b}");
+    let (st, b) = put_settings(&s, gh(base.clone(), json!({"ref": "release/1"}))).await;
+    assert!(st.is_success(), "{b}");
+
+    let (_, audit) = s.get("/api/v1/audit?limit=100", ADMIN_TOKEN).await;
+    let changes = audit_items(&audit, "project.settings.rerun");
+    assert_eq!(changes.len(), 3, "{audit}");
+    assert_eq!(changes[0]["detail"]["new"]["ref"], "release/1");
+    assert_eq!(changes[0]["detail"]["old"]["ref"], Value::Null);
+    assert!(!audit.to_string().contains("ghp_secret_value_4"));
+
+    let (id, _) = launch_with_results(&s).await;
+    let (st, b) = s
+        .post(
+            &format!("/api/v1/projects/shop/launches/{id}/rerun"),
+            ADMIN_TOKEN,
+            json!({"mode": "failed"}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{b}");
+    let r = &ci.requests()[0];
+    let sent: Value = serde_json::from_str(&r.body).unwrap();
+    assert_eq!(sent["ref"], "release/1");
+
+    let pid: uuid::Uuid = sqlx::query_scalar("select id from projects where key = 'shop'")
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    fastproof_store::Store::new(db.pool.clone())
+        .merge_project_settings(
+            pid,
+            json!({"rerun": {"provider": "github", "url": base, "repository": "acme/shop",
+                "workflow": "deploy.yml", "tokenSecretRef": "gh"}}),
+        )
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_secs(11)).await;
+    let before = ci.requests().len();
+    let (st, b) = s
+        .post(
+            &format!("/api/v1/projects/shop/launches/{id}/rerun"),
+            ADMIN_TOKEN,
+            json!({"mode": "failed"}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::BAD_GATEWAY, "{b}");
+    assert!(
+        b.to_string()
+            .contains("another provider, repository or workflow"),
+        "{b}"
+    );
+    assert_eq!(ci.requests().len(), before, "the token was not sent");
+}
+
+#[tokio::test]
+async fn permission_readers_and_audit_of_refusals() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let ci = Ci::start().await;
+    let (s, _d) = start(&db, &ci, false).await;
+    s.project("shop").await;
+    s.project("bare").await;
+    put_secret(
+        &s,
+        "gh",
+        "ghp_secret_value_5",
+        "ci",
+        "https://ci.example.com",
+        "github:acme/shop:tests.yml",
+    )
+    .await;
+    let (st, b) = put_settings(
+        &s,
+        json!({"rerun": {"provider": "github", "url": "https://ci.example.com", "repository": "acme/shop",
+            "workflow": "tests.yml", "tokenSecretRef": "gh"}}),
+    )
+    .await;
+    assert!(st.is_success(), "{b}");
+    let (a, _) = launch_with_results(&s).await;
+    let (b2, _) = launch_with_results(&s).await;
+    let path = |id: &str| format!("/api/v1/projects/shop/launches/{id}/rerun");
+
+    let uploader = s.token("up", "uploader", &["shop"]).await;
+    let editor = s.token("ed", "editor", &["shop"]).await;
+    let viewer = s.token("v", "viewer", &["shop"]).await;
+    let (st, b) = s
+        .post(&path(&a), &uploader, json!({"mode": "failed"}))
+        .await;
+    assert_eq!(st, StatusCode::FORBIDDEN, "{b}");
+    let (st, _) = s.post(&path(&a), &viewer, json!({"mode": "failed"})).await;
+    assert_eq!(st, StatusCode::FORBIDDEN);
+    let (_, opts) = s.get("/api/v1/tokens/options", ADMIN_TOKEN).await;
+    assert!(opts.to_string().contains("launches:rerun"), "{opts}");
+
+    let (st, b) = s.post(&path(&a), &editor, json!({"mode": "failed"})).await;
+    assert_eq!(st, StatusCode::BAD_GATEWAY, "{b}");
+    let shown = b.to_string();
+    assert!(
+        !shown.contains("example.com") && !shown.contains("FASTPROOF_EGRESS_ALLOW"),
+        "{shown}"
+    );
+    let (st, b) = s.post(&path(&a), &editor, json!({"mode": "failed"})).await;
+    assert_eq!(st, StatusCode::TOO_MANY_REQUESTS, "{b}");
+
+    let (st, b) = s
+        .post(&path(&b2), ADMIN_TOKEN, json!({"mode": "failed"}))
+        .await;
+    assert_eq!(st, StatusCode::BAD_GATEWAY, "{b}");
+    assert!(
+        b.to_string().contains("ci.example.com"),
+        "admins see why: {b}"
+    );
+
+    let list = |id: String| format!("/api/v1/projects/shop/launches/{id}/reruns");
+    let (_, as_viewer) = s.get(&list(b2.clone()), &viewer).await;
+    let t = as_viewer.to_string();
+    assert!(
+        !t.contains("example.com") && !t.contains("EGRESS") && !t.contains("\"gh\""),
+        "{t}"
+    );
+    assert_eq!(as_viewer["items"][0]["status"], "failed");
+    let (_, as_admin) = s.get(&list(b2.clone()), ADMIN_TOKEN).await;
+    assert!(as_admin.to_string().contains("ci.example.com"));
+
+    let l = s.launch("bare", None).await;
+    let bid = l["id"].as_str().unwrap();
+    let (st, _) = s
+        .post(
+            &format!("/api/v1/projects/bare/launches/{bid}/rerun"),
+            ADMIN_TOKEN,
+            json!({"mode": "failed"}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::CONFLICT);
+
+    let (_, audit) = s.get("/api/v1/audit?limit=200", ADMIN_TOKEN).await;
+    let items = audit_items(&audit, "launch.rerun");
+    let status_of = |scope: &str, status: u64| {
+        items
+            .iter()
+            .filter(|i| i["scope"] == scope && i["detail"]["status"] == status)
+            .count()
+    };
+    assert_eq!(status_of("shop", 429), 1, "{audit}");
+    assert_eq!(status_of("shop", 502), 2, "{audit}");
+    assert_eq!(status_of("bare", 409), 1, "{audit}");
+    let dispatched = items
+        .iter()
+        .find(|i| {
+            i["scope"] == "shop" && i["principal"] != Value::Null && i["detail"]["status"] == 502
+        })
+        .unwrap();
+    assert_eq!(dispatched["detail"]["target"]["workflow"], "tests.yml");
+    assert_eq!(dispatched["detail"]["target"]["repository"], "acme/shop");
+    assert_eq!(dispatched["detail"]["target"]["ref"], "main");
+    assert_eq!(
+        dispatched["detail"]["target"]["origin"],
+        "https://ci.example.com"
+    );
+    assert!(!audit.to_string().contains("ghp_secret_value_5"));
+
+    let (st, b) = s
+        .call(
+            Method::PUT,
+            "/api/v1/projects/shop/secrets/noscope",
+            Some(ADMIN_TOKEN),
+            Some(json!({"value": "x", "purpose": "ci", "origin": "https://ci.example.com"})),
+        )
+        .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "{b}");
+    let (st, _) = s
+        .call(
+            Method::PUT,
+            "/api/v1/projects/shop/secrets/scoped-vcs",
+            Some(ADMIN_TOKEN),
+            Some(json!({"value": "x", "purpose": "vcs", "origin": "https://ci.example.com", "scope": "github:a/b:c"})),
+        )
+        .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn hourly_limit_holds_under_parallel_requests() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let ci = Ci::start().await;
+    let (s, _d) = start(&db, &ci, false).await;
+    s.project("shop").await;
+    let mut ids = Vec::new();
+    for _ in 0..6 {
+        ids.push(
+            s.launch("shop", None).await["id"]
+                .as_str()
+                .unwrap()
+                .parse::<uuid::Uuid>()
+                .unwrap(),
+        );
+    }
+    let pid: uuid::Uuid = sqlx::query_scalar("select id from projects where key = 'shop'")
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "insert into launch_reruns (id, project_id, source_launch_id, external_id, provider, mode, status, requested_by) \
+         select gen_random_uuid(), $1, $2, 'seed-' || g, 'webhook', 'failed', 'failed', 'seed' from generate_series(1, 59) g",
+    )
+    .bind(pid)
+    .bind(ids[0])
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let store = fastproof_store::Store::new(db.pool.clone());
+    let mut tasks = Vec::new();
+    for id in &ids[1..] {
+        let (store, id) = (store.clone(), *id);
+        tasks.push(tokio::spawn(async move {
+            store
+                .rerun_begin(pid, id, "webhook", "failed", "t")
+                .await
+                .unwrap()
+        }));
+    }
+    let mut ok = 0;
+    for t in tasks {
+        if t.await.unwrap().is_ok() {
+            ok += 1;
+        }
+    }
+    assert_eq!(ok, 1, "59 + 1 = 60 reruns, the rest are refused");
 }

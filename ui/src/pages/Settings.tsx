@@ -495,7 +495,7 @@ function IntegrationsForm({ project, settings, canWrite }: { project: string; se
             </SimpleGrid>
           )}
         </Section>
-        <Section title="Rerun in CI" description="Adds Rerun failed and Rerun selected to a launch: FastProof makes a testplan.json and triggers the CI once. The token secret needs purpose ci and the origin of the URL.">
+        <Section title="Rerun in CI" description="Adds Rerun failed and Rerun selected to a launch: FastProof makes a testplan.json and triggers the CI once. The token secret needs purpose ci, the origin of the URL and a scope naming the provider, repository and workflow: changing any of them means writing the secret again. The signing secret (webhook) signs the body with HMAC-SHA256.">
           <Switch
             label="Enabled"
             checked={!!rr}
@@ -525,6 +525,9 @@ function IntegrationsForm({ project, settings, canWrite }: { project: string; se
                 <TextInput label={rr.provider === 'webhook' ? 'Webhook URL' : 'API base URL'} value={rr.url} onChange={(e) => setRr({ ...rr, url: e.currentTarget.value })} error={rrUrlError} data-testid="rerun-url" />
                 <Select label="Token secret" placeholder="Choose a secret" data={secretOptions(names, rr.tokenSecretRef)} value={rr.tokenSecretRef || null} onChange={(v) => setRr({ ...rr, tokenSecretRef: v ?? '' })} clearable={rr.provider === 'webhook'} error={rrTokenError} comboboxProps={{ withinPortal: true }} data-testid="rerun-token" />
               </SimpleGrid>
+              {rr.provider === 'webhook' && (
+                <Select label="Signing secret" description="Signs every call with HMAC-SHA256 (X-FastProof-Signature); the receiver should verify it" placeholder="Choose a secret" data={secretOptions(names, rr.signingSecretRef)} value={rr.signingSecretRef || null} onChange={(v) => setRr({ ...rr, signingSecretRef: v })} clearable comboboxProps={{ withinPortal: true }} data-testid="rerun-signing" />
+              )}
               {rr.provider !== 'webhook' && (
                 <SimpleGrid cols={{ base: 1, sm: rr.provider === 'github' ? 3 : 2 }} spacing="xs">
                   <TextInput label="Repository" placeholder={rr.provider === 'github' ? 'owner/repo' : 'group/app'} value={rr.repository ?? ''} onChange={(e) => setRr({ ...rr, repository: e.currentTarget.value.trim() })} error={rrRepoError} data-testid="rerun-repository" />
@@ -537,7 +540,7 @@ function IntegrationsForm({ project, settings, canWrite }: { project: string; se
         </Section>
         {canWrite && (
           <Group>
-            <Button onClick={() => run({ ...settings, issueTrackers: trackers.map(cleanTracker), vcs, fastmock: fm, rerun: rr }, 'Integrations')} loading={pending} disabled={!valid} data-testid="integrations-save">
+            <Button onClick={() => run({ ...settings, issueTrackers: trackers.map(cleanTracker), vcs, fastmock: fm, rerun: rr && { ...rr, tokenSecretRef: rr.tokenSecretRef || null, signingSecretRef: rr.signingSecretRef || null } }, 'Integrations')} loading={pending} disabled={!valid} data-testid="integrations-save">
               Save
             </Button>
           </Group>
@@ -554,6 +557,7 @@ function Secrets({ project, canWrite }: { project: string; canWrite: boolean }) 
   const [value, setValue] = useState('');
   const [purpose, setPurpose] = useState<SecretPurpose | null>(null);
   const [origin, setOrigin] = useState('');
+  const [scope, setScope] = useState('');
   if (!canWrite) {
     return <EmptyState title="Secrets are managed by project admins" description="Writing and listing secrets needs the settings:write permission." />;
   }
@@ -561,18 +565,20 @@ function Secrets({ project, canWrite }: { project: string; canWrite: boolean }) 
   const valueError = value.length > 8192 ? 'At most 8192 characters' : purpose === 'teams' && value && !/^https:\/\/\S+$/i.test(value.trim()) ? 'The workflow URL: https://… (its origin is bound automatically)' : null;
   const needsOrigin = purpose === 'vcs' || purpose === 'fastmock' || purpose === 'ci';
   const originError = origin && !ORIGIN.test(origin) ? 'An origin such as https://gitlab.example.com' : needsOrigin && !origin ? 'Required for this purpose' : null;
-  const valid = SECRET_NAME.test(name) && value.length > 0 && !valueError && !!purpose && !originError;
+  const scopeError = purpose === 'ci' && !/^(github:[^:\s]+:[^:\s]+|gitlab:[^:\s]+|webhook:https?:\/\/\S+)$/.test(scope) ? 'github:owner/repo:workflow.yml, gitlab:group/project or webhook:<URL>' : null;
+  const valid = SECRET_NAME.test(name) && value.length > 0 && !valueError && !!purpose && !originError && !scopeError;
   const exists = (q.data ?? []).some((s) => s.name === name);
   const submit = () => {
     if (!valid) return;
     write.mutate(
-      { name, value, purpose, origin: origin.trim() || null },
+      { name, value, purpose, origin: origin.trim() || null, scope: purpose === 'ci' ? scope : null },
       {
         onSuccess: () => {
           notifications.show({ color: 'green', message: `Secret ${name} saved` });
           setValue('');
           setName('');
           setOrigin('');
+          setScope('');
         },
         onError: (e) => {
           setValue('');
@@ -594,6 +600,7 @@ function Secrets({ project, canWrite }: { project: string; canWrite: boolean }) 
             <PasswordInput label="Value" value={value} onChange={(e) => setValue(e.currentTarget.value)} error={valueError} autoComplete="new-password" data-testid="secret-value" />
             <Select label="Purpose" placeholder="Choose" data={PURPOSES} value={purpose} onChange={(v) => setPurpose(PURPOSES.find((p) => p.value === v)?.value ?? null)} allowDeselect={false} comboboxProps={{ withinPortal: true }} data-testid="secret-purpose" />
             <TextInput label="Origin" description={needsOrigin ? 'Where the secret is sent, e.g. https://gitlab.example.com' : 'Optional: the only origin it may be sent to'} placeholder="https://gitlab.example.com" value={origin} onChange={(e) => setOrigin(e.currentTarget.value.trim())} error={originError} data-testid="secret-origin" />
+            {purpose === 'ci' && <TextInput label="Scope" description="What the token may be used for. The rerun settings must name exactly this target" placeholder="github:owner/repo:tests.yml" value={scope} onChange={(e) => setScope(e.currentTarget.value.trim())} error={scopeError} data-testid="secret-scope" />}
           </SimpleGrid>
           {exists && (
             <Text size="xs" c="var(--fh-semantic-warning-fg)">

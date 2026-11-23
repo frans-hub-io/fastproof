@@ -944,7 +944,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description Makes a test plan of the failed (or selected) tests and triggers the CI configured in the project settings (`rerun`) with the plan and the external id the new launch must use (`launches:write`). The CI is called once, without retries. The new launch is linked to this one when it starts with that external id. */
+        /** @description Makes a test plan of the failed (or selected) tests and triggers the CI configured in the project settings (`rerun`) with the plan and the external id the new launch must use (`launches:rerun`, held by editor and admin, not by uploader). The CI is called once, without retries. The new launch is linked to this one when it starts with that external id. Every outcome, also a refusal, is written to the audit log (`launch.rerun`). */
         post: operations["integrations_rerun"];
         delete?: never;
         options?: never;
@@ -959,7 +959,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** @description The reruns requested from the launch with the launches they started, and the rerun that started this launch. */
+        /** @description The reruns requested from the launch with the launches they started, and the rerun that started this launch. Callers without `settings:write` get generic error texts and only the pipeline id in `ciRef`, as the CI host and the secret names are settings details. */
         get: operations["integrations_reruns"];
         put?: never;
         post?: never;
@@ -4098,19 +4098,29 @@ export interface components {
             /** @description `github` (Actions `workflow_dispatch`), `gitlab` (pipeline trigger) or `webhook`. */
             provider: string;
             /**
-             * @description The branch or tag the workflow or pipeline runs on (GitHub, GitLab); by default the
-             *     branch of the launch, else `main`.
+             * @description The branch or tag the workflow or pipeline runs on (GitHub, GitLab); `main` when absent.
+             *     It is never taken from the launch, whose branch comes from the uploader.
              */
             ref?: string | null;
             /** @description `owner/repo` (GitHub) or `group/sub/app` (GitLab); not used by a webhook. */
             repository?: string | null;
             /**
+             * @description Webhook only: a secret (purpose `ci`, same scope) used as the key of the HMAC-SHA256
+             *     signature in `X-FastProof-Signature` (see the Rerun guide).
+             */
+            signingSecretRef?: string | null;
+            /**
              * @description A secret with purpose `ci` bound to the origin of `url`: a GitHub token that may
              *     dispatch workflows, a GitLab pipeline trigger token, or an optional bearer token of
-             *     the webhook.
+             *     the webhook. The secret is also bound to the provider, repository and workflow (the
+             *     webhook: its URL) it was written for.
              */
             tokenSecretRef?: string | null;
-            /** @description GitHub API URL (`https://api.github.com`), GitLab base URL, or the webhook URL. */
+            /**
+             * @description GitHub API URL (`https://api.github.com`, or `https://host/api/v3` for GitHub
+             *     Enterprise), GitLab base URL (origin only), or the webhook URL. No user info, query or
+             *     fragment; GitHub and GitLab take no other path.
+             */
             url: string;
             /** @description GitHub: the workflow file name (`tests.yml`) or id. */
             workflow?: string | null;
@@ -4501,6 +4511,8 @@ export interface components {
              *     `smtp` (absent for a secret stored before purposes existed; it must be stored again).
              */
             purpose?: string | null;
+            /** @description For `ci` secrets: the provider, repository and workflow the token may be used for. */
+            scope?: string | null;
             /** Format: date-time */
             updatedAt: string;
             updatedBy?: string | null;
@@ -4522,6 +4534,13 @@ export interface components {
             origin?: string | null;
             /** @description What the secret is for; it is refused for anything else. */
             purpose: components["schemas"]["SecretPurpose"];
+            /**
+             * @description Required for `ci`, refused for the other purposes: what the token may be used for,
+             *     `github:<owner/repo>:<workflow>`, `gitlab:<group/project>` or `webhook:<URL>`. The
+             *     `rerun` settings must name exactly this target; changing the provider, repository or
+             *     workflow needs the secret written again.
+             */
+            scope?: string | null;
             /** @description At most 8 KiB. Never returned by the API. */
             value: string;
         };

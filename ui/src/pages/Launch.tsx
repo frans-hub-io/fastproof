@@ -342,7 +342,7 @@ function Results({ project, launch, counts }: { project: string; launch: Launch;
   const types = useDefectTypeMap(project);
   const items = flatItems(q.data);
   const [selected, setSelected] = useState(-1);
-  const canRerun = useCan('launches:write', project);
+  const canRerun = useCan('launches:rerun', project);
   const reruns = useReruns(project, launch.id);
   const [picking, setPicking] = useState(false);
   const [picked, setPicked] = useState<Set<string>>(() => new Set());
@@ -500,6 +500,7 @@ export default function LaunchPage() {
   const [planOpen, setPlanOpen] = useState(false);
   const [rerunOpen, setRerunOpen] = useState(false);
   const canPlan = useCan('launches:write', key);
+  const canRerunLaunch = useCan('launches:rerun', key);
   const rerunInfo = useReruns(key, id);
   const scope = useEnvironment(key, q.data);
 
@@ -552,7 +553,7 @@ export default function LaunchPage() {
                   <Button component={Link} to={`/p/${key}/compare?b=${l.id}`} variant="default" size="xs" leftSection={<IconGitCompare size={14} />}>
                     Compare
                   </Button>
-                  {canPlan && rerunInfo.data?.configured && l.counts.failed + l.counts.broken > 0 && (
+                  {canRerunLaunch && rerunInfo.data?.configured && l.counts.failed + l.counts.broken > 0 && (
                     <Button variant="default" size="xs" leftSection={<IconRefresh size={14} />} onClick={() => setRerunOpen(true)} data-testid="open-rerun">
                       Rerun failed
                     </Button>

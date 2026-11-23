@@ -207,8 +207,8 @@ export function useSecrets(key: string, enabled = true) {
 export function useWriteSecret(key: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ name, value, purpose, origin }: { name: string; value: string; purpose: SecretPurpose; origin?: string | null }) =>
-      request<unknown>(`${projectPath(key)}/secrets/${enc(name)}`, { method: 'PUT', json: { value, purpose, ...(origin ? { origin } : {}) } }),
+    mutationFn: ({ name, value, purpose, origin, scope }: { name: string; value: string; purpose: SecretPurpose; origin?: string | null; scope?: string | null }) =>
+      request<unknown>(`${projectPath(key)}/secrets/${enc(name)}`, { method: 'PUT', json: { value, purpose, ...(origin ? { origin } : {}), ...(scope ? { scope } : {}) } }),
     onSuccess: () => qc.invalidateQueries({ queryKey: qc2.secrets(key) }),
   });
 }

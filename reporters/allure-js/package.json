@@ -1,0 +1,51 @@
+{
+  "name": "@franshub/fastproof-allure-js",
+  "version": "0.1.0",
+  "description": "Streams Allure JavaScript results (allure-playwright and other allure-js-commons adapters) to FastProof live, with attempts, traceparent and secret masking, while allure-results are still written.",
+  "license": "Apache-2.0",
+  "type": "commonjs",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./playwright": {
+      "types": "./dist/playwright.d.ts",
+      "default": "./dist/playwright.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "test": "tsc -p tsconfig.test.json && node --test build-test/test/*.test.js",
+    "prepack": "npm run build"
+  },
+  "peerDependencies": {
+    "@franshub/fastproof-playwright": ">=0.1.0 <0.2.0",
+    "allure-js-commons": ">=3.0.0 <4",
+    "allure-playwright": ">=3.0.0 <4"
+  },
+  "peerDependenciesMeta": {
+    "allure-playwright": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@franshub/fastproof-playwright": "file:../playwright",
+    "@playwright/test": "1.65.0",
+    "@types/node": "22.20.5",
+    "allure-js-commons": "3.15.0",
+    "allure-playwright": "3.15.0",
+    "typescript": "6.0.3"
+  }
+}

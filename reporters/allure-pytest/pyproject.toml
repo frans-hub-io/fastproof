@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling==1.33.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "fastproof-allure-pytest"
+version = "0.1.0"
+description = "Streams allure-pytest results to FastProof live (attempts, steps, logs, traceparent, masking) while allure-results are still written."
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.9"
+dependencies = ["pytest>=7.0", "allure-pytest>=2.13,<3", "pytest-fastproof>=0.1.0,<0.2"]
+classifiers = [
+  "Framework :: Pytest",
+  "Programming Language :: Python :: 3",
+  "Topic :: Software Development :: Testing",
+]
+
+[project.entry-points.pytest11]
+fastproof_allure_pytest = "fastproof_allure_pytest.plugin"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fastproof_allure_pytest"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

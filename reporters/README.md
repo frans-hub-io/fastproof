@@ -7,6 +7,15 @@ Thin, dependency-free reporters that send test runs to FastProof while they happ
 | `@franshub/fastproof-playwright` | Playwright Test ≥ 1.45 (tested with 1.65.0), Node ≥ 20 | [`playwright/`](playwright) |
 | `pytest-fastproof` | pytest ≥ 7 (tested with 9.2.0), Python ≥ 3.9 (tested on 3.11), xdist and pytest-rerunfailures | [`pytest/`](pytest) |
 
+Allure adapter enhancers keep the Allure adapter and add live streaming, `traceparent`, retries as attempts and
+masking on top (see the docs page "Reporters"):
+
+| Package | Adapter | Directory |
+|---|---|---|
+| `@franshub/fastproof-allure-js` | allure-playwright 3.x, other allure-js-commons adapters | [`allure-js/`](allure-js) |
+| `fastproof-allure-java` | allure-java 3.1.x (JUnit 5, TestNG) | [`allure-java/`](allure-java) |
+| `fastproof-allure-pytest` | allure-pytest 2.x | [`allure-pytest/`](allure-pytest) |
+
 The wire contract (HTTP calls, ordering, idempotency, retries, spool format) is in [PROTOCOL.md](PROTOCOL.md);
 new reporters follow it.
 

@@ -221,5 +221,5 @@ def test_hint_when_results_also_go_to_alluredir(pytester, env):
     )
     with FakeServer(token=TOKEN, logs=True, running=True) as fake:
         env.setenv("FASTPROOF_URL", fake.url)
-        res = pytester.runpytest_inprocess("-p", "no:cacheprovider", "--alluredir", "allure-results", "-k", "test_pass")
+        res = pytester.runpytest_inprocess("-p", "no:cacheprovider", "-p", "no:fastproof_allure_pytest", "-p", "no:allure_pytest", "--alluredir", "allure-results", "-k", "test_pass")
         res.stdout.fnmatch_lines(["*also written to --alluredir*FASTPROOF_ENABLED=false*"])

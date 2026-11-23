@@ -272,6 +272,8 @@ class Client:
         try:
             if self.api.post_logs(self.launch_id, [], retries=0) == "unsupported":
                 self.logs_state = "off"
+                with self._lock:
+                    self._logs = []
             else:
                 self.logs_state = "on"
         except ApiError:

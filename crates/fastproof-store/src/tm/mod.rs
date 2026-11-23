@@ -15,6 +15,7 @@ pub mod identity;
 pub mod import;
 pub mod keys;
 pub mod lookup;
+pub mod people;
 pub mod plans;
 pub mod projection;
 pub mod runs;

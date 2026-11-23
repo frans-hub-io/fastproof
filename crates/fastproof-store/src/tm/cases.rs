@@ -535,7 +535,11 @@ pub async fn prepare_write(
         e => e,
     })?;
     let mut p = Problems::default();
-    let mut body = w.body.clone();
+    let mut body = match (&w.body, current) {
+        (Some(b), _) => b.clone(),
+        (None, Some(c)) => c.body.clone(),
+        (None, None) => CaseBody::default(),
+    };
     markdown("body.description", &mut body.description, l)?;
     markdown("body.preconditions", &mut body.preconditions, l)?;
     let mut walk = StepWalk {
@@ -906,6 +910,25 @@ pub async fn reserve_numbers(
     Ok(last - k + 1)
 }
 
+/// Takes the next case number of a project in a statement of its own on a connection that is
+/// not in a transaction: the project row is locked only for that statement, so concurrent
+/// creates do not wait for each other's transactions. Numbers stay unique; a create that fails
+/// afterwards leaves a gap.
+pub async fn next_number(
+    conn: &mut PgConnection,
+    project_id: Uuid,
+    limits: &TmLimits,
+) -> TmResult<i64> {
+    let seq: i64 = sqlx::query_scalar(
+        "update projects set case_seq = case_seq + 1 where id = $1 returning case_seq",
+    )
+    .bind(project_id)
+    .fetch_one(&mut *conn)
+    .await?;
+    check_case_count(conn, project_id, seq, limits, 1).await?;
+    Ok(seq)
+}
+
 /// Inserts a validated case with its version 1 (all content keys changed), the `allure_id`
 /// key equal to its number when that key is free, the manual identity (unless it comes from
 /// code) and `case.updated`.
@@ -1038,7 +1061,7 @@ fn write_of(snap: &CaseSnapshot) -> CaseWrite {
         name: snap.name.clone(),
         folder_id: snap.folder_id,
         status: Some(snap.status),
-        body: snap.body.clone(),
+        body: Some(snap.body.clone()),
         fields: Some(snap.fields.clone()),
         tags: Some(snap.tags.clone()),
     }
@@ -1609,11 +1632,18 @@ pub struct CaseAttachmentUpload {
 
 impl Store {
     /// Creates a case from the UI or API (`origin = ui`, version 1 with `source = ui`).
+    /// The number is taken after validation, outside the create transaction ([`next_number`]).
     pub async fn create_case(&self, ctx: &CaseCtx<'_>, w: &CaseWrite) -> TmResult<CaseRow> {
-        let mut tx = self.pool.begin().await?;
-        let defs = field_defs(&mut tx, ctx.project_id, false).await?;
-        let snap = prepare_write(&mut tx, ctx, w, None, &defs).await?;
-        let row = create_case_in(&mut tx, ctx, snap, &NewCaseMeta::ui()).await?;
+        let mut conn = self.pool.acquire().await?;
+        let defs = field_defs(&mut conn, ctx.project_id, false).await?;
+        let snap = prepare_write(&mut conn, ctx, w, None, &defs).await?;
+        let n = next_number(&mut conn, ctx.project_id, ctx.limits).await?;
+        let mut tx = sqlx::Connection::begin(&mut *conn).await?;
+        let meta = NewCaseMeta {
+            number: Some((n, true)),
+            ..NewCaseMeta::ui()
+        };
+        let row = create_case_in(&mut tx, ctx, snap, &meta).await?;
         tx.commit().await?;
         Ok(row)
     }

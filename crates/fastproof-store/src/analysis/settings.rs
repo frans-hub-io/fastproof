@@ -68,6 +68,19 @@ pub struct RetentionSettings {
     /// Launches with a manual run older than this many days are deleted; `0` keeps them
     /// forever (they are evidence for quality audits).
     pub manual_days: u32,
+    /// Test case versions: keep at least the newest this many of each case; `0` sets no count.
+    /// With `caseVersionsDays` too, a version is pruned only when it is beyond the count and
+    /// older than the days. Both `0` (the default) keep every version.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub case_versions_keep: u32,
+    /// Test case versions older than this many days are pruned (beyond `caseVersionsKeep`);
+    /// `0` sets no age.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub case_versions_days: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 impl Default for RetentionSettings {
@@ -77,6 +90,8 @@ impl Default for RetentionSettings {
             launches_keep: None,
             keep_important: true,
             manual_days: 0,
+            case_versions_keep: 0,
+            case_versions_days: 0,
         }
     }
 }
@@ -395,6 +410,12 @@ impl ProjectSettings {
         }
         if r.manual_days > 36_500 {
             return Err("retention.manualDays must be 0..=36500".into());
+        }
+        if r.case_versions_keep > 100_000 {
+            return Err("retention.caseVersionsKeep must be 0..=100000".into());
+        }
+        if r.case_versions_days > 36_500 {
+            return Err("retention.caseVersionsDays must be 0..=36500".into());
         }
         self.case_sync.validate()?;
         if self.gates.len() > MAX_SETTINGS_ITEMS || self.notifications.len() > MAX_SETTINGS_ITEMS {

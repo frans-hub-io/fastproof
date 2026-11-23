@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from './console-guard';
 import { MOD, openManualLaunch } from './tm-helpers';
 
 test('a manual run done with the keyboard only, from the first to the last case', async ({ page }) => {
@@ -81,7 +81,8 @@ test('a manual run done with the keyboard only, from the first to the last case'
   await expect(mine.getByRole('cell').nth(7)).toHaveText('0');
 });
 
-test('single-key shortcuts can be turned off; saves retry after a network failure', async ({ page }) => {
+test('single-key shortcuts can be turned off; saves retry after a network failure', async ({ page, consoleGuard }) => {
+  consoleGuard.allow(/status of 503 .*\/run-items\/[^/]+\/steps\//);
   await openManualLaunch(page);
   await page.getByTestId('tab-manual').click();
   await page.getByTestId('continue-testing').click();

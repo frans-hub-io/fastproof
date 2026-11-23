@@ -218,10 +218,12 @@ pub fn case_query(raw: Option<&str>) -> ApiResult<CaseQuery> {
 pub async fn list_cases(
     State(s): State<AppState>,
     auth: Auth,
+    headers: axum::http::HeaderMap,
     P(key): P<String>,
     RawQuery(raw): RawQuery,
 ) -> ApiResult<Json<CaseList>> {
     let p = s.project_for(&auth, &key, &s.perms.cases_read).await?;
+    crate::tm_people::note(&s, &auth, &headers);
     let q = case_query(raw.as_deref())?;
     Ok(Json(s.store.list_cases(p.id, &q).await.map_err(tm_error)?))
 }
@@ -273,10 +275,12 @@ pub struct CaseTreeQuery {
 pub async fn case_tree(
     State(s): State<AppState>,
     auth: Auth,
+    headers: axum::http::HeaderMap,
     P(key): P<String>,
     Q(q): Q<CaseTreeQuery>,
 ) -> ApiResult<Json<CaseTree>> {
     let p = s.project_for(&auth, &key, &s.perms.cases_read).await?;
+    crate::tm_people::note(&s, &auth, &headers);
     if q.parent.as_ref().is_some_and(|v| v.len() > 4096) {
         return Err(ApiError::bad_request("parent has at most 4096 bytes"));
     }
@@ -535,6 +539,7 @@ pub async fn bulk_cases(
     ApiJson(body): ApiJson<CaseBulk>,
 ) -> ApiResult<Json<CaseBulkResult>> {
     let p = s.project_for(&auth, &key, &s.perms.cases_write).await?;
+    crate::tm_rate::admit(&s, &auth)?;
     let _permit = s.guards.heavy(&auth).await?;
     let r = s
         .store

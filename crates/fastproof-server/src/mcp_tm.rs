@@ -234,19 +234,19 @@ pub(crate) const TOOLS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "draft_case_from_result",
-        description: "Create a draft manual test case from a result: the server takes the name, preconditions from fixtures, steps from the step tree and the error; the agent may add notes or replace steps. The case is a draft marked as AI-made for review. Needs cases:write.",
+        description: "Create a draft manual test case from a result: the server takes the name, preconditions from fixtures, steps from the step tree and the error; the agent may add notes or replace steps. The case is a draft marked as AI-made for review. Needs cases:write or ai:propose (the agent role).",
         schema: schema::<DraftFromResultArgs>,
         write: true,
     },
     ToolSpec {
         name: "create_case_draft",
-        description: "Create a draft test case from the agent's text (e.g. from a trace or a requirement), marked as AI-made for review. Needs cases:write.",
+        description: "Create a draft test case from the agent's text (e.g. from a trace or a requirement), marked as AI-made for review. Needs cases:write or ai:propose (the agent role).",
         schema: schema::<CreateDraftArgs>,
         write: true,
     },
     ToolSpec {
         name: "propose_case_update",
-        description: "Propose changes to an existing case against its revision; stored as a pending suggestion that a person accepts or rejects. Nothing is applied. Needs cases:write.",
+        description: "Propose changes to an existing case against its revision; stored as a pending suggestion that a person accepts or rejects. Nothing is applied. Needs cases:write or ai:propose (the agent role).",
         schema: schema::<ProposeArgs>,
         write: true,
     },
@@ -351,6 +351,30 @@ async fn project(
     perm: &franshub_access::Permission,
 ) -> Result<fastproof_store::Project, ToolError> {
     Ok(s.project_for(auth, key, perm).await?)
+}
+
+/// The project when the caller holds one of `perms` there; the denial names the first one.
+pub(crate) async fn project_any(
+    s: &AppState,
+    auth: &Auth,
+    key: &str,
+    perms: &[&franshub_access::Permission],
+) -> Result<fastproof_store::Project, ToolError> {
+    let perm = perms
+        .iter()
+        .find(|p| auth.allowed(p, Some(key)))
+        .or(perms.first())
+        .ok_or_else(|| ToolError("forbidden".into()))?;
+    project(s, auth, key, perm).await
+}
+
+/// Drafts and suggestions: `cases:write` or the agents' `ai:propose`.
+async fn draft_project(
+    s: &AppState,
+    auth: &Auth,
+    key: &str,
+) -> Result<fastproof_store::Project, ToolError> {
+    project_any(s, auth, key, &[&s.perms.cases_write, &s.perms.ai_propose]).await
 }
 
 async fn run_tool(s: &AppState, name: &str, a: &Value, auth: &Auth) -> ToolResult {
@@ -499,7 +523,9 @@ async fn run_tool(s: &AppState, name: &str, a: &Value, auth: &Auth) -> ToolResul
         }
         "draft_case_from_result" => {
             let x: DraftFromResultArgs = args(a)?;
-            let p = project(s, auth, &x.project, &s.perms.cases_write).await?;
+            let p = draft_project(s, auth, &x.project).await?;
+            franshub_auth::require(auth, &s.perms.launches_read, Some(&p.key))
+                .map_err(ToolError::from)?;
             let agent = agent_of(&x.agent)?;
             let d = s
                 .store
@@ -557,7 +583,7 @@ async fn run_tool(s: &AppState, name: &str, a: &Value, auth: &Auth) -> ToolResul
                 name: x.name.clone().unwrap_or_else(|| d.summary.name.clone()),
                 folder_id: x.folder_id,
                 status: Some(CaseStatus::Draft),
-                body,
+                body: Some(body),
                 fields: None,
                 tags: x.tags.clone(),
             };
@@ -577,18 +603,18 @@ async fn run_tool(s: &AppState, name: &str, a: &Value, auth: &Auth) -> ToolResul
         }
         "create_case_draft" => {
             let x: CreateDraftArgs = args(a)?;
-            let p = project(s, auth, &x.project, &s.perms.cases_write).await?;
+            let p = draft_project(s, auth, &x.project).await?;
             let agent = agent_of(&x.agent)?;
             let w = CaseWrite {
                 name: x.name.clone(),
                 folder_id: x.folder_id,
                 status: Some(CaseStatus::Draft),
-                body: CaseBody {
+                body: Some(CaseBody {
                     description: x.description.clone(),
                     preconditions: x.preconditions.clone(),
                     steps: steps_of(&x.steps, 1),
                     links: Vec::new(),
-                },
+                }),
                 fields: field_values(&x.fields)?,
                 tags: x.tags.clone(),
             };
@@ -608,7 +634,7 @@ async fn run_tool(s: &AppState, name: &str, a: &Value, auth: &Auth) -> ToolResul
         }
         "propose_case_update" => {
             let x: ProposeArgs = args(a)?;
-            let p = project(s, auth, &x.project, &s.perms.cases_write).await?;
+            let p = draft_project(s, auth, &x.project).await?;
             let agent = agent_of(&x.agent)?;
             if x.rationale.trim().is_empty() || x.rationale.len() > MAX_RATIONALE {
                 return Err(ToolError(format!(

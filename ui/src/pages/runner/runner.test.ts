@@ -1,10 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { editorAction, runnerAction } from './keymap';
+import { RUNNER_HELP, editorAction, runnerAction } from './keymap';
 import { SaveQueue, type QueueSnapshot } from './saveQueue';
 
 const on = { singleKeys: true, typing: false };
 
 describe('runner keyboard map', () => {
+  it('gives every help row a unique key', () => {
+    const keys = RUNNER_HELP.map((r) => r.keys.join(' '));
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+
   it('maps every key of the spec', () => {
     const cases: [Parameters<typeof runnerAction>[0], string][] = [
       [{ key: 'j' }, 'nextStep'],

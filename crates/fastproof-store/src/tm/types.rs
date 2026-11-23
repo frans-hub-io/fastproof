@@ -60,6 +60,11 @@ pub struct TmLimits {
     pub max_tags: usize,
     /// Bytes of a name (case, folder, field, plan).
     pub max_name_bytes: usize,
+    /// Writes that multiply work (plan launches, plan item changes, bulk case changes, ...)
+    /// per caller and minute on one replica.
+    pub multiplying_writes_per_minute: usize,
+    /// Launches with an open manual run that one caller started from plans, per project.
+    pub max_open_plan_launches: usize,
 }
 
 impl Default for TmLimits {
@@ -86,6 +91,8 @@ impl Default for TmLimits {
             max_import_cell_bytes: 65_536,
             max_tags: 50,
             max_name_bytes: 500,
+            multiplying_writes_per_minute: 30,
+            max_open_plan_launches: 20,
         }
     }
 }
@@ -405,7 +412,9 @@ pub struct CaseWrite {
     pub folder_id: Option<Uuid>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<CaseStatus>,
-    pub body: CaseBody,
+    /// Absent: an empty body on `POST`, the current body on `PUT`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<CaseBody>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fields: Option<BTreeMap<String, FieldValue>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -963,8 +972,18 @@ pub struct StartPlanLaunch {
     pub environment: Option<BTreeMap<String, String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attributes: Option<Vec<PlanLaunchAttribute>>,
+    /// Absent: `none`.
+    #[serde(default = "PlanAssign::default_none")]
     pub assign: PlanAssign,
+    /// Absent: `false`.
+    #[serde(default)]
     pub include_automated: bool,
+}
+
+impl PlanAssign {
+    fn default_none() -> Self {
+        Self::None
+    }
 }
 
 /// A launch started from a plan, with the CI hand-off.
@@ -1174,7 +1193,15 @@ pub struct RunDefect {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ManualClose {
+    /// Absent: `skipped`.
+    #[serde(default = "ManualClose::default_untested_to")]
     pub untested_to: ManualUntestedTo,
+}
+
+impl ManualClose {
+    fn default_untested_to() -> ManualUntestedTo {
+        ManualUntestedTo::Skipped
+    }
 }
 
 /// Progress of a job.
@@ -1244,6 +1271,18 @@ pub struct ImportPreview {
     pub steps_layout: StepsLayout,
 }
 
+impl ImportMode {
+    fn default_create_only() -> Self {
+        Self::CreateOnly
+    }
+}
+
+impl UnknownFieldValues {
+    fn default_skip() -> Self {
+        Self::Skip
+    }
+}
+
 /// Options of a file import.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1253,9 +1292,13 @@ pub struct ImportOptions {
     pub mapping: Option<BTreeMap<String, String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub steps_layout: Option<StepsLayout>,
+    /// Absent: `createOnly`.
+    #[serde(default = "ImportMode::default_create_only")]
     pub mode: ImportMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_folder_id: Option<Uuid>,
+    /// Absent: `skip`.
+    #[serde(default = "UnknownFieldValues::default_skip")]
     pub unknown_field_values: UnknownFieldValues,
     /// Status of imported cases (`draft` or `active`); absent: the status the source maps, else
     /// `active`. A case whose required fields have no value is imported as `draft`.
@@ -1278,6 +1321,8 @@ pub struct TestOpsImport {
     #[schema(write_only)]
     pub token: String,
     pub remote_project_id: i64,
+    /// Absent: `createOnly`.
+    #[serde(default = "ImportMode::default_create_only")]
     pub mode: ImportMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_folder_id: Option<Uuid>,

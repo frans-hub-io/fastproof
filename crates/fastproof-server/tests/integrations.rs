@@ -1502,6 +1502,7 @@ async fn mcp_tools_over_http() {
             "get_result",
             "get_test_plan",
             "launch_failures",
+            "list_defect_types",
             "list_launches",
             "list_projects",
             "list_test_plans",

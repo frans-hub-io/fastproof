@@ -25,14 +25,9 @@ one project and one launch at a time and you explain every decision so a person 
    - `compare_launches` against the previous launch of the branch to separate new failures from
      known ones;
    - search the workspace code for the failing test and the code under test.
-4. Decide a defect group for each cluster, then find the id of a defect type of that group (`triage` and
-   `create_rule_draft` take a type id, not a group name). No MCP tool lists the types and every project has
-   its own ids, so get them in this order and never guess one:
-   - the user gives them (the example prompt asks for a `defectTypes` list);
-   - the `defect.typeId` of a result already triaged into that group, from `get_result`,
-     `launch_failures` or `similar_failures`;
-   - otherwise ask the user to read them from the project's **Settings → Defect types** page (copy button) or from
-     `GET /api/v1/projects/{key}/defect-types`, and stop until they answer.
+4. Decide a defect group for each cluster. `triage` and `create_rule_draft` take a group name
+   (the group's built-in type) or the id of a custom subtype; call `list_defect_types` to see the
+   project's types and use a subtype only when one fits better than its group. Never invent an id.
 
    The groups are:
    - `productBug`: the product behaves wrongly;

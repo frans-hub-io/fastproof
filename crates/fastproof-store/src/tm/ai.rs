@@ -7,7 +7,7 @@
 
 use uuid::Uuid;
 
-use super::cases::{CaseCtx, NewCaseMeta, apply_patch, create_case_in, prepare_write};
+use super::cases::{CaseCtx, NewCaseMeta, apply_patch, create_case_in, next_number, prepare_write};
 use super::fields::field_defs;
 use super::versions::snapshot_of;
 use super::{
@@ -56,9 +56,11 @@ impl Store {
     pub async fn create_ai_case(&self, ctx: &CaseCtx<'_>, w: &CaseWrite) -> TmResult<CaseRow> {
         let mut w = w.clone();
         w.status = Some(CaseStatus::Draft);
-        let mut tx = self.pool.begin().await?;
-        let defs = field_defs(&mut tx, ctx.project_id, true).await?;
-        let snap = prepare_write(&mut tx, ctx, &w, None, &defs).await?;
+        let mut conn = self.pool.acquire().await?;
+        let defs = field_defs(&mut conn, ctx.project_id, true).await?;
+        let snap = prepare_write(&mut conn, ctx, &w, None, &defs).await?;
+        let n = next_number(&mut conn, ctx.project_id, ctx.limits).await?;
+        let mut tx = sqlx::Connection::begin(&mut *conn).await?;
         let meta = NewCaseMeta {
             origin: CaseOrigin::Ai,
             source: VersionSource::Ai,
@@ -66,7 +68,7 @@ impl Store {
             ai_unreviewed: true,
             automated: false,
             code_hash: None,
-            number: None,
+            number: Some((n, true)),
         };
         let row = create_case_in(&mut tx, ctx, snap, &meta).await?;
         tx.commit().await?;
@@ -113,7 +115,7 @@ impl Store {
             name: snap.name,
             folder_id: snap.folder_id,
             status: Some(snap.status),
-            body: snap.body,
+            body: Some(snap.body),
             fields: Some(snap.fields),
             tags: Some(snap.tags),
         };

@@ -129,7 +129,9 @@ struct TriageArgs {
     result_ids: Option<Vec<Uuid>>,
     launch_id: Option<Uuid>,
     fingerprint: Option<String>,
-    /// Defect type id (see the project's defect types).
+    /// Defect type: an id from `list_defect_types`, or a group name (`productBug`,
+    /// `automationBug`, `systemIssue`, `noDefect`, `toInvestigate`; `product_bug` works too) for
+    /// the group's built-in type.
     defect_type_id: Option<String>,
     comment: Option<String>,
     /// Issue link: a URL, or a key the project's issue trackers turn into a URL.
@@ -146,8 +148,42 @@ struct RuleDraftArgs {
     /// `{messageRegex?, traceRegex?, testCaseId?, fingerprint?, environment?, statuses?}`.
     #[serde(rename = "match")]
     matcher: Value,
-    /// `{defectTypeId?, comment?, issue?, mute?: {days?}, accept?}`.
+    /// `{defectTypeId?, comment?, issue?, mute?: {days?}, accept?}`; `defectTypeId` is an id
+    /// from `list_defect_types` or a group name such as `productBug`.
     action: Value,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProjectOnlyArgs {
+    project: String,
+}
+
+/// A defect type given to `triage` or `create_rule_draft`: a UUID as is, or a built-in group
+/// name (any case, `_` ignored) as the id of the group's built-in type.
+async fn defect_type_ref(
+    s: &AppState,
+    p: &fastproof_store::Project,
+    v: &str,
+) -> Result<String, ToolError> {
+    let v = v.trim();
+    if Uuid::parse_str(v).is_ok() {
+        return Ok(v.to_string());
+    }
+    let norm = |x: &str| x.replace('_', "").to_ascii_lowercase();
+    let want = norm(v);
+    s.store
+        .defect_types(p.id)
+        .await?
+        .into_iter()
+        .find(|t| t.built_in && norm(&t.group) == want)
+        .map(|t| t.id.to_string())
+        .ok_or_else(|| {
+            ToolError(format!(
+                "unknown defect type {:?}: give an id from list_defect_types or a group: productBug, automationBug, systemIssue, noDefect, toInvestigate",
+                v.chars().take(100).collect::<String>()
+            ))
+        })
 }
 
 pub(crate) struct ToolSpec {
@@ -229,6 +265,12 @@ const TOOLS: &[ToolSpec] = &[
         write: false,
     },
     ToolSpec {
+        name: "list_defect_types",
+        description: "Defect types of a project (built-in groups first, then custom subtypes): id, group, name, shortName, builtIn. triage and create_rule_draft take an id from here or a group name. Needs results:triage.",
+        schema: schema::<ProjectOnlyArgs>,
+        write: false,
+    },
+    ToolSpec {
         name: "triage",
         description: "Set the defect type, comment, issue link or mute of results or of a whole failure cluster. Recorded as AI triage and audited. Needs results:triage.",
         schema: schema::<TriageArgs>,
@@ -236,7 +278,7 @@ const TOOLS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "create_rule_draft",
-        description: "Create a disabled triage rule for people to review and enable; audited as AI-created. Needs rules:write.",
+        description: "Create a disabled triage rule for people to review and enable; audited as AI-created. Needs rules:write or ai:propose (the agent role).",
         schema: schema::<RuleDraftArgs>,
         write: true,
     },
@@ -449,11 +491,32 @@ impl McpServer {
                 let m = fastmock::interactions(s, &p, x.result_id, x.attempt).await?;
                 Ok(serde_json::to_value(m).unwrap_or_default())
             }
+            "list_defect_types" => {
+                let x: ProjectOnlyArgs = args(a)?;
+                let p = self
+                    .project(auth, &x.project, &s.perms.results_triage)
+                    .await?;
+                let items: Vec<Value> = s
+                    .store
+                    .defect_types(p.id)
+                    .await?
+                    .into_iter()
+                    .map(|t| {
+                        json!({"id": t.id, "group": t.group, "name": t.name, "shortName": t.short_name,
+                            "builtIn": t.built_in})
+                    })
+                    .collect();
+                Ok(json!({ "items": items }))
+            }
             "triage" => {
                 let x: TriageArgs = args(a)?;
                 let p = self
                     .project(auth, &x.project, &s.perms.results_triage)
                     .await?;
+                let defect_type_id = match &x.defect_type_id {
+                    Some(v) => Some(defect_type_ref(s, &p, v).await?),
+                    None => None,
+                };
                 let ids = x.result_ids.clone().unwrap_or_default();
                 if ids.len() > MAX_TRIAGE_IDS {
                     return Err(ToolError(format!("at most {MAX_TRIAGE_IDS} resultIds")));
@@ -487,7 +550,7 @@ impl McpServer {
                     result_ids: x.result_ids,
                     launch_id: x.launch_id,
                     fingerprint: x.fingerprint,
-                    defect_type_id: x.defect_type_id,
+                    defect_type_id,
                     comment: x.comment,
                     issue,
                     mute: x.mute,
@@ -506,11 +569,26 @@ impl McpServer {
             }
             "create_rule_draft" => {
                 let x: RuleDraftArgs = args(a)?;
-                let p = self.project(auth, &x.project, &s.perms.rules_write).await?;
+                let p = crate::mcp_tm::project_any(
+                    s,
+                    auth,
+                    &x.project,
+                    &[&s.perms.rules_write, &s.perms.ai_propose],
+                )
+                .await?;
                 if x.name.trim().is_empty() || x.name.len() > 200 {
                     return Err(ToolError("name must have 1 to 200 bytes".into()));
                 }
-                let rule = json!({"name": x.name, "enabled": false, "match": x.matcher, "action": x.action});
+                let mut action = x.action;
+                if let Some(v) = action.get("defectTypeId").and_then(Value::as_str) {
+                    if v.len() > 200 {
+                        return Err(ToolError("action.defectTypeId: at most 200 bytes".into()));
+                    }
+                    let id = defect_type_ref(s, &p, v).await?;
+                    action["defectTypeId"] = Value::String(id);
+                }
+                let rule =
+                    json!({"name": x.name, "enabled": false, "match": x.matcher, "action": action});
                 if rule.to_string().len() > 16 * 1024 {
                     return Err(ToolError("the rule is larger than 16 KiB".into()));
                 }

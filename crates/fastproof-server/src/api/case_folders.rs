@@ -164,7 +164,10 @@ pub async fn delete_case_folder(
 ) -> ApiResult<Json<CaseFolderDeleted>> {
     let p = s.project_for(&auth, &key, &s.perms.cases_write).await?;
     let _permit = match q.mode {
-        Some(_) => Some(s.guards.heavy(&auth).await?),
+        Some(_) => {
+            crate::tm_rate::admit(&s, &auth)?;
+            Some(s.guards.heavy(&auth).await?)
+        }
         None => None,
     };
     let d = s

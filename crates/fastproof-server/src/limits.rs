@@ -176,6 +176,10 @@ pub struct Guards {
     heavy_callers: Counts,
     heavy: Arc<Semaphore>,
     spools: Arc<Semaphore>,
+    /// Test-management writes that multiply work, per caller (`crate::tm_rate`).
+    pub tm_writes: crate::tm_rate::WriteRate,
+    /// When test-management users were last recorded (`crate::tm_people`).
+    pub tm_people: crate::tm_people::Noted,
 }
 
 impl Guards {
@@ -188,6 +192,8 @@ impl Guards {
             heavy_callers: Arc::default(),
             heavy: Arc::new(Semaphore::new(heavy_slots.max(1))),
             spools: Arc::new(Semaphore::new(settings.max_spools.max(1))),
+            tm_writes: crate::tm_rate::WriteRate::default(),
+            tm_people: crate::tm_people::Noted::default(),
         }
     }
 

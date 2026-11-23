@@ -237,6 +237,101 @@ fn qase_json() {
     );
 }
 
+fn qase(doc: &str) -> Result<(Vec<ImportedCase>, Vec<RowError>), ImportError> {
+    parse_all(Format::QaseJson, doc.as_bytes(), &ParseOptions::default())
+}
+
+fn invalid(r: Result<(Vec<ImportedCase>, Vec<RowError>), ImportError>) -> String {
+    match r {
+        Err(ImportError::Invalid(m)) => m,
+        other => panic!("not invalid: {other:?}"),
+    }
+}
+
+/// The streamed Qase JSON reader: key order, root shapes and limits.
+#[test]
+fn qase_json_streaming_rules() {
+    let (cases, _) = qase(r#"[{"id": 1, "title": "A"}, {"id": 2, "title": "B"}]"#).unwrap();
+    assert_eq!(cases.len(), 2);
+    assert_eq!(cases[1].keys[0].value, "2");
+
+    let (cases, _) = qase(
+        r#"{"suites_flat": [{"id": 5, "title": "Top"}, {"id": 6, "title": "Leaf", "parent_id": 5}],
+            "cases": [{"id": 1, "title": "A", "suite_id": 6}]}"#,
+    )
+    .unwrap();
+    assert_eq!(cases[0].folder, vec!["Top", "Leaf"]);
+    let m = invalid(qase(
+        r#"{"cases": [{"id": 1, "title": "A", "suite_id": 6}], "suiteList": [{"id": 6, "title": "Leaf"}]}"#,
+    ));
+    assert!(m.contains("suites_flat"), "{m}");
+    let (cases, _) =
+        qase(r#"{"cases": [{"id": 1, "title": "A"}], "suiteList": [{"id": 6, "title": "Leaf"}]}"#)
+            .unwrap();
+    assert!(cases[0].folder.is_empty());
+
+    let m = invalid(qase(
+        r#"{"cases": [{"id": 1, "title": "A"}], "code": "LATE"}"#,
+    ));
+    assert!(m.contains("code"), "{m}");
+    let (cases, _) =
+        qase(r#"{"project_code": "P", "cases": [{"id": 1, "title": "A"}], "code": "P"}"#).unwrap();
+    assert_eq!(cases[0].keys[0].value, "P-1");
+    let m = invalid(qase(
+        r#"{"suites": [{"cases": [{"id": 4, "title": "A"}]}], "code": "C"}"#,
+    ));
+    assert!(m.contains("code"), "{m}");
+
+    let (cases, _) = qase(
+        r#"{"status": true, "result": {"total": 1, "entities": [{"id": 1, "title": "E"}]}, "cases": [{"id": 2, "title": "C"}]}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        cases.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+        vec!["E"]
+    );
+
+    let (cases, _) = qase(
+        r#"{"suites": [{"suites": [{"cases": [{"id": 1, "title": "Deep"}], "title": "Inner"}], "title": 7}]}"#,
+    )
+    .unwrap();
+    assert_eq!(cases[0].folder, vec!["7", "Inner"]);
+
+    assert!(invalid(qase(r#"{"suites": null}"#)).contains("no suites or cases"));
+    assert!(invalid(qase("42")).contains("no suites or cases"));
+    assert!(qase(r#"{"suites": []}"#).unwrap().0.is_empty());
+    assert!(invalid(qase(r#"{"cases": []} x"#)).contains("invalid JSON"));
+    assert!(invalid(qase(r#"{"cases": [{"id": 1"#)).contains("invalid JSON"));
+
+    let long = format!(
+        r#"{{"cases": [{{"id": 1, "title": "{}"}}]}}"#,
+        "x".repeat(65_536 * 6 + 1)
+    );
+    assert!(matches!(
+        qase(&long),
+        Err(ImportError::Limit {
+            limit: "maxImportCellBytes",
+            max: 65_536
+        })
+    ));
+    let small = ParseOptions {
+        limits: ParseLimits {
+            max_rows: 2,
+            ..ParseLimits::default()
+        },
+        ..ParseOptions::default()
+    };
+    let three =
+        r#"{"cases": [{"id": 1, "title": "A"}, {"id": 2, "title": "B"}, {"id": 3, "title": "C"}]}"#;
+    assert!(matches!(
+        parse_all(Format::QaseJson, three.as_bytes(), &small),
+        Err(ImportError::Limit {
+            limit: "maxImportRows",
+            max: 2
+        })
+    ));
+}
+
 #[test]
 fn testops_csv() {
     let (cases, errors) = run(Format::TestopsCsv, "testops-tom.csv");

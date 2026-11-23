@@ -7365,7 +7365,7 @@
         "tags": [
           "runs"
         ],
-        "description": "Principals to assign run items to: users and managed tokens with `runs:execute` in the project (from the role bindings; members of a bound group are not known until they sign in) and the names already used as assignees or executors in the project. Sorted by name, at most 100. Assignees are free text; names that are not in this list are allowed.",
+        "description": "Principals to assign run items to: users and managed tokens with `runs:execute` in the project (from the role bindings), members of bound groups who opened test management in the last 180 days (with the groups of their last sign-in; members who never signed in are not known), and the names already used as assignees or executors in the project. `display` is the `name` claim of the identity provider when known. `q` matches the name or the display name. Sorted by name, at most 100. Assignees are free text; names that are not in this list are allowed.",
         "operationId": "list_project_people",
         "parameters": [
           {
@@ -11477,9 +11477,6 @@
       "CaseExportRequest": {
         "type": "object",
         "description": "Body of `POST /cases/exports`.",
-        "required": [
-          "format"
-        ],
         "properties": {
           "attachments": {
             "type": "boolean",
@@ -11497,7 +11494,7 @@
           },
           "format": {
             "type": "string",
-            "description": "`zip`: `cases.ndjson`, `cases.csv` and `attachments/`."
+            "description": "`zip` (the default and only value): `cases.ndjson`, `cases.csv` and `attachments/`."
           }
         },
         "additionalProperties": false
@@ -12821,12 +12818,19 @@
         "type": "object",
         "description": "Body of `POST /cases` and `PUT /cases/{n}`.",
         "required": [
-          "name",
-          "body"
+          "name"
         ],
         "properties": {
           "body": {
-            "$ref": "#/components/schemas/CaseBody"
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CaseBody",
+                "description": "Absent: an empty body on `POST`, the current body on `PUT`."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "fields": {
             "type": [
@@ -14189,9 +14193,7 @@
         "type": "object",
         "description": "Options of a file import.",
         "required": [
-          "format",
-          "mode",
-          "unknownFieldValues"
+          "format"
         ],
         "properties": {
           "format": {
@@ -14210,7 +14212,8 @@
             }
           },
           "mode": {
-            "$ref": "#/components/schemas/ImportMode"
+            "$ref": "#/components/schemas/ImportMode",
+            "description": "Absent: `createOnly`."
           },
           "status": {
             "oneOf": [
@@ -14241,7 +14244,8 @@
             "format": "uuid"
           },
           "unknownFieldValues": {
-            "$ref": "#/components/schemas/UnknownFieldValues"
+            "$ref": "#/components/schemas/UnknownFieldValues",
+            "description": "Absent: `skip`."
           }
         },
         "additionalProperties": false
@@ -15357,12 +15361,10 @@
       "ManualClose": {
         "type": "object",
         "description": "Body of `POST /launches/{id}/manual/close`.",
-        "required": [
-          "untestedTo"
-        ],
         "properties": {
           "untestedTo": {
-            "$ref": "#/components/schemas/ManualUntestedTo"
+            "$ref": "#/components/schemas/ManualUntestedTo",
+            "description": "Absent: `skipped`."
           }
         },
         "additionalProperties": false
@@ -18080,6 +18082,20 @@
         "type": "object",
         "description": "How long raw results are kept.",
         "properties": {
+          "caseVersionsDays": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Test case versions older than this many days are pruned (beyond `caseVersionsKeep`);\n`0` sets no age.",
+            "default": 0,
+            "minimum": 0
+          },
+          "caseVersionsKeep": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Test case versions: keep at least the newest this many of each case; `0` sets no count.\nWith `caseVersionsDays` too, a version is pruned only when it is beyond the count and\nolder than the days. Both `0` (the default) keep every version.",
+            "default": 0,
+            "minimum": 0
+          },
           "keepImportant": {
             "type": "boolean",
             "description": "Never delete launches marked important.",
@@ -19142,13 +19158,12 @@
         "type": "object",
         "description": "Body of `POST /test-plans/{id}/launches`.",
         "required": [
-          "name",
-          "assign",
-          "includeAutomated"
+          "name"
         ],
         "properties": {
           "assign": {
-            "$ref": "#/components/schemas/PlanAssign"
+            "$ref": "#/components/schemas/PlanAssign",
+            "description": "Absent: `none`."
           },
           "attributes": {
             "type": [
@@ -19178,7 +19193,8 @@
             ]
           },
           "includeAutomated": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "Absent: `false`."
           },
           "name": {
             "type": "string"
@@ -19441,15 +19457,15 @@
           "source",
           "baseUrl",
           "token",
-          "remoteProjectId",
-          "mode"
+          "remoteProjectId"
         ],
         "properties": {
           "baseUrl": {
             "type": "string"
           },
           "mode": {
-            "$ref": "#/components/schemas/ImportMode"
+            "$ref": "#/components/schemas/ImportMode",
+            "description": "Absent: `createOnly`."
           },
           "remoteProjectId": {
             "type": "integer",

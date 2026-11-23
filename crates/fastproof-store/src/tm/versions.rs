@@ -1,6 +1,9 @@
 //! Case versions: a full zstd snapshot (`codec.rs`) per content change, with the content keys
 //! that changed, listed newest first; restoring an old version writes a new one
-//! (`source = restore`).
+//! (`source = restore`). Old versions are pruned per project by the retention settings
+//! `caseVersionsKeep` / `caseVersionsDays` ([`Store::prune_case_versions`]).
+
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 use sqlx::{PgConnection, Row};
@@ -239,4 +242,75 @@ impl Store {
         tx.commit().await?;
         Ok(row)
     }
+
+    /// Deletes case versions beyond each project's retention (`retention.caseVersionsKeep`,
+    /// `retention.caseVersionsDays`; projects with neither are skipped), walking cases by id
+    /// in chunks of 500 and deleting at most `batch` versions per statement, until `budget`
+    /// is spent (the next run goes on). Never deleted: the current version of a case, versions
+    /// a run item or an earlier execution was run against, and on cases made from code the
+    /// newest version that was not written by code (code sync checks for it). Returns the
+    /// number of versions deleted.
+    pub async fn prune_case_versions(&self, budget: Duration, batch: i64) -> anyhow::Result<u64> {
+        const CHUNK: i64 = 500;
+        let started = Instant::now();
+        let mut deleted = 0u64;
+        for (project_id, _, settings) in self.all_project_settings().await? {
+            let r = &settings.retention;
+            if r.case_versions_keep == 0 && r.case_versions_days == 0 {
+                continue;
+            }
+            let mut after = Uuid::nil();
+            loop {
+                if started.elapsed() > budget {
+                    return Ok(deleted);
+                }
+                let ids: Vec<Uuid> = sqlx::query_scalar(
+                    "select id from cases where project_id = $1 and id > $2 order by id limit $3",
+                )
+                .bind(project_id)
+                .bind(after)
+                .bind(CHUNK)
+                .fetch_all(&self.pool)
+                .await?;
+                let Some(last) = ids.last() else {
+                    break;
+                };
+                after = *last;
+                loop {
+                    let n = sqlx::query(PRUNE_SQL)
+                        .bind(&ids)
+                        .bind(project_id)
+                        .bind(r.case_versions_keep as i32)
+                        .bind(r.case_versions_days as i32)
+                        .bind(batch.max(1))
+                        .execute(&self.pool)
+                        .await?
+                        .rows_affected();
+                    deleted += n;
+                    if (n as i64) < batch.max(1) || started.elapsed() > budget {
+                        break;
+                    }
+                }
+                if (ids.len() as i64) < CHUNK {
+                    break;
+                }
+            }
+        }
+        Ok(deleted)
+    }
 }
+
+/// One bounded delete of prunable versions of a chunk of cases (`$1` ids, `$2` project,
+/// `$3` keep, `$4` days, `$5` batch).
+const PRUNE_SQL: &str = "with d as (\
+       select v.case_id, v.version from cases c join case_versions v on v.case_id = c.id \
+       where c.id = any($1) and c.project_id = $2 and v.version < c.version \
+         and ($3 = 0 or v.version <= c.version - $3) \
+         and ($4 = 0 or v.created_at < now() - make_interval(days => $4)) \
+         and not exists (select 1 from run_items r where r.case_id = v.case_id and r.case_version = v.version) \
+         and not exists (select 1 from run_items r join run_item_executions e on e.run_item_id = r.id \
+           where r.case_id = v.case_id and e.case_version = v.version) \
+         and not (c.origin = 'code' and v.source <> 'code' and v.version = \
+           (select max(w.version) from case_versions w where w.case_id = v.case_id and w.source <> 'code')) \
+       limit $5) \
+     delete from case_versions v using d where v.case_id = d.case_id and v.version = d.version";

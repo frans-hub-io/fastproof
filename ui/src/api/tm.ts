@@ -16,7 +16,8 @@ export type CaseLink = S['CaseLink'];
 export type CaseBody = S['CaseBody'];
 export type CaseStepHtml = S['CaseStepHtml'];
 export type CaseHtml = S['CaseHtml'];
-export type CaseWrite = S['CaseWrite'];
+/** `POST /cases`, `PUT /cases/{n}`. The server takes `body` as optional; the UI always sends the whole body. */
+export type CaseWrite = Omit<S['CaseWrite'], 'body'> & { body: S['CaseBody'] };
 export type FieldValue = S['FieldValue'];
 export type CasePatch = S['CasePatch'];
 export type LastResult = S['LastResult'];

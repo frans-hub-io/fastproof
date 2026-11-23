@@ -452,6 +452,17 @@ pub fn case_jobs(sch: &mut Scheduler) -> anyhow::Result<()> {
         case_backfill(&s, Duration::from_secs(50)).await?;
         Ok(())
     })?;
+    sch.register("cases.versions.prune", "1h", |s: AppState| async move {
+        let n = s
+            .store
+            .prune_case_versions(Duration::from_secs(300), 1000)
+            .await?;
+        if n > 0 {
+            tracing::info!(versions = n, "case versions pruned");
+        }
+        s.store.prune_people().await?;
+        Ok(())
+    })?;
     Ok(())
 }
 

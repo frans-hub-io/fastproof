@@ -16,7 +16,7 @@ secret storage):
     {
       "type": "promptString",
       "id": "fastproof-token",
-      "description": "FastProof API token (viewer to read, editor to triage)",
+      "description": "FastProof API token (viewer to read, agent to triage and draft)",
       "password": true
     }
   ],
@@ -66,15 +66,17 @@ Copy the `.vscode` and `.github` folders into your repository and adjust the URL
 | `flaky_tests` | Flaky tests of recent launches | `launches:read` |
 | `compare_launches` | New failures, fixed, still failing, new and missing tests between two launches | `launches:read` |
 | `fastmock_interactions` | Requests the project's FastMock answered during an attempt | `launches:read` |
+| `list_defect_types` | The project's defect types: `id`, `group`, `name`, `shortName`, `builtIn` (built-in groups first) | `results:triage` |
 | `triage` | Set the defect type, comment, issue or mute of results or a whole cluster | `results:triage` |
-| `create_rule_draft` | Create a disabled triage rule for people to review and enable; the audit log records it as AI-created (`"source": "ai"`) | `rules:write` |
+| `create_rule_draft` | Create a disabled triage rule for people to review and enable; the audit log records it as AI-created (`"source": "ai"`) | `rules:write` or `ai:propose` |
 
-`triage` and `create_rule_draft` take a defect type **id**, not a group name. Every project has its own ids
-(the built-in types get them when the project is created) and no MCP tool lists them yet. Get them from
-**Settings → Defect types** (the copy button next to a type), from `GET /api/v1/projects/{key}/defect-types`, or from the `defect.typeId` of results that
-already have the type; the example prompt takes them as an input, and the example agent never guesses one.
+`triage` (`defectTypeId`) and `create_rule_draft` (`action.defectTypeId`) take a defect type id from
+`list_defect_types`, or a group name for the group's built-in type: `productBug`, `automationBug`,
+`systemIssue`, `noDefect`, `toInvestigate` (any case; `product_bug` works too). Every project has its own ids, so
+an agent uses a group name unless a custom subtype fits better.
 
-A `viewer` token is enough to investigate; give an `editor` token only to agents that should triage. Every
+A `viewer` token is enough to investigate; give an [`agent` token](#agent-tokens) to agents that should triage or
+draft. Every
 tool checks the permission in the project's scope, exactly like the API. Writes through MCP are recorded with
 `source: ai`, so people can tell them apart and change them, are never replaced by rules, and are written to
 the audit log with `via: mcp`. Tool answers are bounded (256 KiB per answer, 64 KiB per log field).
@@ -94,16 +96,18 @@ people decide.
 | `list_test_plans`, `get_test_plan` | Managed test plans (`q`, `limit` 1–100); one plan by `planId` with its cases (`limit` 1–500) | `cases:read` |
 | `manual_run_progress` | The manual run of a launch (`launchId`): its counts and up to 50 failed or blocked items with their failed steps' actual results and comments | `launches:read` |
 | `trace_actions` | The actions of the Playwright trace of an attempt (`resultId`, `attempt`): `apiName`, `selector`, `url`, `status`, `error`, `durationMs`, at most 500 (`truncated` beyond); traces up to 256 MiB | `launches:read` |
-| `draft_case_from_result` | A draft case from a result (`resultId`, `attempt`): its name, preconditions from fixtures, steps from the step tree (3 levels), the failure message, a link to the result; the agent may give `name`, `notes`, `steps`, `folderId`, `tags` | `cases:write` |
-| `create_case_draft` | A draft case from the agent's `name`, `description`, `preconditions`, `steps`, `folderId`, `tags`, `fields` | `cases:write` |
-| `propose_case_update` | A suggestion for case `number` against `baseRevision` (`name`, `description`, `preconditions`, `steps`, `status`, `tags`, `fields`, a required `rationale`); validated like a case save, stored as pending, nothing applied; a moved revision answers `suggestion_stale` | `cases:write` |
+| `draft_case_from_result` | A draft case from a result (`resultId`, `attempt`): its name, preconditions from fixtures, steps from the step tree (3 levels), the failure message, a link to the result; the agent may give `name`, `notes`, `steps`, `folderId`, `tags` | `cases:write` or `ai:propose`, and `launches:read` |
+| `create_case_draft` | A draft case from the agent's `name`, `description`, `preconditions`, `steps`, `folderId`, `tags`, `fields` | `cases:write` or `ai:propose` |
+| `propose_case_update` | A suggestion for case `number` against `baseRevision` (`name`, `description`, `preconditions`, `steps`, `status`, `tags`, `fields`, a required `rationale`); validated like a case save, stored as pending, nothing applied; a moved revision answers `suggestion_stale` | `cases:write` or `ai:propose` |
 | `add_cases_to_plan` | Add case `numbers` (1–1000) to a managed plan (`planId`) | `plans:write` |
 
 Every write tool takes an optional `agent` (the agent's name, up to 100 bytes, recorded in the audit log).
 Errors come back as tool errors whose text starts with the API error code (`forbidden`, `not_found`,
 `invalid_case`, `suggestion_stale`, …).
 
-The server enforces the rules, whatever the agent asks for, on the MCP tools and on the REST API alike:
+The server enforces the rules, whatever the agent asks for. On the MCP tools they hold for every token; on the
+REST API they hold fully for [agent tokens](#agent-tokens), and for other tokens as far as the self-review rule
+below goes:
 
 - cases an agent creates are always `draft`, with `origin = ai`, and marked **AI draft** in the UI until a
   person reviews them;
@@ -124,9 +128,30 @@ The server enforces the rules, whatever the agent asks for, on the MCP tools and
 - every write is in the audit log with `source: ai` and the agent's name (`case.create`,
   `caseSuggestion.create`, `testPlan.items`).
 
+## Agent tokens
+
+An agent with a terminal can call the REST API with the token it has, so the rules above hold for the REST API
+only when the token itself cannot change cases. The built-in role `agent` is made for that: it can read
+projects, launches and test cases, triage results (`results:triage`), and create work for people to review
+(`ai:propose`: `create_case_draft`, `draft_case_from_result`, `propose_case_update` and `create_rule_draft`). It
+has no `cases:write`, `rules:write`, `plans:write` or `runs:execute`, so over REST an agent token answers `403`
+to creating, changing, reviewing, activating or archiving cases, to accepting or rejecting suggestions, to bulk
+changes and to enabling rules, and over MCP it cannot call `add_cases_to_plan`. People review its drafts and
+suggestions with their own accounts.
+
+```sh
+curl -fsS -X POST https://fastproof.example.com/api/v1/tokens -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "copilot-web", "role": "agent", "scopes": ["web"], "expiresInDays": 30}'
+```
+
+An `editor` token used by an agent keeps every `editor` right on the REST API; only the self-review rule
+(`403 ai_self_review`) and the MCP rules apply to it.
+
 ## Good practice
 
-- Give the agent a dedicated token with the smallest role that fits, and set an expiry. Do not reuse the token
+- Give the agent a dedicated token with the smallest role that fits (`viewer` to read, `agent` to triage and
+  draft), and set an expiry. Do not reuse the token
   you work with yourself: the rules above tell the agent and the reviewer apart by principal, so with a shared
   token you could not review the agent's drafts and suggestions with it. Review them signed in as yourself.
 - Keep the token out of the repository: the `inputs` entry above makes VS Code prompt for it.

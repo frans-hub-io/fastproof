@@ -49,6 +49,10 @@ pub fn catalog() -> anyhow::Result<Catalog> {
         )
         .permission("plans:write", "Create and change test plans")
         .permission("runs:execute", "Execute manual runs")
+        .permission(
+            "ai:propose",
+            "Create work for people to review (AI agents): AI draft test cases, case suggestions, disabled triage rules",
+        )
         .role_described(
             "viewer",
             "Read projects, launches and test cases",
@@ -92,6 +96,17 @@ pub fn catalog() -> anyhow::Result<Catalog> {
                 "runs:execute",
             ],
         )
+        .role_described(
+            "agent",
+            "AI agents over MCP: read, triage, draft test cases and triage rules, propose case changes; no direct case changes, reviews or activations",
+            &[
+                "projects:read",
+                "launches:read",
+                "cases:read",
+                "results:triage",
+                "ai:propose",
+            ],
+        )
         .role_described("admin", "Everything", &["*"])
         .build()?)
 }
@@ -113,6 +128,7 @@ pub struct Perms {
     pub cases_sync: Permission,
     pub plans_write: Permission,
     pub runs_execute: Permission,
+    pub ai_propose: Permission,
 }
 
 impl Perms {
@@ -132,6 +148,7 @@ impl Perms {
             cases_sync: p.permission("cases:sync"),
             plans_write: p.permission("plans:write"),
             runs_execute: p.permission("runs:execute"),
+            ai_propose: p.permission("ai:propose"),
         }
     }
 }

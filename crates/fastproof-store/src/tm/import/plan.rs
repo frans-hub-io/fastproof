@@ -568,12 +568,12 @@ impl Planner {
             name: c.name.clone(),
             folder_id: folder,
             status,
-            body: CaseBody {
+            body: Some(CaseBody {
                 description: rewrite(&c.description, c, attachments),
                 preconditions: rewrite(&c.preconditions, c, attachments),
                 steps: steps_of(&c.steps, attachments, cur.map(|r| r.body.steps.as_slice())),
                 links,
-            },
+            }),
             fields: Some(merged),
             tags: if tags.is_empty() && cur.is_some() {
                 None

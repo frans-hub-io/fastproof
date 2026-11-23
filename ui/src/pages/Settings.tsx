@@ -67,6 +67,8 @@ function GeneralForm({ project, settings, canWrite }: { project: string; setting
   const [rawDays, setRawDays] = useState<number | string>(settings.retention.rawDays);
   const [keep, setKeep] = useState<number | string>(settings.retention.launchesKeep ?? '');
   const [keepImportant, setKeepImportant] = useState(settings.retention.keepImportant);
+  const [versionsKeep, setVersionsKeep] = useState<number | string>(settings.retention.caseVersionsKeep || '');
+  const [versionsDays, setVersionsDays] = useState<number | string>(settings.retention.caseVersionsDays || '');
   const [rollup, setRollup] = useState<number | string>(settings.rollup.afterDays);
   const { run, pending } = useSave(project);
 
@@ -76,6 +78,8 @@ function GeneralForm({ project, settings, canWrite }: { project: string; setting
     stab: rangeError(toInt(stab), 0, d ?? 100),
     rawDays: rangeError(toInt(rawDays), 1, 3650),
     keep: rangeError(toInt(keep), 1, 1_000_000, false),
+    versionsKeep: rangeError(toInt(versionsKeep), 1, 100_000, false),
+    versionsDays: rangeError(toInt(versionsDays), 1, 36_500, false),
     rollup: rangeError(toInt(rollup), 1, 3650),
   };
   const valid = Object.values(errors).every((e) => e === null);
@@ -87,7 +91,14 @@ function GeneralForm({ project, settings, canWrite }: { project: string; setting
       {
         ...settings,
         flaky: { historyDepth: d ?? 10, stabilizationPeriod: toInt(stab) ?? 0, includePassedTests: includePassed },
-        retention: { ...settings.retention, rawDays: toInt(rawDays) ?? 90, keepImportant, launchesKeep: launchesKeep ?? undefined },
+        retention: {
+          ...settings.retention,
+          rawDays: toInt(rawDays) ?? 90,
+          keepImportant,
+          launchesKeep: launchesKeep ?? undefined,
+          caseVersionsKeep: toInt(versionsKeep) ?? 0,
+          caseVersionsDays: toInt(versionsDays) ?? 0,
+        },
         rollup: { afterDays: toInt(rollup) ?? 30 },
       },
       'General settings',
@@ -110,6 +121,10 @@ function GeneralForm({ project, settings, canWrite }: { project: string; setting
             <NumberInput label="Keep at most (launches)" description="Empty: no limit" min={1} max={1_000_000} value={keep} onChange={setKeep} error={errors.keep} />
           </SimpleGrid>
           <Switch label="Never delete launches marked important" checked={keepImportant} onChange={(e) => setKeepImportant(e.currentTarget.checked)} />
+          <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="sm">
+            <NumberInput label="Keep test case versions (newest per case)" description="Empty: no count; versions run items used are always kept" min={1} max={100_000} value={versionsKeep} onChange={setVersionsKeep} error={errors.versionsKeep} data-testid="settings-case-versions-keep" />
+            <NumberInput label="Prune test case versions older than (days)" description="Empty: no age; with both set, a version must be beyond the count and older" min={1} max={36_500} value={versionsDays} onChange={setVersionsDays} error={errors.versionsDays} data-testid="settings-case-versions-days" />
+          </SimpleGrid>
         </Section>
         <Section title="Rollup" description="Results older than this are summarized into daily series.">
           <NumberInput label="Roll up after (days)" min={1} max={3650} value={rollup} onChange={setRollup} error={errors.rollup} maw={320} />

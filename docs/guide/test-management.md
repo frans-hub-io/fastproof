@@ -149,11 +149,12 @@ curl -fsS -X PUT "$api/settings" -H "$auth" -H 'Content-Type: application/json' 
 - With both set, a version is pruned only when it is beyond the newest `caseVersionsKeep` **and** older than
   `caseVersionsDays`; with one set, that one decides; with neither (both `0`), nothing is pruned.
 - Never pruned: the current version, the versions that run items (and their earlier executions) were run
-  against, so manual runs always show the steps that were executed, and on cases made from code the newest
-  version that a person or an import wrote.
+  against, so manual runs always show the steps that were executed, a version replaced less than an hour ago
+  (a launch being started may still record it), and on cases made from code the newest version that a person
+  or an import wrote.
 
 The hourly job `cases.versions.prune` (on the `scheduler` role) deletes them in batches of 1000, at most 5
-minutes per run; the next run goes on. `retention` is replaced as a whole like every settings area, so send
+minutes per run, starting at another project each hour; the next run goes on. `retention` is replaced as a whole like every settings area, so send
 the other retention keys too. A pruned version is missing from the list and answers `404`.
 
 | Call | Does |

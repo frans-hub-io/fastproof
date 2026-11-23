@@ -60,8 +60,11 @@ The `fs` volume is kept on uninstall.
   cases and rules, and propose case changes over MCP, but cannot change, review or activate cases over REST
   (see [Agent tokens](../guide/mcp-copilot.md#agent-tokens)). Existing roles do not change; agents that use
   `editor` tokens keep working.
+- Muting results needs the new permission `results:mute` (in `editor`; `admin` has every permission). Custom
+  roles in `FASTPROOF_ACCESS_FILE` that hold `results:triage` and should keep muting need `results:mute` added.
 - Migration `0790_tm_people` adds the table of people the assignee picker lists (members of bound OIDC groups
-  who opened test management, with their display names).
+  who opened test management, with their display names and bound groups). Migration
+  `0791_tm_index_cases_ai_drafts` builds an index concurrently for the cap on unreviewed AI drafts.
 - New limits with defaults: `FASTPROOF_TM_MULTIPLYING_WRITES_PER_MINUTE` (30 per caller and replica; plan
   launches, run items, plan changes, bulk case changes answer `429 rate_limited` beyond it) and
   `FASTPROOF_TM_MAX_OPEN_PLAN_LAUNCHES` (20 open manual runs started from plans per caller and project). Raise

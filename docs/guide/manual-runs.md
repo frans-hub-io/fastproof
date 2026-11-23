@@ -78,11 +78,15 @@ curl -fsS -X POST "$api/test-plans/$plan/items" -H "$auth" -H 'Content-Type: app
 Assignees are the user names people sign in with (for OIDC, the username claim). The assignee boxes in the
 UI suggest the people known to the project (`GET $api/people?q=`, needs `projects:read`, at most 100, as
 `{items: [{principal, display}]}`): users bound to the project in the access file, active managed tokens whose
-role can execute runs in it, members of bound OIDC groups who have opened test management in the last 180 days
-(FastProof remembers each user's groups and display name, the provider's `name` claim, from their requests),
+role can execute runs in it, members of bound OIDC groups who have opened test management in the last 90 days
+(FastProof remembers each user's display name, the provider's `name` claim, and those of their groups that the
+access file binds; a user whose last request showed no bound group is forgotten, and a member removed from a
+group stays suggested until their next request or for at most 90 days; access itself always follows the live
+policy),
 and every name already used as an assignee or executor in its runs and plans. FastProof does not ask the
 identity provider for group members, so a member who has never signed in is not suggested until then; the box
-says so. `q` matches the name or the display name. You can still type any
+says so. Display names are shown only to callers with `cases:read` or `runs:execute`, only for such members
+(never for token names or names merely used as assignees), and only for them `q` matches the display name too. You can still type any
 name; a name that matches nobody known is marked as an unknown user, because work assigned to a wrong name
 shows up in nobody's queue.
 

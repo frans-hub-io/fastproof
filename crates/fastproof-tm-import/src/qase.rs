@@ -11,7 +11,7 @@
 //! are custom fields. `postconditions` and `parameters` go to the description.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{self, BufRead, Read};
 use std::rc::Rc;
 
@@ -24,8 +24,8 @@ use crate::steps::{numbered, rich_items, tree};
 use crate::text::io_error;
 use crate::{
     ImportError, ImportedAttachment, ImportedCase, ImportedKey, ImportedStep, ImportedValue,
-    MAX_JSON_DEPTH, ParseOptions, RowError, Visit, emit, emit_error, map_status, norm_header, rich,
-    split_list,
+    MAX_JSON_DEPTH, ParseOptions, RowError, Visit, cap_name, emit, emit_error, map_status,
+    norm_header, rich, split_list,
 };
 
 const SYSTEM: &[&str] = &[
@@ -70,14 +70,21 @@ const FIELDS: &[&str] = &[
 ];
 const UNSET: &[&str] = &["undefined", "not set", "notset", "none", "-"];
 
-fn suite_path(suites: &HashMap<String, (String, String)>, mut id: String) -> Vec<String> {
+/// The path of a CSV suite, root first: follows parents at most `max_depth + 1` levels and
+/// stops at a suite already on the path (a cycle).
+fn suite_path(
+    suites: &HashMap<String, (String, String)>,
+    mut id: String,
+    max_depth: usize,
+) -> Vec<String> {
     let mut out = Vec::new();
-    for _ in 0..64 {
+    let mut seen = HashSet::new();
+    while out.len() <= max_depth && seen.insert(id.clone()) {
         let Some((title, parent)) = suites.get(&id) else {
             break;
         };
         out.push(title.clone());
-        if parent.is_empty() || *parent == id {
+        if parent.is_empty() {
             break;
         }
         id = parent.clone();
@@ -161,6 +168,8 @@ pub fn parse_csv(
     }
     let mut suites: HashMap<String, (String, String)> = HashMap::new();
     let mut by_title: HashMap<String, String> = HashMap::new();
+    let mut paths: HashMap<String, Rc<[String]>> = HashMap::new();
+    let l = &opts.limits;
     while let Some((row, rec)) = t.reader.next_record()? {
         let rec = match rec {
             Ok(r) => r,
@@ -175,8 +184,8 @@ pub fn parse_csv(
                 .into_iter()
                 .map(str::trim)
                 .find(|s| !s.is_empty())
-                .unwrap_or("")
-                .to_string();
+                .map(|s| cap_name(s, l.max_name_bytes))
+                .unwrap_or_default();
             if sid.is_empty() || name.is_empty() {
                 emit_error(
                     RowError::new(row, "invalid_row", "a suite row needs suite_id and a title"),
@@ -187,6 +196,7 @@ pub fn parse_csv(
             if suites.len() < 100_000 {
                 by_title.entry(name.to_lowercase()).or_insert(sid.clone());
                 suites.insert(sid, (name, cell(&rec, suite_parent).trim().to_string()));
+                paths.clear();
             }
             continue;
         }
@@ -213,13 +223,16 @@ pub fn parse_csv(
                     .cloned()
             });
         c.folder = match sid {
-            Some(s) => suite_path(&suites, s),
+            Some(s) => paths
+                .entry(s.clone())
+                .or_insert_with(|| suite_path(&suites, s, l.max_folder_depth).into())
+                .to_vec(),
             None => {
                 let s = cell(&rec, suite).trim();
                 if s.is_empty() {
                     Vec::new()
                 } else {
-                    vec![s.to_string()]
+                    vec![cap_name(s, l.max_name_bytes)]
                 }
             }
         };
@@ -412,6 +425,9 @@ pub const MAX_CASE_JSON_BYTES: usize = 8 * 1024 * 1024;
 /// Memory of the values of one case (or flat suite entry) as read, at most; past it the
 /// case is a row error. Numbers and empty containers cost far more as values than as text.
 const MAX_CASE_VALUE_BYTES: usize = 32 * 1024 * 1024;
+/// Bytes of the cases of a suite that wait for its title (a `title` after `cases`), in all;
+/// past it the file fails.
+pub const MAX_DEFERRED_BYTES: usize = 4 * MAX_CASE_JSON_BYTES;
 /// Bytes of the reader's buffer.
 const SCAN_BUFFER: usize = 64 * 1024;
 /// What one value costs in [`Budget`] besides its text.
@@ -440,7 +456,12 @@ struct Scan<'r> {
     depth: u32,
     in_string: bool,
     escape: bool,
+    /// Hex digits of a `\u` escape still to come.
+    hex_left: u8,
     string_len: u64,
+    /// Bytes of the current string once decoded (a `\u` escape counts 3, the most a UTF-16
+    /// unit takes in UTF-8).
+    decoded_len: u64,
     max_string: u64,
     max_cell: u64,
 }
@@ -448,22 +469,35 @@ struct Scan<'r> {
 impl Scan<'_> {
     fn step(&mut self, b: u8) -> Option<(&'static str, u64)> {
         if self.in_string {
-            if self.escape {
+            if self.hex_left > 0 {
+                self.hex_left -= 1;
+            } else if self.escape {
                 self.escape = false;
+                if b == b'u' {
+                    self.hex_left = 4;
+                    self.decoded_len += 3;
+                } else {
+                    self.decoded_len += 1;
+                }
             } else if b == b'\\' {
                 self.escape = true;
             } else if b == b'"' {
                 self.in_string = false;
                 return None;
+            } else {
+                self.decoded_len += 1;
             }
             self.string_len += 1;
-            return (self.string_len > self.max_string)
+            return (self.string_len > self.max_string || self.decoded_len > self.max_cell)
                 .then_some(("maxImportCellBytes", self.max_cell));
         }
         match b {
             b'"' => {
                 self.in_string = true;
                 self.string_len = 0;
+                self.decoded_len = 0;
+                self.escape = false;
+                self.hex_left = 0;
             }
             b'{' | b'[' => {
                 self.depth += 1;
@@ -760,6 +794,12 @@ struct Walk<'v, 'a> {
     count: usize,
     emitted: usize,
     suite_titles: HashMap<i64, (String, Option<i64>)>,
+    /// Paths of flat suites, built once per suite.
+    paths: HashMap<i64, Rc<[String]>>,
+    /// Entries of flat suite lists read; they count toward `maxImportRows` with the cases.
+    flat_rows: usize,
+    /// Bytes of [`Deferred`] cases held.
+    deferred_bytes: usize,
     flat_seen: bool,
     /// A root case named a `suite_id` before the flat suite list was read.
     early_suite_ids: bool,
@@ -787,7 +827,7 @@ impl Walk<'_, '_> {
 
     fn next_row(&mut self) -> Result<u64, ImportError> {
         self.count += 1;
-        if self.count > self.opts.limits.max_rows {
+        if self.count.saturating_add(self.flat_rows) > self.opts.limits.max_rows {
             return Err(ImportError::limit(
                 "maxImportRows",
                 self.opts.limits.max_rows,
@@ -831,18 +871,25 @@ impl Walk<'_, '_> {
         if suite.is_some() && !self.flat_seen {
             self.early_suite_ids = true;
         }
-        let folder = suite.map(|s| self.path_of(s)).unwrap_or_default();
+        let folder = match suite {
+            Some(s) => self.path_of(s),
+            None => Rc::from(Vec::new()),
+        };
         self.emit_case(v, row, &folder)
     }
 
     fn suite_case(&mut self, v: &Value, row: u64) -> Result<(), ImportError> {
         if let Some(i) = self.levels.iter().position(|l| l.title.borrow().is_none()) {
             let path = self.levels.iter().map(|l| l.title.clone()).collect();
-            self.levels[i].deferred.push(Deferred {
-                row,
-                path,
-                json: v.to_string(),
-            });
+            let mut json = v.to_string();
+            json.shrink_to_fit();
+            self.deferred_bytes = self.deferred_bytes.saturating_add(json.len());
+            if self.deferred_bytes > MAX_DEFERRED_BYTES {
+                return Err(ImportError::invalid(format!(
+                    "qase json: more than {MAX_DEFERRED_BYTES} bytes of cases wait for the title of their suite; put each suite's `title` before its `cases`"
+                )));
+            }
+            self.levels[i].deferred.push(Deferred { row, path, json });
             return Ok(());
         }
         let folder: Vec<String> = self
@@ -858,6 +905,7 @@ impl Walk<'_, '_> {
     fn resolve(&mut self, i: usize, title: String) -> Result<(), ImportError> {
         *self.levels[i].title.borrow_mut() = Some(title);
         for d in std::mem::take(&mut self.levels[i].deferred) {
+            self.deferred_bytes = self.deferred_bytes.saturating_sub(d.json.len());
             let folder: Vec<String> = d
                 .path
                 .iter()
@@ -869,20 +917,30 @@ impl Walk<'_, '_> {
         Ok(())
     }
 
-    fn path_of(&self, mut id: i64) -> Vec<String> {
+    /// The path of a flat suite, root first, built once per suite: parents are followed at
+    /// most `maxFolderDepth + 1` levels and a suite already on the path (a cycle) ends it.
+    fn path_of(&mut self, id: i64) -> Rc<[String]> {
+        if let Some(p) = self.paths.get(&id) {
+            return p.clone();
+        }
+        let max = self.opts.limits.max_folder_depth;
         let mut out = Vec::new();
-        for _ in 0..64 {
-            let Some((t, parent)) = self.suite_titles.get(&id) else {
+        let mut seen = HashSet::new();
+        let mut cur = id;
+        while out.len() <= max && seen.insert(cur) {
+            let Some((t, parent)) = self.suite_titles.get(&cur) else {
                 break;
             };
             out.push(t.clone());
             match parent {
-                Some(p) if *p != id => id = *p,
-                _ => break,
+                Some(p) => cur = *p,
+                None => break,
             }
         }
         out.reverse();
-        out
+        let p: Rc<[String]> = out.into();
+        self.paths.insert(id, p.clone());
+        p
     }
 }
 
@@ -1018,32 +1076,29 @@ impl<'de> Visitor<'de> for FlatSeed<'_, '_, '_> {
     }
 
     fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<(), A::Error> {
-        if self.w.early_suite_ids {
+        if self.w.early_suite_ids || self.w.emitted > 0 || self.w.deferred_bytes > 0 {
             return Err(self.w.fail(ImportError::invalid(
-                "qase json: `suites_flat` must come before the cases that name a suite_id",
+                "qase json: `suites_flat` must come before the cases",
             )));
         }
         self.w.flat_seen = true;
+        self.w.paths.clear();
         let pos = self.w.pos.clone();
-        let mut n = 0usize;
         loop {
             let budget = Budget::new(&pos);
             let Some(x) = seq.next_element_seed(Bounded(&budget))? else {
                 return Ok(());
             };
-            n += 1;
-            if n > self.w.opts.limits.max_rows {
-                let max = self.w.opts.limits.max_rows;
+            self.w.flat_rows += 1;
+            let max = self.w.opts.limits.max_rows;
+            if self.w.flat_rows.saturating_add(self.w.count) > max {
                 return Err(self.w.fail(ImportError::limit("maxImportRows", max)));
             }
             if let (false, Some(id)) = (budget.over.get(), x.get("id").and_then(Value::as_i64)) {
-                self.w.suite_titles.insert(
-                    id,
-                    (
-                        text(&x, "title"),
-                        x.get("parent_id").and_then(Value::as_i64),
-                    ),
-                );
+                let title = cap_name(&text(&x, "title"), self.w.opts.limits.max_name_bytes);
+                self.w
+                    .suite_titles
+                    .insert(id, (title, x.get("parent_id").and_then(Value::as_i64)));
             }
         }
     }
@@ -1122,7 +1177,8 @@ impl<'de> Visitor<'de> for SuiteSeed<'_, '_, '_> {
                 "title" => {
                     let t = map.next_value_seed(TextSeed { numbers: true })?;
                     if self.w.levels[i].title.borrow().is_none() {
-                        let r = self.w.resolve(i, t.unwrap_or_default());
+                        let t = cap_name(&t.unwrap_or_default(), self.w.opts.limits.max_name_bytes);
+                        let r = self.w.resolve(i, t);
                         self.w.lift(r)?;
                     }
                 }
@@ -1248,7 +1304,9 @@ pub fn parse_json(
         depth: 0,
         in_string: false,
         escape: false,
+        hex_left: 0,
         string_len: 0,
+        decoded_len: 0,
         max_string: (opts.limits.max_cell_bytes as u64).saturating_mul(6),
         max_cell: opts.limits.max_cell_bytes as u64,
     };
@@ -1259,6 +1317,9 @@ pub fn parse_json(
         count: 0,
         emitted: 0,
         suite_titles: HashMap::new(),
+        paths: HashMap::new(),
+        flat_rows: 0,
+        deferred_bytes: 0,
         flat_seen: false,
         early_suite_ids: false,
         levels: Vec::new(),

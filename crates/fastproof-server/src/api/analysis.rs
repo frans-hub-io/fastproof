@@ -189,6 +189,16 @@ pub async fn triage(
     ApiJson(body): ApiJson<TriageRequest>,
 ) -> ApiResult<Json<TriageOutcome>> {
     let p = s.project_for(&auth, &key, &s.perms.results_triage).await?;
+    let mut body = body;
+    crate::mcp_tm::check_mute(
+        &s,
+        &auth,
+        &p.key,
+        body.mute.is_some() || body.unmute == Some(true),
+    )?;
+    if crate::mcp_tm::is_agent(&s, &auth, &p.key) {
+        body.source = Some("ai".into());
+    }
     let (out, body) = apply_triage(&s, &p, &auth.principal.name, body).await?;
     s.audit(
         &auth,

@@ -393,6 +393,37 @@ pub fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
+/// `maxOpenPlanLaunches` for `creator` in a project, inside the transaction that opens one more
+/// plan launch: an advisory lock on (project, creator) until the commit makes concurrent starts
+/// and reopens of the same creator count one after another.
+pub(crate) async fn check_open_plan_launches(
+    tx: &mut PgConnection,
+    project_id: Uuid,
+    creator: &str,
+    limits: &TmLimits,
+) -> TmResult<()> {
+    sqlx::query("select pg_advisory_xact_lock(hashtextextended($1 || ':' || $2, 7902))")
+        .bind(project_id.to_string())
+        .bind(no_nul(creator))
+        .execute(&mut *tx)
+        .await?;
+    let open: i64 = sqlx::query_scalar(
+        "select count(*) from launches where project_id = $1 and test_plan_id is not null \
+         and manual_state = 'open' and created_by = $2",
+    )
+    .bind(project_id)
+    .bind(no_nul(creator))
+    .fetch_one(&mut *tx)
+    .await?;
+    if open as usize >= limits.max_open_plan_launches {
+        return Err(TmError::limit(
+            "maxOpenPlanLaunches",
+            limits.max_open_plan_launches as u64,
+        ));
+    }
+    Ok(())
+}
+
 impl Store {
     /// Launches started from a plan of the project, newest first: numbers below `before`, at
     /// most `limit`. 404 when the plan is not in the project.
@@ -968,19 +999,8 @@ impl Store {
         if row.plan.counts.manual as usize > limits.max_run_items {
             return Err(TmError::limit("maxRunItems", limits.max_run_items as u64));
         }
-        let open: i64 = sqlx::query_scalar(
-            "select count(*) from launches where project_id = $1 and test_plan_id is not null \
-             and manual_state = 'open' and created_by = $2",
-        )
-        .bind(project.id)
-        .bind(no_nul(by))
-        .fetch_one(&mut *tx)
-        .await?;
-        if row.plan.counts.manual > 0 && open as usize >= limits.max_open_plan_launches {
-            return Err(TmError::limit(
-                "maxOpenPlanLaunches",
-                limits.max_open_plan_launches as u64,
-            ));
+        if row.plan.counts.manual > 0 {
+            check_open_plan_launches(&mut tx, project.id, by, limits).await?;
         }
         let manual: Vec<(Uuid, i64, String, i32, Option<String>)> = sqlx::query_as(
             "select c.id, c.number, c.name, c.version, i.assignee from test_plan_items i \

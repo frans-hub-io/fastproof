@@ -31,6 +31,10 @@ pub fn catalog() -> anyhow::Result<Catalog> {
             "results:triage",
             "Set defect types, comments, issue links and mutes",
         )
+        .permission(
+            "results:mute",
+            "Mute and unmute results (quality gates ignore muted failures)",
+        )
         .permission("rules:write", "Manage triage rules")
         .permission("settings:write", "Change project settings, delete launches")
         .permission("audit:read", "Read the audit log")
@@ -89,6 +93,7 @@ pub fn catalog() -> anyhow::Result<Catalog> {
                 "cases:read",
                 "cases:sync",
                 "results:triage",
+                "results:mute",
                 "rules:write",
                 "cases:write",
                 "cases:import",
@@ -98,7 +103,7 @@ pub fn catalog() -> anyhow::Result<Catalog> {
         )
         .role_described(
             "agent",
-            "AI agents over MCP: read, triage, draft test cases and triage rules, propose case changes; no direct case changes, reviews or activations",
+            "AI agents over MCP: read, set defect types and comments (recorded as AI triage), draft test cases and triage rules, propose case changes; no mutes, no direct case changes, reviews or activations",
             &[
                 "projects:read",
                 "launches:read",
@@ -119,6 +124,7 @@ pub struct Perms {
     pub launches_read: Permission,
     pub launches_write: Permission,
     pub results_triage: Permission,
+    pub results_mute: Permission,
     pub rules_write: Permission,
     pub settings_write: Permission,
     pub audit_read: Permission,
@@ -139,6 +145,7 @@ impl Perms {
             launches_read: p.permission("launches:read"),
             launches_write: p.permission("launches:write"),
             results_triage: p.permission("results:triage"),
+            results_mute: p.permission("results:mute"),
             rules_write: p.permission("rules:write"),
             settings_write: p.permission("settings:write"),
             audit_read: p.permission("audit:read"),

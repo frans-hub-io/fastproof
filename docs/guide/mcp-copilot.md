@@ -67,7 +67,7 @@ Copy the `.vscode` and `.github` folders into your repository and adjust the URL
 | `compare_launches` | New failures, fixed, still failing, new and missing tests between two launches | `launches:read` |
 | `fastmock_interactions` | Requests the project's FastMock answered during an attempt | `launches:read` |
 | `list_defect_types` | The project's defect types: `id`, `group`, `name`, `shortName`, `builtIn` (built-in groups first) | `results:triage` |
-| `triage` | Set the defect type, comment, issue or mute of results or a whole cluster | `results:triage` |
+| `triage` | Set the defect type, comment, issue or mute of results or a whole cluster | `results:triage`; mute and unmute also `results:mute` |
 | `create_rule_draft` | Create a disabled triage rule for people to review and enable; the audit log records it as AI-created (`"source": "ai"`) | `rules:write` or `ai:propose` |
 
 `triage` (`defectTypeId`) and `create_rule_draft` (`action.defectTypeId`) take a defect type id from
@@ -137,7 +137,18 @@ projects, launches and test cases, triage results (`results:triage`), and create
 has no `cases:write`, `rules:write`, `plans:write` or `runs:execute`, so over REST an agent token answers `403`
 to creating, changing, reviewing, activating or archiving cases, to accepting or rejecting suggestions, to bulk
 changes and to enabling rules, and over MCP it cannot call `add_cases_to_plan`. People review its drafts and
-suggestions with their own accounts.
+suggestions with their own accounts. More limits of agent tokens:
+
+- **Mutes.** Muting hides a failure from quality gates, so it needs `results:mute`, which the `agent` role lacks.
+  An agent proposes a mute as a disabled rule (`create_rule_draft` with `action.mute`), which a person reviews
+  and enables. `triage` with `mute` or `unmute` answers `403` with `details.required: results:mute`.
+- **AI triage.** Triage by a principal with `ai:propose` and without `cases:write` (the `agent` role) is always
+  recorded with `source: ai`, on MCP and on `POST /triage` and run item defects alike, whatever `source` it sends.
+- **Draft caps.** One principal has at most 200 unreviewed AI draft cases (`409 limit_reached`,
+  `maxUnreviewedAiDrafts`) and 20 disabled rules (`maxRuleDrafts`) per project; people review, archive or delete
+  some to make room.
+- **Rate.** MCP write tools count against the same per-caller rate as other writes that multiply work
+  (`FASTPROOF_TM_MULTIPLYING_WRITES_PER_MINUTE`).
 
 ```sh
 curl -fsS -X POST https://fastproof.example.com/api/v1/tokens -H "Authorization: Bearer $ADMIN_TOKEN" \

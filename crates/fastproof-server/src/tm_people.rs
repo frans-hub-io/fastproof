@@ -1,9 +1,10 @@
 //! Remembers the people who use test management so the assignee picker (`GET /people`) can
 //! list members of bound OIDC groups and show display names. Test-management pages call
 //! [`note`]: for an OIDC user (session or bearer JWT) it records, at most every
-//! [`NOTE_EVERY`] per user and replica and in the background, the groups and the display name
-//! (the `name` claim of the session's ID token or of the bearer JWT, which the platform
-//! already validated). Tokens are not recorded; they are listed from the token store.
+//! [`NOTE_EVERY`] per user and replica and in the background, the groups the access policy
+//! binds (only those) and the display name (the `name` claim of the session's ID token or of
+//! the bearer JWT, which the platform already validated). A user in no bound group is
+//! forgotten. Tokens are not recorded; they are listed from the token store.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -91,6 +92,23 @@ pub fn display_of_jwt(jwt: &str) -> Option<String> {
     Some(name[..end].to_string())
 }
 
+/// The groups of `groups` that a binding of the access policy names (only these are stored).
+pub fn bound_groups(policy: &franshub_access::AccessPolicy, groups: &[String]) -> Vec<String> {
+    let bound: std::collections::HashSet<&str> = policy
+        .bindings()
+        .iter()
+        .filter_map(|b| match &b.subject {
+            franshub_access::Subject::Group(g) => Some(g.as_str()),
+            _ => None,
+        })
+        .collect();
+    groups
+        .iter()
+        .filter(|g| bound.contains(g.as_str()))
+        .cloned()
+        .collect()
+}
+
 /// Records the caller when it is an OIDC user that is due; returns at once.
 pub fn note(s: &AppState, auth: &Auth, headers: &HeaderMap) {
     if auth.principal.kind != PrincipalKind::User {
@@ -120,10 +138,17 @@ pub fn note(s: &AppState, auth: &Auth, headers: &HeaderMap) {
         (AuthMethod::Session, Some(rt)) => rt.oidc.session_id(headers).map(str::to_string),
         _ => None,
     };
-    let groups = auth.principal.groups.clone();
+    let groups = bound_groups(s.platform.policy(), &auth.principal.groups);
+    let leave = groups.is_empty();
     let s = s.clone();
     tokio::spawn(async move {
         let _permit = permit;
+        if leave {
+            if let Err(e) = s.store.forget_person(&name).await {
+                tracing::warn!(error = %e, "forgetting a person failed");
+            }
+            return;
+        }
         let mut display = bearer.as_deref().and_then(display_of_jwt);
         if let (Some(id), Some(rt)) = (session, s.platform.oidc()) {
             match rt.sessions().get(&id).await {
@@ -171,6 +196,23 @@ mod tests {
         let long = "é".repeat(150);
         let d = display_of_jwt(&jwt(serde_json::json!({ "name": long }))).unwrap();
         assert!(d.len() <= 200 && d.chars().all(|c| c == 'é'), "{d}");
+    }
+
+    #[test]
+    fn only_bound_groups_are_kept() {
+        let catalog = std::sync::Arc::new(crate::state::catalog().unwrap());
+        let policy = franshub_access::AccessPolicy::parse(
+            catalog,
+            "bindings:\n  - subject: group:qa\n    role: tester\n    scopes: [web]\n  - subject: user:ann\n    role: viewer\n    scopes: [web]\n",
+        )
+        .unwrap();
+        let groups = vec![
+            "qa".to_string(),
+            "hr-payroll".to_string(),
+            "dev".to_string(),
+        ];
+        assert_eq!(bound_groups(&policy, &groups), ["qa"]);
+        assert!(bound_groups(&policy, &["dev".to_string()]).is_empty());
     }
 
     #[test]

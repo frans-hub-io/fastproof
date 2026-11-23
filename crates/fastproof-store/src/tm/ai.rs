@@ -7,7 +7,10 @@
 
 use uuid::Uuid;
 
-use super::cases::{CaseCtx, NewCaseMeta, apply_patch, create_case_in, next_number, prepare_write};
+use super::cases::{
+    CaseCtx, NewCaseMeta, apply_patch, check_count_in_tx, create_case_in, next_number,
+    prepare_write,
+};
 use super::fields::field_defs;
 use super::versions::snapshot_of;
 use super::{
@@ -17,6 +20,14 @@ use crate::{Store, no_nul};
 
 /// Pending suggestions of one case, at most (409 `limit_reached`, `maxPendingSuggestions`).
 pub const MAX_PENDING_SUGGESTIONS: i64 = 20;
+
+/// Unreviewed AI draft cases one principal has in a project, at most (409 `limit_reached`,
+/// `maxUnreviewedAiDrafts`); people review or archive some to make room.
+pub const MAX_UNREVIEWED_AI_DRAFTS: i64 = 200;
+
+/// Disabled triage rules one principal created in a project, at most, before an agent may draft
+/// another (409 `limit_reached`, `maxRuleDrafts`).
+pub const MAX_RULE_DRAFTS: i64 = 20;
 
 /// Code of the 403 answered to a principal reviewing its own AI work.
 pub const AI_SELF_REVIEW: &str = "ai_self_review";
@@ -59,8 +70,28 @@ impl Store {
         let mut conn = self.pool.acquire().await?;
         let defs = field_defs(&mut conn, ctx.project_id, true).await?;
         let snap = prepare_write(&mut conn, ctx, &w, None, &defs).await?;
-        let n = next_number(&mut conn, ctx.project_id, ctx.limits).await?;
+        let n = next_number(&mut conn, ctx.project_id).await?;
         let mut tx = sqlx::Connection::begin(&mut *conn).await?;
+        sqlx::query("select pg_advisory_xact_lock(hashtextextended($1 || ':' || $2, 7901))")
+            .bind(ctx.project_id.to_string())
+            .bind(no_nul(ctx.by))
+            .execute(&mut *tx)
+            .await?;
+        let drafts: i64 = sqlx::query_scalar(
+            "select count(*) from cases where project_id = $1 and origin = 'ai' and ai_unreviewed \
+             and archived_at is null and created_by = $2",
+        )
+        .bind(ctx.project_id)
+        .bind(no_nul(ctx.by))
+        .fetch_one(&mut *tx)
+        .await?;
+        if drafts >= MAX_UNREVIEWED_AI_DRAFTS {
+            return Err(TmError::limit(
+                "maxUnreviewedAiDrafts",
+                MAX_UNREVIEWED_AI_DRAFTS as u64,
+            ));
+        }
+        check_count_in_tx(&mut tx, ctx.project_id, n, ctx.limits).await?;
         let meta = NewCaseMeta {
             origin: CaseOrigin::Ai,
             source: VersionSource::Ai,
@@ -138,5 +169,17 @@ impl Store {
         .await?;
         conn.commit().await?;
         Ok(id)
+    }
+
+    /// Disabled triage rules `by` created in the project (the rule drafts an agent may still
+    /// add are [`MAX_RULE_DRAFTS`] minus this).
+    pub async fn disabled_rules_by(&self, project_id: Uuid, by: &str) -> anyhow::Result<i64> {
+        Ok(sqlx::query_scalar(
+            "select count(*) from rules where project_id = $1 and not enabled and created_by = $2",
+        )
+        .bind(project_id)
+        .bind(no_nul(by))
+        .fetch_one(&self.pool)
+        .await?)
     }
 }

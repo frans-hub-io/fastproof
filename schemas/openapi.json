@@ -7365,7 +7365,7 @@
         "tags": [
           "runs"
         ],
-        "description": "Principals to assign run items to: users and managed tokens with `runs:execute` in the project (from the role bindings), members of bound groups who opened test management in the last 180 days (with the groups of their last sign-in; members who never signed in are not known), and the names already used as assignees or executors in the project. `display` is the `name` claim of the identity provider when known. `q` matches the name or the display name. Sorted by name, at most 100. Assignees are free text; names that are not in this list are allowed.",
+        "description": "Principals to assign run items to: users and managed tokens with `runs:execute` in the project (from the role bindings), members of bound groups who opened test management in the last 90 days (with the groups of their last sign-in; members who never signed in are not known), and the names already used as assignees or executors in the project. `display` is the `name` claim of the identity provider of those members, shown only to callers with `cases:read` or `runs:execute` (never for token names); `q` then matches it too. Sorted by name, at most 100. Assignees are free text; names that are not in this list are allowed.",
         "operationId": "list_project_people",
         "parameters": [
           {

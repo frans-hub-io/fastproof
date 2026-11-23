@@ -37,6 +37,8 @@ pub struct LaunchFilter {
     /// Exact external id.
     pub external_id: Option<String>,
     pub debug: bool,
+    /// Also launches merged into another one (hidden by default).
+    pub include_merged: bool,
     pub before: Option<i64>,
     pub limit: i64,
 }
@@ -412,8 +414,14 @@ impl Store {
     ) -> anyhow::Result<Page<Launch>> {
         let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(LAUNCH_SELECT);
         qb.push("where l.project_id = ").push_bind(project_id);
-        qb.push(" and l.debug = ").push_bind(f.debug);
-        qb.push(" and l.merged_into is null");
+        if f.include_merged {
+            qb.push(" and (l.debug = ")
+                .push_bind(f.debug)
+                .push(" or l.merged_into is not null)");
+        } else {
+            qb.push(" and l.debug = ").push_bind(f.debug);
+            qb.push(" and l.merged_into is null");
+        }
         if let Some(b) = &f.branch {
             qb.push(" and l.branch = ").push_bind(no_nul(b));
         }

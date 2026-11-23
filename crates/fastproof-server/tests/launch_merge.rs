@@ -629,7 +629,10 @@ async fn busy_late_final_and_deleted_targets() {
     )
     .await;
     assert_eq!(st, StatusCode::CREATED, "{f}");
-    assert_eq!(f["status"], "final");
+    assert_eq!(
+        (f["status"].as_str(), f["final"].as_bool()),
+        (Some("active"), Some(true))
+    );
     assert!(f["undoUntil"].is_null());
     let (st, e) = s
         .post(
@@ -643,7 +646,7 @@ async fn busy_late_final_and_deleted_targets() {
         .await;
     assert_eq!(
         (st, e["code"].as_str()),
-        (StatusCode::CONFLICT, Some("merge_not_active"))
+        (StatusCode::CONFLICT, Some("merge_final"))
     );
     let r = by_name(&s, "bz", f["targetId"].as_str().unwrap()).await;
     assert_eq!(r["z"]["attemptCount"], 2);

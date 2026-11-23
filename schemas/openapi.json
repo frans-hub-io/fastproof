@@ -4311,6 +4311,15 @@
             }
           },
           {
+            "name": "includeMerged",
+            "in": "query",
+            "description": "Also list launches merged into another one (hidden by default).",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
             "name": "before",
             "in": "query",
             "description": "Cursor from `next`.",
@@ -4449,7 +4458,7 @@
         "tags": [
           "launches"
         ],
-        "description": "Merges launches (CI shards, re-runs) into a new launch or into one of them (`into`). A test run in several of them becomes one result with more attempts (the latest is the result, mixed outcomes are flaky in the run); counters, transitions, flakiness, defects and the series statistics are recomputed. The other launches are hidden (`mergedInto`) and refuse further results with 409 `launch_merged`; they come back on undo, which is possible until `undoUntil` (`FASTPROOF_MERGE_UNDO_HOURS`), and are deleted afterwards. Repeating the same merge returns it (200) and copies what reached the launches since. Launches to merge must be finished with no upload in progress (409 `launch_running`, `launch_busy`); the target may run. Also 409 `launch_merged`, `launch_manual`, `merge_mixed` (debug or branch differ), `launch_rolled_up`; 413 `merge_too_large`. `dryRun` answers counts (status `preview`) without merging.",
+        "description": "Merges launches (CI shards, re-runs) into a new launch or into one of them (`into`). A test run in several of them becomes one result with more attempts (the latest is the result, mixed outcomes are flaky in the run); counters, transitions, flakiness, defects and the series statistics are recomputed (the analysis may finish shortly after the answer: `analysing`). The other launches are hidden (`mergedInto`) and refuse further writes with 409 `launch_merged`; they come back on undo, possible until `undoUntil` (`FASTPROOF_MERGE_UNDO_HOURS`), and are deleted afterwards (a merge with `final` keeps them a couple of minutes for writes on their way). Repeating the same merge returns it (200) and copies what reached the launches since. Launches to merge must be finished with no upload in progress (409 `launch_running`, `launch_busy`); the target may run, but a finished target takes the merge only from its creator or a caller with `cases:sync` (409 `launch_finished`). Also 409 `launch_merged`, `launch_manual`, `launch_plan`, `merge_mixed` (debug or branch differ), `launch_rolled_up`, `merge_busy` (another merge or undo of the project runs); 413 `merge_too_large` (attempts or log bytes). `dryRun` answers counts (status `preview`) without merging and without locks.",
         "operationId": "launches_merge",
         "parameters": [
           {
@@ -4529,6 +4538,15 @@
             }
           },
           "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
             "content": {
               "application/json": {
                 "schema": {
@@ -7421,7 +7439,7 @@
         "tags": [
           "launches"
         ],
-        "description": "Undoes a merge before `undoUntil`: a launch the merge created is deleted, or the copied attempts leave the launch merged into; the merged launches come back. 409 `merge_not_active`, `merge_final`, `merge_expired`, `merge_target_changed` (results were added to a created launch: delete it instead), `merge_target_merged`, `merge_target_rolled_up`, `merge_target_gone`.",
+        "description": "Undoes a merge before `undoUntil`: a launch the merge created is deleted, or the copied attempts leave the launch merged into; the merged launches come back. 409 `merge_not_active`, `merge_final`, `merge_expired`, `merge_target_changed` (results or logs were added to a created launch: delete it instead), `merge_target_merged`, `merge_target_rolled_up`, `merge_target_gone`, `merge_source_gone`, `merge_busy`; 403 `merge_target_triaged` when people triaged the created launch and the caller lacks `results:triage`.",
         "operationId": "merges_undo",
         "parameters": [
           {
@@ -7471,6 +7489,15 @@
             }
           },
           "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
             "content": {
               "application/json": {
                 "schema": {
@@ -15308,9 +15335,14 @@
           "sources",
           "status",
           "final",
+          "analysing",
           "counts"
         ],
         "properties": {
+          "analysing": {
+            "type": "boolean",
+            "description": "The analysis and statistics of the target are still being updated."
+          },
           "counts": {
             "$ref": "#/components/schemas/MergeCounts"
           },
@@ -15358,7 +15390,7 @@
           },
           "status": {
             "type": "string",
-            "description": "`preview`, `active` (can be undone until `undoUntil`), `undone`, `final` (the sources\nare deleted) or `deleted` (the target was deleted, and the sources with it)."
+            "description": "`preview`, `active` (can be undone until `undoUntil`, unless `final`), `undone`,\n`final` (the sources are deleted) or `deleted` (the target was deleted, and the sources\nwith it)."
           },
           "targetId": {
             "type": [
@@ -15380,7 +15412,8 @@
               "string",
               "null"
             ],
-            "format": "date-time"
+            "format": "date-time",
+            "description": "Until when the merge can be undone (absent for a merge without undo)."
           },
           "undoneAt": {
             "type": [
@@ -15406,11 +15439,11 @@
         "properties": {
           "dryRun": {
             "type": "boolean",
-            "description": "Check and count without merging (status `preview`)."
+            "description": "Check and count without merging (status `preview`); takes no locks."
           },
           "final": {
             "type": "boolean",
-            "description": "No undo: the sources are deleted right after the merge (needs `settings:write`)."
+            "description": "No undo: the sources are deleted after a short grace (needs `settings:write`)."
           },
           "into": {
             "type": [

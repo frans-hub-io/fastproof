@@ -96,8 +96,12 @@ const CODE_MESSAGES: Record<string, string> = {
   launch_manual: 'Launches with a manual run cannot be merged.',
   launch_rolled_up: 'One of the launches is older than the history rollup and can no longer be merged.',
   merge_mixed: 'Only launches of the same branch, and either all debug or all regular, can be merged.',
-  merge_too_large: 'These launches hold more attempts than one merge may take on this server.',
+  merge_too_large: 'These launches hold more attempts or log lines than one merge may take on this server.',
   merge_expired: 'The undo window of this merge has ended.',
+  merge_busy: 'Another merge or undo of this project is running. Try again in a moment.',
+  merge_target_triaged: 'People triaged results of the merged launch after the merge. Undoing it deletes that work, so it needs the triage permission.',
+  merge_source_gone: 'One of the merged launches was deleted, so this merge cannot be undone.',
+  launch_plan: 'Launches started from a test plan cannot be merged.',
   merge_target_changed: 'Results were added to the merged launch after the merge, so it cannot be undone. Delete the launch instead.',
 };
 

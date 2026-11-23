@@ -1,21 +1,25 @@
 //! Merging launches (CI shards, re-runs that no CI id joined) into a new launch or into one of
 //! them.
 //!
-//! The attempts of the source launches are copied into the target, and every series of the
-//! target gets its result recomputed from all its attempts with the retry semantics of ingest:
-//! a later run of the same test becomes a new attempt and the latest attempt is the result
-//! ([`fastproof_model::group_attempts`]). The sources are then hidden (`merged_into`, and
-//! `debug` so history, statistics, gates and dashboards leave them out), the analysis of the
-//! target runs as after an upload (transitions, flakiness, defects, mutes), its counters are
-//! recounted, and the series statistics are rebuilt without the sources.
+//! A merge runs in two phases.
 //!
-//! A merge can be undone until `undo_until`: the target (when the merge created it) or the
-//! copied attempts (when it merged into an existing launch) go, and the sources come back.
-//! Afterwards the sources become tombstones: their results, attempts, logs and containers are
-//! deleted, while the launch row, its uploads and its attachment links and references stay
-//! (copied attempts may reference attachment variants of a source by id) until the target is
-//! deleted. Merges are serialized per project, and the launch rows are locked in id order, so
-//! an ingest into the target waits for the merge (and the other way round).
+//! 1. One transaction copies the attempts of the source launches into the target and
+//!    recomputes every affected result from all its attempts with the retry semantics of
+//!    ingest: a later run of the same test is a new attempt and the latest attempt is the
+//!    result ([`fastproof_model::group_attempts`]). It hides the sources (`merged_into`, and
+//!    `debug` so that history, statistics, gates and dashboards leave them out), recounts the
+//!    target and queues the affected series in `launch_merge_work`. This phase takes no lock
+//!    that ingest of other launches needs: only the rows of the merged launches.
+//! 2. Short transactions, a chunk of series at a time and in ingest's lock order, run the
+//!    analysis of ingest on the target (transitions, flakiness, defects, mutes) and rebuild the
+//!    series statistics; each chunk removes its work rows, so a crash resumes where it stopped
+//!    (the `launches.merges` job drains what is left).
+//!
+//! A merge can be undone until `undo_until`. Afterwards (or after a short grace for a merge
+//! without undo) the sources become tombstones: their results, attempts, logs and containers
+//! go, the launch row and uploads stay, attachment references move to the target. Hidden
+//! launches leave with their target. Merges, undos and finalizations of a project never run
+//! at the same time (`pg_try_advisory_xact_lock`: a second request gets `merge_busy`).
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
@@ -34,12 +38,73 @@ use crate::{Project, Store, json_no_nul, no_nul};
 
 /// Launches one merge takes, at most (the target included).
 pub const MAX_MERGE_LAUNCHES: usize = 20;
-/// Series analysed per statement group (bounds the rows the analysis holds at once).
-const ANALYSIS_CHUNK: usize = 1000;
+/// Series analysed per transaction of the second phase.
+const ANALYSIS_CHUNK: usize = 500;
 /// Attributes of a new target, at most (as a launch start).
 const MAX_ATTRIBUTES: usize = 100;
 /// Merges the maintenance job handles per kind and run, at most.
 const JOB_BATCH: i64 = 20;
+/// How long a merge without undo keeps its sources before they become tombstones, so that
+/// writes already on their way (a Kafka writer behind) are copied first.
+pub const FINAL_GRACE: chrono::Duration = chrono::Duration::minutes(2);
+/// Days after finalization during which writes reaching a tombstone are still moved to the
+/// target.
+const LATE_DAYS: i32 = 7;
+/// How long a request runs the second phase before leaving the rest to the job.
+const REQUEST_BUDGET: std::time::Duration = std::time::Duration::from_secs(15);
+/// How long the job runs the second phase of one merge per run.
+const JOB_BUDGET: std::time::Duration = std::time::Duration::from_secs(50);
+/// Lock wait of a merge transaction: a merge gives up instead of making ingest queue behind it.
+const LOCK_TIMEOUT: &str = "set local lock_timeout = '5s'";
+
+/// The statement that copies the attempts of the sources into the target (`$1` target creation
+/// time, `$2` project, `$3` target, `$4`..`$6` source ids, creation times and order, `$7` new
+/// attempt ids, `$8` the target's attempt sequence before). Collisions of client keys are found
+/// with window functions over the keys only; the payload columns are read once, in the insert.
+/// A key that an earlier source used for another test or start, or that the target holds for
+/// another test or start (or for a running attempt of its own), is copied under a prefixed key:
+/// `r:m:<source>:<id>` for results sent through the API (their log lines follow them),
+/// `m:<source>:<key>` otherwise. The same key for the same test and start is one attempt.
+pub const COPY_ATTEMPTS_SQL: &str = "with src as materialized ( \
+       select a.id, a.launch_created_at as at, a.launch_id, a.series_id, a.client_key, a.seq, a.started_at, s.ord \
+       from unnest($4::uuid[], $5::timestamptz[], $6::int[]) as s(id, at, ord) \
+       join attempts a on a.launch_id = s.id and a.launch_created_at = s.at), \
+     ranked as (select src.*, \
+         row_number() over (order by src.ord, src.seq) as n, \
+         row_number() over (partition by src.client_key order by src.ord, src.seq) as kn, \
+         first_value(src.series_id) over (partition by src.client_key order by src.ord, src.seq) as fs, \
+         first_value(src.started_at) over (partition by src.client_key order by src.ord, src.seq) as fa \
+       from src), \
+     keyed as (select r.id, r.at, r.n, r.kn, r.launch_id, r.series_id, r.client_key, \
+         (r.series_id <> r.fs or r.started_at is distinct from r.fa) as other_test, \
+         (t.client_key is not null and t.merged_from is distinct from r.launch_id \
+           and (t.series_id <> r.series_id or t.started_at is distinct from r.started_at \
+             or (t.merged_from is null and t.status = 'running'))) as taken \
+       from ranked r left join attempts t on t.launch_id = $3 and t.launch_created_at = $1 \
+         and t.client_key = r.client_key), \
+     picked as (select k.id, k.at, k.n, k.launch_id, k.series_id, \
+         case when k.other_test or k.taken then \
+           case when k.client_key like 'r:%' then 'r:m:' || k.launch_id::text || ':' || substr(k.client_key, 3) \
+           else 'm:' || k.launch_id::text || ':' || k.client_key end \
+         else k.client_key end as new_key \
+       from keyed k where k.kn = 1 or k.other_test or k.taken) \
+   insert into attempts (id, launch_created_at, project_id, launch_id, result_id, series_id, upload_id, \
+     client_key, seq, status, raw_status, started_at, stopped_at, duration_ms, message, trace, source_uuid, \
+     trace_id, detail, steps_z, logs_z, fingerprint, merged_from) \
+   select ($7::uuid[])[p.n], $1, $2, $3, r.id, p.series_id, null, p.new_key, $8 + p.n, a.status, a.raw_status, \
+     a.started_at, a.stopped_at, a.duration_ms, a.message, a.trace, a.source_uuid, a.trace_id, a.detail, \
+     a.steps_z, a.logs_z, a.fingerprint, p.launch_id \
+   from picked p join attempts a on a.id = p.id and a.launch_created_at = p.at \
+   join results r on r.launch_id = $3 and r.launch_created_at = $1 and r.series_id = p.series_id \
+   on conflict (launch_id, client_key, launch_created_at) do update set status = excluded.status, \
+     result_id = excluded.result_id, series_id = excluded.series_id, raw_status = excluded.raw_status, \
+     started_at = excluded.started_at, stopped_at = excluded.stopped_at, duration_ms = excluded.duration_ms, \
+     message = excluded.message, trace = excluded.trace, source_uuid = excluded.source_uuid, \
+     trace_id = excluded.trace_id, detail = excluded.detail, steps_z = excluded.steps_z, \
+     logs_z = excluded.logs_z, fingerprint = excluded.fingerprint \
+     where attempts.status = 'running' and excluded.status <> 'running' \
+       and attempts.merged_from is not distinct from excluded.merged_from \
+   returning series_id, merged_from, client_key";
 
 /// Body of `POST /api/v1/projects/{key}/launches/merge`.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, ToSchema)]
@@ -53,10 +118,10 @@ pub struct LaunchMergeRequest {
     /// Name of the new launch (default: the name of the earliest source).
     #[serde(default)]
     pub name: Option<String>,
-    /// No undo: the sources are deleted right after the merge (needs `settings:write`).
+    /// No undo: the sources are deleted after a short grace (needs `settings:write`).
     #[serde(default, rename = "final")]
     pub final_merge: bool,
-    /// Check and count without merging (status `preview`).
+    /// Check and count without merging (status `preview`); takes no locks.
     #[serde(default)]
     pub dry_run: bool,
 }
@@ -101,15 +166,19 @@ pub struct LaunchMerge {
     /// The merge created the target (else it merged into one of the launches).
     pub created_target: bool,
     pub sources: Vec<MergeSource>,
-    /// `preview`, `active` (can be undone until `undoUntil`), `undone`, `final` (the sources
-    /// are deleted) or `deleted` (the target was deleted, and the sources with it).
+    /// `preview`, `active` (can be undone until `undoUntil`, unless `final`), `undone`,
+    /// `final` (the sources are deleted) or `deleted` (the target was deleted, and the sources
+    /// with it).
     pub status: String,
     /// Merged without undo.
     #[serde(rename = "final")]
     pub final_merge: bool,
+    /// The analysis and statistics of the target are still being updated.
+    pub analysing: bool,
     pub counts: MergeCounts,
     pub created_by: Option<String>,
     pub created_at: Option<DateTime<Utc>>,
+    /// Until when the merge can be undone (absent for a merge without undo).
     pub undo_until: Option<DateTime<Utc>>,
     pub undone_at: Option<DateTime<Utc>>,
     pub undone_by: Option<String>,
@@ -126,8 +195,13 @@ pub enum MergeError {
         message: String,
         details: serde_json::Value,
     },
+    Forbidden {
+        code: &'static str,
+        message: String,
+    },
     TooLarge {
-        attempts: i64,
+        what: &'static str,
+        value: i64,
         limit: i64,
     },
     Other(anyhow::Error),
@@ -157,6 +231,24 @@ fn conflict(
     }
 }
 
+fn busy() -> MergeError {
+    conflict(
+        "merge_busy",
+        "another merge, undo or finalization of this project is running; retry in a moment",
+        serde_json::json!({}),
+    )
+}
+
+/// True for errors after which a merge transaction may simply run again: deadlock,
+/// serialization failure, lock timeout (SQLSTATE 55P03).
+pub fn merge_retryable(e: &anyhow::Error) -> bool {
+    retryable(e).is_some()
+        || e.chain().any(|c| {
+            matches!(c.downcast_ref::<sqlx::Error>(),
+                Some(sqlx::Error::Database(d)) if d.code().as_deref() == Some("55P03"))
+        })
+}
+
 /// Server settings of merges.
 #[derive(Clone, Copy, Debug)]
 pub struct MergeOptions {
@@ -164,6 +256,8 @@ pub struct MergeOptions {
     pub undo_window: chrono::Duration,
     /// Attempts of the sources of one merge, at most.
     pub max_attempts: i64,
+    /// Log bytes one launch may hold (`launch_log_bytes`), so the target stays within it.
+    pub max_log_bytes: i64,
 }
 
 impl Default for MergeOptions {
@@ -171,19 +265,36 @@ impl Default for MergeOptions {
         Self {
             undo_window: chrono::Duration::hours(24),
             max_attempts: 200_000,
+            max_log_bytes: 256 * 1024 * 1024,
         }
     }
+}
+
+/// Who merges or undoes: a display name, a stable key (the managed token id, else the
+/// principal kind and name: `token:<id>` / `<kind>:<name>`), and what the caller may do.
+#[derive(Clone, Debug, Default)]
+pub struct MergeCaller {
+    pub name: String,
+    pub key: String,
+    /// `cases:sync`: may make a launch trusted for code sync.
+    pub can_sync: bool,
+    /// `results:triage`: may merge others' launches and undo others' merges.
+    pub can_triage: bool,
 }
 
 /// What the maintenance job did.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MergeJobReport {
-    /// Merges whose sources got late attempts, copied into the target.
+    /// Merges whose analysis was resumed and finished.
+    pub analysed: u64,
+    /// Merges whose sources got late attempts or log lines, copied into the target.
     pub synced: u64,
     /// Merges whose undo window ended (sources turned into tombstones).
     pub finalized: u64,
     /// Hidden launches deleted because their target is gone.
     pub orphans_deleted: u64,
+    /// Merges that failed in this run (logged and counted; the others went on).
+    pub errors: u64,
 }
 
 /// Validates the shape of a merge request.
@@ -217,7 +328,7 @@ pub fn validate(req: &LaunchMergeRequest) -> Result<(), MergeError> {
     Ok(())
 }
 
-/// A launch as a merge reads it (locked).
+/// A launch as a merge reads it.
 #[derive(Clone, Debug)]
 struct Row0 {
     id: Uuid,
@@ -232,8 +343,10 @@ struct Row0 {
     finished_at: Option<DateTime<Utc>>,
     rolled_up_at: Option<DateTime<Utc>>,
     manual_state: Option<String>,
+    test_plan_id: Option<Uuid>,
     merged_into: Option<Uuid>,
     attempt_seq: i64,
+    created_by_key: Option<String>,
     ci: Option<serde_json::Value>,
     vcs: Option<serde_json::Value>,
     environment: Option<serde_json::Value>,
@@ -243,9 +356,23 @@ struct Row0 {
     important: bool,
 }
 
+impl Row0 {
+    /// Code sync must not trust what this launch brought.
+    fn untrusted(&self) -> bool {
+        self.sync_blocked || !self.created_by_can_sync
+    }
+
+    fn src(&self) -> Src {
+        Src {
+            id: self.id,
+            at: self.created_at,
+        }
+    }
+}
+
 const ROW_SELECT: &str = "select id, number, name, status, debug, branch, env_key, created_at, started_at, \
-    finished_at, rolled_up_at, manual_state, merged_into, attempt_seq, ci, vcs, environment, \
-    attributes, created_by_can_sync, sync_blocked, important from launches";
+    finished_at, rolled_up_at, manual_state, test_plan_id, merged_into, attempt_seq, created_by_key, ci, vcs, \
+    environment, attributes, created_by_can_sync, sync_blocked, important from launches";
 
 fn row0(r: &PgRow) -> Result<Row0, sqlx::Error> {
     Ok(Row0 {
@@ -261,8 +388,10 @@ fn row0(r: &PgRow) -> Result<Row0, sqlx::Error> {
         finished_at: r.try_get("finished_at")?,
         rolled_up_at: r.try_get("rolled_up_at")?,
         manual_state: r.try_get("manual_state")?,
+        test_plan_id: r.try_get("test_plan_id")?,
         merged_into: r.try_get("merged_into")?,
         attempt_seq: r.try_get("attempt_seq")?,
+        created_by_key: r.try_get("created_by_key")?,
         ci: r.try_get("ci")?,
         vcs: r.try_get("vcs")?,
         environment: r.try_get("environment")?,
@@ -273,18 +402,20 @@ fn row0(r: &PgRow) -> Result<Row0, sqlx::Error> {
     })
 }
 
-/// Locks launches of a project in id order (as every merge does, so merges and ingest of the
-/// same launches queue instead of deadlocking).
-async fn lock_launches(
+/// Reads launches of a project; `lock` takes their rows in id order (as every merge does, so
+/// merges and ingest of the same launches queue instead of deadlocking).
+async fn read_launches(
     conn: &mut PgConnection,
     project_id: Uuid,
     ids: &[Uuid],
+    lock: bool,
 ) -> anyhow::Result<Vec<Row0>> {
     let mut ids = ids.to_vec();
     ids.sort();
     ids.dedup();
+    let suffix = if lock { " for update" } else { "" };
     let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
-        "{ROW_SELECT} where project_id = $1 and id = any($2) order by id for update"
+        "{ROW_SELECT} where project_id = $1 and id = any($2) order by id{suffix}"
     )))
     .bind(project_id)
     .bind(&ids)
@@ -293,13 +424,15 @@ async fn lock_launches(
     Ok(rows.iter().map(row0).collect::<Result<_, _>>()?)
 }
 
-/// Serializes merges, undos and finalizations of a project.
-async fn project_lock(conn: &mut PgConnection, project_id: Uuid) -> anyhow::Result<()> {
-    sqlx::query("select pg_advisory_xact_lock(hashtextextended($1, 7720))")
-        .bind(format!("fastproof-merge:{project_id}"))
-        .execute(&mut *conn)
-        .await?;
-    Ok(())
+/// Serializes merges, undos and finalizations of a project without queueing: false when
+/// another one holds the project.
+async fn try_project_lock(conn: &mut PgConnection, project_id: Uuid) -> anyhow::Result<bool> {
+    Ok(
+        sqlx::query_scalar("select pg_try_advisory_xact_lock(hashtextextended($1, 7720))")
+            .bind(format!("fastproof-merge:{project_id}"))
+            .fetch_one(&mut *conn)
+            .await?,
+    )
 }
 
 /// The project of a merge, as its writes need it.
@@ -325,7 +458,7 @@ async fn ctx(conn: &mut PgConnection, project: &Project, purge_batch: i64) -> an
     })
 }
 
-/// A source: id, creation time (the partition of its rows) and its order in the merge.
+/// A source: id and creation time (the partition of its rows); its order is its position.
 #[derive(Clone, Copy, Debug)]
 struct Src {
     id: Uuid,
@@ -340,24 +473,29 @@ fn src_arrays(sources: &[Src]) -> (Vec<Uuid>, Vec<DateTime<Utc>>, Vec<i32>) {
     )
 }
 
-async fn count_attempts(conn: &mut PgConnection, sources: &[Src]) -> anyhow::Result<i64> {
+/// Attempts of the sources, counted up to `cap` (enough to compare with a limit).
+async fn count_attempts(conn: &mut PgConnection, sources: &[Src], cap: i64) -> anyhow::Result<i64> {
     let (ids, ats, _) = src_arrays(sources);
     Ok(sqlx::query_scalar(
-        "select count(*) from unnest($1::uuid[], $2::timestamptz[]) as s(id, at) \
-         join attempts a on a.launch_id = s.id and a.launch_created_at = s.at",
+        "select count(*) from (select 1 from unnest($1::uuid[], $2::timestamptz[]) as s(id, at) \
+         join attempts a on a.launch_id = s.id and a.launch_created_at = s.at limit $3) x",
     )
     .bind(&ids)
     .bind(&ats)
+    .bind(cap)
     .fetch_one(&mut *conn)
     .await?)
 }
 
-/// Series with results in the sources, sorted.
-async fn source_series(conn: &mut PgConnection, sources: &[Src]) -> anyhow::Result<Vec<Uuid>> {
+/// Series with results in the sources, with how many sources ran each, sorted.
+async fn source_series(
+    conn: &mut PgConnection,
+    sources: &[Src],
+) -> anyhow::Result<Vec<(Uuid, i32)>> {
     let (ids, ats, _) = src_arrays(sources);
-    Ok(sqlx::query_scalar(
-        "select distinct r.series_id from unnest($1::uuid[], $2::timestamptz[]) as s(id, at) \
-         join results r on r.launch_id = s.id and r.launch_created_at = s.at order by 1",
+    Ok(sqlx::query_as(
+        "select r.series_id, count(*)::int from unnest($1::uuid[], $2::timestamptz[]) as s(id, at) \
+         join results r on r.launch_id = s.id and r.launch_created_at = s.at group by 1 order by 1",
     )
     .bind(&ids)
     .bind(&ats)
@@ -379,6 +517,16 @@ async fn shared_series(conn: &mut PgConnection, launches: &[Src]) -> anyhow::Res
     .await?)
 }
 
+/// Log bytes the sources hold.
+async fn source_log_bytes(conn: &mut PgConnection, ids: &[Uuid]) -> anyhow::Result<i64> {
+    Ok(sqlx::query_scalar(
+        "select coalesce(sum(bytes), 0)::bigint from launch_log_bytes where launch_id = any($1)",
+    )
+    .bind(ids)
+    .fetch_one(&mut *conn)
+    .await?)
+}
+
 /// The target of a merge.
 #[derive(Clone, Copy, Debug)]
 struct Target {
@@ -388,13 +536,13 @@ struct Target {
 
 /// Creates the launch a merge goes into: numbered next, created when the earliest source was
 /// (so it takes the sources' place in history), CI and VCS data of the earliest source, the
-/// attributes of all of them.
+/// attributes of all of them; trusted for code sync only when every source and the caller are.
 async fn insert_target(
     conn: &mut PgConnection,
     ctx: &Ctx,
     sources: &[Row0],
     name: Option<&str>,
-    by: &str,
+    caller: &MergeCaller,
 ) -> anyhow::Result<(Target, i64)> {
     let first = &sources[0];
     let number: i64 = sqlx::query_scalar(
@@ -435,11 +583,13 @@ async fn insert_target(
         .min()
         .unwrap_or(first.started_at);
     let finished_at = sources.iter().filter_map(|s| s.finished_at).max();
+    let untrusted = !caller.can_sync || sources.iter().any(Row0::untrusted);
     let id = Uuid::now_v7();
     sqlx::query(
         "insert into launches (id, project_id, number, name, status, debug, created_at, started_at, finished_at, \
-           ci, vcs, environment, attributes, branch, env_key, created_by, created_by_can_sync, sync_blocked, important) \
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)",
+           ci, vcs, environment, attributes, branch, env_key, created_by, created_by_key, created_by_can_sync, \
+           sync_blocked, important) \
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)",
     )
     .bind(id)
     .bind(ctx.id)
@@ -456,78 +606,29 @@ async fn insert_target(
     .bind(json_no_nul(serde_json::Value::Array(attrs)))
     .bind(first.branch.clone())
     .bind(env_key)
-    .bind(no_nul(by))
-    .bind(sources.iter().all(|s| s.created_by_can_sync))
-    .bind(sources.iter().any(|s| s.sync_blocked))
+    .bind(no_nul(&caller.name))
+    .bind(no_nul(&caller.key))
+    .bind(!untrusted)
+    .bind(untrusted)
     .bind(sources.iter().any(|s| s.important))
     .execute(&mut *conn)
     .await?;
     Ok((Target { id, created_at }, number))
 }
 
-/// Series statistics before a merge or an undo changes which launches count, with how many
-/// of their characters belong to launches created since `window` (which the rebuild replaces).
-struct StatsSnapshot {
-    window: DateTime<Utc>,
-    rows: HashMap<Uuid, (String, i32)>,
-    since: HashMap<Uuid, i64>,
-}
-
-/// Locks the statistics rows of `series` (in order, like ingest) and counts their results in
-/// counted launches (not debug, so neither hidden sources) created since `window`.
-async fn stats_snapshot(
-    conn: &mut PgConnection,
-    project_id: Uuid,
-    series: &[Uuid],
-    window: DateTime<Utc>,
-) -> anyhow::Result<StatsSnapshot> {
-    let mut rows = HashMap::with_capacity(series.len());
-    let mut since = HashMap::with_capacity(series.len());
-    for chunk in series.chunks(ANALYSIS_CHUNK) {
-        let got: Vec<(Uuid, String, i32)> = sqlx::query_as(
-            "select series_id, last_statuses, runs_tracked from series_stats where series_id = any($1) \
-             order by series_id for update",
-        )
-        .bind(chunk)
-        .fetch_all(&mut *conn)
-        .await?;
-        rows.extend(got.into_iter().map(|(s, l, n)| (s, (l, n))));
-        let counted: Vec<(Uuid, i64)> = sqlx::query_as(
-            "select r.series_id, count(*) from results r join launches l on l.id = r.launch_id \
-             where r.series_id = any($1) and r.project_id = $2 and r.launch_created_at >= $3 and not l.debug \
-             group by r.series_id",
-        )
-        .bind(chunk)
-        .bind(project_id)
-        .bind(window)
-        .fetch_all(&mut *conn)
-        .await?;
-        since.extend(counted);
-    }
-    Ok(StatsSnapshot {
-        window,
-        rows,
-        since,
-    })
-}
-
-/// The status string of a series after a rebuild: the characters of launches created before
-/// the window are kept, those since are replaced by the results of the counted launches since
-/// then, in creation order. Returns the string and the runs tracked.
-fn rebuilt_statuses(
-    old: Option<&(String, i32)>,
-    before_since: i64,
-    tail: &[Status],
-) -> (String, i32) {
+/// The status string of a series after a rebuild: its last `strip` characters (those of the
+/// launches created since the merge's window began, as they were) are replaced by the results
+/// of the launches counted now. Returns the string and the runs tracked.
+fn rebuilt_statuses(old: Option<&(String, i32)>, strip: i64, tail: &[Status]) -> (String, i32) {
     let (old_s, old_runs) = old.map(|(s, n)| (s.as_str(), *n)).unwrap_or(("", 0));
     let chars: Vec<char> = old_s.chars().collect();
-    let keep = chars.len().saturating_sub(before_since.max(0) as usize);
-    let mut out: Vec<char> = chars[..keep].to_vec();
+    let strip = (strip.max(0) as usize).min(chars.len());
+    let mut out: Vec<char> = chars[..chars.len() - strip].to_vec();
     out.extend(tail.iter().map(|s| stats::encode(*s)));
     if out.len() > STATUS_CHARS {
         out.drain(..out.len() - STATUS_CHARS);
     }
-    let runs = (old_runs as i64 - before_since + tail.len() as i64).max(out.len() as i64);
+    let runs = (old_runs as i64 - strip as i64 + tail.len() as i64).max(out.len() as i64);
     (out.into_iter().collect(), runs.min(i32::MAX as i64) as i32)
 }
 
@@ -537,98 +638,115 @@ type TailRow = (Status, bool, Uuid, DateTime<Utc>);
 /// An attempt of a target: series, id, status, start, order.
 type AttemptRow = (Uuid, Uuid, String, Option<DateTime<Utc>>, i64);
 
-/// Rebuilds the statistics of `series` from the snapshot and the results now counted.
+/// Rebuilds the statistics of series (sorted, with the `delta` of their work rows: the
+/// characters to strip are the counted results since `window` plus `delta`). Locks the rows in
+/// order, after everything else of the transaction (ingest's order).
 async fn rebuild_stats(
     conn: &mut PgConnection,
     ctx: &Ctx,
-    snap: &StatsSnapshot,
-    series: &[Uuid],
+    window: DateTime<Utc>,
+    work: &[(Uuid, i32)],
 ) -> anyhow::Result<()> {
-    let window = ctx.settings.flaky.depth() as usize + 1;
-    for chunk in series.chunks(ANALYSIS_CHUNK) {
-        let rows: Vec<(Uuid, String, bool, Uuid, DateTime<Utc>)> = sqlx::query_as(
-            "select r.series_id, r.status, r.flaky, r.launch_id, r.launch_created_at from results r \
-             join launches l on l.id = r.launch_id \
-             where r.series_id = any($1) and r.project_id = $2 and r.launch_created_at >= $3 and not l.debug \
-             order by r.series_id, r.launch_created_at, l.number",
-        )
-        .bind(chunk)
-        .bind(ctx.id)
-        .bind(snap.window)
-        .fetch_all(&mut *conn)
-        .await?;
-        let mut tails: HashMap<Uuid, Vec<TailRow>> = HashMap::new();
-        for (s, st, fl, l, at) in rows {
-            tails
-                .entry(s)
-                .or_default()
-                .push((Status::parse_lenient(&st), fl, l, at));
-        }
-        let mut ids = Vec::new();
-        let mut strings = Vec::new();
-        let mut bits = Vec::new();
-        let mut runs = Vec::new();
-        let mut scores: Vec<Option<f32>> = Vec::new();
-        let mut last: Vec<Option<String>> = Vec::new();
-        let mut last_launch: Vec<Option<Uuid>> = Vec::new();
-        let mut flaky = Vec::new();
-        let mut seen_at: Vec<Option<DateTime<Utc>>> = Vec::new();
-        for s in chunk {
-            let tail = tails.remove(s).unwrap_or_default();
-            let old = snap.rows.get(s);
-            if old.is_none() && tail.is_empty() {
-                continue;
-            }
-            let statuses: Vec<Status> = tail.iter().map(|t| t.0).collect();
-            let (string, n) =
-                rebuilt_statuses(old, snap.since.get(s).copied().unwrap_or(0), &statuses);
-            let decoded = stats::decode(&string);
-            let mut b: i64 = 0;
-            for (i, st) in decoded.iter().rev().take(63).enumerate() {
-                if st.is_failure() {
-                    b |= 1 << i;
-                }
-            }
-            ids.push(*s);
-            scores.push(stats::flaky_score(&decoded, window));
-            strings.push(string);
-            bits.push(b);
-            runs.push(n);
-            let latest = tail.last();
-            last.push(latest.map(|t| t.0.as_str().to_string()));
-            last_launch.push(latest.map(|t| t.2));
-            flaky.push(latest.is_some_and(|t| t.1));
-            seen_at.push(latest.map(|t| t.3));
-        }
-        if ids.is_empty() {
+    if work.is_empty() {
+        return Ok(());
+    }
+    let series: Vec<Uuid> = work.iter().map(|w| w.0).collect();
+    let flaky_window = ctx.settings.flaky.depth() as usize + 1;
+    let olds: HashMap<Uuid, (String, i32)> = sqlx::query_as::<_, (Uuid, String, i32)>(
+        "select series_id, last_statuses, runs_tracked from series_stats where series_id = any($1) \
+         order by series_id for update",
+    )
+    .bind(&series)
+    .fetch_all(&mut *conn)
+    .await?
+    .into_iter()
+    .map(|(s, l, n)| (s, (l, n)))
+    .collect();
+    let rows: Vec<(Uuid, String, bool, Uuid, DateTime<Utc>)> = sqlx::query_as(
+        "select r.series_id, r.status, r.flaky, r.launch_id, r.launch_created_at from results r \
+         join launches l on l.id = r.launch_id \
+         where r.series_id = any($1) and r.project_id = $2 and r.launch_created_at >= $3 and not l.debug \
+         order by r.series_id, r.launch_created_at, l.number",
+    )
+    .bind(&series)
+    .bind(ctx.id)
+    .bind(window)
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut tails: HashMap<Uuid, Vec<TailRow>> = HashMap::new();
+    for (s, st, fl, l, at) in rows {
+        tails
+            .entry(s)
+            .or_default()
+            .push((Status::parse_lenient(&st), fl, l, at));
+    }
+    let n = work.len();
+    let (mut ids, mut strings, mut bits, mut runs) = (
+        Vec::with_capacity(n),
+        Vec::with_capacity(n),
+        Vec::with_capacity(n),
+        Vec::with_capacity(n),
+    );
+    let mut scores: Vec<Option<f32>> = Vec::with_capacity(n);
+    let mut last: Vec<Option<String>> = Vec::with_capacity(n);
+    let mut last_launch: Vec<Option<Uuid>> = Vec::with_capacity(n);
+    let mut flaky = Vec::with_capacity(n);
+    let mut seen_at: Vec<Option<DateTime<Utc>>> = Vec::with_capacity(n);
+    for (s, delta) in work {
+        let tail = tails.remove(s).unwrap_or_default();
+        let old = olds.get(s);
+        if old.is_none() && tail.is_empty() {
             continue;
         }
-        sqlx::query(
-            "insert into series_stats (series_id, project_id, last_statuses, status_bits, runs_tracked, flaky_score, \
-               last_status, last_launch_id, flaky, first_seen_at, last_seen_at, updated_at) \
-             select s, $1, st, b, r, sc, ls, ll, fl, sa, sa, now() \
-             from unnest($2::uuid[], $3::text[], $4::bigint[], $5::int[], $6::real[], $7::text[], $8::uuid[], \
-               $9::bool[], $10::timestamptz[]) as t(s, st, b, r, sc, ls, ll, fl, sa) \
-             on conflict (series_id) do update set last_statuses = excluded.last_statuses, \
-               status_bits = excluded.status_bits, runs_tracked = excluded.runs_tracked, \
-               flaky_score = excluded.flaky_score, \
-               last_status = coalesce(excluded.last_status, series_stats.last_status), \
-               last_launch_id = excluded.last_launch_id, flaky = excluded.flaky, \
-               first_seen_at = coalesce(series_stats.first_seen_at, excluded.first_seen_at), updated_at = now()",
-        )
-        .bind(ctx.id)
-        .bind(&ids)
-        .bind(&strings)
-        .bind(&bits)
-        .bind(&runs)
-        .bind(&scores)
-        .bind(&last)
-        .bind(&last_launch)
-        .bind(&flaky)
-        .bind(&seen_at)
-        .execute(&mut *conn)
-        .await?;
+        let statuses: Vec<Status> = tail.iter().map(|t| t.0).collect();
+        let strip = tail.len() as i64 + *delta as i64;
+        let (string, r) = rebuilt_statuses(old, strip, &statuses);
+        let decoded = stats::decode(&string);
+        let mut b: i64 = 0;
+        for (i, st) in decoded.iter().rev().take(63).enumerate() {
+            if st.is_failure() {
+                b |= 1 << i;
+            }
+        }
+        ids.push(*s);
+        scores.push(stats::flaky_score(&decoded, flaky_window));
+        strings.push(string);
+        bits.push(b);
+        runs.push(r);
+        let latest = tail.last();
+        last.push(latest.map(|t| t.0.as_str().to_string()));
+        last_launch.push(latest.map(|t| t.2));
+        flaky.push(latest.is_some_and(|t| t.1));
+        seen_at.push(latest.map(|t| t.3));
     }
+    if ids.is_empty() {
+        return Ok(());
+    }
+    sqlx::query(
+        "insert into series_stats (series_id, project_id, last_statuses, status_bits, runs_tracked, flaky_score, \
+           last_status, last_launch_id, flaky, first_seen_at, last_seen_at, updated_at) \
+         select s, $1, st, b, r, sc, ls, ll, fl, sa, sa, now() \
+         from unnest($2::uuid[], $3::text[], $4::bigint[], $5::int[], $6::real[], $7::text[], $8::uuid[], \
+           $9::bool[], $10::timestamptz[]) as t(s, st, b, r, sc, ls, ll, fl, sa) \
+         on conflict (series_id) do update set last_statuses = excluded.last_statuses, \
+           status_bits = excluded.status_bits, runs_tracked = excluded.runs_tracked, \
+           flaky_score = excluded.flaky_score, \
+           last_status = coalesce(excluded.last_status, series_stats.last_status), \
+           last_launch_id = excluded.last_launch_id, flaky = excluded.flaky, \
+           first_seen_at = coalesce(series_stats.first_seen_at, excluded.first_seen_at), updated_at = now()",
+    )
+    .bind(ctx.id)
+    .bind(&ids)
+    .bind(&strings)
+    .bind(&bits)
+    .bind(&runs)
+    .bind(&scores)
+    .bind(&last)
+    .bind(&last_launch)
+    .bind(&flaky)
+    .bind(&seen_at)
+    .execute(&mut *conn)
+    .await?;
     Ok(())
 }
 
@@ -644,7 +762,7 @@ async fn recompute_results(
     kinds: &HashMap<Uuid, i32>,
 ) -> anyhow::Result<Vec<Uuid>> {
     let mut kept = Vec::with_capacity(series.len());
-    for chunk in series.chunks(ANALYSIS_CHUNK * 10) {
+    for chunk in series.chunks(ANALYSIS_CHUNK * 20) {
         let mut all: Vec<AttemptRow> = sqlx::query_as(
             "select series_id, id, status, started_at, seq from attempts \
              where launch_id = $1 and launch_created_at = $2 and series_id = any($3)",
@@ -752,25 +870,68 @@ async fn source_kinds(
     .collect())
 }
 
-/// Copies the attempts (and containers, attachment links, log chunks) of `sources` into the
-/// target, recomputes its results, hides the sources when `hide`, analyses the target and
-/// rebuilds the statistics. Copying again copies only what is new (idempotent).
-async fn apply(
+/// Series of the target that had a result before a copy.
+async fn target_series(
+    conn: &mut PgConnection,
+    t: Target,
+    series: &[Uuid],
+) -> anyhow::Result<HashSet<Uuid>> {
+    Ok(sqlx::query_scalar::<_, Uuid>(
+        "select series_id from results where launch_id = $1 and launch_created_at = $2 and series_id = any($3)",
+    )
+    .bind(t.id)
+    .bind(t.created_at)
+    .bind(series)
+    .fetch_all(&mut *conn)
+    .await?
+    .into_iter()
+    .collect())
+}
+
+/// Queues series for the second phase; an existing row keeps its delta (it still describes the
+/// statistics as they are).
+async fn queue_work(
+    conn: &mut PgConnection,
+    project_id: Uuid,
+    merge_id: Uuid,
+    work: &[(Uuid, i32)],
+) -> anyhow::Result<()> {
+    for chunk in work.chunks(10_000) {
+        let ids: Vec<Uuid> = chunk.iter().map(|w| w.0).collect();
+        let deltas: Vec<i32> = chunk.iter().map(|w| w.1).collect();
+        sqlx::query(
+            "insert into launch_merge_work (merge_id, project_id, series_id, delta) \
+             select $1, $2, s, d from unnest($3::uuid[], $4::int[]) as t(s, d) \
+             on conflict (merge_id, series_id) do nothing",
+        )
+        .bind(merge_id)
+        .bind(project_id)
+        .bind(&ids)
+        .bind(&deltas)
+        .execute(&mut *conn)
+        .await?;
+    }
+    Ok(())
+}
+
+/// What a copy did.
+struct Copied {
+    counts: MergeCounts,
+    /// Series whose attempts changed.
+    affected: Vec<Uuid>,
+}
+
+/// Copies the attempts, containers, attachment links and log chunks of `sources` into the
+/// target and recomputes its affected results. Copying again copies only what is new.
+async fn copy_into(
     conn: &mut PgConnection,
     ctx: &Ctx,
     t: Target,
     sources: &[Src],
-    hide: bool,
-) -> anyhow::Result<MergeCounts> {
+    series: &[Uuid],
+    n: i64,
+) -> anyhow::Result<Copied> {
     let mut counts = MergeCounts::default();
-    let series = source_series(conn, sources).await?;
-    let window = sources
-        .iter()
-        .map(|s| s.at)
-        .chain([t.created_at])
-        .min()
-        .unwrap_or(t.created_at);
-    let snap = stats_snapshot(conn, ctx.id, &series, window).await?;
     let (ids, ats, ords) = src_arrays(sources);
 
     let result_ids: Vec<Uuid> = (0..series.len()).map(|_| Uuid::now_v7()).collect();
@@ -798,73 +959,39 @@ async fn apply(
     .execute(&mut *conn)
     .await?;
 
-    let n = count_attempts(conn, sources).await?;
     let seq0: i64 = sqlx::query_scalar("select attempt_seq from launches where id = $1")
         .bind(t.id)
         .fetch_one(&mut *conn)
         .await?;
     let attempt_ids: Vec<Uuid> = (0..n).map(|_| Uuid::now_v7()).collect();
-    // A client key the target (or an earlier source) uses for another test or start gets the
-    // source's prefix; the same key for the same test and start is the same attempt, copied
-    // once. A copy reported running is replaced when the source completed it.
-    let copied: Vec<(Uuid, bool)> = sqlx::query_as(
-        "with src as materialized (select a.id, a.launch_id, a.series_id, a.client_key, a.seq, a.status, a.raw_status, \
-             a.started_at, a.stopped_at, a.duration_ms, a.message, a.trace, a.source_uuid, a.trace_id, a.detail, \
-             a.steps_z, a.logs_z, a.fingerprint, s.ord \
-           from unnest($4::uuid[], $5::timestamptz[], $6::int[]) as s(id, at, ord) \
-           join attempts a on a.launch_id = s.id and a.launch_created_at = s.at), \
-         keyed as (select src.*, row_number() over (order by src.ord, src.seq) as n, \
-             case when exists (select 1 from attempts o where o.launch_id = $3 and o.launch_created_at = $1 \
-                 and o.client_key = src.client_key and o.merged_from is distinct from src.launch_id \
-                 and (o.series_id <> src.series_id or o.started_at is distinct from src.started_at)) \
-               or exists (select 1 from src e where e.client_key = src.client_key and e.ord < src.ord \
-                 and (e.series_id <> src.series_id or e.started_at is distinct from src.started_at)) \
-             then 'm:' || src.launch_id::text || ':' || src.client_key else src.client_key end as new_key, \
-             exists (select 1 from src e where e.client_key = src.client_key and e.ord < src.ord \
-               and e.series_id = src.series_id and e.started_at is not distinct from src.started_at) as repeated \
-           from src) \
-         insert into attempts (id, launch_created_at, project_id, launch_id, result_id, series_id, upload_id, \
-           client_key, seq, status, raw_status, started_at, stopped_at, duration_ms, message, trace, source_uuid, \
-           trace_id, detail, steps_z, logs_z, fingerprint, merged_from) \
-         select ($7::uuid[])[k.n], $1, $2, $3, r.id, k.series_id, null, k.new_key, $8 + k.n, k.status, k.raw_status, \
-           k.started_at, k.stopped_at, k.duration_ms, k.message, k.trace, k.source_uuid, k.trace_id, k.detail, \
-           k.steps_z, k.logs_z, k.fingerprint, k.launch_id \
-         from keyed k join results r on r.launch_id = $3 and r.launch_created_at = $1 and r.series_id = k.series_id \
-         where not k.repeated \
-         on conflict (launch_id, client_key, launch_created_at) do update set status = excluded.status, \
-           result_id = excluded.result_id, series_id = excluded.series_id, raw_status = excluded.raw_status, \
-           started_at = excluded.started_at, stopped_at = excluded.stopped_at, duration_ms = excluded.duration_ms, \
-           message = excluded.message, trace = excluded.trace, source_uuid = excluded.source_uuid, \
-           trace_id = excluded.trace_id, detail = excluded.detail, steps_z = excluded.steps_z, \
-           logs_z = excluded.logs_z, fingerprint = excluded.fingerprint, merged_from = excluded.merged_from \
-           where attempts.status = 'running' and excluded.status <> 'running' \
-         returning series_id, left(client_key, 39) = 'm:' || coalesce(merged_from::text, '') || ':'",
-    )
-    .bind(t.created_at)
-    .bind(ctx.id)
-    .bind(t.id)
-    .bind(&ids)
-    .bind(&ats)
-    .bind(&ords)
-    .bind(&attempt_ids)
-    .bind(seq0)
-    .fetch_all(&mut *conn)
-    .await?;
+    let copied: Vec<(Uuid, Option<Uuid>, String)> = sqlx::query_as(COPY_ATTEMPTS_SQL)
+        .bind(t.created_at)
+        .bind(ctx.id)
+        .bind(t.id)
+        .bind(&ids)
+        .bind(&ats)
+        .bind(&ords)
+        .bind(&attempt_ids)
+        .bind(seq0)
+        .fetch_all(&mut *conn)
+        .await?;
     counts.attempts = copied.len() as i64;
-    counts.duplicates = n - counts.attempts;
-    counts.rekeyed = copied.iter().filter(|c| c.1).count() as i64;
-    let mut affected: Vec<Uuid> = if hide {
-        series.clone()
-    } else {
-        copied
-            .iter()
-            .map(|c| c.0)
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect()
-    };
-    affected.sort();
-    affected.dedup();
+    counts.duplicates = (n - counts.attempts).max(0);
+    counts.rekeyed = copied
+        .iter()
+        .filter(|(_, from, key)| {
+            from.is_some_and(|f| {
+                let p = format!("m:{f}:");
+                key.starts_with(&p) || key.strip_prefix("r:").is_some_and(|k| k.starts_with(&p))
+            })
+        })
+        .count() as i64;
+    let affected: Vec<Uuid> = copied
+        .iter()
+        .map(|c| c.0)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
 
     sqlx::query(
         "insert into launch_containers (launch_id, uuid, name, children, fixtures_z, start_ms, merged_from) \
@@ -886,24 +1013,29 @@ async fn apply(
     .bind(&ids)
     .execute(&mut *conn)
     .await?;
+    // Log chunks follow their attempt: a rekeyed API result (`r:m:<source>:<id>`) gets its
+    // lines under `m:<source>:<id>`, so chunks of two tests that shared an id stay apart.
     let log_bytes: i64 = sqlx::query_scalar(
-        "with ins as (insert into attempt_log_chunks (project_id, launch_id, result_key, attempt, first_seq, \
+        "with c0 as (select c.id, s.ord, c.attempt, c.first_seq, \
+             case when exists (select 1 from attempts t where t.launch_id = $1 and t.launch_created_at = $4 \
+                 and t.client_key = 'r:m:' || c.launch_id::text || ':' || c.result_key) \
+               then 'm:' || c.launch_id::text || ':' || c.result_key else c.result_key end as rk \
+           from unnest($2::uuid[], $3::int[]) as s(id, ord) join attempt_log_chunks c on c.launch_id = s.id), \
+         pick as (select distinct on (rk, attempt, first_seq) id, rk from c0 order by rk, attempt, first_seq, ord), \
+         ins as (insert into attempt_log_chunks (project_id, launch_id, result_key, attempt, first_seq, \
              last_seq, line_count, levels, bytes, first_ts, last_ts, lines_z, created_at, merged_from) \
-           select c.project_id, $1, c.result_key, c.attempt, c.first_seq, c.last_seq, c.line_count, c.levels, \
+           select c.project_id, $1, p.rk, c.attempt, c.first_seq, c.last_seq, c.line_count, c.levels, \
              c.bytes, c.first_ts, c.last_ts, c.lines_z, c.created_at, c.launch_id \
-           from (select distinct on (c.result_key, c.attempt, c.first_seq) c.project_id, c.launch_id, \
-               c.result_key, c.attempt, c.first_seq, c.last_seq, c.line_count, c.levels, c.bytes, c.first_ts, \
-               c.last_ts, c.lines_z, c.created_at \
-             from unnest($2::uuid[], $3::int[]) as s(id, ord) join attempt_log_chunks c on c.launch_id = s.id \
-             order by c.result_key, c.attempt, c.first_seq, s.ord) c \
+           from pick p join attempt_log_chunks c on c.id = p.id \
            where not exists (select 1 from attempt_log_chunks o where o.launch_id = $1 \
-             and o.result_key = c.result_key and o.attempt = c.attempt and o.first_seq = c.first_seq) \
+             and o.result_key = p.rk and o.attempt = c.attempt and o.first_seq = c.first_seq) \
            returning bytes) \
          select coalesce(sum(bytes), 0)::bigint from ins",
     )
     .bind(t.id)
     .bind(&ids)
     .bind(&ords)
+    .bind(t.created_at)
     .fetch_one(&mut *conn)
     .await?;
     if log_bytes > 0 {
@@ -917,16 +1049,6 @@ async fn apply(
         .await?;
     }
 
-    if hide {
-        sqlx::query(
-            "update launches set merged_into = $2, debug = true, updated_at = now() where id = any($1)",
-        )
-        .bind(&ids)
-        .bind(t.id)
-        .execute(&mut *conn)
-        .await?;
-    }
-
     let kinds = if affected.is_empty() {
         HashMap::new()
     } else {
@@ -934,56 +1056,105 @@ async fn apply(
     };
     let kept = recompute_results(conn, t, &affected, &kinds).await?;
     counts.results = kept.len() as i64;
-    analyse(conn, ctx, t, &kept).await?;
     crate::ingest::recount(conn, t.id, t.created_at, Some(seq0 + n)).await?;
-    rebuild_stats(conn, ctx, &snap, &series).await?;
-    if hide {
-        repoint_fingerprints(conn, ctx.id, &ids, t.id, t.id).await?;
-    }
-    Ok(counts)
+    Ok(Copied { counts, affected })
 }
 
-/// The analysis of ingest (transitions, flakiness, defects, mutes, statistics) for results
-/// of `t`, a chunk of series at a time.
-async fn analyse(
-    conn: &mut PgConnection,
-    ctx: &Ctx,
-    t: Target,
-    series: &[Uuid],
-) -> anyhow::Result<()> {
-    let lref = LaunchRef {
-        id: t.id,
-        project_id: ctx.id,
-        project_key: ctx.key.clone(),
-        created_at: t.created_at,
-    };
-    for chunk in series.chunks(ANALYSIS_CHUNK) {
-        crate::analysis::after_persist(&mut *conn, &lref, &[], chunk).await?;
-    }
-    Ok(())
-}
-
-/// Failure fingerprints first or last seen in `from` now name `first` / `last`.
+/// Failure fingerprints first or last seen in the sources, as they were (restored on undo),
+/// then pointed at the target: `last` always, `first` when the target is not newer.
 async fn repoint_fingerprints(
     conn: &mut PgConnection,
     project_id: Uuid,
-    from: &[Uuid],
-    first: Uuid,
-    last: Uuid,
-) -> anyhow::Result<()> {
+    sources: &[Src],
+    t: Target,
+) -> anyhow::Result<serde_json::Value> {
+    let ids: Vec<Uuid> = sources.iter().map(|s| s.id).collect();
+    let saved: Vec<(String, Option<Uuid>, Option<Uuid>)> = sqlx::query_as(
+        "select fingerprint, first_launch_id, last_launch_id from failure_fingerprints \
+         where project_id = $1 and (first_launch_id = any($2) or last_launch_id = any($2))",
+    )
+    .bind(project_id)
+    .bind(&ids)
+    .fetch_all(&mut *conn)
+    .await?;
+    let older: Vec<Uuid> = sources
+        .iter()
+        .filter(|s| s.at >= t.created_at)
+        .map(|s| s.id)
+        .collect();
     sqlx::query(
         "update failure_fingerprints set \
-           first_launch_id = case when first_launch_id = any($2) then $3 else first_launch_id end, \
+           first_launch_id = case when first_launch_id = any($3) then $4 else first_launch_id end, \
            last_launch_id = case when last_launch_id = any($2) then $4 else last_launch_id end \
          where project_id = $1 and (first_launch_id = any($2) or last_launch_id = any($2))",
     )
     .bind(project_id)
-    .bind(from)
-    .bind(first)
-    .bind(last)
+    .bind(&ids)
+    .bind(&older)
+    .bind(t.id)
+    .execute(&mut *conn)
+    .await?;
+    Ok(serde_json::Value::Array(
+        saved
+            .into_iter()
+            .map(|(f, a, b)| serde_json::json!({"fp": f, "first": a, "last": b}))
+            .collect(),
+    ))
+}
+
+/// Puts back the fingerprints a merge pointed at its target.
+async fn restore_fingerprints(
+    conn: &mut PgConnection,
+    project_id: Uuid,
+    saved: Option<&serde_json::Value>,
+    target: Uuid,
+) -> anyhow::Result<()> {
+    let Some(items) = saved.and_then(|v| v.as_array()) else {
+        return Ok(());
+    };
+    let mut fps = Vec::new();
+    let mut firsts: Vec<Option<Uuid>> = Vec::new();
+    let mut lasts: Vec<Option<Uuid>> = Vec::new();
+    for i in items {
+        let Some(fp) = i.get("fp").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        fps.push(fp.to_string());
+        firsts.push(i.get("first").and_then(|v| v.as_str()?.parse().ok()));
+        lasts.push(i.get("last").and_then(|v| v.as_str()?.parse().ok()));
+    }
+    sqlx::query(
+        "update failure_fingerprints f set \
+           first_launch_id = case when f.first_launch_id = $5 then t.a else f.first_launch_id end, \
+           last_launch_id = case when f.last_launch_id = $5 then t.b else f.last_launch_id end \
+         from unnest($2::text[], $3::uuid[], $4::uuid[]) as t(fp, a, b) \
+         where f.project_id = $1 and f.fingerprint = t.fp",
+    )
+    .bind(project_id)
+    .bind(&fps)
+    .bind(&firsts)
+    .bind(&lasts)
+    .bind(target)
     .execute(&mut *conn)
     .await?;
     Ok(())
+}
+
+/// Highest log chunk id per launch (0 without chunks), in the order of `ids`.
+async fn log_marks(conn: &mut PgConnection, ids: &[Uuid]) -> anyhow::Result<Vec<i64>> {
+    let rows: HashMap<Uuid, i64> = sqlx::query_as::<_, (Uuid, i64)>(
+        "select s, coalesce((select max(c.id) from attempt_log_chunks c where c.launch_id = s), 0) \
+         from unnest($1::uuid[]) as s",
+    )
+    .bind(ids)
+    .fetch_all(&mut *conn)
+    .await?
+    .into_iter()
+    .collect();
+    Ok(ids
+        .iter()
+        .map(|i| rows.get(i).copied().unwrap_or(0))
+        .collect())
 }
 
 /// A stored merge.
@@ -994,6 +1165,7 @@ struct MergeRow {
     target_created: bool,
     sources: Vec<Uuid>,
     source_seqs: Vec<i64>,
+    log_marks: Option<Vec<i64>>,
     debug: bool,
     status: String,
     final_merge: bool,
@@ -1004,10 +1176,13 @@ struct MergeRow {
     undone_at: Option<DateTime<Utc>>,
     undone_by: Option<String>,
     finalized_at: Option<DateTime<Utc>>,
+    fingerprints: Option<serde_json::Value>,
+    window_start: Option<DateTime<Utc>>,
 }
 
-const MERGE_SELECT: &str = "select id, target_id, target_created, sources, source_seqs, debug, status, final, \
-    counts, created_by, created_at, undo_until, undone_at, undone_by, finalized_at from launch_merges";
+const MERGE_SELECT: &str = "select id, target_id, target_created, sources, source_seqs, log_marks, debug, status, \
+    final, counts, created_by, created_at, undo_until, undone_at, undone_by, finalized_at, \
+    fingerprints, window_start from launch_merges";
 
 fn merge_row(r: &PgRow) -> Result<MergeRow, sqlx::Error> {
     Ok(MergeRow {
@@ -1016,6 +1191,7 @@ fn merge_row(r: &PgRow) -> Result<MergeRow, sqlx::Error> {
         target_created: r.try_get("target_created")?,
         sources: r.try_get("sources")?,
         source_seqs: r.try_get("source_seqs")?,
+        log_marks: r.try_get("log_marks")?,
         debug: r.try_get("debug")?,
         status: r.try_get("status")?,
         final_merge: r.try_get("final")?,
@@ -1026,6 +1202,8 @@ fn merge_row(r: &PgRow) -> Result<MergeRow, sqlx::Error> {
         undone_at: r.try_get("undone_at")?,
         undone_by: r.try_get("undone_by")?,
         finalized_at: r.try_get("finalized_at")?,
+        fingerprints: r.try_get("fingerprints")?,
+        window_start: r.try_get("window_start")?,
     })
 }
 
@@ -1050,11 +1228,13 @@ fn add_counts(stored: &serde_json::Value, late: &MergeCounts) -> serde_json::Val
     serde_json::to_value(c).unwrap_or_default()
 }
 
-/// Copies what reached the sources of an active merge since it was made or last synced.
+/// Copies what reached the sources of a merge since it was made or last synced (attempts, or
+/// log lines only), queues the affected series and, for a finalized merge, deletes the copied
+/// rows from the tombstones again. Returns whether anything was copied.
 async fn sync_in(conn: &mut PgConnection, ctx: &Ctx, m: &MergeRow) -> anyhow::Result<bool> {
     let mut ids = m.sources.clone();
     ids.push(m.target_id);
-    let rows = lock_launches(conn, ctx.id, &ids).await?;
+    let rows = read_launches(conn, ctx.id, &ids, true).await?;
     let Some(t) = rows.iter().find(|r| r.id == m.target_id) else {
         return Ok(false);
     };
@@ -1068,25 +1248,57 @@ async fn sync_in(conn: &mut PgConnection, ctx: &Ctx, m: &MergeRow) -> anyhow::Re
         .copied()
         .zip(m.source_seqs.iter().copied())
         .collect();
+    let marks: HashMap<Uuid, i64> = m
+        .sources
+        .iter()
+        .copied()
+        .zip(m.log_marks.clone().unwrap_or_default())
+        .collect();
     let mut sources: Vec<&Row0> = rows
         .iter()
         .filter(|r| r.id != m.target_id && m.sources.contains(&r.id))
         .collect();
     sources.sort_by_key(|r| (r.created_at, r.number));
-    let changed = sources
-        .iter()
-        .any(|r| r.attempt_seq > seqs.get(&r.id).copied().unwrap_or(i64::MAX));
+    let src_ids: Vec<Uuid> = sources.iter().map(|r| r.id).collect();
+    let now_marks = log_marks(conn, &src_ids).await?;
+    let changed = sources.iter().zip(now_marks.iter()).any(|(r, mark)| {
+        r.attempt_seq > seqs.get(&r.id).copied().unwrap_or(i64::MAX)
+            || *mark > marks.get(&r.id).copied().unwrap_or(0)
+    });
     if !changed {
         return Ok(false);
     }
-    let srcs: Vec<Src> = sources
+    let srcs: Vec<Src> = sources.iter().map(|r| r.src()).collect();
+    let series: Vec<Uuid> = source_series(conn, &srcs)
+        .await?
+        .into_iter()
+        .map(|s| s.0)
+        .collect();
+    let had = target_series(conn, t, &series).await?;
+    let n = count_attempts(conn, &srcs, i64::MAX).await?;
+    let late = copy_into(conn, ctx, t, &srcs, &series, n).await?;
+    let work: Vec<(Uuid, i32)> = late
+        .affected
         .iter()
-        .map(|r| Src {
-            id: r.id,
-            at: r.created_at,
+        .map(|s| (*s, if had.contains(s) { 0 } else { -1 }))
+        .collect();
+    if !m.debug {
+        queue_work(conn, ctx.id, m.id, &work).await?;
+    }
+    if m.status == "final" {
+        tombstone(conn, &srcs, t).await?;
+    }
+    let all_marks: Vec<i64> = m
+        .sources
+        .iter()
+        .map(|id| {
+            src_ids
+                .iter()
+                .position(|s| s == id)
+                .map(|i| now_marks[i])
+                .unwrap_or(0)
         })
         .collect();
-    let late = apply(conn, ctx, t, &srcs, false).await?;
     let now_seqs: Vec<i64> = m
         .sources
         .iter()
@@ -1099,11 +1311,12 @@ async fn sync_in(conn: &mut PgConnection, ctx: &Ctx, m: &MergeRow) -> anyhow::Re
         })
         .collect();
     sqlx::query(
-        "update launch_merges set source_seqs = $2, synced_at = now(), counts = $3 where id = $1",
+        "update launch_merges set source_seqs = $2, log_marks = $3, synced_at = now(), counts = $4 where id = $1",
     )
     .bind(m.id)
     .bind(&now_seqs)
-    .bind(add_counts(&m.counts, &late))
+    .bind(&all_marks)
+    .bind(add_counts(&m.counts, &late.counts))
     .execute(&mut *conn)
     .await?;
     crate::events::notify_launch(&mut *conn, &ctx.key, t.id).await?;
@@ -1111,8 +1324,9 @@ async fn sync_in(conn: &mut PgConnection, ctx: &Ctx, m: &MergeRow) -> anyhow::Re
 }
 
 /// Deletes what the sources of a merge hold except the launch rows, their uploads and their
-/// attachment links and references, which stay as tombstones.
-async fn tombstone(conn: &mut PgConnection, sources: &[Src]) -> anyhow::Result<()> {
+/// attachment links; their attachment references move to the target (copied attempts may name
+/// them), unless the target has the same variant already (then they stay on the tombstone).
+async fn tombstone(conn: &mut PgConnection, sources: &[Src], t: Target) -> anyhow::Result<()> {
     let (ids, ats, _) = src_arrays(sources);
     for table in ["attempts", "results"] {
         sqlx::query(sqlx::AssertSqlSafe(format!(
@@ -1138,7 +1352,89 @@ async fn tombstone(conn: &mut PgConnection, sources: &[Src]) -> anyhow::Result<(
         .execute(&mut *conn)
         .await?;
     }
+    sqlx::query(
+        "update attachment_refs r set launch_id = $2 \
+         from (select distinct on (attachment_id, content_type, coalesce(original_name, '')) id \
+           from attachment_refs where launch_id = any($1) \
+           order by attachment_id, content_type, coalesce(original_name, ''), id) m \
+         where r.id = m.id and not exists (select 1 from attachment_refs o where o.launch_id = $2 \
+           and o.attachment_id = r.attachment_id and o.content_type = r.content_type \
+           and coalesce(o.original_name, '') = coalesce(r.original_name, ''))",
+    )
+    .bind(&ids)
+    .bind(t.id)
+    .execute(&mut *conn)
+    .await?;
     Ok(())
+}
+
+/// Second phase of a merge, sync or undo: one chunk of queued series in a short transaction.
+/// The target (when it exists) is analysed as after an upload, with its statistics push
+/// suppressed (it is marked debug inside the transaction), then the statistics are rebuilt.
+/// Returns the series handled (0: nothing left).
+async fn work_chunk(conn: &mut PgConnection, ctx: &Ctx, m: &MergeRow) -> anyhow::Result<usize> {
+    sqlx::query(LOCK_TIMEOUT).execute(&mut *conn).await?;
+    let work: Vec<(Uuid, i32)> = sqlx::query_as(
+        "select series_id, delta from launch_merge_work where merge_id = $1 order by series_id \
+         limit $2 for update skip locked",
+    )
+    .bind(m.id)
+    .bind(ANALYSIS_CHUNK as i64)
+    .fetch_all(&mut *conn)
+    .await?;
+    if work.is_empty() {
+        return Ok(0);
+    }
+    let series: Vec<Uuid> = work.iter().map(|w| w.0).collect();
+    let target: Option<(DateTime<Utc>, bool)> = sqlx::query_as(
+        "select created_at, debug from launches where id = $1 and project_id = $2 and merged_into is null for update",
+    )
+    .bind(m.target_id)
+    .bind(ctx.id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    if let Some((created_at, debug)) = target {
+        let t = Target {
+            id: m.target_id,
+            created_at,
+        };
+        let present: Vec<Uuid> = {
+            let mut v: Vec<Uuid> = target_series(conn, t, &series).await?.into_iter().collect();
+            v.sort();
+            v
+        };
+        if !present.is_empty() {
+            if !debug {
+                sqlx::query("update launches set debug = true where id = $1")
+                    .bind(t.id)
+                    .execute(&mut *conn)
+                    .await?;
+            }
+            let lref = LaunchRef {
+                id: t.id,
+                project_id: ctx.id,
+                project_key: ctx.key.clone(),
+                created_at: t.created_at,
+            };
+            crate::analysis::after_persist(&mut *conn, &lref, &[], &present).await?;
+            if !debug {
+                sqlx::query("update launches set debug = false where id = $1")
+                    .bind(t.id)
+                    .execute(&mut *conn)
+                    .await?;
+            }
+        }
+    }
+    if !m.debug {
+        let window = m.window_start.unwrap_or(m.created_at);
+        rebuild_stats(conn, ctx, window, &work).await?;
+    }
+    sqlx::query("delete from launch_merge_work where merge_id = $1 and series_id = any($2)")
+        .bind(m.id)
+        .bind(&series)
+        .execute(&mut *conn)
+        .await?;
+    Ok(work.len())
 }
 
 impl Store {
@@ -1149,21 +1445,22 @@ impl Store {
         &self,
         project: &Project,
         req: &LaunchMergeRequest,
-        by: &str,
+        caller: &MergeCaller,
         opts: MergeOptions,
     ) -> Result<(LaunchMerge, bool), MergeError> {
         validate(req)?;
+        if req.dry_run {
+            let mut conn = self.pool.acquire().await.map_err(anyhow::Error::from)?;
+            let c = ctx(&mut conn, project, self.purge_batch).await?;
+            return preview(&mut conn, &c, req, opts).await.map(|p| (p, false));
+        }
         let mut attempt = 0;
-        loop {
+        let (id, created) = loop {
             attempt += 1;
             let r = async {
                 let mut tx = self.pool.begin().await?;
                 let c = ctx(&mut tx, project, self.purge_batch).await?;
-                match merge_in(&mut tx, &c, req, by, opts).await {
-                    Ok(o @ Outcome::Preview(_)) => {
-                        tx.rollback().await?;
-                        Ok(o)
-                    }
+                match merge_in(&mut tx, &c, req, caller, opts).await {
                     Ok(o) => {
                         tx.commit().await?;
                         Ok(o)
@@ -1176,21 +1473,70 @@ impl Store {
             }
             .await;
             match r {
-                Err(MergeError::Other(e)) if attempt < TX_ATTEMPTS && retryable(&e).is_some() => {
+                Err(MergeError::Other(e)) if attempt < TX_ATTEMPTS && merge_retryable(&e) => {
                     retry_pause("merge", &e, attempt).await
                 }
                 Err(e) => return Err(e),
-                Ok(Outcome::Preview(p)) => return Ok((*p, false)),
-                Ok(Outcome::Merge { id, created }) => {
-                    if req.final_merge && created {
-                        self.finalize_merge(project.id, id).await?;
-                    }
-                    let m = self
-                        .merge(project.id, id)
-                        .await?
-                        .ok_or(MergeError::NotFound("merge"))?;
-                    return Ok((m, created));
+                Ok(v) => break v,
+            }
+        };
+        // The second phase runs here; what it does not finish, the job does.
+        if let Err(e) = self.drain_merge(project.id, id, REQUEST_BUDGET).await {
+            tracing::warn!(merge = %id, error = %format!("{e:#}"), "merge analysis left to the job");
+        }
+        let m = self
+            .merge(project.id, id)
+            .await?
+            .ok_or(MergeError::NotFound("merge"))?;
+        Ok((m, created))
+    }
+
+    /// Runs the second phase of a merge, chunk by chunk (each retried on deadlocks and lock
+    /// timeouts), until it is done or `budget` has passed (the job goes on later). Returns the
+    /// series handled.
+    pub async fn drain_merge(
+        &self,
+        project_id: Uuid,
+        id: Uuid,
+        budget: std::time::Duration,
+    ) -> anyhow::Result<usize> {
+        let started = std::time::Instant::now();
+        let Some(project) = self.project_by_id(project_id).await? else {
+            return Ok(0);
+        };
+        let mut total = 0;
+        loop {
+            let mut attempt = 0;
+            let n = loop {
+                attempt += 1;
+                let r = async {
+                    let mut tx = self.pool.begin().await?;
+                    let c = ctx(&mut tx, &project, self.purge_batch).await?;
+                    let m = sqlx::query(sqlx::AssertSqlSafe(format!(
+                        "{MERGE_SELECT} where project_id = $1 and id = $2"
+                    )))
+                    .bind(project_id)
+                    .bind(id)
+                    .fetch_optional(&mut *tx)
+                    .await?;
+                    let Some(m) = m.as_ref().map(merge_row).transpose()? else {
+                        return Ok::<_, anyhow::Error>(0);
+                    };
+                    let n = work_chunk(&mut tx, &c, &m).await?;
+                    tx.commit().await?;
+                    Ok(n)
                 }
+                .await;
+                match r {
+                    Err(e) if attempt < TX_ATTEMPTS && merge_retryable(&e) => {
+                        retry_pause("merge_analysis", &e, attempt).await
+                    }
+                    r => break r?,
+                }
+            };
+            total += n;
+            if n == 0 || started.elapsed() > budget {
+                return Ok(total);
             }
         }
     }
@@ -1213,6 +1559,18 @@ impl Store {
         }
     }
 
+    /// Who made a merge (its stable caller key), for the permission check of an undo.
+    pub async fn merge_owner(&self, project_id: Uuid, id: Uuid) -> anyhow::Result<Option<String>> {
+        Ok(sqlx::query_scalar::<_, Option<String>>(
+            "select created_by_key from launch_merges where project_id = $1 and id = $2",
+        )
+        .bind(project_id)
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?
+        .flatten())
+    }
+
     /// The merges a launch took part in (as target or source), newest first, at most 50.
     pub async fn launch_merges(
         &self,
@@ -1231,14 +1589,15 @@ impl Store {
         self.expand(project_id, rows).await
     }
 
-    /// Who created each of these launches of the project (missing ids are left out).
-    pub async fn launch_creators(
+    /// The stable creator keys of these launches of the project (missing ids are left out;
+    /// launches created before keys were recorded have none).
+    pub async fn launch_owner_keys(
         &self,
         project_id: Uuid,
         ids: &[Uuid],
     ) -> anyhow::Result<HashMap<Uuid, Option<String>>> {
         Ok(sqlx::query_as::<_, (Uuid, Option<String>)>(
-            "select id, created_by from launches where project_id = $1 and id = any($2)",
+            "select id, created_by_key from launches where project_id = $1 and id = any($2)",
         )
         .bind(project_id)
         .bind(ids)
@@ -1246,6 +1605,34 @@ impl Store {
         .await?
         .into_iter()
         .collect())
+    }
+
+    /// Records the stable key of the caller that created a launch.
+    pub async fn set_launch_owner_key(&self, launch_id: Uuid, key: &str) -> anyhow::Result<()> {
+        sqlx::query(
+            "update launches set created_by_key = $2 where id = $1 and created_by_key is null",
+        )
+        .bind(launch_id)
+        .bind(no_nul(key))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Whether any of these results of the project belongs to a launch merged into another.
+    pub async fn results_in_merged_launches(
+        &self,
+        project_id: Uuid,
+        result_ids: &[Uuid],
+    ) -> anyhow::Result<bool> {
+        Ok(sqlx::query_scalar(
+            "select exists (select 1 from results r join launches l on l.id = r.launch_id \
+             where r.project_id = $1 and r.id = any($2) and l.merged_into is not null)",
+        )
+        .bind(project_id)
+        .bind(result_ids)
+        .fetch_one(&self.pool)
+        .await?)
     }
 
     async fn expand(
@@ -1269,6 +1656,15 @@ impl Store {
         .into_iter()
         .map(|(i, n, s)| (i, (n, s)))
         .collect();
+        let merge_ids: Vec<Uuid> = rows.iter().map(|m| m.id).collect();
+        let pending: HashSet<Uuid> = sqlx::query_scalar::<_, Uuid>(
+            "select distinct merge_id from launch_merge_work where merge_id = any($1)",
+        )
+        .bind(&merge_ids)
+        .fetch_all(&self.pool)
+        .await?
+        .into_iter()
+        .collect();
         Ok(rows
             .into_iter()
             .map(|m| LaunchMerge {
@@ -1285,6 +1681,7 @@ impl Store {
                         name: named.get(s).map(|v| v.1.clone()),
                     })
                     .collect(),
+                analysing: pending.contains(&m.id),
                 status: m.status,
                 final_merge: m.final_merge,
                 counts: serde_json::from_value(m.counts).unwrap_or_default(),
@@ -1299,13 +1696,13 @@ impl Store {
     }
 
     /// Undoes an active merge within its window: a target the merge created is deleted (it
-    /// must hold nothing but the merge), or the copied attempts leave the existing target; the
-    /// sources come back as they were.
+    /// must hold nothing but the merge, and a triage done on it needs `results:triage`), or
+    /// the copied attempts leave the existing target; the sources come back as they were.
     pub async fn undo_merge(
         &self,
         project: &Project,
         id: Uuid,
-        by: &str,
+        caller: &MergeCaller,
     ) -> Result<LaunchMerge, MergeError> {
         let mut attempt = 0;
         loop {
@@ -1313,7 +1710,7 @@ impl Store {
             let r = async {
                 let mut tx = self.pool.begin().await?;
                 let c = ctx(&mut tx, project, self.purge_batch).await?;
-                match undo_in(&mut tx, &c, id, by).await {
+                match undo_in(&mut tx, &c, id, caller).await {
                     Ok(()) => {
                         tx.commit().await?;
                         Ok(())
@@ -1326,11 +1723,14 @@ impl Store {
             }
             .await;
             match r {
-                Err(MergeError::Other(e)) if attempt < TX_ATTEMPTS && retryable(&e).is_some() => {
+                Err(MergeError::Other(e)) if attempt < TX_ATTEMPTS && merge_retryable(&e) => {
                     retry_pause("merge_undo", &e, attempt).await
                 }
                 Err(e) => return Err(e),
                 Ok(()) => {
+                    if let Err(e) = self.drain_merge(project.id, id, REQUEST_BUDGET).await {
+                        tracing::warn!(merge = %id, error = %format!("{e:#}"), "undo analysis left to the job");
+                    }
                     return self
                         .merge(project.id, id)
                         .await?
@@ -1340,102 +1740,183 @@ impl Store {
         }
     }
 
-    /// Copies late attempts of an active merge into its target. Returns whether anything was
-    /// copied.
+    async fn with_retry<F, Fut>(&self, path: &'static str, f: F) -> anyhow::Result<bool>
+    where
+        F: Fn() -> Fut,
+        Fut: std::future::Future<Output = anyhow::Result<bool>>,
+    {
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            match f().await {
+                Err(e) if attempt < TX_ATTEMPTS && merge_retryable(&e) => {
+                    retry_pause(path, &e, attempt).await
+                }
+                r => return r,
+            }
+        }
+    }
+
+    /// Copies late attempts and log lines of a merge into its target. Returns whether anything
+    /// was copied (false also when another merge operation holds the project).
     pub async fn sync_merge(&self, project_id: Uuid, id: Uuid) -> anyhow::Result<bool> {
         let Some(project) = self.project_by_id(project_id).await? else {
             return Ok(false);
         };
-        let mut tx = self.pool.begin().await?;
-        let c = ctx(&mut tx, &project, self.purge_batch).await?;
-        project_lock(&mut tx, project_id).await?;
-        let Some(m) = merge_for_update(&mut tx, project_id, id).await? else {
-            return Ok(false);
-        };
-        if m.status != "active" {
-            return Ok(false);
+        let done = self
+            .with_retry("merge_sync", || async {
+                let mut tx = self.pool.begin().await?;
+                sqlx::query(LOCK_TIMEOUT).execute(&mut *tx).await?;
+                if !try_project_lock(&mut tx, project_id).await? {
+                    return Ok(false);
+                }
+                let c = ctx(&mut tx, &project, self.purge_batch).await?;
+                let Some(m) = merge_for_update(&mut tx, project_id, id).await? else {
+                    return Ok(false);
+                };
+                if !matches!(m.status.as_str(), "active" | "final") {
+                    return Ok(false);
+                }
+                let done = sync_in(&mut tx, &c, &m).await?;
+                tx.commit().await?;
+                Ok(done)
+            })
+            .await?;
+        if done {
+            self.drain_merge(project_id, id, REQUEST_BUDGET).await?;
         }
-        let done = sync_in(&mut tx, &c, &m).await?;
-        tx.commit().await?;
         Ok(done)
     }
 
     /// Ends the undo window of a merge: late attempts are copied, then the sources become
-    /// tombstones. Returns false when the merge is not active.
+    /// tombstones. Returns false when the merge is not active (or the project is busy).
     pub async fn finalize_merge(&self, project_id: Uuid, id: Uuid) -> anyhow::Result<bool> {
         let Some(project) = self.project_by_id(project_id).await? else {
             return Ok(false);
         };
-        let mut tx = self.pool.begin().await?;
-        let c = ctx(&mut tx, &project, self.purge_batch).await?;
-        project_lock(&mut tx, project_id).await?;
-        let Some(m) = merge_for_update(&mut tx, project_id, id).await? else {
-            return Ok(false);
-        };
-        if m.status != "active" {
-            return Ok(false);
-        }
-        sync_in(&mut tx, &c, &m).await?;
-        let rows = lock_launches(&mut tx, project_id, &m.sources).await?;
-        let srcs: Vec<Src> = rows
-            .iter()
-            .map(|r| Src {
-                id: r.id,
-                at: r.created_at,
+        let done = self
+            .with_retry("merge_finalize", || async {
+                let mut tx = self.pool.begin().await?;
+                sqlx::query(LOCK_TIMEOUT).execute(&mut *tx).await?;
+                if !try_project_lock(&mut tx, project_id).await? {
+                    return Ok(false);
+                }
+                let c = ctx(&mut tx, &project, self.purge_batch).await?;
+                let Some(m) = merge_for_update(&mut tx, project_id, id).await? else {
+                    return Ok(false);
+                };
+                if m.status != "active" {
+                    return Ok(false);
+                }
+                sync_in(&mut tx, &c, &m).await?;
+                let rows = read_launches(&mut tx, project_id, &m.sources, true).await?;
+                let srcs: Vec<Src> = rows.iter().map(Row0::src).collect();
+                let target: Option<DateTime<Utc>> =
+                    sqlx::query_scalar("select created_at from launches where id = $1")
+                        .bind(m.target_id)
+                        .fetch_optional(&mut *tx)
+                        .await?;
+                if let Some(created_at) = target {
+                    tombstone(
+                        &mut tx,
+                        &srcs,
+                        Target {
+                            id: m.target_id,
+                            created_at,
+                        },
+                    )
+                    .await?;
+                }
+                sqlx::query(
+                    "update launch_merges set status = 'final', finalized_at = now() where id = $1",
+                )
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+                crate::events::emit(
+                    &mut tx,
+                    "launch.merge_finalized",
+                    Some(&project.key),
+                    serde_json::json!({"mergeId": id, "targetId": m.target_id, "sources": m.sources}),
+                )
+                .await?;
+                tx.commit().await?;
+                Ok(true)
             })
-            .collect();
-        tombstone(&mut tx, &srcs).await?;
-        sqlx::query(
-            "update launch_merges set status = 'final', finalized_at = now() where id = $1",
-        )
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
-        crate::events::emit(
-            &mut tx,
-            "launch.merge_finalized",
-            Some(&project.key),
-            serde_json::json!({"mergeId": id, "targetId": m.target_id, "sources": m.sources}),
-        )
-        .await?;
-        tx.commit().await?;
-        Ok(true)
+            .await?;
+        if done {
+            self.drain_merge(project_id, id, REQUEST_BUDGET).await?;
+        }
+        Ok(done)
     }
 
-    /// The merge job: copies late attempts of active merges, finalizes merges whose undo
-    /// window ended and deletes hidden launches whose target is gone (the target was deleted:
-    /// its sources go with it). Bounded per run.
+    /// The merge job: finishes analyses left over, copies late attempts and log lines of
+    /// active (and recently finalized) merges, finalizes merges whose undo window ended and
+    /// deletes hidden launches whose target is gone. Each merge is isolated: a failure is
+    /// logged and counted (`fastproof_merge_job_errors_total`) and the job goes on. Merges of
+    /// deleted projects are left to the project purge.
     pub async fn merge_maintenance(&self) -> anyhow::Result<MergeJobReport> {
         let mut report = MergeJobReport::default();
-        let late: Vec<(Uuid, Uuid)> = sqlx::query_as(
-            "select m.project_id, m.id from launch_merges m where m.status = 'active' and exists \
-               (select 1 from unnest(m.sources, m.source_seqs) as s(id, seq) join launches l on l.id = s.id \
-                where l.attempt_seq > s.seq) \
-             order by m.created_at limit $1",
+        let fail = |what: &'static str, id: Uuid, e: anyhow::Error, r: &mut MergeJobReport| {
+            metrics::counter!("fastproof_merge_job_errors_total", "step" => what).increment(1);
+            tracing::warn!(merge = %id, step = what, error = %format!("{e:#}"), "merge job step failed");
+            r.errors += 1;
+        };
+        let pending: Vec<(Uuid, Uuid)> = sqlx::query_as(
+            "select w.project_id, w.merge_id from (select distinct project_id, merge_id from launch_merge_work) w \
+             join projects p on p.id = w.project_id and p.deleted_at is null limit $1",
         )
         .bind(JOB_BATCH)
         .fetch_all(&self.pool)
         .await?;
+        for (p, id) in pending {
+            match self.drain_merge(p, id, JOB_BUDGET).await {
+                Ok(n) if n > 0 => report.analysed += 1,
+                Ok(_) => {}
+                Err(e) => fail("analyse", id, e, &mut report),
+            }
+        }
+        let late: Vec<(Uuid, Uuid)> = sqlx::query_as(
+            "select m.project_id, m.id from launch_merges m join projects p on p.id = m.project_id \
+             where p.deleted_at is null and (m.status = 'active' or (m.status = 'final' \
+               and m.finalized_at > now() - make_interval(days => $2))) \
+               and exists (select 1 from launches t where t.id = m.target_id) \
+               and exists (select 1 from unnest(m.sources, m.source_seqs, \
+                   coalesce(m.log_marks, array_fill(0::bigint, array[cardinality(m.sources)]))) as s(id, seq, mark) \
+                 join launches l on l.id = s.id \
+                 where l.attempt_seq > s.seq or exists (select 1 from attempt_log_chunks c \
+                   where c.launch_id = s.id and c.id > s.mark)) \
+             order by m.created_at limit $1",
+        )
+        .bind(JOB_BATCH)
+        .bind(LATE_DAYS)
+        .fetch_all(&self.pool)
+        .await?;
         for (p, id) in late {
-            if self.sync_merge(p, id).await? {
-                report.synced += 1;
+            match self.sync_merge(p, id).await {
+                Ok(true) => report.synced += 1,
+                Ok(false) => {}
+                Err(e) => fail("sync", id, e, &mut report),
             }
         }
         let due: Vec<(Uuid, Uuid)> = sqlx::query_as(
-            "select project_id, id from launch_merges where status = 'active' and undo_until <= now() \
-             order by undo_until limit $1",
+            "select m.project_id, m.id from launch_merges m join projects p on p.id = m.project_id \
+             where p.deleted_at is null and m.status = 'active' and m.undo_until <= now() \
+             order by m.undo_until limit $1",
         )
         .bind(JOB_BATCH)
         .fetch_all(&self.pool)
         .await?;
         for (p, id) in due {
-            if self.finalize_merge(p, id).await? {
-                report.finalized += 1;
+            match self.finalize_merge(p, id).await {
+                Ok(true) => report.finalized += 1,
+                Ok(false) => {}
+                Err(e) => fail("finalize", id, e, &mut report),
             }
         }
         let orphans: Vec<(Uuid, Uuid, String)> = sqlx::query_as(
             "select l.id, l.project_id, p.key from launches l join projects p on p.id = l.project_id \
-             where l.merged_into is not null \
+             where p.deleted_at is null and l.merged_into is not null \
                and not exists (select 1 from launches t where t.id = l.merged_into) \
              order by l.id limit $1",
         )
@@ -1443,8 +1924,22 @@ impl Store {
         .fetch_all(&self.pool)
         .await?;
         for (id, project_id, key) in orphans {
+            match self.delete_orphan(id, project_id, &key).await {
+                Ok(true) => report.orphans_deleted += 1,
+                Ok(false) => {}
+                Err(e) => fail("orphan", id, e, &mut report),
+            }
+        }
+        Ok(report)
+    }
+
+    async fn delete_orphan(&self, id: Uuid, project_id: Uuid, key: &str) -> anyhow::Result<bool> {
+        self.with_retry("merge_orphan", || async {
             let mut tx = self.pool.begin().await?;
-            project_lock(&mut tx, project_id).await?;
+            sqlx::query(LOCK_TIMEOUT).execute(&mut *tx).await?;
+            if !try_project_lock(&mut tx, project_id).await? {
+                return Ok(false);
+            }
             let gone: Option<Uuid> = sqlx::query_scalar(
                 "select l.id from launches l where l.id = $1 and l.merged_into is not null \
                    and not exists (select 1 from launches t where t.id = l.merged_into) for update",
@@ -1453,14 +1948,23 @@ impl Store {
             .fetch_optional(&mut *tx)
             .await?;
             if gone.is_none() {
-                continue;
+                return Ok(false);
             }
             crate::purge::Purge::new(&mut tx, self.purge_batch, crate::purge::Mode::Atomic)
                 .launches(&[id])
                 .await?;
             sqlx::query(
                 "update launch_merges set status = 'deleted', finalized_at = coalesce(finalized_at, now()) \
-                 where project_id = $1 and sources @> array[$2]::uuid[] and status = 'active'",
+                 where project_id = $1 and sources @> array[$2]::uuid[] and status in ('active', 'final')",
+            )
+            .bind(project_id)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                "delete from launch_merge_work w using launch_merges m where w.merge_id = m.id \
+                 and m.project_id = $1 and m.sources @> array[$2]::uuid[] and m.status = 'deleted' \
+                 and not exists (select 1 from launches t where t.id = m.target_id)",
             )
             .bind(project_id)
             .bind(id)
@@ -1469,14 +1973,14 @@ impl Store {
             crate::events::emit(
                 &mut tx,
                 "launch.deleted",
-                Some(&key),
+                Some(key),
                 serde_json::json!({"id": id, "launchId": id, "projectId": project_id}),
             )
             .await?;
             tx.commit().await?;
-            report.orphans_deleted += 1;
-        }
-        Ok(report)
+            Ok(true)
+        })
+        .await
     }
 
     async fn project_by_id(&self, id: Uuid) -> anyhow::Result<Option<Project>> {
@@ -1492,11 +1996,8 @@ impl Store {
     }
 }
 
-/// What [`merge_in`] decided.
-enum Outcome {
-    Preview(Box<LaunchMerge>),
-    Merge { id: Uuid, created: bool },
-}
+/// What [`merge_in`] decided: the merge and whether this call made it.
+type Outcome = (Uuid, bool);
 
 /// An active merge of exactly these sources into `into` (or into a launch it created).
 async fn existing_merge(
@@ -1536,39 +2037,9 @@ async fn existing_merge(
     Ok(None)
 }
 
-async fn merge_in(
-    conn: &mut PgConnection,
-    ctx: &Ctx,
-    req: &LaunchMergeRequest,
-    by: &str,
-    opts: MergeOptions,
-) -> Result<Outcome, MergeError> {
-    project_lock(conn, ctx.id).await?;
-    let rows = lock_launches(conn, ctx.id, &req.launch_ids).await?;
-    if rows.len() != req.launch_ids.len() {
-        return Err(MergeError::NotFound("launch"));
-    }
-    let target_row = req
-        .into
-        .and_then(|t| rows.iter().find(|r| r.id == t))
-        .cloned();
-    let mut sources: Vec<Row0> = rows
-        .iter()
-        .filter(|r| Some(r.id) != req.into)
-        .cloned()
-        .collect();
-    sources.sort_by_key(|r| (r.created_at, r.number));
-
-    if !req.dry_run
-        && let Some(m) = existing_merge(conn, ctx.id, &sources, req.into).await?
-    {
-        sync_in(conn, ctx, &m).await?;
-        return Ok(Outcome::Merge {
-            id: m.id,
-            created: false,
-        });
-    }
-    for r in &rows {
+/// The checks of a merge that do not change anything (shared by the preview).
+fn check_rows(rows: &[Row0], sources: &[Row0]) -> Result<(), MergeError> {
+    for r in rows {
         if let Some(t) = r.merged_into {
             return Err(conflict(
                 "launch_merged",
@@ -1586,6 +2057,16 @@ async fn merge_in(
                 serde_json::json!({"launchId": r.id}),
             ));
         }
+        if r.test_plan_id.is_some() {
+            return Err(conflict(
+                "launch_plan",
+                format!(
+                    "launch #{} was started from a test plan; such launches are not merged",
+                    r.number
+                ),
+                serde_json::json!({"launchId": r.id}),
+            ));
+        }
     }
     let running: Vec<Uuid> = sources
         .iter()
@@ -1597,20 +2078,6 @@ async fn merge_in(
             "launch_running",
             "finish the launches to merge first (only the target may still run)",
             serde_json::json!({"launchIds": running}),
-        ));
-    }
-    let src_ids: Vec<Uuid> = sources.iter().map(|r| r.id).collect();
-    let busy: Vec<Uuid> = sqlx::query_scalar(
-        "select distinct launch_id from uploads where launch_id = any($1) and status in ('queued', 'processing')",
-    )
-    .bind(&src_ids)
-    .fetch_all(&mut *conn)
-    .await?;
-    if !busy.is_empty() {
-        return Err(conflict(
-            "launch_busy",
-            "uploads of the launches to merge are still being processed",
-            serde_json::json!({"launchIds": busy}),
         ));
     }
     let first = &rows[0];
@@ -1638,73 +2105,183 @@ async fn merge_in(
             serde_json::json!({"launchId": r.id}),
         ));
     }
-    let srcs: Vec<Src> = sources
-        .iter()
-        .map(|r| Src {
-            id: r.id,
-            at: r.created_at,
-        })
-        .collect();
-    let n = count_attempts(conn, &srcs).await?;
+    Ok(())
+}
+
+async fn check_busy_and_size(
+    conn: &mut PgConnection,
+    rows: &[Row0],
+    sources: &[Row0],
+    opts: MergeOptions,
+) -> Result<i64, MergeError> {
+    let src_ids: Vec<Uuid> = sources.iter().map(|r| r.id).collect();
+    let busy: Vec<Uuid> = sqlx::query_scalar(
+        "select distinct launch_id from uploads where launch_id = any($1) and status in ('queued', 'processing')",
+    )
+    .bind(&src_ids)
+    .fetch_all(&mut *conn)
+    .await?;
+    if !busy.is_empty() {
+        return Err(conflict(
+            "launch_busy",
+            "uploads of the launches to merge are still being processed",
+            serde_json::json!({"launchIds": busy}),
+        ));
+    }
+    let srcs: Vec<Src> = sources.iter().map(Row0::src).collect();
+    let n = count_attempts(conn, &srcs, opts.max_attempts + 1).await?;
     if n > opts.max_attempts {
         return Err(MergeError::TooLarge {
-            attempts: n,
+            what: "attempts",
+            value: n,
             limit: opts.max_attempts,
         });
     }
-    let all: Vec<Src> = rows
-        .iter()
-        .map(|r| Src {
-            id: r.id,
-            at: r.created_at,
-        })
-        .collect();
-    let shared = shared_series(conn, &all).await?;
-    let source_list: Vec<MergeSource> = sources
-        .iter()
-        .map(|r| MergeSource {
-            id: r.id,
-            number: Some(r.number),
-            name: Some(r.name.clone()),
-        })
-        .collect();
-    if req.dry_run {
-        let series = source_series(conn, &srcs).await?;
-        return Ok(Outcome::Preview(Box::new(LaunchMerge {
-            id: None,
-            target_id: target_row.as_ref().map(|t| t.id),
-            target_number: target_row.as_ref().map(|t| t.number),
-            created_target: target_row.is_none(),
-            sources: source_list,
-            status: "preview".into(),
-            final_merge: req.final_merge,
-            counts: MergeCounts {
-                attempts: n,
-                results: series.len() as i64,
-                shared_series: shared,
-                ..Default::default()
-            },
-            created_by: None,
-            created_at: None,
-            undo_until: (!req.final_merge).then(|| Utc::now() + opts.undo_window),
-            undone_at: None,
-            undone_by: None,
-            finalized_at: None,
-        })));
+    let all_ids: Vec<Uuid> = rows.iter().map(|r| r.id).collect();
+    let bytes = source_log_bytes(conn, &all_ids).await?;
+    if bytes > opts.max_log_bytes {
+        return Err(MergeError::TooLarge {
+            what: "logBytes",
+            value: bytes,
+            limit: opts.max_log_bytes,
+        });
     }
+    Ok(n)
+}
+
+fn split(rows: &[Row0], into: Option<Uuid>) -> (Option<Row0>, Vec<Row0>) {
+    let target = into.and_then(|t| rows.iter().find(|r| r.id == t)).cloned();
+    let mut sources: Vec<Row0> = rows
+        .iter()
+        .filter(|r| Some(r.id) != into)
+        .cloned()
+        .collect();
+    sources.sort_by_key(|r| (r.created_at, r.number));
+    (target, sources)
+}
+
+/// A dry run: plain reads, no locks, attempts counted up to the limit.
+async fn preview(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    req: &LaunchMergeRequest,
+    opts: MergeOptions,
+) -> Result<LaunchMerge, MergeError> {
+    let rows = read_launches(conn, ctx.id, &req.launch_ids, false).await?;
+    if rows.len() != req.launch_ids.len() {
+        return Err(MergeError::NotFound("launch"));
+    }
+    let (target, sources) = split(&rows, req.into);
+    check_rows(&rows, &sources)?;
+    let n = check_busy_and_size(conn, &rows, &sources, opts).await?;
+    let all: Vec<Src> = rows.iter().map(Row0::src).collect();
+    let srcs: Vec<Src> = sources.iter().map(Row0::src).collect();
+    let shared = shared_series(conn, &all).await?;
+    let series = source_series(conn, &srcs).await?;
+    Ok(LaunchMerge {
+        id: None,
+        target_id: target.as_ref().map(|t| t.id),
+        target_number: target.as_ref().map(|t| t.number),
+        created_target: target.is_none(),
+        sources: sources
+            .iter()
+            .map(|r| MergeSource {
+                id: r.id,
+                number: Some(r.number),
+                name: Some(r.name.clone()),
+            })
+            .collect(),
+        status: "preview".into(),
+        final_merge: req.final_merge,
+        analysing: false,
+        counts: MergeCounts {
+            attempts: n,
+            results: series.len() as i64,
+            shared_series: shared,
+            ..Default::default()
+        },
+        created_by: None,
+        created_at: None,
+        undo_until: (!req.final_merge).then(|| Utc::now() + opts.undo_window),
+        undone_at: None,
+        undone_by: None,
+        finalized_at: None,
+    })
+}
+
+async fn merge_in(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    req: &LaunchMergeRequest,
+    caller: &MergeCaller,
+    opts: MergeOptions,
+) -> Result<Outcome, MergeError> {
+    sqlx::query(LOCK_TIMEOUT).execute(&mut *conn).await?;
+    if !try_project_lock(conn, ctx.id).await? {
+        return Err(busy());
+    }
+    let rows = read_launches(conn, ctx.id, &req.launch_ids, true).await?;
+    if rows.len() != req.launch_ids.len() {
+        return Err(MergeError::NotFound("launch"));
+    }
+    let (target_row, sources) = split(&rows, req.into);
+
+    if let Some(m) = existing_merge(conn, ctx.id, &sources, req.into).await? {
+        sync_in(conn, ctx, &m).await?;
+        return Ok((m.id, false));
+    }
+    check_rows(&rows, &sources)?;
+    if let Some(t) = &target_row
+        && t.status != "running"
+        && !caller.can_sync
+        && t.created_by_key.as_deref() != Some(caller.key.as_str())
+    {
+        return Err(conflict(
+            "launch_finished",
+            "the launch to merge into is finished: only its creator or a caller with cases:sync may add to it",
+            serde_json::json!({"launchId": t.id}),
+        ));
+    }
+    let n = check_busy_and_size(conn, &rows, &sources, opts).await?;
+    let all: Vec<Src> = rows.iter().map(Row0::src).collect();
+    let srcs: Vec<Src> = sources.iter().map(Row0::src).collect();
+    let shared = shared_series(conn, &all).await?;
+    let src_ids: Vec<Uuid> = sources.iter().map(|r| r.id).collect();
 
     let (target, number) = match &target_row {
-        Some(t) => (
-            Target {
-                id: t.id,
-                created_at: t.created_at,
-            },
-            t.number,
-        ),
-        None => insert_target(conn, ctx, &sources, req.name.as_deref(), by).await?,
+        Some(t) => {
+            let untrusted = !caller.can_sync || sources.iter().any(Row0::untrusted);
+            if untrusted {
+                sqlx::query("update launches set sync_blocked = true where id = $1")
+                    .bind(t.id)
+                    .execute(&mut *conn)
+                    .await?;
+            }
+            (
+                Target {
+                    id: t.id,
+                    created_at: t.created_at,
+                },
+                t.number,
+            )
+        }
+        None => insert_target(conn, ctx, &sources, req.name.as_deref(), caller).await?,
     };
-    let mut counts = apply(conn, ctx, target, &srcs, true).await?;
-    counts.shared_series = shared;
+    let series_counts = source_series(conn, &srcs).await?;
+    let series: Vec<Uuid> = series_counts.iter().map(|s| s.0).collect();
+    let had = target_series(conn, target, &series).await?;
+    let marks = log_marks(conn, &src_ids).await?;
+    let mut copied = copy_into(conn, ctx, target, &srcs, &series, n).await?;
+    copied.counts.shared_series = shared;
+
+    sqlx::query(
+        "update launches set merged_into = $2, debug = true, updated_at = now() where id = any($1)",
+    )
+    .bind(&src_ids)
+    .bind(target.id)
+    .execute(&mut *conn)
+    .await?;
+    let fingerprints = repoint_fingerprints(conn, ctx.id, &srcs, target).await?;
     let delta = target_row.is_none() as i64 - sources.len() as i64;
     sqlx::query(
         "update projects set launch_count = greatest(launch_count + $2, 0), updated_at = now() where id = $1",
@@ -1715,14 +2292,22 @@ async fn merge_in(
     .await?;
     let id = Uuid::now_v7();
     let undo_until = if req.final_merge {
-        Utc::now()
+        Utc::now() + FINAL_GRACE
     } else {
         Utc::now() + opts.undo_window
     };
+    let window = srcs
+        .iter()
+        .map(|s| s.at)
+        .chain([target.created_at])
+        .min()
+        .unwrap_or(target.created_at);
     let seqs: Vec<i64> = sources.iter().map(|r| r.attempt_seq).collect();
+    let debug = rows[0].debug;
     sqlx::query(
-        "insert into launch_merges (id, project_id, target_id, target_created, sources, source_seqs, debug, \
-           final, counts, created_by, undo_until) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+        "insert into launch_merges (id, project_id, target_id, target_created, sources, source_seqs, log_marks, \
+           debug, final, counts, created_by, created_by_key, undo_until, fingerprints, window_start) \
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
     )
     .bind(id)
     .bind(ctx.id)
@@ -1730,13 +2315,29 @@ async fn merge_in(
     .bind(target_row.is_none())
     .bind(&src_ids)
     .bind(&seqs)
-    .bind(first.debug)
+    .bind(&marks)
+    .bind(debug)
     .bind(req.final_merge)
-    .bind(serde_json::to_value(&counts).map_err(anyhow::Error::from)?)
-    .bind(no_nul(by))
+    .bind(serde_json::to_value(&copied.counts).map_err(anyhow::Error::from)?)
+    .bind(no_nul(&caller.name))
+    .bind(no_nul(&caller.key))
     .bind(undo_until)
+    .bind(fingerprints)
+    .bind(window)
     .execute(&mut *conn)
     .await?;
+    if !debug {
+        // The statistics hold a character per source that ran the test, and one of the target
+        // if it ran the test before: they make way for the counted results.
+        let work: Vec<(Uuid, i32)> = series_counts
+            .iter()
+            .map(|(s, c)| (*s, *c - if had.contains(s) { 0 } else { 1 }))
+            .collect();
+        queue_work(conn, ctx.id, id, &work).await?;
+    } else {
+        let work: Vec<(Uuid, i32)> = series.iter().map(|s| (*s, 0)).collect();
+        queue_work(conn, ctx.id, id, &work).await?;
+    }
     if target_row.is_none() {
         crate::events::emit(
             &mut *conn,
@@ -1778,11 +2379,19 @@ async fn merge_in(
     for s in &src_ids {
         crate::events::notify_launch(&mut *conn, &ctx.key, *s).await?;
     }
-    Ok(Outcome::Merge { id, created: true })
+    Ok((id, true))
 }
 
-async fn undo_in(conn: &mut PgConnection, ctx: &Ctx, id: Uuid, by: &str) -> Result<(), MergeError> {
-    project_lock(conn, ctx.id).await?;
+async fn undo_in(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    id: Uuid,
+    caller: &MergeCaller,
+) -> Result<(), MergeError> {
+    sqlx::query(LOCK_TIMEOUT).execute(&mut *conn).await?;
+    if !try_project_lock(conn, ctx.id).await? {
+        return Err(busy());
+    }
     let m = merge_for_update(conn, ctx.id, id)
         .await?
         .ok_or(MergeError::NotFound("merge"))?;
@@ -1809,7 +2418,7 @@ async fn undo_in(conn: &mut PgConnection, ctx: &Ctx, id: Uuid, by: &str) -> Resu
     }
     let mut ids = m.sources.clone();
     ids.push(m.target_id);
-    let rows = lock_launches(conn, ctx.id, &ids).await?;
+    let rows = read_launches(conn, ctx.id, &ids, true).await?;
     let Some(t) = rows.iter().find(|r| r.id == m.target_id).cloned() else {
         return Err(conflict(
             "merge_target_gone",
@@ -1817,6 +2426,19 @@ async fn undo_in(conn: &mut PgConnection, ctx: &Ctx, id: Uuid, by: &str) -> Resu
             serde_json::json!({}),
         ));
     };
+    if rows.len() != m.sources.len() + 1 {
+        let missing: Vec<Uuid> = m
+            .sources
+            .iter()
+            .filter(|s| !rows.iter().any(|r| r.id == **s))
+            .copied()
+            .collect();
+        return Err(conflict(
+            "merge_source_gone",
+            "a merged launch was deleted; the merge cannot be undone",
+            serde_json::json!({"launchIds": missing}),
+        ));
+    }
     if let Some(into) = t.merged_into {
         return Err(conflict(
             "merge_target_merged",
@@ -1837,25 +2459,13 @@ async fn undo_in(conn: &mut PgConnection, ctx: &Ctx, id: Uuid, by: &str) -> Resu
     };
     let mut sources: Vec<&Row0> = rows.iter().filter(|r| r.id != t.id).collect();
     sources.sort_by_key(|r| (r.created_at, r.number));
-    let srcs: Vec<Src> = sources
-        .iter()
-        .map(|r| Src {
-            id: r.id,
-            at: r.created_at,
-        })
-        .collect();
+    let srcs: Vec<Src> = sources.iter().map(|r| r.src()).collect();
     let src_ids: Vec<Uuid> = srcs.iter().map(|s| s.id).collect();
-    let series = source_series(conn, &srcs).await?;
-    let window = srcs
-        .iter()
-        .map(|s| s.at)
-        .chain([t.created_at])
-        .min()
-        .unwrap_or(t.created_at);
     if m.target_created {
         let own: bool = sqlx::query_scalar(
             "select exists (select 1 from attempts where launch_id = $1 and launch_created_at = $2 \
-               and merged_from is null) or exists (select 1 from uploads where launch_id = $1)",
+               and merged_from is null) or exists (select 1 from uploads where launch_id = $1) \
+               or exists (select 1 from attempt_log_chunks where launch_id = $1 and merged_from is null)",
         )
         .bind(t.id)
         .bind(t.created_at)
@@ -1864,12 +2474,37 @@ async fn undo_in(conn: &mut PgConnection, ctx: &Ctx, id: Uuid, by: &str) -> Resu
         if own {
             return Err(conflict(
                 "merge_target_changed",
-                "results were added to the merged launch after the merge; delete it instead",
+                "results or logs were added to the merged launch after the merge; delete it instead",
                 serde_json::json!({"targetId": t.id}),
             ));
         }
+        let triaged: bool = sqlx::query_scalar(
+            "select exists (select 1 from results where launch_id = $1 and launch_created_at = $2 \
+               and defect ->> 'source' in ('user', 'ai') and (defect ->> 'at')::timestamptz > $3)",
+        )
+        .bind(t.id)
+        .bind(t.created_at)
+        .bind(m.created_at)
+        .fetch_one(&mut *conn)
+        .await?;
+        if triaged && !caller.can_triage {
+            return Err(MergeError::Forbidden {
+                code: "merge_target_triaged",
+                message: "results of the merged launch were triaged after the merge; undoing it \
+                    deletes that work and needs results:triage"
+                    .into(),
+            });
+        }
     }
-    let snap = stats_snapshot(conn, ctx.id, &series, window).await?;
+    let series_counts = source_series(conn, &srcs).await?;
+    let pending: HashSet<Uuid> = sqlx::query_scalar::<_, Uuid>(
+        "select series_id from launch_merge_work where merge_id = $1",
+    )
+    .bind(m.id)
+    .fetch_all(&mut *conn)
+    .await?
+    .into_iter()
+    .collect();
     sqlx::query(
         "update launches set merged_into = null, debug = $2, rolled_up_at = case when $2 then rolled_up_at end, \
            updated_at = now() where id = any($1)",
@@ -1878,13 +2513,12 @@ async fn undo_in(conn: &mut PgConnection, ctx: &Ctx, id: Uuid, by: &str) -> Resu
     .bind(m.debug)
     .execute(&mut *conn)
     .await?;
+    restore_fingerprints(conn, ctx.id, m.fingerprints.as_ref(), t.id).await?;
+    let mut work: Vec<(Uuid, i32)> = Vec::with_capacity(series_counts.len());
     if m.target_created {
         crate::purge::Purge::new(&mut *conn, ctx.purge_batch, crate::purge::Mode::Atomic)
             .launches(&[t.id])
             .await?;
-        if let (Some(f), Some(l)) = (src_ids.first(), src_ids.last()) {
-            repoint_fingerprints(conn, ctx.id, &[t.id], *f, *l).await?;
-        }
         crate::events::emit(
             &mut *conn,
             "launch.deleted",
@@ -1892,6 +2526,9 @@ async fn undo_in(conn: &mut PgConnection, ctx: &Ctx, id: Uuid, by: &str) -> Resu
             serde_json::json!({"id": t.id, "launchId": t.id, "projectId": ctx.id}),
         )
         .await?;
+        for (s, c) in &series_counts {
+            work.push((*s, if pending.contains(s) { 0 } else { 1 - c }));
+        }
     } else {
         let mut affected: Vec<Uuid> = sqlx::query_scalar(
             "delete from attempts where launch_id = $1 and launch_created_at = $2 and merged_from = any($3) \
@@ -1930,12 +2567,45 @@ async fn undo_in(conn: &mut PgConnection, ctx: &Ctx, id: Uuid, by: &str) -> Resu
             .execute(&mut *conn)
             .await?;
         }
-        let kept = recompute_results(conn, target, &affected, &HashMap::new()).await?;
-        analyse(conn, ctx, target, &kept).await?;
+        // A person's decision the merge copied from a source result leaves with it.
+        let (ids, ats, _) = src_arrays(&srcs);
+        sqlx::query(
+            "update results r set defect = null, updated_at = now() \
+             from unnest($3::uuid[], $4::timestamptz[]) as s(id, at) \
+             join results sr on sr.launch_id = s.id and sr.launch_created_at = s.at \
+             where r.launch_id = $1 and r.launch_created_at = $2 and r.series_id = sr.series_id \
+               and r.series_id = any($5) and r.defect ->> 'source' in ('user', 'ai') and r.defect = sr.defect",
+        )
+        .bind(t.id)
+        .bind(t.created_at)
+        .bind(&ids)
+        .bind(&ats)
+        .bind(&affected)
+        .execute(&mut *conn)
+        .await?;
+        let kept: HashSet<Uuid> = recompute_results(conn, target, &affected, &HashMap::new())
+            .await?
+            .into_iter()
+            .collect();
         crate::ingest::recount(conn, t.id, t.created_at, None).await?;
         crate::events::notify_launch(&mut *conn, &ctx.key, t.id).await?;
+        for (s, c) in &series_counts {
+            let lost = affected.contains(s) && !kept.contains(s);
+            work.push((
+                *s,
+                if pending.contains(s) {
+                    0
+                } else {
+                    lost as i32 - c
+                },
+            ));
+        }
     }
-    rebuild_stats(conn, ctx, &snap, &series).await?;
+    sqlx::query("update launch_merge_work set delta = 0 where merge_id = $1")
+        .bind(m.id)
+        .execute(&mut *conn)
+        .await?;
+    queue_work(conn, ctx.id, m.id, &work).await?;
     let delta = src_ids.len() as i64 - m.target_created as i64;
     sqlx::query(
         "update projects set launch_count = greatest(launch_count + $2, 0), updated_at = now() where id = $1",
@@ -1948,7 +2618,7 @@ async fn undo_in(conn: &mut PgConnection, ctx: &Ctx, id: Uuid, by: &str) -> Resu
         "update launch_merges set status = 'undone', undone_at = now(), undone_by = $2 where id = $1",
     )
     .bind(id)
-    .bind(no_nul(by))
+    .bind(no_nul(&caller.name))
     .execute(&mut *conn)
     .await?;
     crate::events::emit(
@@ -1976,7 +2646,7 @@ mod tests {
         let (s, n) = rebuilt_statuses(None, 0, &[Status::Failed, Status::Passed]);
         assert_eq!((s.as_str(), n), ("FP", 2));
         let (s, n) = rebuilt_statuses(Some(&old), 9, &[]);
-        assert_eq!((s.as_str(), n), ("", 1));
+        assert_eq!((s.as_str(), n), ("", 5));
         let long = ("P".repeat(STATUS_CHARS), 200);
         let (s, n) = rebuilt_statuses(Some(&long), 1, &[Status::Broken, Status::Failed]);
         assert_eq!(s.len(), STATUS_CHARS);

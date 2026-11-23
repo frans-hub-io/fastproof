@@ -75,6 +75,7 @@ pub async fn find_launch(client: &Client, project: &str, name: &str) -> anyhow::
                     ("before", (n.saturating_add(1)).to_string().as_str()),
                     ("limit", "1"),
                     ("debug", debug),
+                    ("includeMerged", "true"),
                 ]);
             let page: Items<Launch> = client.send(rb).await?;
             if let Some(l) = page.items.into_iter().find(|l| l.number == n) {

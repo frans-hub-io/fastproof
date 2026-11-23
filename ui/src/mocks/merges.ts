@@ -34,6 +34,7 @@ export function mergeHandlers(error: ErrorFn) {
         sources: sources.map((l) => ({ id: l.id, number: l.number, name: l.name })),
         status: body.dryRun ? 'preview' : body.final ? 'final' : 'active',
         final: !!body.final,
+        analysing: false,
         counts: { attempts, duplicates: 0, rekeyed: 0, results: attempts, sharedSeries: Math.min(...sources.map((l) => l.counts.total)), lateAttempts: 0 },
         createdBy: body.dryRun ? null : 'admin',
         createdAt: body.dryRun ? null : new Date().toISOString(),

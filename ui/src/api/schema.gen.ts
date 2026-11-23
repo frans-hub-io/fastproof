@@ -712,7 +712,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description Merges launches (CI shards, re-runs) into a new launch or into one of them (`into`). A test run in several of them becomes one result with more attempts (the latest is the result, mixed outcomes are flaky in the run); counters, transitions, flakiness, defects and the series statistics are recomputed. The other launches are hidden (`mergedInto`) and refuse further results with 409 `launch_merged`; they come back on undo, which is possible until `undoUntil` (`FASTPROOF_MERGE_UNDO_HOURS`), and are deleted afterwards. Repeating the same merge returns it (200) and copies what reached the launches since. Launches to merge must be finished with no upload in progress (409 `launch_running`, `launch_busy`); the target may run. Also 409 `launch_merged`, `launch_manual`, `merge_mixed` (debug or branch differ), `launch_rolled_up`; 413 `merge_too_large`. `dryRun` answers counts (status `preview`) without merging. */
+        /** @description Merges launches (CI shards, re-runs) into a new launch or into one of them (`into`). A test run in several of them becomes one result with more attempts (the latest is the result, mixed outcomes are flaky in the run); counters, transitions, flakiness, defects and the series statistics are recomputed (the analysis may finish shortly after the answer: `analysing`). The other launches are hidden (`mergedInto`) and refuse further writes with 409 `launch_merged`; they come back on undo, possible until `undoUntil` (`FASTPROOF_MERGE_UNDO_HOURS`), and are deleted afterwards (a merge with `final` keeps them a couple of minutes for writes on their way). Repeating the same merge returns it (200) and copies what reached the launches since. Launches to merge must be finished with no upload in progress (409 `launch_running`, `launch_busy`); the target may run, but a finished target takes the merge only from its creator or a caller with `cases:sync` (409 `launch_finished`). Also 409 `launch_merged`, `launch_manual`, `launch_plan`, `merge_mixed` (debug or branch differ), `launch_rolled_up`, `merge_busy` (another merge or undo of the project runs); 413 `merge_too_large` (attempts or log bytes). `dryRun` answers counts (status `preview`) without merging and without locks. */
         post: operations["launches_merge"];
         delete?: never;
         options?: never;
@@ -1112,7 +1112,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description Undoes a merge before `undoUntil`: a launch the merge created is deleted, or the copied attempts leave the launch merged into; the merged launches come back. 409 `merge_not_active`, `merge_final`, `merge_expired`, `merge_target_changed` (results were added to a created launch: delete it instead), `merge_target_merged`, `merge_target_rolled_up`, `merge_target_gone`. */
+        /** @description Undoes a merge before `undoUntil`: a launch the merge created is deleted, or the copied attempts leave the launch merged into; the merged launches come back. 409 `merge_not_active`, `merge_final`, `merge_expired`, `merge_target_changed` (results or logs were added to a created launch: delete it instead), `merge_target_merged`, `merge_target_rolled_up`, `merge_target_gone`, `merge_source_gone`, `merge_busy`; 403 `merge_target_triaged` when people triaged the created launch and the caller lacks `results:triage`. */
         post: operations["merges_undo"];
         delete?: never;
         options?: never;
@@ -3121,6 +3121,8 @@ export interface components {
         };
         /** @description A merge of launches. */
         LaunchMerge: {
+            /** @description The analysis and statistics of the target are still being updated. */
+            analysing: boolean;
             counts: components["schemas"]["MergeCounts"];
             /** Format: date-time */
             createdAt?: string | null;
@@ -3138,8 +3140,9 @@ export interface components {
             id?: string | null;
             sources: components["schemas"]["MergeSource"][];
             /**
-             * @description `preview`, `active` (can be undone until `undoUntil`), `undone`, `final` (the sources
-             *     are deleted) or `deleted` (the target was deleted, and the sources with it).
+             * @description `preview`, `active` (can be undone until `undoUntil`, unless `final`), `undone`,
+             *     `final` (the sources are deleted) or `deleted` (the target was deleted, and the sources
+             *     with it).
              */
             status: string;
             /**
@@ -3149,7 +3152,10 @@ export interface components {
             targetId?: string | null;
             /** Format: int64 */
             targetNumber?: number | null;
-            /** Format: date-time */
+            /**
+             * Format: date-time
+             * @description Until when the merge can be undone (absent for a merge without undo).
+             */
             undoUntil?: string | null;
             /** Format: date-time */
             undoneAt?: string | null;
@@ -3157,9 +3163,9 @@ export interface components {
         };
         /** @description Body of `POST /api/v1/projects/{key}/launches/merge`. */
         LaunchMergeRequest: {
-            /** @description Check and count without merging (status `preview`). */
+            /** @description Check and count without merging (status `preview`); takes no locks. */
             dryRun?: boolean;
-            /** @description No undo: the sources are deleted right after the merge (needs `settings:write`). */
+            /** @description No undo: the sources are deleted after a short grace (needs `settings:write`). */
             final?: boolean;
             /**
              * Format: uuid
@@ -8016,6 +8022,8 @@ export interface operations {
                 externalId?: string;
                 /** @description `false` (default): regular launches; `true`: debug launches only. */
                 debug?: boolean;
+                /** @description Also list launches merged into another one (hidden by default). */
+                includeMerged?: boolean;
                 /** @description Cursor from `next`. */
                 before?: string;
                 limit?: number;
@@ -8187,6 +8195,14 @@ export interface operations {
                 };
             };
             413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -9935,6 +9951,14 @@ export interface operations {
                 };
             };
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };

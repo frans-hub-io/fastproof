@@ -87,6 +87,7 @@ pub async fn upload(
 ) -> ApiResult<(StatusCode, Json<AttachmentCreated>)> {
     let project = s.project_for(&auth, &key, &s.perms.launches_write).await?;
     let launch = s.launch_of(&project, id).await?;
+    s.refuse_merged(&launch)?;
     let (limit, max) = if s.limits.max_entry_bytes < s.cfg.max_upload_bytes {
         ("max_entry_bytes", s.limits.max_entry_bytes)
     } else {

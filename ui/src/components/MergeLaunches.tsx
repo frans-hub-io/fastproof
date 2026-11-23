@@ -1,6 +1,7 @@
 import { Alert, Anchor, Button, Checkbox, Group, Modal, Radio, Select, Stack, Text, TextInput } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { IconAlertTriangle, IconArrowMerge } from '@tabler/icons-react';
+import { useDebouncedValue } from '@mantine/hooks';
 import { useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router';
 import { errorMessage } from '../api/client';
@@ -42,7 +43,9 @@ export function MergeLaunchesModal({ project, launches, opened, onClose, onMerge
     }),
     [ordered, mode, into, name, final],
   );
-  const preview = useMergePreview(project, opened ? body : null);
+  const previewBody = useMemo(() => ({ launchIds: body.launchIds, into: body.into, final: body.final }), [body.launchIds, body.into, body.final]);
+  const [debouncedPreview] = useDebouncedValue(previewBody, 300);
+  const preview = useMergePreview(project, opened ? debouncedPreview : null);
   const merge = useMergeLaunches(project);
   const nameError = mode === 'new' && name.length > 300 ? 'At most 300 characters' : undefined;
 
@@ -104,7 +107,7 @@ export function MergeLaunchesModal({ project, launches, opened, onClose, onMerge
         />
         {final ? (
           <Alert color="orange" icon={<IconAlertTriangle size={16} />}>
-            The {mode === 'into' ? 'other launches' : 'selected launches'} are deleted right after the merge. This cannot be undone.
+            The {mode === 'into' ? 'other launches' : 'selected launches'} are deleted within a few minutes of the merge (writes still on their way are copied first). This cannot be undone.
           </Alert>
         ) : (
           preview.data?.undoUntil && (
@@ -176,6 +179,7 @@ export function MergeBanner({ project, launch, canUndo }: { project: string; lau
               Merged from {m.sources.map((s) => (s.number ? `#${String(s.number)}` : 'a deleted launch')).join(', ')}
               {m.createdBy ? ` by ${m.createdBy}` : ''}
               {m.createdAt ? ` ${formatRelative(m.createdAt)}` : ''}.{' '}
+              {m.analysing ? 'History and statistics are being updated. ' : ''}
               {m.status === 'active' && m.undoUntil ? `Undo is possible until ${untilText(m.undoUntil)}.` : 'The merged launches are deleted.'}
             </Text>
             {canUndo && m.status === 'active' && m.id && (

@@ -457,11 +457,12 @@ impl Store {
     /// Launches beyond retention: without a manual run, older than `rawDays` or beyond
     /// `launchesKeep`; with a closed manual run, older than `manualDays` when it is set.
     fn retention_candidates_sql() -> &'static str {
-        "select id, created_at, count_total from launches where project_id = $1 \
+        "select id, created_at, count_total from launches where project_id = $1 and merged_into is null \
            and not (important and $2) and ((manual_state is null and \
              (created_at < now() - make_interval(days => $3) \
              or ($4::bigint is not null and id in (select id from launches where project_id = $1 \
-               and not (important and $2) and manual_state is null order by number desc offset $4)))) \
+               and merged_into is null and not (important and $2) and manual_state is null \
+               order by number desc offset $4)))) \
              or (manual_state = 'closed' and $6 > 0 and created_at < now() - make_interval(days => $6))) \
          order by created_at, number limit $5"
     }

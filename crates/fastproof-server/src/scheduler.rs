@@ -349,6 +349,7 @@ pub fn standard_jobs() -> anyhow::Result<Scheduler> {
     })?;
     analysis_jobs(&mut sch)?;
     case_jobs(&mut sch)?;
+    media_jobs(&mut sch)?;
     Ok(sch)
 }
 
@@ -436,6 +437,23 @@ pub fn analysis_jobs(sch: &mut Scheduler) -> anyhow::Result<()> {
         Ok(())
     })?;
     Ok(())
+}
+
+/// Seekable copies of video attachments (new uploads and existing ones).
+pub fn media_jobs(sch: &mut Scheduler) -> anyhow::Result<()> {
+    sch.register("media.prepare", "15s", |s: AppState| async move {
+        let r = crate::media_prepare::run(&s, Duration::from_secs(60)).await?;
+        if r != crate::media_prepare::RunStats::default() {
+            tracing::info!(
+                ready = r.ready,
+                native = r.native,
+                skipped = r.skipped,
+                failed = r.failed,
+                "videos prepared"
+            );
+        }
+        Ok(())
+    })
 }
 
 /// Jobs of test-management cases: code sync of finished launches and the backfill of cases

@@ -18,6 +18,7 @@ pub mod integrations;
 pub mod launches;
 pub mod logs;
 pub mod maintenance;
+pub mod media;
 pub mod projects;
 pub mod purge;
 pub mod results;

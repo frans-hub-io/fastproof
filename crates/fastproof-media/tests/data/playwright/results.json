@@ -1,0 +1,204 @@
+{
+  "config": {
+    "argv": [
+      "/usr/local/bin/node",
+      "/builds/example/fastproof-samples/node_modules/.bin/playwright",
+      "test"
+    ],
+    "configFile": "/builds/example/fastproof-samples/playwright.config.mjs",
+    "rootDir": "/builds/example/fastproof-samples/tests",
+    "failOnFlakyTests": false,
+    "forbidOnly": false,
+    "fullyParallel": false,
+    "globalSetup": null,
+    "globalTeardown": null,
+    "globalTimeout": 0,
+    "grep": {},
+    "grepInvert": null,
+    "maxFailures": 0,
+    "metadata": {
+      "actualWorkers": 1
+    },
+    "preserveOutput": "always",
+    "projects": [
+      {
+        "outputDir": "/builds/example/fastproof-samples/test-results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "actualWorkers": 1
+        },
+        "id": "",
+        "name": "",
+        "testDir": "/builds/example/fastproof-samples/tests",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 30000
+      }
+    ],
+    "filteredProjects": [
+      {
+        "grep": {},
+        "grepInvert": null,
+        "outputDir": "/builds/example/fastproof-samples/test-results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "actualWorkers": 1
+        },
+        "name": "",
+        "testDir": "/builds/example/fastproof-samples/tests",
+        "snapshotDir": "/builds/example/fastproof-samples/tests",
+        "testIgnore": [],
+        "testMatch": "**/*.@(spec|test).?(c|m)[jt]s?(x)",
+        "timeout": 30000,
+        "use": {
+          "browserName": "chromium",
+          "viewport": {
+            "width": 320,
+            "height": 240
+          },
+          "video": {
+            "mode": "on",
+            "size": {
+              "width": 320,
+              "height": 240
+            }
+          }
+        },
+        "dependencies": [],
+        "ignoreSnapshots": false,
+        "__projectId": ""
+      }
+    ],
+    "quiet": false,
+    "reporter": [
+      [
+        "json",
+        {
+          "outputFile": "results.json"
+        }
+      ]
+    ],
+    "reportSlowTests": {
+      "max": 5,
+      "threshold": 300000
+    },
+    "shard": null,
+    "tags": [],
+    "updateSnapshots": "default",
+    "updateSourceMethod": "patch",
+    "version": "1.65.0",
+    "workers": 1,
+    "webServer": null
+  },
+  "suites": [
+    {
+      "title": "mediarecorder.spec.mjs",
+      "file": "mediarecorder.spec.mjs",
+      "column": 0,
+      "line": 0,
+      "specs": [
+        {
+          "title": "canvas recorded with MediaRecorder",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 30000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 6268,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-11-23T00:19:56.064Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "recording",
+                      "contentType": "video/webm",
+                      "path": "/builds/example/fastproof-samples/test-results/mediarecorder-canvas-recorded-with-MediaRecorder/attachments/recording-0cc2ec2db0c31c5e183d587456706ada5f2d1887.webm"
+                    }
+                  ]
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "30a09e2957796bf1786f-1c2d997a145d64791604",
+          "file": "mediarecorder.spec.mjs",
+          "line": 9,
+          "column": 1
+        }
+      ]
+    },
+    {
+      "title": "screen.spec.mjs",
+      "file": "screen.spec.mjs",
+      "column": 0,
+      "line": 0,
+      "specs": [
+        {
+          "title": "screen recording",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 30000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 1,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 5403,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-11-23T00:20:03.521Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "video",
+                      "contentType": "video/webm",
+                      "path": "/builds/example/fastproof-samples/test-results/screen-screen-recording/video.webm"
+                    }
+                  ]
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "73b4ffa37cc9d30107b2-25719f2ccd8535341565",
+          "file": "screen.spec.mjs",
+          "line": 4,
+          "column": 1
+        }
+      ]
+    }
+  ],
+  "errors": [],
+  "stats": {
+    "startTime": "2026-11-23T00:19:55.359Z",
+    "duration": 14029.077,
+    "expected": 2,
+    "skipped": 0,
+    "unexpected": 0,
+    "flaky": 0
+  }
+}

@@ -142,6 +142,8 @@ pub struct Config {
     pub max_upload_bytes: u64,
     /// Lifetime of media URLs (`FASTPROOF_MEDIA_URL_TTL_SECONDS`, 1 s to 1 h).
     pub media_url_ttl: Duration,
+    /// Seekable copies of video attachments (`FASTPROOF_MEDIA_PREPARE*`).
+    pub media_prepare: MediaPrepare,
     pub ingest_workers: usize,
     pub access_file: Option<PathBuf>,
     pub admin_tokens_file: Option<PathBuf>,
@@ -177,6 +179,28 @@ pub struct Config {
     /// (`FASTPROOF_TM_BACKFILL_DELAY`, default 10 minutes): projects with `caseSync` off by
     /// then are skipped.
     pub tm_backfill_delay: std::time::Duration,
+}
+
+/// Settings of the `media.prepare` job ([`crate::media_prepare`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MediaPrepare {
+    /// `FASTPROOF_MEDIA_PREPARE` (default on).
+    pub enabled: bool,
+    /// Larger videos are left as they are (`FASTPROOF_MEDIA_PREPARE_MAX_BYTES`, default 1 GiB).
+    pub max_bytes: u64,
+    /// Time allowed for one video, download and upload included
+    /// (`FASTPROOF_MEDIA_PREPARE_TIMEOUT_SECONDS`, 10 to 3600, default 300).
+    pub timeout: Duration,
+}
+
+impl Default for MediaPrepare {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_bytes: 1 << 30,
+            timeout: Duration::from_secs(300),
+        }
+    }
 }
 
 /// Default of `FASTPROOF_TM_BACKFILL_DELAY`.
@@ -298,6 +322,7 @@ impl fmt::Debug for Config {
             .field("spool_dir", &self.spool_dir)
             .field("max_upload_bytes", &self.max_upload_bytes)
             .field("media_url_ttl", &self.media_url_ttl)
+            .field("media_prepare", &self.media_prepare)
             .field("ingest_workers", &self.ingest_workers)
             .field("access_file", &self.access_file)
             .field("admin_tokens_file", &self.admin_tokens_file)
@@ -481,6 +506,25 @@ impl Config {
                 crate::api::media::MAX_TTL_SECONDS
             );
         }
+        let media_prepare = {
+            let d = MediaPrepare::default();
+            let max_bytes: u64 = env.parse("FASTPROOF_MEDIA_PREPARE_MAX_BYTES", d.max_bytes)?;
+            if max_bytes < 1024 {
+                bail!("FASTPROOF_MEDIA_PREPARE_MAX_BYTES: at least 1024");
+            }
+            let timeout: u64 = env.parse(
+                "FASTPROOF_MEDIA_PREPARE_TIMEOUT_SECONDS",
+                d.timeout.as_secs(),
+            )?;
+            if !(10..=3600).contains(&timeout) {
+                bail!("FASTPROOF_MEDIA_PREPARE_TIMEOUT_SECONDS: 10..=3600");
+            }
+            MediaPrepare {
+                enabled: env.bool("FASTPROOF_MEDIA_PREPARE", d.enabled)?,
+                max_bytes,
+                timeout: Duration::from_secs(timeout),
+            }
+        };
         let ingest_workers: usize = env.parse("FASTPROOF_INGEST_WORKERS", 2)?;
         if ingest_workers > 64 {
             bail!("FASTPROOF_INGEST_WORKERS: at most 64");
@@ -641,6 +685,7 @@ impl Config {
                 .unwrap_or_else(|| PathBuf::from("/tmp/fastproof")),
             max_upload_bytes,
             media_url_ttl: Duration::from_secs(media_url_ttl),
+            media_prepare,
             ingest_workers,
             access_file: env.path("FASTPROOF_ACCESS_FILE"),
             admin_tokens_file: env.path("FASTPROOF_ADMIN_TOKENS_FILE"),
@@ -709,6 +754,34 @@ mod tests {
     }
 
     #[test]
+    fn media_prepare_settings() {
+        let base = ("FASTPROOF_DATABASE_URL", "postgres://db.example.com/fp");
+        let c = cfg(&[
+            base,
+            ("FASTPROOF_MEDIA_PREPARE", "false"),
+            ("FASTPROOF_MEDIA_PREPARE_MAX_BYTES", "2048"),
+            ("FASTPROOF_MEDIA_PREPARE_TIMEOUT_SECONDS", "60"),
+        ])
+        .unwrap();
+        assert_eq!(
+            c.media_prepare,
+            MediaPrepare {
+                enabled: false,
+                max_bytes: 2048,
+                timeout: Duration::from_secs(60),
+            }
+        );
+        for (k, v) in [
+            ("FASTPROOF_MEDIA_PREPARE_MAX_BYTES", "10"),
+            ("FASTPROOF_MEDIA_PREPARE_TIMEOUT_SECONDS", "5"),
+            ("FASTPROOF_MEDIA_PREPARE_TIMEOUT_SECONDS", "3601"),
+            ("FASTPROOF_MEDIA_PREPARE", "maybe"),
+        ] {
+            assert!(cfg(&[base, (k, v)]).is_err(), "{k}={v}");
+        }
+    }
+
+    #[test]
     fn defaults_and_required() {
         let e = cfg(&[]).unwrap_err().to_string();
         assert!(e.contains("FASTPROOF_DATABASE_URL"), "{e}");
@@ -722,6 +795,7 @@ mod tests {
         assert_eq!(c.ingest_workers, 2);
         assert_eq!(c.max_upload_bytes, 1_073_741_824);
         assert_eq!(c.media_url_ttl, Duration::from_secs(900));
+        assert_eq!(c.media_prepare, MediaPrepare::default());
         assert_eq!(c.migrate, MigrateMode::Auto);
         assert!(c.ui);
         assert!(matches!(c.blob, BlobConfig::Fs { .. }));

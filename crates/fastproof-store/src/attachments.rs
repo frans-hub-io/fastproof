@@ -283,8 +283,8 @@ impl Store {
 
     /// Deletes up to `batch` attachments that no launch links, no case holds (`case_attachments`)
     /// and no manual step result references (`run_step_results.attachment_ids`), and that were
-    /// not seen for `grace`, and queues their blobs in `blob_deletions` (same transaction); returns how
-    /// many. The blobs are deleted by the purge job, which an upload of the same content
+    /// not seen for `grace`, and queues their blobs in `blob_deletions` (same transaction), with
+    /// their derived blobs ([`crate::media`]); returns how many attachments. The blobs are deleted by the purge job, which an upload of the same content
     /// cancels ([`Store::cancel_blob_deletions`]).
     pub async fn collect_attachments(&self, grace: Duration, batch: i64) -> anyhow::Result<u64> {
         let r = sqlx::query(
@@ -295,7 +295,9 @@ impl Store {
                  and not exists (select 1 from run_step_results s where s.attachment_ids @> array[a.id]) \
                  and not exists (select 1 from attachment_refs r join run_step_results s \
                    on s.attachment_ids @> array[r.id] where r.attachment_id = a.id) \
-               order by a.last_seen_at limit $2 for update skip locked) returning blob_key) \
+               order by a.last_seen_at limit $2 for update skip locked) returning id, blob_key), \
+             derived as (insert into blob_deletions (prefix, project_id) select m.blob_key, null \
+               from attachment_media m join gone g on g.id = m.attachment_id where m.blob_key is not null) \
              insert into blob_deletions (prefix, project_id) select blob_key, null from gone",
         )
         .bind(grace.as_secs_f64())

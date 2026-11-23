@@ -2,8 +2,9 @@
 //! S3-compatible bucket, behind one [`BlobStore`].
 //!
 //! Keys are built only through [`BlobKey`] constructors that validate every component, so a key
-//! can never escape its prefix: `projects/<key>/attachments/<sha256[0..2]>/<sha256>` and
-//! `uploads/<uuid>`.
+//! can never escape its prefix: `projects/<key>/attachments/<sha256[0..2]>/<sha256>`,
+//! `projects/<key>/derived/<sha256[0..2]>/<sha256>/<name>` (a copy made from an attachment, such
+//! as a seekable video) and `uploads/<uuid>`.
 
 use std::fmt;
 use std::io::Write;
@@ -79,6 +80,9 @@ pub enum BlobConfig {
     S3(S3Config),
 }
 
+/// Names of derived blobs.
+pub const DERIVED_NAMES: [&str; 2] = ["seekable.webm", "seekable.mp4"];
+
 /// A validated object key.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct BlobKey(String);
@@ -117,6 +121,24 @@ impl BlobKey {
         }
         Ok(Self(format!(
             "projects/{project_key}/attachments/{}/{sha256}",
+            &sha256[..2]
+        )))
+    }
+
+    /// `projects/<key>/derived/<aa>/<sha256>/<name>`: a copy derived from the attachment with this
+    /// SHA-256, such as `seekable.webm` (see [`DERIVED_NAMES`]).
+    pub fn derived(project_key: &str, sha256: &str, name: &str) -> anyhow::Result<Self> {
+        if !valid_project_key(project_key) {
+            bail!("invalid project key in a blob key");
+        }
+        if !valid_sha256(sha256) {
+            bail!("invalid sha256 in a blob key");
+        }
+        if !DERIVED_NAMES.contains(&name) {
+            bail!("invalid derived blob name");
+        }
+        Ok(Self(format!(
+            "projects/{project_key}/derived/{}/{sha256}/{name}",
             &sha256[..2]
         )))
     }
@@ -167,6 +189,9 @@ impl BlobKey {
             ["tm-jobs", id, name] => Self::tm_job(id, name),
             ["projects", p, "attachments", aa, sha] if sha.len() == 64 && &sha[..2] == *aa => {
                 Self::attachment(p, sha)
+            }
+            ["projects", p, "derived", aa, sha, name] if sha.len() == 64 && &sha[..2] == *aa => {
+                Self::derived(p, sha, name)
             }
             _ => bail!("unexpected blob key shape"),
         }
@@ -663,6 +688,18 @@ mod tests {
         assert!(BlobKey::parse("projects/team-a/attachments/cd/".to_string().as_str()).is_err());
         assert!(BlobKey::parse(&format!("projects/team-a/attachments/cd/{sha}")).is_err());
         assert!(BlobKey::parse("etc/passwd").is_err());
+        let d = BlobKey::derived("team-a", &sha, "seekable.webm").unwrap();
+        assert_eq!(
+            d.as_str(),
+            format!("projects/team-a/derived/ab/{sha}/seekable.webm")
+        );
+        assert_eq!(BlobKey::parse(d.as_str()).unwrap(), d);
+        assert!(BlobKey::derived("team-a", &sha, "../x").is_err());
+        assert!(BlobKey::derived("team-a", &sha, "other.webm").is_err());
+        assert!(
+            BlobKey::parse(&format!("projects/team-a/derived/cd/{sha}/seekable.webm")).is_err()
+        );
+        assert!(BlobKey::parse(&format!("projects/team-a/derived/ab/{sha}/x.sh")).is_err());
     }
 
     #[test]

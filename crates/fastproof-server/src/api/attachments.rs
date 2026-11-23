@@ -170,8 +170,42 @@ pub async fn store_attachment(
 #[derive(Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct ContentQuery {
-    /// `1` forces a download.
+    /// `1` forces a download (of the original).
     pub download: Option<String>,
+    /// `1` serves the original even when a seekable copy of a video is ready.
+    pub original: Option<String>,
+}
+
+/// The blob a content request serves, with the validators of its bytes.
+pub struct ServedBlob {
+    pub key: BlobKey,
+    pub sha256: String,
+    pub size: u64,
+}
+
+/// Chooses what serves an attachment: the seekable copy of a video when one is ready (see
+/// `crate::media_prepare`) unless `original`, else the stored original.
+pub async fn blob_to_serve(
+    s: &AppState,
+    a: &fastproof_store::StoredAttachment,
+    original: bool,
+) -> ApiResult<ServedBlob> {
+    let ct = clean_content_type(Some(&a.content_type));
+    if !original
+        && fastproof_store::media::VIDEO_TYPES.contains(&ct.as_str())
+        && let Some(m) = s.store.ready_media(a.project_id, &a.sha256).await?
+    {
+        return Ok(ServedBlob {
+            key: BlobKey::parse(&m.blob_key)?,
+            sha256: m.sha256,
+            size: m.size.max(0) as u64,
+        });
+    }
+    Ok(ServedBlob {
+        key: BlobKey::parse(&a.blob_key)?,
+        sha256: a.sha256.clone(),
+        size: a.size.max(0) as u64,
+    })
 }
 
 fn disposition(kind: &str, name: &str) -> HeaderValue {
@@ -224,11 +258,9 @@ pub async fn content(
         .attachment(project.id, id)
         .await?
         .ok_or_else(|| ApiError::not_found("attachment"))?;
-    let force = q
-        .download
-        .as_deref()
-        .is_some_and(|v| v == "1" || v == "true");
-    serve(&s, &method, &headers, &a, force).await
+    let flag = |v: &Option<String>| v.as_deref().is_some_and(|v| v == "1" || v == "true");
+    let force = flag(&q.download);
+    serve(&s, &method, &headers, &a, force, force || flag(&q.original)).await
 }
 
 #[utoipa::path(head, path = "/api/v1/projects/{key}/attachments/{id}/content", tag = "attachments", operation_id = "attachments_content_head",
@@ -281,21 +313,24 @@ fn header_str(h: &HeaderMap, name: header::HeaderName) -> Option<&str> {
 
 /// Serves a stored attachment: 200, 206 for one byte range (a ranged read of the store), 304,
 /// 416, `HEAD`, always with the sandboxing headers. Used by the content route and by media URLs.
+/// The bytes come from [`blob_to_serve`]; the ETag is the SHA-256 of those bytes.
 pub async fn serve(
     s: &AppState,
     method: &Method,
     req: &HeaderMap,
     a: &fastproof_store::StoredAttachment,
     force_download: bool,
+    original: bool,
 ) -> ApiResult<Response> {
-    let key = BlobKey::parse(&a.blob_key)?;
+    let blob = blob_to_serve(s, a, original).await?;
+    let key = blob.key;
     let ct = clean_content_type(Some(&a.content_type));
     let download = force_download || !inline_safe(&ct);
     let name = a
         .original_name
         .clone()
         .unwrap_or_else(|| format!("attachment-{}", &a.sha256[..12]));
-    let etag = format!("\"{}\"", a.sha256);
+    let etag = format!("\"{}\"", blob.sha256);
     let mut h = HeaderMap::new();
     sandbox(
         &mut h,
@@ -304,7 +339,7 @@ pub async fn serve(
         disposition(if download { "attachment" } else { "inline" }, &name),
     );
     let head = method == Method::HEAD;
-    let size = a.size.max(0) as u64;
+    let size = blob.size;
 
     if header_str(req, header::IF_NONE_MATCH).is_some_and(|v| range::none_match(v, &etag)) {
         return Ok((StatusCode::NOT_MODIFIED, h).into_response());

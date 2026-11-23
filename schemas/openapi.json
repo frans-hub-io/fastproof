@@ -460,7 +460,16 @@
           {
             "name": "download",
             "in": "query",
-            "description": "`1` forces a download.",
+            "description": "`1` forces a download (of the original).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "original",
+            "in": "query",
+            "description": "`1` serves the original even when a seekable copy of a video is ready.",
             "required": false,
             "schema": {
               "type": "string"
@@ -526,7 +535,16 @@
           {
             "name": "download",
             "in": "query",
-            "description": "`1` forces a download.",
+            "description": "`1` forces a download (of the original).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "original",
+            "in": "query",
+            "description": "`1` serves the original even when a seekable copy of a video is ready.",
             "required": false,
             "schema": {
               "type": "string"

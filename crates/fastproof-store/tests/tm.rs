@@ -235,7 +235,10 @@ async fn upgrade_from_stage_one_keeps_data_and_queries() {
 
     let mut applied = fastproof_store::migrate(&db.pool).await.unwrap();
     applied.sort();
-    assert_eq!(applied, vec![500, 501, 502, 503, 504, 505, 506, 507, 600]);
+    assert_eq!(
+        applied,
+        vec![500, 501, 502, 503, 504, 505, 506, 507, 600, 750, 751]
+    );
     fastproof_store::check_schema(&db.pool).await.unwrap();
     let (kind, case_id): (String, Option<Uuid>) =
         sqlx::query_as("select kind, case_id from test_cases where id = $1")

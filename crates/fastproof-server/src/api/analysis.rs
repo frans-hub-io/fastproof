@@ -199,6 +199,8 @@ pub async fn triage(
     if crate::mcp_tm::is_agent(&s, &auth, &p.key) {
         body.source = Some("ai".into());
     }
+    s.refuse_merged_results(&p, body.launch_id, body.result_ids.as_deref())
+        .await?;
     let (out, body) = apply_triage(&s, &p, &auth.principal.name, body).await?;
     s.audit(
         &auth,
@@ -736,6 +738,7 @@ pub async fn patch_launch(
     ApiJson(body): ApiJson<LaunchPatch>,
 ) -> ApiResult<Json<Launch>> {
     let p = s.project_for(&auth, &key, &s.perms.launches_write).await?;
+    s.refuse_merged(&s.launch_of(&p, id).await?)?;
     if let Some(n) = &body.name
         && (n.trim().is_empty() || n.len() > 300)
     {

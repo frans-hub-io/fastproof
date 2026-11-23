@@ -16,6 +16,7 @@ pub mod markdown;
 pub mod mcp;
 pub mod mcp_tm;
 pub mod media_prepare;
+pub mod merges;
 pub mod ops;
 pub mod scheduler;
 pub mod schema;

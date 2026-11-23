@@ -31,6 +31,9 @@ streamed batch of FastProof JSON results. Parallel CI jobs (shards) each send th
 launch. Uploads are queued in PostgreSQL and processed by any replica; each has a status (`queued`,
 `processing`, `done`, `failed`), counts of results, attachments and ignored entries, and warnings.
 
+Shards that did not share a launch (no common CI id), and re-runs, can be merged afterwards: see
+[Merging launches](merging-launches.md).
+
 Allure containers (fixtures) and their results may arrive in different uploads and in any order; FastProof
 attaches fixtures to results as soon as both are present.
 

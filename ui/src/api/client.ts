@@ -90,6 +90,19 @@ const CODE_MESSAGES: Record<string, string> = {
   ai_self_review: 'An AI draft or suggestion needs a second person: whoever created it cannot review it, make it active or accept it. Ask a colleague to do it.',
   export_busy: 'Too many zip exports are being built (at most 2 per person and 4 per project). Wait for one to finish or download it first.',
   launch_finished: 'The launch is finished: only the one who created it, or a caller allowed to sync cases, can add results to it.',
+  launch_merged: 'One of the launches was merged into another launch already. Open that launch instead, or undo the earlier merge.',
+  launch_running: 'Finish the launches first: only the launch you merge into may still be running.',
+  launch_busy: 'Uploads of these launches are still being processed. Merge when they are done.',
+  launch_manual: 'Launches with a manual run cannot be merged.',
+  launch_rolled_up: 'One of the launches is older than the history rollup and can no longer be merged.',
+  merge_mixed: 'Only launches of the same branch, and either all debug or all regular, can be merged.',
+  merge_too_large: 'These launches hold more attempts or log lines than one merge may take on this server.',
+  merge_expired: 'The undo window of this merge has ended.',
+  merge_busy: 'Another merge or undo of this project is running. Try again in a moment.',
+  merge_target_triaged: 'People triaged results of the merged launch after the merge. Undoing it deletes that work, so it needs the triage permission.',
+  merge_source_gone: 'One of the merged launches was deleted, so this merge cannot be undone.',
+  launch_plan: 'Launches started from a test plan cannot be merged.',
+  merge_target_changed: 'Results were added to the merged launch after the merge, so it cannot be undone. Delete the launch instead.',
 };
 
 export function errorMessage(e: unknown): string {

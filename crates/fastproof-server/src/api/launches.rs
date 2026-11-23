@@ -31,6 +31,9 @@ pub struct LaunchQuery {
     pub external_id: Option<String>,
     /// `false` (default): regular launches; `true`: debug launches only.
     pub debug: Option<bool>,
+    /// Also list launches merged into another one (hidden by default).
+    #[serde(rename = "includeMerged")]
+    pub include_merged: Option<bool>,
     /// Cursor from `next`.
     pub before: Option<String>,
     pub limit: Option<i64>,
@@ -144,6 +147,9 @@ pub async fn create(
         .start_launch_as(&project, &body, &auth.principal.name, can_sync)
         .await?;
     if created {
+        s.store
+            .set_launch_owner_key(launch.id, &crate::limits::caller_key(&auth))
+            .await?;
         s.audit(
             &auth,
             "launch.create",
@@ -197,6 +203,7 @@ pub async fn list(
         q: q.q.filter(|v| !v.is_empty()),
         external_id: q.external_id.filter(|v| !v.is_empty() && v.len() <= 256),
         debug: q.debug.unwrap_or(false),
+        include_merged: q.include_merged.unwrap_or(false),
         before,
         limit: page_limit(q.limit)?,
     };
@@ -235,6 +242,7 @@ pub async fn finish(
         serde_json::from_slice(&body)
             .map_err(|e| ApiError::bad_request(format!("invalid JSON body: {e}")))?
     };
+    s.refuse_merged(&s.launch_of(&project, id).await?)?;
     let status = body.status.unwrap_or_else(|| "finished".to_string());
     if !matches!(status.as_str(), "finished" | "interrupted") {
         return Err(ApiError::bad_request(
@@ -275,6 +283,7 @@ pub async fn delete(
 ) -> ApiResult<StatusCode> {
     let project = s.project_for(&auth, &key, &s.perms.settings_write).await?;
     let launch = s.launch_of(&project, id).await?;
+    s.refuse_merged(&launch)?;
     if !s.store.delete_launch(project.id, &project.key, id).await? {
         return Err(ApiError::not_found("launch"));
     }

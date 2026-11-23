@@ -101,7 +101,8 @@ impl Store {
         all.dedup();
         sqlx::query(
             "insert into attachment_links (attachment_id, launch_id) select a, $2 from unnest($1::uuid[]) as a \
-             on conflict do nothing",
+             on conflict (attachment_id, launch_id) do update set merged_from = null \
+             where attachment_links.merged_from is not null",
         )
         .bind(&all)
         .bind(launch_id)
@@ -173,7 +174,8 @@ impl Store {
         ids.dedup();
         sqlx::query(
             "insert into attachment_links (attachment_id, launch_id) select a, $2 from unnest($1::uuid[]) as a \
-             on conflict do nothing",
+             on conflict (attachment_id, launch_id) do update set merged_from = null \
+             where attachment_links.merged_from is not null",
         )
         .bind(&ids)
         .bind(launch_id)

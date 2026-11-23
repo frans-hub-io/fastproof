@@ -125,6 +125,9 @@ begin
         insert into launch_reruns (id, project_id, source_launch_id, external_id, provider, mode, requested_by)
             values (gen_random_uuid(), p, l, 'rerun-' || l::text, 'webhook', 'failed', 'seed');
     end loop;
+    insert into launch_merges (id, project_id, target_id, target_created, sources, source_seqs, created_by, undo_until)
+        values (l, p, l, false, array[l], array[0::bigint], 'seed', now());
+    insert into launch_merge_work (merge_id, project_id, series_id) select l, p, s.id from series s where s.project_id = p;
     insert into series_daily (project_id, series_id, day) select p, s.id, current_date from series s where s.project_id = p;
     insert into series_stats (series_id, project_id) select s.id, p from series s where s.project_id = p;
     insert into series_mutes (series_id, project_id) select s.id, p from series s where s.project_id = p limit 2;

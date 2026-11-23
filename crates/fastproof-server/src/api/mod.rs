@@ -15,6 +15,7 @@ pub mod launch_exports;
 pub mod launches;
 pub mod logs;
 pub mod media;
+pub mod merges;
 pub mod plans;
 pub mod projects;
 pub mod range;
@@ -281,6 +282,7 @@ impl AppState {
         project: &Project,
         launch: &Launch,
     ) -> ApiResult<()> {
+        self.refuse_merged(launch)?;
         let can_sync = auth
             .principal
             .denial(&self.perms.cases_sync, Some(&project.key))

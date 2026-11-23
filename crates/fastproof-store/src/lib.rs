@@ -22,6 +22,7 @@ pub mod launches;
 pub mod logs;
 pub mod maintenance;
 pub mod media;
+pub mod merges;
 pub mod projects;
 pub mod purge;
 pub mod reruns;

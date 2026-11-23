@@ -37,6 +37,8 @@ pub struct LaunchFilter {
     /// Exact external id.
     pub external_id: Option<String>,
     pub debug: bool,
+    /// Also launches merged into another one (hidden by default).
+    pub include_merged: bool,
     pub before: Option<i64>,
     pub limit: i64,
 }
@@ -46,7 +48,7 @@ pub(crate) const LAUNCH_SELECT: &str = "select l.id, l.project_id, l.number, l.n
     l.ci, l.vcs, l.environment, l.attributes, l.count_total, l.count_passed, l.count_failed, \
     l.count_broken, l.count_skipped, l.count_unknown, l.count_flaky, l.count_muted, l.important, \
     coalesce(u.queued, 0) as uploads_queued, coalesce(u.processing, 0) as uploads_processing, \
-    coalesce(u.failed, 0) as uploads_failed, l.test_plan_id, l.manual_state, \
+    coalesce(u.failed, 0) as uploads_failed, l.test_plan_id, l.manual_state, l.merged_into, \
     m.total as manual_total, m.untested as manual_untested, m.in_progress as manual_in_progress, \
     m.passed as manual_passed, m.failed as manual_failed, m.blocked as manual_blocked, \
     m.skipped as manual_skipped, m.started_at as manual_started_at, m.finished_at as manual_finished_at \
@@ -117,6 +119,7 @@ pub(crate) fn launch_row(r: &PgRow) -> Result<Launch, sqlx::Error> {
         important: r.try_get("important")?,
         test_plan_id: r.try_get("test_plan_id")?,
         manual: manual_row(r)?,
+        merged_into: r.try_get("merged_into")?,
     })
 }
 
@@ -277,6 +280,7 @@ impl Store {
         start: &LaunchStart,
         can_sync: bool,
     ) -> anyhow::Result<Launch> {
+        let l = self.follow_merged(l).await?;
         if !can_sync || l.test_plan_id.is_none() {
             return Ok(l);
         }
@@ -363,6 +367,20 @@ impl Store {
         Ok(Some(allowed))
     }
 
+    /// The launch a merged launch went into (following a few merges in a row), else `l`.
+    pub async fn follow_merged(&self, mut l: Launch) -> anyhow::Result<Launch> {
+        for _ in 0..4 {
+            let Some(into) = l.merged_into else {
+                return Ok(l);
+            };
+            match self.launch(l.project_id, into).await? {
+                Some(t) => l = t,
+                None => return Ok(l),
+            }
+        }
+        Ok(l)
+    }
+
     pub async fn launch_by_external(
         &self,
         project_id: Uuid,
@@ -396,7 +414,14 @@ impl Store {
     ) -> anyhow::Result<Page<Launch>> {
         let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(LAUNCH_SELECT);
         qb.push("where l.project_id = ").push_bind(project_id);
-        qb.push(" and l.debug = ").push_bind(f.debug);
+        if f.include_merged {
+            qb.push(" and (l.debug = ")
+                .push_bind(f.debug)
+                .push(" or l.merged_into is not null)");
+        } else {
+            qb.push(" and l.debug = ").push_bind(f.debug);
+            qb.push(" and l.merged_into is null");
+        }
         if let Some(b) = &f.branch {
             qb.push(" and l.branch = ").push_bind(no_nul(b));
         }

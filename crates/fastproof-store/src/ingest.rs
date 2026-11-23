@@ -482,7 +482,7 @@ impl Store {
              select $1, u, n, array(select jsonb_array_elements_text(c)), f, s \
              from unnest($2::text[], $3::text[], $4::jsonb[], $5::bytea[], $6::bigint[]) as t(u, n, c, f, s) \
              on conflict (launch_id, uuid) do update set name = excluded.name, children = excluded.children, \
-               fixtures_z = excluded.fixtures_z, start_ms = excluded.start_ms",
+               fixtures_z = excluded.fixtures_z, start_ms = excluded.start_ms, merged_from = null",
         )
         .bind(launch.id)
         .bind(&uuids)
@@ -1326,7 +1326,8 @@ pub async fn persist_attempts_in(
                raw_status = excluded.raw_status, started_at = excluded.started_at, stopped_at = excluded.stopped_at, \
                duration_ms = excluded.duration_ms, message = excluded.message, trace = excluded.trace, \
                source_uuid = excluded.source_uuid, trace_id = excluded.trace_id, detail = excluded.detail, \
-               steps_z = excluded.steps_z, logs_z = excluded.logs_z, upload_id = excluded.upload_id \
+               steps_z = excluded.steps_z, logs_z = excluded.logs_z, upload_id = excluded.upload_id, \
+               merged_from = null \
                where attempts.status = 'running' \
              returning id, client_key",
         )

@@ -104,6 +104,7 @@ nav:
       - guide/live-logs.md
       - guide/launch-explorer.md
       - guide/launch-export.md
+      - guide/merging-launches.md
       - guide/migrating-from-allure.md
   - Test management:
       - guide/test-management.md

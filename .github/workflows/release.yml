@@ -18,12 +18,12 @@ env:
   PLATFORM_REF: main
 
 jobs:
-  image:
+  version:
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
-    environment:
-      name: release
-      url: https://hub.docker.com/r/franshub/fastproof
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
       - name: check the tag
         id: version
@@ -40,6 +40,20 @@ jobs:
             *) prerelease=false ;;
           esac
           printf 'version=%s\nprerelease=%s\n' "$version" "$prerelease" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: version
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           path: fastproof
@@ -54,7 +68,73 @@ jobs:
       - name: record the platform revision
         id: platform
         run: printf 'revision=%s\n' "$(git -C franshub-platform rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: build the binary for the checks
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc
+        with:
+          context: .
+          file: fastproof/Dockerfile
+          platforms: linux/${{ matrix.arch }}
+          push: false
+          outputs: type=local,dest=${{ runner.temp }}/image
+          build-args: |
+            VERSION=${{ needs.version.outputs.version }}
+            REVISION=${{ github.sha }}
+          cache-from: type=gha,scope=release-${{ matrix.arch }}
+          cache-to: type=gha,scope=release-${{ matrix.arch }},mode=max
+      - name: check the version and the build paths of the binary
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          bash fastproof/.github/scripts/check-binary.sh \
+            "$RUNNER_TEMP/image/usr/local/bin/fastproof" "$VERSION" \
+            "$GITHUB_WORKSPACE" /src/fastproof /src/franshub-platform /usr/local/cargo /usr/local/rustup /root/
+      - id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc
+        with:
+          context: .
+          file: fastproof/Dockerfile
+          platforms: linux/${{ matrix.arch }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          build-args: |
+            VERSION=${{ needs.version.outputs.version }}
+            REVISION=${{ github.sha }}
+          labels: |
+            io.franshub.platform.revision=${{ steps.platform.outputs.revision }}
+          provenance: false
+          sbom: false
+          cache-from: type=gha,scope=release-${{ matrix.arch }}
+          cache-to: type=gha,scope=release-${{ matrix.arch }},mode=max
+      - name: record the digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: digest_${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: [version, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment:
+      name: release
+      url: https://hub.docker.com/r/franshub/fastproof
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          pattern: digest_*
+          merge-multiple: true
+          path: ${{ runner.temp }}/digests
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
       - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550
         with:
@@ -68,47 +148,29 @@ jobs:
             latest=false
           tags: |
             type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable=${{ steps.version.outputs.prerelease == 'false' }}
-          labels: |
-            org.opencontainers.image.title=FastProof
-            org.opencontainers.image.vendor=FransHub
-            org.opencontainers.image.licenses=Apache-2.0
-            io.franshub.platform.revision=${{ steps.platform.outputs.revision }}
-      - name: build the binaries for the checks
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc
-        with:
-          context: .
-          file: fastproof/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: false
-          outputs: type=local,dest=${{ runner.temp }}/image
-          build-args: |
-            VERSION=${{ steps.version.outputs.version }}
-            REVISION=${{ github.sha }}
-          cache-from: type=gha,scope=release
-          cache-to: type=gha,scope=release,mode=max
-      - name: check the version and the build paths of each binary
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ needs.version.outputs.prerelease == 'false' }}
+            type=raw,value=latest,enable=${{ needs.version.outputs.prerelease == 'false' }}
+      - name: create the multi-arch manifest
+        working-directory: ${{ runner.temp }}/digests
         run: |
-          for platform in linux_amd64 linux_arm64; do
-            bash fastproof/.github/scripts/check-binary.sh \
-              "$RUNNER_TEMP/image/$platform/usr/local/bin/fastproof" "$VERSION" \
-              "$GITHUB_WORKSPACE" /src/fastproof /src/franshub-platform /usr/local/cargo /usr/local/rustup /root/
+          set -euo pipefail
+          test "$(ls | wc -l)" -eq 2
+          tags=$(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          refs=$(printf "$IMAGE@sha256:%s " *)
+          docker buildx imagetools create $tags $refs
+      - name: check both architectures and the version of the pushed image
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools inspect "$IMAGE:$VERSION"
+          raw=$(docker buildx imagetools inspect "$IMAGE:$VERSION" --raw)
+          for arch in amd64 arm64; do
+            jq -e --arg arch "$arch" '.manifests | any(.platform.os == "linux" and .platform.architecture == $arch)' <<< "$raw" > /dev/null \
+              || { echo "::error::$IMAGE:$VERSION has no linux/$arch manifest"; exit 1; }
           done
-      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc
-        with:
-          context: .
-          file: fastproof/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            VERSION=${{ steps.version.outputs.version }}
-            REVISION=${{ github.sha }}
-          sbom: true
-          provenance: mode=max
-          cache-from: type=gha,scope=release
-          cache-to: type=gha,scope=release,mode=max
+          out=$(docker run --rm --platform linux/amd64 "$IMAGE:$VERSION" version)
+          if [ "$out" != "fastproof $VERSION" ]; then
+            echo "::error::$IMAGE:$VERSION reports '$out'"
+            exit 1
+          fi

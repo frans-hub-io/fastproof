@@ -17,6 +17,9 @@ import type {
   MockInteractions,
   NotificationTestResult,
   ProjectSettings,
+  Rerun,
+  RerunList,
+  RerunRequest,
   Rule,
   RuleInput,
   RuleTestResponse,
@@ -178,6 +181,7 @@ export function withSettingsDefaults(s: Partial<ProjectSettings>): ProjectSettin
     issueTrackers: s.issueTrackers ?? [],
     vcs: s.vcs ?? null,
     fastmock: s.fastmock ?? null,
+    rerun: s.rerun ?? null,
   };
 }
 
@@ -268,6 +272,21 @@ export function usePatchLaunch(key: string, id: string) {
 export function useCreateTestPlan(key: string) {
   return useMutation({
     mutationFn: (body: TestPlanCreate) => request<TestPlanCreated>(`${projectPath(key)}/test-plans`, { method: 'POST', json: body }),
+  });
+}
+
+export function useReruns(key: string, launchId: string) {
+  return useQuery({
+    queryKey: ['reruns', key, launchId],
+    queryFn: () => request<RerunList>(`${projectPath(key)}/launches/${enc(launchId)}/reruns`),
+  });
+}
+
+export function useRerun(key: string, launchId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: RerunRequest) => request<Rerun>(`${projectPath(key)}/launches/${enc(launchId)}/rerun`, { method: 'POST', json: body }),
+    onSettled: () => void qc.invalidateQueries({ queryKey: ['reruns', key, launchId] }),
   });
 }
 

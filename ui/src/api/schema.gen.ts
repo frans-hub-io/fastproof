@@ -935,6 +935,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{key}/launches/{id}/rerun": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Makes a test plan of the failed (or selected) tests and triggers the CI configured in the project settings (`rerun`) with the plan and the external id the new launch must use (`launches:write`). The CI is called once, without retries. The new launch is linked to this one when it starts with that external id. */
+        post: operations["integrations_rerun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/launches/{id}/reruns": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description The reruns requested from the launch with the launches they started, and the rerun that started this launch. */
+        get: operations["integrations_reruns"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{key}/launches/{id}/results": {
         parameters: {
             query?: never;
@@ -3875,6 +3909,7 @@ export interface components {
              * @default []
              */
             notifications?: components["schemas"]["Notification"][];
+            rerun?: components["schemas"]["RerunSettings"] | null;
             /**
              * @default {
              *       "rawDays": 90,
@@ -3997,6 +4032,88 @@ export interface components {
              * @description Stop, milliseconds since the Unix epoch.
              */
             stop?: number | null;
+        };
+        /** @description A rerun as listed. */
+        Rerun: {
+            /** @description A reference the CI returned (a pipeline id or URL on the configured origin). */
+            ciRef?: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            dispatchedAt?: string | null;
+            /** @description Why the CI was not triggered; never contains URLs or secrets. */
+            error?: string | null;
+            /** @description The external id the CI is told to start its launch with. */
+            externalId: string;
+            /** Format: uuid */
+            id: string;
+            /**
+             * Format: uuid
+             * @description The launch the CI started, once it exists.
+             */
+            launchId?: string | null;
+            /** Format: int64 */
+            launchNumber?: number | null;
+            /** @description `failed` or `selected`. */
+            mode: string;
+            /** Format: uuid */
+            planId?: string | null;
+            /** @description `github`, `gitlab` or `webhook`. */
+            provider: string;
+            requestedBy: string;
+            /** Format: uuid */
+            sourceLaunchId: string;
+            /** Format: int64 */
+            sourceLaunchNumber: number;
+            /** @description `dispatching`, `dispatched` or `failed`. */
+            status: string;
+            /** Format: int32 */
+            testCount: number;
+        };
+        /** @description Answer of `GET .../launches/{id}/reruns`. */
+        RerunList: {
+            /** @description Whether the project settings have a `rerun` section. */
+            configured: boolean;
+            /** @description Reruns requested from this launch, newest first. */
+            items: components["schemas"]["Rerun"][];
+            /** @description `github`, `gitlab` or `webhook` when configured. */
+            provider?: string | null;
+            rerunOf?: components["schemas"]["Rerun"] | null;
+        };
+        /**
+         * @description What a rerun runs.
+         * @enum {string}
+         */
+        RerunMode: "failed" | "selected";
+        /** @description Body of `POST .../launches/{id}/rerun`. */
+        RerunRequest: {
+            mode: components["schemas"]["RerunMode"];
+            /** @description `selected`: results of this launch (1 to 1000). */
+            resultIds?: string[] | null;
+            /** @description `failed`: statuses taken from the launch (default `failed`, `broken`). */
+            statuses?: string[] | null;
+        };
+        /** @description The CI that "Rerun failed" and "Rerun selected" trigger. */
+        RerunSettings: {
+            /** @description `github` (Actions `workflow_dispatch`), `gitlab` (pipeline trigger) or `webhook`. */
+            provider: string;
+            /**
+             * @description The branch or tag the workflow or pipeline runs on (GitHub, GitLab); by default the
+             *     branch of the launch, else `main`.
+             */
+            ref?: string | null;
+            /** @description `owner/repo` (GitHub) or `group/sub/app` (GitLab); not used by a webhook. */
+            repository?: string | null;
+            /**
+             * @description A secret with purpose `ci` bound to the origin of `url`: a GitHub token that may
+             *     dispatch workflows, a GitLab pipeline trigger token, or an optional bearer token of
+             *     the webhook.
+             */
+            tokenSecretRef?: string | null;
+            /** @description GitHub API URL (`https://api.github.com`), GitLab base URL, or the webhook URL. */
+            url: string;
+            /** @description GitHub: the workflow file name (`tests.yml`) or id. */
+            workflow?: string | null;
         };
         /** @description A result with its attempts, steps and history. */
         ResultDetail: components["schemas"]["ResultSummary"] & {
@@ -4392,7 +4509,7 @@ export interface components {
          * @description What a secret may be used for.
          * @enum {string}
          */
-        SecretPurpose: "vcs" | "fastmock" | "slack" | "telegram" | "webhook" | "smtp" | "teams" | "testops";
+        SecretPurpose: "vcs" | "fastmock" | "slack" | "telegram" | "webhook" | "smtp" | "teams" | "testops" | "ci";
         /** @description Body of `PUT .../secrets/{name}`. */
         SecretValue: {
             /**
@@ -8866,6 +8983,121 @@ export interface operations {
             };
         };
     };
+    integrations_rerun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RerunRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Rerun"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description no `rerun` settings, or no tests to run */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description too many reruns */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description the CI refused or is unreachable (the rerun is kept with the reason) */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    integrations_reruns: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RerunList"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     results_list: {
         parameters: {
             query?: {
@@ -11003,7 +11235,7 @@ export interface operations {
             };
             cookie?: never;
         };
-        /** @description The areas to change. Each top-level area present in the body (`flaky`, `retention`, `rollup`, `gates`, `notifications`, `issueTrackers`, `fastmock`, `vcs`) replaces the stored one as a whole; areas left out are kept; `null` resets an area to its default (removes it). `caseSync` is merged by key instead (and its `fields` by field): keys left out keep their values, a `null` key returns to its default. The answer is the whole stored document. */
+        /** @description The areas to change. Each top-level area present in the body (`flaky`, `retention`, `rollup`, `gates`, `notifications`, `issueTrackers`, `fastmock`, `vcs`, `rerun`) replaces the stored one as a whole; areas left out are kept; `null` resets an area to its default (removes it). `caseSync` is merged by key instead (and its `fields` by field): keys left out keep their values, a `null` key returns to its default. The answer is the whole stored document. */
         requestBody: {
             content: {
                 "application/json": components["schemas"]["ProjectSettings"];

@@ -16,6 +16,7 @@ pub mod media;
 pub mod plans;
 pub mod projects;
 pub mod range;
+pub mod reruns;
 pub mod results;
 pub mod runs;
 pub mod search;
@@ -89,6 +90,7 @@ pub fn type_project_settings(doc: &mut utoipa::openapi::OpenApi) {
         }
         props.insert("fastmock".into(), nullable("FastMockSettings"));
         props.insert("vcs".into(), nullable("VcsSettings"));
+        props.insert("rerun".into(), nullable("RerunSettings"));
     }
     if let Ok(schema) = serde_json::from_value(v) {
         c.schemas.insert("ProjectSettings".into(), schema);
@@ -103,7 +105,7 @@ pub fn type_project_settings(doc: &mut utoipa::openapi::OpenApi) {
     components(schemas(ErrorBody, fastproof_model::ReportResult, logs::LogStreamBatch, logs::LogGap,
         crate::integrations::settings::Gate, crate::integrations::settings::Notification,
         crate::integrations::settings::NotificationFilter, crate::integrations::settings::VcsSettings,
-        crate::integrations::settings::IssueTracker, crate::integrations::settings::FastMockSettings,
+        crate::integrations::settings::IssueTracker, crate::integrations::settings::FastMockSettings, crate::integrations::settings::RerunSettings,
         tm::Case, tm::CaseList, tm::CaseSummary, tm::CaseWrite, tm::CasePatch, tm::CaseTree, tm::CaseTreeNode,
         tm::CaseTreeGroupBy, tm::CaseFolder, tm::CaseFolderList, tm::CaseFolderWrite, tm::CaseFolderPatch,
         tm::CaseFieldDef, tm::CaseFieldList, tm::CaseFieldWrite, tm::CaseFieldPatch, tm::CaseVersionSummary,

@@ -152,6 +152,25 @@ impl Client {
         self.send(rb).await
     }
 
+    /// Triggers the CI of the project to rerun tests of a launch.
+    pub async fn rerun(
+        &self,
+        project: &str,
+        launch: Uuid,
+        body: &serde_json::Value,
+    ) -> anyhow::Result<serde_json::Value> {
+        let rb = self
+            .request(
+                Method::POST,
+                &format!(
+                    "api/v1/projects/{}/launches/{launch}/rerun",
+                    Self::enc(project)
+                ),
+            )?
+            .json(body);
+        self.send(rb).await
+    }
+
     /// Allure `testplan.json` of a launch started from a managed plan.
     pub async fn launch_testplan_json(
         &self,

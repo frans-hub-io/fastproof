@@ -1,4 +1,4 @@
-//! Command line: `serve`, `migrate`, `upload`, `watch`, `launch start|finish`, `testplan`,
+//! Command line: `serve`, `migrate`, `upload`, `watch`, `launch start|finish`, `testplan`, `rerun`,
 //! `cases export|import`, `bench [tm]`, `version`.
 
 pub mod archive;
@@ -54,6 +54,10 @@ pub enum Command {
     /// managed plan (`--plan`) or of a launch started from one (`--launch`), so Allure adapters
     /// run only those (`ALLURE_TESTPLAN_PATH=testplan.json`).
     Testplan(TestplanArgs),
+    /// Run the failed (or chosen) tests of a launch again: make a test plan and trigger the
+    /// CI configured in the project settings (`rerun`). Prints the external id the new launch
+    /// uses.
+    Rerun(RerunArgs),
     /// Export test cases (`export --format ndjson|csv [--out file]`) or import them
     /// (`import <file> --format <f> [--apply]`, a dry run by default).
     Cases {
@@ -65,6 +69,21 @@ pub enum Command {
     Bench(bench::BenchCli),
     /// Print the version.
     Version,
+}
+
+#[derive(Args, Debug)]
+pub struct RerunArgs {
+    #[command(flatten)]
+    pub conn: Conn,
+    /// The launch to rerun: its id or its external id.
+    #[arg(long)]
+    pub launch: String,
+    /// Statuses taken from the launch, comma-separated.
+    #[arg(long, default_value = "failed,broken", conflicts_with = "result")]
+    pub status: String,
+    /// A result of the launch to run again, repeatable (instead of `--status`).
+    #[arg(long = "result")]
+    pub result: Vec<uuid::Uuid>,
 }
 
 #[derive(Args, Debug)]
@@ -374,6 +393,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<i32> {
         Command::Upload(u) => upload(u).await,
         Command::Gate(g) => Ok(gate::run(g).await),
         Command::Testplan(t) => testplan(t).await,
+        Command::Rerun(r) => rerun(r).await,
         Command::Cases { command } => cases::run(command).await,
         Command::Watch(w) => watch::run(w).await,
         Command::Bench(bench::BenchCli {
@@ -504,6 +524,40 @@ async fn upload(u: UploadArgs) -> anyhow::Result<i32> {
         );
     }
     Ok(code)
+}
+
+async fn rerun(r: RerunArgs) -> anyhow::Result<i32> {
+    let client = r.conn.client()?;
+    let id = match r.launch.parse::<uuid::Uuid>() {
+        Ok(id) => id,
+        Err(_) => {
+            client
+                .launch_by_external(&r.conn.project, &r.launch)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("no launch with external id {:?}", r.launch))?
+                .id
+        }
+    };
+    let body = if r.result.is_empty() {
+        let statuses: Vec<String> = r
+            .status
+            .split(',')
+            .map(|s| s.trim().to_ascii_lowercase())
+            .filter(|s| !s.is_empty())
+            .collect();
+        serde_json::json!({"mode": "failed", "statuses": statuses})
+    } else {
+        serde_json::json!({"mode": "selected", "resultIds": r.result})
+    };
+    let out = client.rerun(&r.conn.project, id, &body).await?;
+    println!("{}", out["externalId"].as_str().unwrap_or_default());
+    eprintln!(
+        "rerun {}: {} tests sent to the CI ({})",
+        out["id"].as_str().unwrap_or_default(),
+        out["testCount"],
+        out["provider"].as_str().unwrap_or_default()
+    );
+    Ok(0)
 }
 
 async fn testplan(t: TestplanArgs) -> anyhow::Result<i32> {

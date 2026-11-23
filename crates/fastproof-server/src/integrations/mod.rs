@@ -11,6 +11,7 @@ pub mod gates;
 pub mod issues;
 pub mod notify;
 pub mod quality;
+pub mod rerun;
 pub mod secrets;
 pub mod settings;
 pub mod teams;

@@ -13,6 +13,9 @@ import type {
   LogLineWire,
   MockInteractions,
   ProjectSettings,
+  Rerun,
+  RerunList,
+  RerunRequest,
   Rule,
   RuleMatch,
   SimilarFailure,
@@ -129,6 +132,7 @@ function initialSettings(): ProjectSettings {
     ],
     vcs: { provider: 'gitlab', url: 'https://gitlab.example.com', repository: 'example/web-shop', tokenSecretRef: 'gitlab-token', comment: true, status: true },
     fastmock: { url: 'https://fastmock.example.com', tokenSecretRef: 'fastmock-token' },
+    rerun: { provider: 'github', url: 'https://api.github.com', repository: 'example/web-shop', workflow: 'tests.yml', ref: 'main', tokenSecretRef: 'gitlab-token' },
   };
 }
 
@@ -206,6 +210,7 @@ export function settingsOf(project: string): ProjectSettings {
       s.notifications = [];
       s.vcs = null;
       s.fastmock = null;
+      s.rerun = null;
     }
     state.settings.set(project, s);
   }
@@ -716,6 +721,41 @@ export function planJson(id: string): { version: string; tests: { id?: string; s
   if (plan.statuses?.length) results = results.filter((r) => plan.statuses?.includes(r.status));
   if (plan.testCaseIds?.length) results = results.filter((r) => plan.testCaseIds?.includes(r.testCaseId));
   return { version: '1.0', tests: results.map((r) => ({ id: r.testCaseId, selector: r.fullName })) };
+}
+
+const reruns: Rerun[] = [];
+
+export function rerunsOf(launchId: string): RerunList {
+  const settings = settingsOf(launchDef(launchId)?.project ?? 'web-shop');
+  const started = reruns.find((r) => r.launchId === launchId) ?? null;
+  return { configured: !!settings.rerun, provider: settings.rerun?.provider ?? null, items: reruns.filter((r) => r.sourceLaunchId === launchId), rerunOf: started };
+}
+
+export function createRerun(launchId: string, body: RerunRequest): Rerun {
+  const def = launchDef(launchId);
+  const results = launchResults(launchId);
+  const picked = body.mode === 'selected' ? results.filter((r) => body.resultIds?.includes(r.id)) : results.filter((r) => (body.statuses ?? ['failed', 'broken']).includes(r.status));
+  const id = `rerun-${String(reruns.length + 1)}`;
+  const r: Rerun = {
+    id,
+    sourceLaunchId: launchId,
+    sourceLaunchNumber: def?.launch.number ?? 0,
+    externalId: id,
+    planId: `plan-${id}`,
+    provider: settingsOf(def?.project ?? 'web-shop').rerun?.provider ?? 'github',
+    mode: body.mode,
+    testCount: picked.length,
+    status: 'dispatched',
+    error: null,
+    ciRef: null,
+    requestedBy: 'alex@example.com',
+    createdAt: new Date().toISOString(),
+    dispatchedAt: new Date().toISOString(),
+    launchId: null,
+    launchNumber: null,
+  };
+  reruns.unshift(r);
+  return r;
 }
 
 export function jobs(): ScheduledJob[] {

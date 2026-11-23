@@ -86,6 +86,8 @@ pub fn api_router() -> (Router<AppState>, utoipa::openapi::OpenApi) {
         .routes(routes!(api::integrations::deliveries))
         .routes(routes!(api::integrations::test_notification))
         .routes(routes!(api::integrations::mock_interactions))
+        .routes(routes!(api::reruns::create))
+        .routes(routes!(api::reruns::list))
         .routes(routes!(
             api::analysis::defect_types,
             api::analysis::create_defect_type

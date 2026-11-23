@@ -120,6 +120,8 @@ begin
         insert into launch_log_bytes (launch_id, bytes) values (l, 4);
         insert into launch_gates (launch_id, project_id) values (l, p);
         insert into case_sync_queue (launch_id) values (l);
+        insert into launch_reruns (id, project_id, source_launch_id, external_id, provider, mode, requested_by)
+            values (gen_random_uuid(), p, l, 'rerun-' || l::text, 'webhook', 'failed', 'seed');
     end loop;
     insert into series_daily (project_id, series_id, day) select p, s.id, current_date from series s where s.project_id = p;
     insert into series_stats (series_id, project_id) select s.id, p from series s where s.project_id = p;

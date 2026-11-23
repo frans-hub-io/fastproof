@@ -204,9 +204,35 @@ pub struct FastMockSettings {
     pub token_secret_ref: Option<String>,
 }
 
+/// The CI that "Rerun failed" and "Rerun selected" trigger.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RerunSettings {
+    /// `github` (Actions `workflow_dispatch`), `gitlab` (pipeline trigger) or `webhook`.
+    pub provider: String,
+    /// GitHub API URL (`https://api.github.com`), GitLab base URL, or the webhook URL.
+    pub url: String,
+    /// `owner/repo` (GitHub) or `group/sub/app` (GitLab); not used by a webhook.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository: Option<String>,
+    /// GitHub: the workflow file name (`tests.yml`) or id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow: Option<String>,
+    /// The branch or tag the workflow or pipeline runs on (GitHub, GitLab); by default the
+    /// branch of the launch, else `main`.
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "ref")]
+    pub git_ref: Option<String>,
+    /// A secret with purpose `ci` bound to the origin of `url`: a GitHub token that may
+    /// dispatch workflows, a GitLab pipeline trigger token, or an optional bearer token of
+    /// the webhook.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_secret_ref: Option<String>,
+}
+
 /// The integration keys of the settings document.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct IntegrationSettings {
+    pub rerun: Option<RerunSettings>,
     pub gates: Vec<Gate>,
     pub notifications: Vec<Notification>,
     pub vcs: Option<VcsSettings>,
@@ -283,6 +309,7 @@ impl IntegrationSettings {
             vcs: field(doc, "vcs")?,
             issue_trackers: field(doc, "issueTrackers")?.unwrap_or_default(),
             fastmock: field(doc, "fastmock")?,
+            rerun: field(doc, "rerun")?,
         };
         s.check()?;
         Ok(s)
@@ -488,6 +515,67 @@ impl IntegrationSettings {
             http_url("fastmock.url", &f.url)?;
             secret_ref("fastmock.tokenSecretRef", &f.token_secret_ref)?;
         }
+        if let Some(r) = &self.rerun {
+            r.check()?;
+        }
+        Ok(())
+    }
+}
+
+impl RerunSettings {
+    fn check(&self) -> Result<(), String> {
+        if !matches!(self.provider.as_str(), "github" | "gitlab" | "webhook") {
+            return Err("rerun.provider must be github, gitlab or webhook".into());
+        }
+        http_url("rerun.url", &self.url)?;
+        secret_ref("rerun.tokenSecretRef", &self.token_secret_ref)?;
+        let word = |what: &str, v: &Option<String>, max: usize| match v {
+            Some(v)
+                if v.is_empty()
+                    || v.len() > max
+                    || !v.bytes().all(|b| {
+                        b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'/')
+                    })
+                    || v.contains("..") =>
+            {
+                Err(format!("{what}: 1 to {max} letters, digits, - _ . /"))
+            }
+            _ => Ok(()),
+        };
+        word("rerun.ref", &self.git_ref, 200)?;
+        word("rerun.workflow", &self.workflow, 200)?;
+        match self.provider.as_str() {
+            "webhook" => {
+                if self.repository.is_some() || self.workflow.is_some() || self.git_ref.is_some() {
+                    return Err("rerun: a webhook takes only url and tokenSecretRef".into());
+                }
+            }
+            p => {
+                let Some(repo) = &self.repository else {
+                    return Err(format!("rerun.repository is required for {p}"));
+                };
+                if !valid_repository(p, repo) {
+                    return Err(
+                        "rerun.repository must be the project path: group/sub/app (GitLab) or owner/repo (GitHub)"
+                            .into(),
+                    );
+                }
+                if p == "github" && self.workflow.is_none() {
+                    return Err("rerun.workflow is required for github".into());
+                }
+                if p == "gitlab" {
+                    if self.workflow.is_some() {
+                        return Err("rerun.workflow is for github".into());
+                    }
+                    if self.token_secret_ref.is_none() {
+                        return Err("rerun.tokenSecretRef (a pipeline trigger token) is required for gitlab".into());
+                    }
+                }
+                if p == "github" && self.token_secret_ref.is_none() {
+                    return Err("rerun.tokenSecretRef is required for github".into());
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -553,6 +641,11 @@ impl IntegrationSettings {
         {
             add(t, SecretPurpose::Fastmock, Some(f.url.clone()));
         }
+        if let Some(r) = &self.rerun
+            && let Some(t) = &r.token_secret_ref
+        {
+            add(t, SecretPurpose::Ci, Some(r.url.clone()));
+        }
         out
     }
 }
@@ -572,7 +665,7 @@ fn url_fields(doc: &serde_json::Value) -> std::collections::BTreeMap<String, Str
         Err(_) => s.chars().take(256).collect(),
     };
     let text = |v: &serde_json::Value, k: &str| v.get(k).and_then(|x| x.as_str()).map(clean);
-    for k in ["vcs", "fastmock"] {
+    for k in ["vcs", "fastmock", "rerun"] {
         if let Some(v) = doc.get(k) {
             if let Some(u) = text(v, "url") {
                 out.insert(format!("{k}.url"), u);
@@ -639,9 +732,11 @@ pub fn redact(doc: &mut fastproof_store::analysis::settings::ProjectSettings) {
         o.insert("url".into(), serde_json::json!(""));
         o.insert("redacted".into(), serde_json::json!(true));
     }
-    if let Some(o) = doc.other.get_mut("vcs").and_then(|v| v.as_object_mut()) {
-        o.insert("url".into(), serde_json::json!(""));
-        o.insert("redacted".into(), serde_json::json!(true));
+    for k in ["vcs", "rerun"] {
+        if let Some(o) = doc.other.get_mut(k).and_then(|v| v.as_object_mut()) {
+            o.insert("url".into(), serde_json::json!(""));
+            o.insert("redacted".into(), serde_json::json!(true));
+        }
     }
 }
 

@@ -46,6 +46,8 @@ pub enum SecretPurpose {
     Teams,
     /// Allure TestOps API token of a case import (stored by `POST /imports`); needs an origin.
     Testops,
+    /// Token for the CI a rerun triggers (`rerun.tokenSecretRef`); needs an origin.
+    Ci,
 }
 
 impl SecretPurpose {
@@ -59,6 +61,7 @@ impl SecretPurpose {
             SecretPurpose::Smtp => "smtp",
             SecretPurpose::Teams => "teams",
             SecretPurpose::Testops => "testops",
+            SecretPurpose::Ci => "ci",
         }
     }
 
@@ -70,6 +73,7 @@ impl SecretPurpose {
                 | SecretPurpose::Fastmock
                 | SecretPurpose::Teams
                 | SecretPurpose::Testops
+                | SecretPurpose::Ci
         )
     }
 

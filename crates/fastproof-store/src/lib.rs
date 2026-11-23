@@ -22,6 +22,7 @@ pub mod maintenance;
 pub mod media;
 pub mod projects;
 pub mod purge;
+pub mod reruns;
 pub mod results;
 pub mod scheduler;
 pub mod search;

@@ -7,7 +7,7 @@ version has migrated the schema.
 
 This page lists what needs attention per release.
 
-## Next release: big launches on every writer
+## 0.2.0-dev1: big launches on every writer
 
 A launch with many results used to go through one Kafka partition and one writer, and every
 transaction storing results of a launch held the launch row to its end, so a single launch of 100,000
@@ -56,7 +56,7 @@ and wait until the sinks have caught up (`fastproof_sink_lag_seconds`, or the ou
 lag at 0): an earlier sink skips `log.chunks` events and moves past them, and those log lines never reach
 ClickHouse or OpenSearch.
 
-## Next release: faster launch explorer
+## 0.2.0-dev1: faster launch explorer
 
 The tree of a launch is counted in the database and the explorer keeps the aggregates of finished launches
 (see [Launch explorer](../guide/launch-explorer.md#large-launches)). What to know:
@@ -95,7 +95,7 @@ The tree of a launch is counted in the database and the explorer keeps the aggre
 - A result with several values of a grouping label is now in the group of each value (it was placed by its first
   value), and an empty label value counts as no value in the filters and the **(none)** groups.
 
-## Next release: video serving and S3 by default
+## 0.2.0-dev1: video serving and S3 by default
 
 The content route of attachments now answers byte ranges and conditional requests, and `<video>` elements load
 attachments through short-lived signed [media URLs](../reference/api.md#attachment-content-and-media-urls).
@@ -154,7 +154,7 @@ example `rclone copy /var/lib/fastproof/blobs s3:<bucket>`), then switch to `s3`
 bundled Garage) together with `server.blobBackendMigrated: true` for one rollout, and verify a few attachments.
 The `fs` volume is kept on uninstall.
 
-## Next release: test management agents, limits and version retention
+## 0.2.0-dev1: test management agents, limits and version retention
 
 - A new built-in role `agent` and permission `ai:propose` for the tokens of AI agents: they triage, draft
   cases and rules, and propose case changes over MCP, but cannot change, review or activate cases over REST
@@ -177,7 +177,7 @@ The `fs` volume is kept on uninstall.
 - Case numbers are taken in a short statement of their own, so parallel creates no longer wait for each other;
   a create that fails after its number was taken leaves a gap.
 
-## Earlier in the next release: faster Kafka writers
+## 0.2.0-dev1: faster Kafka writers
 
 The writers of Kafka mode (and ingest in `direct` mode) store results and logs with far fewer statements and
 locks; see [Kafka writer](scaling.md#kafka-writer). Things to know before upgrading:

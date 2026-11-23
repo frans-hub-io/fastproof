@@ -44,7 +44,7 @@ docker run -d --name fastproof --network fastproof \
   -e FASTPROOF_LOG_FORMAT=text \
   -v "$PWD/admin-tokens:/etc/fastproof/admin-tokens:ro" \
   -v fastproof-blobs:/var/lib/fastproof \
-  docker.io/franshub/fastproof:0.1.0-dev2
+  docker.io/franshub/fastproof:0.2.0-dev1
 ```
 
 FastProof runs its database migrations at start (`FASTPROOF_MIGRATE=auto`, guarded by an advisory lock).
@@ -113,7 +113,7 @@ docker run --rm --network host \
   -e FASTPROOF_URL=http://localhost:8080 \
   -e FASTPROOF_TOKEN -e FASTPROOF_PROJECT=web \
   -v "$PWD:/work:ro" -w /work \
-  docker.io/franshub/fastproof:0.1.0-dev2 upload allure-results
+  docker.io/franshub/fastproof:0.2.0-dev1 upload allure-results
 ```
 
 The CLI creates a launch, uploads the directory as one archive, waits until the server has processed it,
@@ -134,7 +134,7 @@ Any report format works the same way: a `junit.xml` file, a CTRF `ctrf-report.js
 The CLI is a static Linux binary inside the image. Copy it out once:
 
 ```sh
-id=$(docker create docker.io/franshub/fastproof:0.1.0-dev2)
+id=$(docker create docker.io/franshub/fastproof:0.2.0-dev1)
 docker cp "$id:/usr/local/bin/fastproof" ./fastproof
 docker rm "$id"
 ./fastproof version
@@ -143,7 +143,7 @@ docker rm "$id"
 Or add it to your CI image:
 
 ```dockerfile
-COPY --from=docker.io/franshub/fastproof:0.1.0-dev2 /usr/local/bin/fastproof /usr/local/bin/fastproof
+COPY --from=docker.io/franshub/fastproof:0.2.0-dev1 /usr/local/bin/fastproof /usr/local/bin/fastproof
 ```
 
 ## Run the server without a container

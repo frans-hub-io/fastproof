@@ -90,7 +90,7 @@ names and the filter counts read at most 200 000 results; `partial` is true when
 After an upgrade, a background job fills the label index and the stored suite path of results stored by
 earlier versions, and the
 attachment kinds of results stored before the explorer had attachment filters (see
-[Upgrading](../operations/upgrading.md#next-release-faster-launch-explorer)). Until it reaches a launch, its tree
+[Upgrading](../operations/upgrading.md#020-dev1-faster-launch-explorer)). Until it reaches a launch, its tree
 is built the slower way and its attachment filter may miss results.
 
 Keys: ↑ and ↓ move, → and ← open and close groups, Enter shows a test, Esc closes it. On a phone the test opens

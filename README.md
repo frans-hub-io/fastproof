@@ -8,7 +8,7 @@ and S3-compatible storage (or a directory); Valkey is optional. Large installati
 API and the database, run the roles as separate Deployments, and copy results and logs to ClickHouse or
 OpenSearch for search.
 
-Status: early development (`0.1.0-dev2`).
+Status: early development (`0.2.0-dev1`).
 
 - Documentation: <https://fastproof.franshub.io/>
 - Image: [`franshub/fastproof`](https://hub.docker.com/r/franshub/fastproof)
@@ -29,7 +29,7 @@ docker run -d --name fastproof --network fastproof -p 127.0.0.1:8080:8080 -p 127
   -e FASTPROOF_DATABASE_URL=postgres://fastproof:fastproof@fastproof-db:5432/fastproof \
   -e FASTPROOF_ADMIN_TOKENS_FILE=/etc/fastproof/admin-tokens \
   -v "$PWD/admin-tokens:/etc/fastproof/admin-tokens:ro" -v fastproof-blobs:/var/lib/fastproof \
-  docker.io/franshub/fastproof:0.1.0-dev2
+  docker.io/franshub/fastproof:0.2.0-dev1
 
 curl -fsS -X POST http://localhost:8080/api/v1/projects -H "Authorization: Bearer $FASTPROOF_TOKEN" \
   -H 'Content-Type: application/json' -d '{"key":"web","name":"Web shop"}'

@@ -64,7 +64,7 @@ id) like the other commands, or by `--id`. Add it to the final job of the recipe
 
 !!! note "Getting the CLI"
     The CLI is a static Linux binary in the image `docker.io/franshub/fastproof`. Add it to your test image
-    with `COPY --from=docker.io/franshub/fastproof:0.1.0-dev2 /usr/local/bin/fastproof /usr/local/bin/fastproof`,
+    with `COPY --from=docker.io/franshub/fastproof:0.2.0-dev1 /usr/local/bin/fastproof /usr/local/bin/fastproof`,
     or copy it out with `docker create` and `docker cp` as in the recipes below. The image itself has no
     shell, so it cannot be the job image of a CI system that runs shell scripts.
 
@@ -103,7 +103,7 @@ report:
 
 ```dockerfile
 FROM mcr.microsoft.com/playwright:v1.65.0-noble
-COPY --from=docker.io/franshub/fastproof:0.1.0-dev2 /usr/local/bin/fastproof /usr/local/bin/fastproof
+COPY --from=docker.io/franshub/fastproof:0.2.0-dev1 /usr/local/bin/fastproof /usr/local/bin/fastproof
 ```
 
 Store `FASTPROOF_TOKEN` as a masked and protected CI/CD variable. Without `watch`, replace the three watch
@@ -135,7 +135,7 @@ jobs:
       - name: install fastproof CLI
         run: |
           mkdir -p "$HOME/.local/bin"
-          id=$(docker create docker.io/franshub/fastproof:0.1.0-dev2)
+          id=$(docker create docker.io/franshub/fastproof:0.2.0-dev1)
           docker cp "$id:/usr/local/bin/fastproof" "$HOME/.local/bin/fastproof"
           docker rm "$id"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
@@ -160,7 +160,7 @@ jobs:
       - name: install fastproof CLI
         run: |
           mkdir -p "$HOME/.local/bin"
-          id=$(docker create docker.io/franshub/fastproof:0.1.0-dev2)
+          id=$(docker create docker.io/franshub/fastproof:0.2.0-dev1)
           docker cp "$id:/usr/local/bin/fastproof" "$HOME/.local/bin/fastproof"
           docker rm "$id"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"

@@ -126,6 +126,7 @@ nav:
       - operations/security.md
       - operations/limits.md
       - operations/upgrading.md
+  - Release notes: release-notes.md
   - Reference:
       - reference/api.md
       - API reference (Swagger UI): /api/swagger/

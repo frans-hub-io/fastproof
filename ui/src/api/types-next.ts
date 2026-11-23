@@ -50,8 +50,8 @@ export type Task = S['Task'];
 
 export type FlakySettings = Required<S['FlakySettings']>;
 
-export type RetentionSettings = Required<Omit<S['RetentionSettings'], 'launchesKeep' | 'manualDays'>> &
-  Pick<S['RetentionSettings'], 'launchesKeep' | 'manualDays'>;
+export type RetentionSettings = Required<Omit<S['RetentionSettings'], 'launchesKeep' | 'manualDays' | 'caseVersionsKeep' | 'caseVersionsDays'>> &
+  Pick<S['RetentionSettings'], 'launchesKeep' | 'manualDays' | 'caseVersionsKeep' | 'caseVersionsDays'>;
 
 export type RollupSettings = Required<S['RollupSettings']>;
 

@@ -77,9 +77,12 @@ curl -fsS -X POST "$api/test-plans/$plan/items" -H "$auth" -H 'Content-Type: app
 
 Assignees are the user names people sign in with (for OIDC, the username claim). The assignee boxes in the
 UI suggest the people known to the project (`GET $api/people?q=`, needs `projects:read`, at most 100, as
-`{items: [{principal}]}`): users bound to the project in the access file, active managed tokens whose role
-can execute runs in it, and every name already used as an assignee or executor in its runs and plans. Members
-of a bound group appear only once they have been assigned or have executed something. You can still type any
+`{items: [{principal, display}]}`): users bound to the project in the access file, active managed tokens whose
+role can execute runs in it, members of bound OIDC groups who have opened test management in the last 180 days
+(FastProof remembers each user's groups and display name, the provider's `name` claim, from their requests),
+and every name already used as an assignee or executor in its runs and plans. FastProof does not ask the
+identity provider for group members, so a member who has never signed in is not suggested until then; the box
+says so. `q` matches the name or the display name. You can still type any
 name; a name that matches nobody known is marked as an unknown user, because work assigned to a wrong name
 shows up in nobody's queue.
 
@@ -105,8 +108,8 @@ curl -fsS -X POST "$api/test-plans/$plan/launches" -H "$auth" -H 'Content-Type: 
 | `name` | Launch name (required) |
 | `externalId` | The launch's external id; generated when absent. Starting again with the same id returns the same launch (`200`); an id used by a launch of something else answers `409 launch_exists` |
 | `environment`, `attributes` | As for any launch |
-| `assign` | Required: `plan` (the plan's assignees), `me` (everything to the caller) or `none` |
-| `includeAutomated` | Required: whether CI will run the automated cases of the plan into this launch |
+| `assign` | `plan` (the plan's assignees), `me` (everything to the caller) or `none` (the default) |
+| `includeAutomated` | Whether CI will run the automated cases of the plan into this launch (default `false`) |
 
 The answer holds the `launch`, its `testplanUrl` and a `ciHint`: the shell lines that make a CI job run the
 plan's automated cases into this launch. Each run item keeps the version of its case at the moment the run
@@ -293,7 +296,7 @@ curl -fsS -X POST "$api/launches/$launch/manual/close" -H "$auth" -H 'Content-Ty
   -d '{"untestedTo":"skipped"}'
 ```
 
-Closing marks the untested items `skipped` (or leaves them with `"untestedTo": "leave"`) and then:
+Closing marks the untested items `skipped` (the default when `untestedTo` is absent; `"untestedTo": "leave"` leaves them) and then:
 
 - a purely manual launch (no automated results or uploads) becomes `finished`;
 - the quality gate of a finished launch is evaluated again with the manual results, and notifications go out

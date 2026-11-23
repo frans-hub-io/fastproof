@@ -37,6 +37,7 @@ Permissions are `resource:action` strings:
 | `cases:sync` | Let results uploaded with this permission into launches created with it update test cases from code ([code sync](../guide/test-management.md#code-sync)) |
 | `plans:write` | Create, change, sync and archive test plans; reopen closed manual runs |
 | `runs:execute` | Start launches from test plans and execute manual runs |
+| `ai:propose` | Create work for people to review through MCP: AI draft cases, case suggestions, disabled triage rules ([agent tokens](../guide/mcp-copilot.md#agent-tokens)) |
 | `tokens:read`, `tokens:write` | List and manage API tokens |
 
 Built-in roles:
@@ -47,6 +48,7 @@ Built-in roles:
 | `tester` | `projects:read`, `launches:read`, `cases:read`, `runs:execute` |
 | `uploader` | `projects:read`, `launches:read`, `launches:write`, `cases:read`, `cases:sync` |
 | `editor` | everything of `uploader`, plus `results:triage`, `rules:write`, `cases:write`, `cases:import`, `plans:write`, `runs:execute` |
+| `agent` | `projects:read`, `launches:read`, `cases:read`, `results:triage`, `ai:propose` (tokens of AI agents; no direct changes to cases) |
 | `admin` | `*` (every permission) |
 
 A **binding** gives a role to a user, an OIDC group or a token, scoped globally, to a list of projects, or to

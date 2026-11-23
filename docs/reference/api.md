@@ -204,6 +204,7 @@ management routes answer:
 | 409 | `launch_exists` | Starting a plan with the `externalId` of a launch that does not belong to it |
 | 409 | `no_manual_run` | A manual run operation on a launch without run items |
 | 409 | `manual_run_closed` | A write to an item of a closed manual run; reopen it first |
+| 429 | `rate_limited` | More writes that multiply work (plan launches, run items, plan changes, bulk changes) than `FASTPROOF_TM_MULTIPLYING_WRITES_PER_MINUTE` per caller; wait `Retry-After` seconds |
 | 409 | `manual_run_open` | Reopening a run that is open |
 | 409 | `run_item_not_final` | A defect on a run item without a final status |
 | 409 | `no_issue_tracker` | A new-issue link when the project has no matching issue tracker |

@@ -121,6 +121,7 @@ pub async fn add_run_items(
     ApiJson(body): ApiJson<RunItemsAdd>,
 ) -> ApiResult<Json<RunItemsAdded>> {
     let p = s.project_for(&auth, &key, &s.perms.runs_execute).await?;
+    crate::tm_rate::admit(&s, &auth)?;
     let _permit = s.guards.heavy(&auth).await?;
     let out = s
         .store
@@ -196,10 +197,12 @@ pub struct MyRunItemsQuery {
 pub async fn my_run_items(
     State(s): State<AppState>,
     auth: Auth,
+    headers: axum::http::HeaderMap,
     P(key): P<String>,
     Q(q): Q<MyRunItemsQuery>,
 ) -> ApiResult<Json<Page<MyRunItem>>> {
     let p = s.project_for(&auth, &key, &s.perms.launches_read).await?;
+    crate::tm_people::note(&s, &auth, &headers);
     if q.assignee.as_deref().is_some_and(|a| a != "me") {
         return Err(ApiError::bad_request("assignee must be me"));
     }
@@ -229,9 +232,11 @@ pub async fn my_run_items(
 pub async fn get_run_item(
     State(s): State<AppState>,
     auth: Auth,
+    headers: axum::http::HeaderMap,
     P((key, id)): P<(String, Uuid)>,
 ) -> ApiResult<Response> {
     let p = s.project_for(&auth, &key, &s.perms.launches_read).await?;
+    crate::tm_people::note(&s, &auth, &headers);
     Ok(item_response(rendered(&s, &p, id).await?))
 }
 
@@ -700,15 +705,18 @@ pub const MAX_PEOPLE: usize = 100;
 
 #[utoipa::path(get, path = "/api/v1/projects/{key}/people", tag = "runs", operation_id = "list_project_people",
     description = "Principals to assign run items to: users and managed tokens with `runs:execute` in the project (from \
-        the role bindings; members of a bound group are not known until they sign in) and the names already used as \
-        assignees or executors in the project. Sorted by name, at most 100. Assignees are free text; names that are not \
-        in this list are allowed.",
+        the role bindings), members of bound groups who opened test management in the last 180 days (with the groups \
+        of their last sign-in; members who never signed in are not known), and the names already used as assignees or \
+        executors in the project. `display` is the `name` claim of the identity provider when known. `q` matches the \
+        name or the display name. Sorted by name, at most 100. Assignees are free text; names that are not in this \
+        list are allowed.",
     params(("key" = String, Path), PeopleQuery),
     responses((status = 200, body = People), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),
         (status = 404, body = ErrorBody)))]
 pub async fn project_people(
     State(s): State<AppState>,
     auth: Auth,
+    headers: axum::http::HeaderMap,
     P(key): P<String>,
     Q(q): Q<PeopleQuery>,
 ) -> ApiResult<Json<People>> {
@@ -747,6 +755,20 @@ pub async fn project_people(
             }
         }
     }
+    let mut displays: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for k in s.store.known_people(MAX_KNOWN_PEOPLE).await? {
+        let shown = k.display.as_deref().unwrap_or(&k.principal);
+        if (wanted(&k.principal) || wanted(shown))
+            && policy
+                .user_principal(&k.principal, &k.groups)
+                .is_some_and(|pr| pr.allowed(&s.perms.runs_execute, Some(&p.key)))
+        {
+            names.insert(k.principal.clone());
+        }
+        if let Some(d) = k.display {
+            displays.insert(k.principal, d);
+        }
+    }
     for n in s
         .store
         .seen_principals(p.id, q.as_deref(), MAX_PEOPLE as i64)
@@ -754,17 +776,21 @@ pub async fn project_people(
     {
         names.insert(n);
     }
+    crate::tm_people::note(&s, &auth, &headers);
     Ok(Json(People {
         items: names
             .into_iter()
             .take(MAX_PEOPLE)
             .map(|principal| Person {
+                display: displays.get(&principal).cloned(),
                 principal,
-                display: None,
             })
             .collect(),
     }))
 }
+
+/// People recorded at sign-in that `GET /people` looks at, most recent first.
+pub const MAX_KNOWN_PEOPLE: i64 = 5000;
 
 #[utoipa::path(post, path = "/api/v1/projects/{key}/launches/{id}/manual/close", tag = "runs", operation_id = "close_manual_run",
     description = "Closes the manual run: untested items become `skipped` unless `untestedTo: leave`; a purely manual launch \

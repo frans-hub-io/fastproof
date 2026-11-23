@@ -16,9 +16,12 @@ describe('query hooks', () => {
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(flatItems(result.current.data)).toHaveLength(30);
     expect(result.current.hasNextPage).toBe(true);
-    await act(() => result.current.fetchNextPage());
-    await waitFor(() => expect(flatItems(result.current.data).length).toBeGreaterThan(30));
-    const numbers = flatItems(result.current.data).map((l) => l.number);
+    // The fetch's own result carries both pages; the hook re-renders with them only on the query client's next
+    // notify tick, which is outside act.
+    const next = await act(() => result.current.fetchNextPage());
+    expect(next.data?.pages).toHaveLength(2);
+    const numbers = flatItems(next.data).map((l) => l.number);
+    expect(numbers.length).toBeGreaterThan(30);
     expect(new Set(numbers).size).toBe(numbers.length);
     expect(numbers).not.toContain(17);
   });

@@ -157,13 +157,18 @@ pub async fn export_cases(
 #[derive(Debug, Deserialize, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CaseExportRequest {
-    /// `zip`: `cases.ndjson`, `cases.csv` and `attachments/`.
+    /// `zip` (the default and only value): `cases.ndjson`, `cases.csv` and `attachments/`.
+    #[serde(default = "zip_format")]
     pub format: String,
     #[serde(default)]
     pub filter: Option<CaseFilter>,
     /// Put the attachments of the cases into the zip.
     #[serde(default)]
     pub attachments: bool,
+}
+
+fn zip_format() -> String {
+    "zip".into()
 }
 
 fn token_hash(t: &str) -> String {

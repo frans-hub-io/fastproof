@@ -22,6 +22,8 @@ pub mod state;
 pub mod stream;
 pub mod testops;
 pub mod tm_jobs;
+pub mod tm_people;
+pub mod tm_rate;
 pub mod trace;
 pub mod ui;
 

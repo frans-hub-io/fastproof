@@ -66,6 +66,26 @@ example `rclone copy /var/lib/fastproof/blobs s3:<bucket>`), then switch to `s3`
 bundled Garage) together with `server.blobBackendMigrated: true` for one rollout, and verify a few attachments.
 The `fs` volume is kept on uninstall.
 
+## Next release: test management agents, limits and version retention
+
+- A new built-in role `agent` and permission `ai:propose` for the tokens of AI agents: they triage, draft
+  cases and rules, and propose case changes over MCP, but cannot change, review or activate cases over REST
+  (see [Agent tokens](../guide/mcp-copilot.md#agent-tokens)). Existing roles do not change; agents that use
+  `editor` tokens keep working.
+- Migration `0790_tm_people` adds the table of people the assignee picker lists (members of bound OIDC groups
+  who opened test management, with their display names).
+- New limits with defaults: `FASTPROOF_TM_MULTIPLYING_WRITES_PER_MINUTE` (30 per caller and replica; plan
+  launches, run items, plan changes, bulk case changes answer `429 rate_limited` beyond it) and
+  `FASTPROOF_TM_MAX_OPEN_PLAN_LAUNCHES` (20 open manual runs started from plans per caller and project). Raise
+  them before upgrading if scripts start many plan launches under one token.
+- Optional request fields now have defaults: `assign` (`none`) and `includeAutomated` (`false`) of plan
+  launches, `mode` (`createOnly`) and `unknownFieldValues` (`skip`) of imports, `untestedTo` (`skipped`), the
+  `body` of a case (`POST`: empty; `PUT`: kept), `format` (`zip`) of zip exports.
+- Case versions can be pruned per project (`retention.caseVersionsKeep`, `retention.caseVersionsDays`; off by
+  default) by the hourly job `cases.versions.prune`.
+- Case numbers are taken in a short statement of their own, so parallel creates no longer wait for each other;
+  a create that fails after its number was taken leaves a gap.
+
 ## Earlier in the next release: faster Kafka writers
 
 The writers of Kafka mode (and ingest in `direct` mode) store results and logs with far fewer statements and

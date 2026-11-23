@@ -15,7 +15,7 @@ export function HelpModal({ opened, onClose, singleKeys, onSingleKeys }: { opene
         <Table verticalSpacing={4} striped>
           <Table.Tbody>
             {RUNNER_HELP.map((r) => (
-              <Table.Tr key={r.label} style={{ opacity: !singleKeys && r.singleKey && !r.keys.some((k) => k === '↓' || k === '↑') ? 0.5 : 1 }}>
+              <Table.Tr key={r.keys.join(' ')} style={{ opacity: !singleKeys && r.singleKey && !r.keys.some((k) => k === '↓' || k === '↑') ? 0.5 : 1 }}>
                 <Table.Td w={160}>
                   {r.keys.map((k, i) => (
                     <span key={k}>

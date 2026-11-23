@@ -60,7 +60,10 @@ pub async fn create_managed(
     w: &TestPlanWrite,
 ) -> ApiResult<TestPlan> {
     let _permit = match &w.filter {
-        Some(Some(_)) => Some(s.guards.heavy(auth).await?),
+        Some(Some(_)) => {
+            crate::tm_rate::admit(s, auth)?;
+            Some(s.guards.heavy(auth).await?)
+        }
         _ => None,
     };
     let plan = s
@@ -101,10 +104,12 @@ pub struct PlanListQuery {
 pub async fn list_managed_plans(
     State(s): State<AppState>,
     auth: Auth,
+    headers: axum::http::HeaderMap,
     P(key): P<String>,
     Q(q): Q<PlanListQuery>,
 ) -> ApiResult<Json<Page<TestPlan>>> {
     let p = s.project_for(&auth, &key, &s.perms.cases_read).await?;
+    crate::tm_people::note(&s, &auth, &headers);
     if q.kind.as_deref().is_some_and(|k| k != "managed") {
         return Err(ApiError::bad_request("kind must be managed"));
     }
@@ -259,6 +264,7 @@ pub async fn change_test_plan_items(
     ApiJson(body): ApiJson<TestPlanItemsChange>,
 ) -> ApiResult<Response> {
     let p = s.project_for(&auth, &key, &s.perms.plans_write).await?;
+    crate::tm_rate::admit(&s, &auth)?;
     let _permit = s.guards.heavy(&auth).await?;
     let plan = s
         .store
@@ -298,6 +304,7 @@ pub async fn sync_test_plan(
     Q(q): Q<SyncQuery>,
 ) -> ApiResult<Json<PlanSyncDiff>> {
     let p = s.project_for(&auth, &key, &s.perms.plans_write).await?;
+    crate::tm_rate::admit(&s, &auth)?;
     let _permit = s.guards.heavy(&auth).await?;
     let dry = q.dry_run.unwrap_or(false);
     let diff = s
@@ -381,6 +388,7 @@ pub async fn start_plan_launch(
     ApiJson(body): ApiJson<StartPlanLaunch>,
 ) -> ApiResult<(StatusCode, Json<PlanLaunch>)> {
     let p = s.project_for(&auth, &key, &s.perms.runs_execute).await?;
+    crate::tm_rate::admit(&s, &auth)?;
     let _permit = s.guards.heavy(&auth).await?;
     if let Some(env) = &body.environment
         && (env.len() > MAX_ENVIRONMENT_VALUES

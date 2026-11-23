@@ -8,8 +8,8 @@ function optionLabel(p: Person): string {
 }
 
 /**
- * An assignee box: suggestions come from `GET /people?q=` (people bound to the project and assignees or executors
- * seen in its runs). Free text is allowed; a name the server does not know is marked so typos are visible.
+ * An assignee box: suggestions come from `GET /people?q=` (people bound to the project, members of bound groups who
+ * have signed in, and assignees or executors seen in its runs). Free text is allowed; a name the server does not know is marked so typos are visible.
  */
 export function PersonInput({ project, value, onChange, warnUnknown = true, ...rest }: { project: string; value: string; onChange: (v: string) => void; warnUnknown?: boolean } & Omit<AutocompleteProps, 'value' | 'onChange' | 'data'>) {
   const [q] = useDebouncedValue(value.trim(), 200);
@@ -27,7 +27,7 @@ export function PersonInput({ project, value, onChange, warnUnknown = true, ...r
       filter={({ options }) => options}
       renderOption={({ option }) => labels.get(option.value) ?? option.value}
       comboboxProps={{ withinPortal: true, ...rest.comboboxProps }}
-      description={unknown ? 'Not a known user of this project; check the spelling' : rest.description}
+      description={unknown ? 'Not a known user of this project; check the spelling. Members of a bound group are known once they have signed in.' : rest.description}
       styles={unknown ? { description: { color: 'var(--fh-semantic-warning-fg)' } } : undefined}
       data-unknown={unknown || undefined}
     />

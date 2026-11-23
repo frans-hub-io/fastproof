@@ -298,6 +298,12 @@ fn tm_limits(env: &Env<'_>) -> anyhow::Result<fastproof_store::tm::TmLimits> {
         )?,
         max_tags: n("MAX_TAGS", d.max_tags, 1000)?,
         max_name_bytes: n("MAX_NAME_BYTES", d.max_name_bytes, 4096)?,
+        multiplying_writes_per_minute: n(
+            "MULTIPLYING_WRITES_PER_MINUTE",
+            d.multiplying_writes_per_minute,
+            100_000,
+        )?,
+        max_open_plan_launches: n("MAX_OPEN_PLAN_LAUNCHES", d.max_open_plan_launches, 100_000)?,
     })
 }
 

@@ -1094,7 +1094,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** @description Principals to assign run items to: users and managed tokens with `runs:execute` in the project (from the role bindings; members of a bound group are not known until they sign in) and the names already used as assignees or executors in the project. Sorted by name, at most 100. Assignees are free text; names that are not in this list are allowed. */
+        /** @description Principals to assign run items to: users and managed tokens with `runs:execute` in the project (from the role bindings), members of bound groups who opened test management in the last 180 days (with the groups of their last sign-in; members who never signed in are not known), and the names already used as assignees or executors in the project. `display` is the `name` claim of the identity provider when known. `q` matches the name or the display name. Sorted by name, at most 100. Assignees are free text; names that are not in this list are allowed. */
         get: operations["list_project_people"];
         put?: never;
         post?: never;
@@ -1877,8 +1877,8 @@ export interface components {
             /** @description Put the attachments of the cases into the zip. */
             attachments?: boolean;
             filter?: components["schemas"]["CaseFilter"] | null;
-            /** @description `zip`: `cases.ndjson`, `cases.csv` and `attachments/`. */
-            format: string;
+            /** @description `zip` (the default and only value): `cases.ndjson`, `cases.csv` and `attachments/`. */
+            format?: string;
         };
         /** @description A case field definition. */
         CaseFieldDef: {
@@ -2306,7 +2306,7 @@ export interface components {
         };
         /** @description Body of `POST /cases` and `PUT /cases/{n}`. */
         CaseWrite: {
-            body: components["schemas"]["CaseBody"];
+            body?: components["schemas"]["CaseBody"] | null;
             fields?: {
                 [key: string]: components["schemas"]["FieldValue"];
             } | null;
@@ -2774,12 +2774,14 @@ export interface components {
             mapping?: {
                 [key: string]: string;
             } | null;
-            mode: components["schemas"]["ImportMode"];
+            /** @description Absent: `createOnly`. */
+            mode?: components["schemas"]["ImportMode"];
             status?: components["schemas"]["ImportCaseStatus"] | null;
             stepsLayout?: components["schemas"]["StepsLayout"] | null;
             /** Format: uuid */
             targetFolderId?: string | null;
-            unknownFieldValues: components["schemas"]["UnknownFieldValues"];
+            /** @description Absent: `skip`. */
+            unknownFieldValues?: components["schemas"]["UnknownFieldValues"];
         };
         /** @description First rows of an import file and the suggested column mapping. */
         ImportPreview: {
@@ -3164,7 +3166,8 @@ export interface components {
         };
         /** @description Body of `POST /launches/{id}/manual/close`. */
         ManualClose: {
-            untestedTo: components["schemas"]["ManualUntestedTo"];
+            /** @description Absent: `skipped`. */
+            untestedTo?: components["schemas"]["ManualUntestedTo"];
         };
         /** @description The JSON manual report. */
         ManualReport: {
@@ -4095,6 +4098,21 @@ export interface components {
         /** @description How long raw results are kept. */
         RetentionSettings: {
             /**
+             * Format: int32
+             * @description Test case versions older than this many days are pruned (beyond `caseVersionsKeep`);
+             *     `0` sets no age.
+             * @default 0
+             */
+            caseVersionsDays?: number;
+            /**
+             * Format: int32
+             * @description Test case versions: keep at least the newest this many of each case; `0` sets no count.
+             *     With `caseVersionsDays` too, a version is pruned only when it is beyond the count and
+             *     older than the days. Both `0` (the default) keep every version.
+             * @default 0
+             */
+            caseVersionsKeep?: number;
+            /**
              * @description Never delete launches marked important.
              * @default true
              */
@@ -4443,13 +4461,15 @@ export interface components {
         };
         /** @description Body of `POST /test-plans/{id}/launches`. */
         StartPlanLaunch: {
-            assign: components["schemas"]["PlanAssign"];
+            /** @description Absent: `none`. */
+            assign?: components["schemas"]["PlanAssign"];
             attributes?: components["schemas"]["PlanLaunchAttribute"][] | null;
             environment?: {
                 [key: string]: string;
             } | null;
             externalId?: string | null;
-            includeAutomated: boolean;
+            /** @description Absent: `false`. */
+            includeAutomated?: boolean;
             name: string;
         };
         /**
@@ -4536,7 +4556,8 @@ export interface components {
          */
         TestOpsImport: {
             baseUrl: string;
-            mode: components["schemas"]["ImportMode"];
+            /** @description Absent: `createOnly`. */
+            mode?: components["schemas"]["ImportMode"];
             /** Format: int64 */
             remoteProjectId: number;
             source: components["schemas"]["TestOpsSource"];

@@ -34,7 +34,7 @@ or the key column of a generic CSV), so importing the same file again finds the 
 
 | `mode` | A case whose key exists already |
 |---|---|
-| `createOnly` | is skipped |
+| `createOnly` (the default) | is skipped |
 | `upsert` | is updated, with a new [version](test-management.md#versions) (`source = import`); a case whose content did not change is skipped and gets no version |
 
 Other options:
@@ -45,7 +45,7 @@ Other options:
 | `mapping` | Generic CSV: which column fills which case field (see [Generic CSV](#generic-csv)) |
 | `stepsLayout` | `rows` (one row per step, a new case when the key changes) or `cells` (all steps of a case in one cell) |
 | `targetFolderId` | Folder under which the source's sections or suites are created; the top level when absent |
-| `unknownFieldValues` | Required in the API (the CLI defaults to `skip`). A value that is not an option of a select field: `create` adds the option, `skip` drops the value, `fail` reports the row as an error. With `create`, source columns that match no case field are also created as fields (see [Unknown columns](#unknown-columns-and-custom-fields)) |
+| `unknownFieldValues` | Default `skip`. A value that is not an option of a select field: `create` adds the option, `skip` drops the value, `fail` reports the row as an error. With `create`, source columns that match no case field are also created as fields (see [Unknown columns](#unknown-columns-and-custom-fields)) |
 | `status` | Optional, `draft` or `active`: every case the import creates gets it. Absent: each created case gets the status its source maps (TestOps, Qase and NDJSON statuses), else `active`. Updated cases keep the source's status, or their own. In the UI: **Status of new cases** |
 
 Formatting from the sources is converted to Markdown: bold, italic, code, code blocks, lists, links, images,
@@ -237,6 +237,10 @@ Qase JSON is read in the shape of the Qase API v1: `{"suites": [{"title", "cases
 `description`, `preconditions`, `postconditions`, `severity`, `priority`, `type`, `layer`, `status` (a slug or
 0/1/2), `tags`, `custom_fields` (`{title|name, value}`), `steps` (`{action, expected_result, data, attachments,
 steps, shared_step_hash}`) and `attachments`. A root `code` (or `project_code`) makes keys `CODE-45`.
+The file is read as a stream, one case at a time, so its size does not decide the memory an import needs; one
+case may hold at most 8 MiB of JSON (larger ones become a `limit_reached` row error). For that, a root `code`
+and a flat suite list (`suites_flat`, `suiteList`) must come before the cases they apply to, as in Qase's own
+exports; a file that has them after such cases fails with `invalid_file`.
 
 Not confirmed on real exports: the V2 step encoding beyond the quotes and tabs, the column with a suite's title,
 whether case rows name their suite in `suite_id` or `suite_parent_id`, and the JSON export schema (Qase does not

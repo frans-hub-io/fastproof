@@ -18,7 +18,8 @@ auth="Authorization: Bearer $FASTPROOF_TOKEN"
 
 ### Case
 
-A case has a **number** that is unique in the project and never reused, shown as `TC-12`. The API addresses a
+A case has a **number** that is unique in the project and never reused, shown as `TC-12`. Numbers grow but
+may have gaps: a create that fails after its number was taken does not give the number back. The API addresses a
 case by its number (`GET $api/cases/12`). A case holds:
 
 | Part | What it is |
@@ -135,7 +136,25 @@ refused (409 `case_has_runs`) for a case that was executed in a manual run, beca
 ### Versions
 
 Every change of the content (name, status, folder, description, preconditions, steps, links, fields, tags)
-writes a new version with a full snapshot. Versions are never pruned.
+writes a new version with a full snapshot. By default versions are kept for the life of the case; the
+project's retention settings can prune old ones:
+
+```sh
+curl -fsS -X PUT "$api/settings" -H "$auth" -H 'Content-Type: application/json' \
+  -d '{"retention":{"rawDays":90,"keepImportant":true,"caseVersionsKeep":20,"caseVersionsDays":365}}'
+```
+
+- `caseVersionsKeep` (0 to 100 000, default `0`): keep at least the newest this many versions of each case.
+- `caseVersionsDays` (0 to 36 500, default `0`): versions older than this many days may be pruned.
+- With both set, a version is pruned only when it is beyond the newest `caseVersionsKeep` **and** older than
+  `caseVersionsDays`; with one set, that one decides; with neither (both `0`), nothing is pruned.
+- Never pruned: the current version, the versions that run items (and their earlier executions) were run
+  against, so manual runs always show the steps that were executed, and on cases made from code the newest
+  version that a person or an import wrote.
+
+The hourly job `cases.versions.prune` (on the `scheduler` role) deletes them in batches of 1000, at most 5
+minutes per run; the next run goes on. `retention` is replaced as a whole like every settings area, so send
+the other retention keys too. A pruned version is missing from the list and answers `404`.
 
 | Call | Does |
 |---|---|
@@ -448,10 +467,11 @@ A case holds at most 20 pending suggestions; a further one answers `409 limit_re
 
 | Permission | Allows | Roles |
 |---|---|---|
-| `cases:read` | Read cases, folders, fields, history and plans | `viewer`, `tester`, `uploader`, `editor` |
+| `cases:read` | Read cases, folders, fields, history and plans | `viewer`, `tester`, `uploader`, `editor`, `agent` |
 | `cases:write` | Create, change and archive cases and folders | `editor` |
 | `cases:import` | Import cases | `editor` |
 | `cases:sync` | Update cases from code through uploaded results | `uploader`, `editor` |
+| `ai:propose` | AI drafts and case suggestions through MCP (not the REST case routes) | `agent` |
 | `settings:write` | Custom fields, `caseSync` settings, purge, backfill | `admin` |
 
 See [Roles and permissions](../operations/security.md#roles-and-permissions) for all roles. Every change is

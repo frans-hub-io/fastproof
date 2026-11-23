@@ -228,7 +228,7 @@ pub async fn content(
         .download
         .as_deref()
         .is_some_and(|v| v == "1" || v == "true");
-    serve(&s, &method, &headers, &a, force).await
+    serve(&s, &method, &headers, &a, force, Cache::Immutable).await
 }
 
 #[utoipa::path(head, path = "/api/v1/projects/{key}/attachments/{id}/content", tag = "attachments", operation_id = "attachments_content_head",
@@ -246,7 +246,29 @@ pub async fn content_head(
     content(state, auth, method, headers, path, q).await
 }
 
-fn sandbox(h: &mut HeaderMap, ct: &str, etag: &str, disposition: HeaderValue) {
+/// How long a response may be cached.
+#[derive(Clone, Copy, Debug)]
+pub enum Cache {
+    /// The content never changes behind its address.
+    Immutable,
+    /// Until this time (unix milliseconds): the lifetime of a media URL.
+    Until(i64),
+}
+
+impl Cache {
+    fn header(self) -> HeaderValue {
+        match self {
+            Cache::Immutable => HeaderValue::from_static("private, max-age=31536000, immutable"),
+            Cache::Until(ms) => {
+                let left = ((ms - chrono::Utc::now().timestamp_millis()) / 1000).max(0);
+                HeaderValue::from_str(&format!("private, max-age={left}"))
+                    .unwrap_or(HeaderValue::from_static("no-store"))
+            }
+        }
+    }
+}
+
+fn sandbox(h: &mut HeaderMap, ct: &str, etag: &str, disposition: HeaderValue, cache: Cache) {
     h.insert(
         header::CONTENT_TYPE,
         HeaderValue::from_str(ct).unwrap_or(HeaderValue::from_static("application/octet-stream")),
@@ -259,10 +281,7 @@ fn sandbox(h: &mut HeaderMap, ct: &str, etag: &str, disposition: HeaderValue) {
         header::CONTENT_SECURITY_POLICY,
         HeaderValue::from_static("sandbox; default-src 'none'"),
     );
-    h.insert(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static("private, max-age=31536000, immutable"),
-    );
+    h.insert(header::CACHE_CONTROL, cache.header());
     h.insert(header::CONTENT_DISPOSITION, disposition);
     h.insert(
         header::ETAG,
@@ -279,6 +298,59 @@ fn header_str(h: &HeaderMap, name: header::HeaderName) -> Option<&str> {
     h.get(name).and_then(|v| v.to_str().ok())
 }
 
+fn stream_permit(s: &AppState) -> ApiResult<tokio::sync::OwnedSemaphorePermit> {
+    take_permit(s.media.streams())
+}
+
+fn take_permit(
+    sem: &std::sync::Arc<tokio::sync::Semaphore>,
+) -> ApiResult<tokio::sync::OwnedSemaphorePermit> {
+    sem.clone().try_acquire_owned().map_err(|_| {
+        metrics::counter!("attachment_streams_refused_total").increment(1);
+        ApiError::unavailable("too many downloads in progress, retry shortly")
+            .with_header(header::RETRY_AFTER, HeaderValue::from_static("1"))
+    })
+}
+
+/// A body fed by a task that holds the stream permit and gives up when the store or the client
+/// makes no progress for `timeout`.
+fn paced(
+    stream: futures::stream::BoxStream<'static, anyhow::Result<bytes::Bytes>>,
+    permit: tokio::sync::OwnedSemaphorePermit,
+    timeout: std::time::Duration,
+) -> Body {
+    let (tx, rx) = tokio::sync::mpsc::channel::<std::io::Result<bytes::Bytes>>(2);
+    tokio::spawn(async move {
+        let _permit = permit;
+        let mut stream = stream;
+        loop {
+            match tokio::time::timeout(timeout, stream.next()).await {
+                Ok(Some(Ok(b))) => {
+                    if !matches!(
+                        tokio::time::timeout(timeout, tx.send(Ok(b))).await,
+                        Ok(Ok(()))
+                    ) {
+                        return;
+                    }
+                }
+                Ok(Some(Err(e))) => {
+                    let _ = tx.send(Err(std::io::Error::other(e))).await;
+                    return;
+                }
+                Ok(None) => return,
+                Err(_) => {
+                    let _ = tx.try_send(Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "no progress",
+                    )));
+                    return;
+                }
+            }
+        }
+    });
+    Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx))
+}
+
 /// Serves a stored attachment: 200, 206 for one byte range (a ranged read of the store), 304,
 /// 416, `HEAD`, always with the sandboxing headers. Used by the content route and by media URLs.
 pub async fn serve(
@@ -287,6 +359,7 @@ pub async fn serve(
     req: &HeaderMap,
     a: &fastproof_store::StoredAttachment,
     force_download: bool,
+    cache: Cache,
 ) -> ApiResult<Response> {
     let key = BlobKey::parse(&a.blob_key)?;
     let ct = clean_content_type(Some(&a.content_type));
@@ -302,6 +375,7 @@ pub async fn serve(
         &ct,
         &etag,
         disposition(if download { "attachment" } else { "inline" }, &name),
+        cache,
     );
     let head = method == Method::HEAD;
     let size = a.size.max(0) as u64;
@@ -359,13 +433,18 @@ pub async fn serve(
                 h.insert(header::CONTENT_LENGTH, HeaderValue::from(n));
                 return Ok((StatusCode::OK, h).into_response());
             }
+            let permit = stream_permit(s)?;
             let Some(body) = s.blobs.get(&key).await? else {
                 return Err(missing());
             };
             h.insert(header::CONTENT_LENGTH, HeaderValue::from(body.size));
             metrics::counter!("attachment_bytes_served_total").increment(body.size);
-            let stream = body.stream.map(|r| r.map_err(std::io::Error::other));
-            Ok((StatusCode::OK, h, Body::from_stream(stream)).into_response())
+            Ok((
+                StatusCode::OK,
+                h,
+                paced(body.stream, permit, s.media.stream_timeout()),
+            )
+                .into_response())
         }
     }
 }
@@ -373,6 +452,40 @@ pub async fn serve(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn streams_are_limited_and_stalled_ones_let_go() {
+        use std::sync::Arc;
+        use std::time::Duration;
+        let sem = Arc::new(tokio::sync::Semaphore::new(1));
+        let p = take_permit(&sem).unwrap();
+        let busy = take_permit(&sem).unwrap_err();
+        assert_eq!(
+            busy.into_response().status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        let endless =
+            futures::stream::repeat_with(|| Ok(bytes::Bytes::from_static(&[0u8; 1024]))).boxed();
+        let body = paced(endless, p, Duration::from_millis(200));
+        tokio::time::sleep(Duration::from_millis(900)).await;
+        assert_eq!(
+            sem.available_permits(),
+            1,
+            "the unread stream gave its slot back"
+        );
+        drop(body);
+        let ended = futures::stream::iter(vec![Ok(bytes::Bytes::from_static(b"abc"))]).boxed();
+        let p = take_permit(&sem).unwrap();
+        let body = paced(ended, p, Duration::from_secs(5));
+        let got = axum::body::to_bytes(body, 1024).await.unwrap();
+        assert_eq!(got.as_ref(), b"abc");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            sem.available_permits(),
+            1,
+            "a finished stream released its slot"
+        );
+    }
 
     #[test]
     fn content_types() {

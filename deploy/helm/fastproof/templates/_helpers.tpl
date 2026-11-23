@@ -182,6 +182,15 @@ s3
 {{- end -}}
 {{- end -}}
 
+{{- define "fastproof.mediaKey" -}}
+{{- $m := .Values.server.mediaUrlKey | default dict -}}
+{{- if $m.existingSecret -}}
+{{- toJson (dict "name" $m.existingSecret "key" ($m.key | default "media-url-key")) -}}
+{{- else -}}
+{{- toJson (dict "name" (printf "%s-media-key" (include "fastproof.fullname" .)) "key" "media-url-key") -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "fastproof.secretsKey" -}}
 {{- $k := .Values.integrations.secretsKey -}}
 {{- if $k.existingSecret -}}

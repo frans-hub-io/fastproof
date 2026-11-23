@@ -17,7 +17,14 @@ server:
   logFilter: info
   ui: true
   maxUploadBytes: 1073741824
-  mediaUrlTtlSeconds: 900
+  mediaUrlTtlSeconds: 300
+  mediaMaxStreams: 256
+  mediaStreamTimeoutSeconds: 60
+  mediaKeyReloadSeconds: 30
+  blobBackendMigrated: false
+  mediaUrlKey:
+    existingSecret: ""
+    key: media-url-key
   ingestWorkers: 2
   retainUploads: false
   outboxRetentionDays: 7
@@ -363,6 +370,8 @@ networkPolicy:
         - 9200
     extraRules: []
   storage: true
+  garagePorts:
+    - 3900
 
 pdb:
   enabled: true

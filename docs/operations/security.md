@@ -101,12 +101,15 @@ FastProof origin:
   sandboxing headers.
 - A [media URL](../reference/api.md#attachment-content-and-media-urls) lets a `<video>` or `<img>` element
   load one attachment without an `Authorization` header or cookie. It is signed (HMAC-SHA256 under a key
-  derived from a server-side secret), names one attachment of one project, expires after 15 minutes by default
-  (at most one hour) and is checked on every request: the principal that asked must still exist and still read
-  the project (a revoked or expired API token, or a removed binding, ends the URL within a few seconds), and
-  the attachment must still exist. Every refusal is the same `404`. The token is removed from the request path
-  before logging and tracing, and metrics label the route as `/api/v1/media/{token}`. Treat the URL as a
-  credential for the time it lives: do not post it.
+  derived from a database secret and a secret held outside the database), names one attachment of one project
+  and is valid until its `expiresAt`: 5 minutes by default, one hour at most, and never beyond the session or
+  bearer token of the caller. Each request checks that the attachment exists and that the principal that asked
+  still reads the project. Every refusal is the same `404`. Media responses are cacheable only until
+  `expiresAt`, and at most `FASTPROOF_MEDIA_MAX_STREAMS` bodies stream at once per replica.
+- The token is removed from the request path before FastProof logs or traces it, and metrics label the route as
+  `/api/v1/media/{token}`. The token is part of the URL path, so reverse proxies and ingress controllers in front
+  of FastProof record it in their access logs for as long as the URL is valid; give those logs the same
+  handling as other credentials.
 
 ## Limits
 

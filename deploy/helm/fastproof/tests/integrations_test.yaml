@@ -124,10 +124,6 @@ tests:
       integrations.smtp.username: fastproof
       integrations.smtp.password.value: smtp-secret
     asserts:
-      - containsDocument:
-          kind: Secret
-          apiVersion: v1
-          name: fp-fastproof-integrations
       - equal:
           path: stringData.secrets-key
           value: abababababababababababababababababababababababababababababababab

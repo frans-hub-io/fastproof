@@ -48,7 +48,14 @@ data:
   FASTPROOF_S3_SECRET_KEY_FILE: /etc/fastproof/secrets/s3-secret-key
   {{- end }}
   FASTPROOF_SPOOL_DIR: /tmp/fastproof
-  FASTPROOF_MEDIA_URL_TTL_SECONDS: {{ .Values.server.mediaUrlTtlSeconds | int64 | quote }}
+  FASTPROOF_MEDIA_URL_TTL_SECONDS: {{ .Values.server.mediaUrlTtlSeconds | default 300 | int64 | quote }}
+  FASTPROOF_MEDIA_MAX_STREAMS: {{ .Values.server.mediaMaxStreams | default 256 | int64 | quote }}
+  FASTPROOF_MEDIA_STREAM_TIMEOUT_SECONDS: {{ .Values.server.mediaStreamTimeoutSeconds | default 60 | int64 | quote }}
+  FASTPROOF_MEDIA_KEY_RELOAD_SECONDS: {{ .Values.server.mediaKeyReloadSeconds | default 30 | int64 | quote }}
+  FASTPROOF_MEDIA_URL_KEY_FILE: /etc/fastproof/secrets/media-url-key
+  {{- if .Values.server.blobBackendMigrated }}
+  FASTPROOF_BLOB_BACKEND_MIGRATED: "true"
+  {{- end }}
   FASTPROOF_MAX_UPLOAD_BYTES: {{ .Values.server.maxUploadBytes | int64 | quote }}
   FASTPROOF_INGEST_WORKERS: {{ .Values.server.ingestWorkers | quote }}
   FASTPROOF_RETAIN_UPLOADS: {{ .Values.server.retainUploads | quote }}

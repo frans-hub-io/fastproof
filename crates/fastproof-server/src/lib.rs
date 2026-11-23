@@ -3,6 +3,7 @@
 
 pub mod api;
 pub mod app;
+pub mod blob_guard;
 pub mod cli;
 pub mod config;
 pub mod db;

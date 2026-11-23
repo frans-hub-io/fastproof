@@ -456,7 +456,18 @@ async fn start_inner(cfg: Config, pool: PgPool, boot: Boot) -> anyhow::Result<Ru
     }
     let store = Store::new(pool.clone());
     let pg = Arc::new(PgPlatformStore::new(pool.clone()));
-    let platform = platform(&cfg, &store, pg).await?;
+    let platform = platform(&cfg, &store, pg.clone()).await?;
+    let sessions = platform.oidc().map(|rt| {
+        (
+            pg.clone() as Arc<dyn franshub_oidc::session::SessionStore>,
+            franshub_oidc::session::Lifetimes {
+                ttl: rt.oidc.settings.session_ttl,
+                idle: rt.oidc.settings.session_idle,
+            },
+        )
+    });
+    let media = crate::api::media::Media::load(&store, &cfg, sessions).await?;
+    crate::blob_guard::check(&store, &blobs, &cfg.blob, cfg.blob_migrated).await?;
     let instance = format!(
         "{}-{:08x}",
         std::env::var("HOSTNAME")
@@ -479,7 +490,6 @@ async fn start_inner(cfg: Config, pool: PgPool, boot: Boot) -> anyhow::Result<Ru
         _ => None,
     };
     let search = crate::stream::search_backend(&cfg)?;
-    let media = crate::api::media::Media::load(&store, cfg.media_url_ttl).await?;
     let state = AppState(Arc::new(Inner {
         media,
         perms: Perms::new(&platform),
@@ -544,6 +554,10 @@ async fn start_inner(cfg: Config, pool: PgPool, boot: Boot) -> anyhow::Result<Ru
         )));
         tasks.push(tokio::spawn(sched.run(state.clone(), stop.clone())));
     }
+    tasks.push(tokio::spawn(crate::api::media::reload_keys(
+        state.clone(),
+        stop.clone(),
+    )));
     tasks.extend(crate::stream::start(&state, &stop).await?);
     {
         let s = state.clone();

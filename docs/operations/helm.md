@@ -60,6 +60,11 @@ The default is object storage because it serves video and large attachments with
 and lets the API scale out without a shared volume. An existing release that stores attachments on a volume is
 not switched silently: see [Upgrading](upgrading.md#attachments-default-to-s3).
 
+Tools that render the chart without cluster access (`helm template`, some GitOps controllers) cannot read the
+existing release or its Secrets. With them, set `blob.backend` explicitly, and use existing Secrets for
+generated values: `garage.credentials.existingSecret` for the bundled Garage and `server.mediaUrlKey.existingSecret`
+for the media URL key; otherwise each render generates new ones.
+
 Garage is AGPL-3.0 licensed and runs as a separate, unmodified service. The chart ships its own small Garage
 StatefulSet (non-root, read-only root filesystem, seccomp, probes on `/health`, resources) instead of
 Garage's in-repository chart, because single-node setup with a default bucket and a hardened pod need
@@ -166,7 +171,11 @@ digest:
 | `database.*` | | External database URL, pool size, TLS |
 | `migrations.mode` | `job` | `job`: a Helm hook Job runs `fastproof migrate`; `auto`: the server migrates at start |
 | `blob.*`, `garage.*` | bundled Garage (`s3`) | Attachment storage (see [Attachments](#attachments)) |
-| `server.mediaUrlTtlSeconds` | `900` | Lifetime of signed media URLs, 1 to 3600 (`FASTPROOF_MEDIA_URL_TTL_SECONDS`) |
+| `server.mediaUrlTtlSeconds` | `300` | Lifetime of signed media URLs, 1 to 3600 (`FASTPROOF_MEDIA_URL_TTL_SECONDS`) |
+| `server.mediaMaxStreams`, `mediaStreamTimeoutSeconds`, `mediaKeyReloadSeconds` | `256`, `60`, `30` | Concurrent body streams per replica, idle timeout of a stream, key reload interval |
+| `server.mediaUrlKey.existingSecret`, `key` | chart-created | Secret with the media URL key (default key `media-url-key`). Without it the chart creates `<release>-fastproof-media-key` once and keeps it |
+| `server.blobBackendMigrated` | `false` | Allow one start with a changed blob store after the data was copied (see [Blob store identity](configuration.md#blob-store-identity)) |
+| `networkPolicy.garagePorts` | `[3900]` | Ports of the bundled Garage that the FastProof pods may reach |
 | `spool.sizeLimit` | `4Gi` | `emptyDir` for uploads in progress (`FASTPROOF_SPOOL_DIR`) |
 | `auth.adminTokens.existingSecret` / `tokens` / `generate` | none | Static tokens file |
 | `auth.access.roles`, `auth.access.bindings` or `existingConfigMap` | none | Access file |

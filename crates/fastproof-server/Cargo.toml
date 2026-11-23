@@ -30,6 +30,7 @@ fastproof-model = { workspace = true, features = ["openapi"] }
 fastproof-store.workspace = true
 fastproof-stream.workspace = true
 fastproof-tm-import.workspace = true
+fastproof-media.workspace = true
 flate2.workspace = true
 franshub-access.workspace = true
 franshub-auth.workspace = true
@@ -69,4 +70,5 @@ zip.workspace = true
 
 [dev-dependencies]
 fastproof-store = { workspace = true, features = ["test-util"] }
+matroska-demuxer.workspace = true
 tempfile.workspace = true

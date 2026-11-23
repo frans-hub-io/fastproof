@@ -595,7 +595,7 @@ pub async fn get(
     if !principal_allowed(&s, &c, &project_key).await? {
         return Err(rejected("principal"));
     }
-    super::attachments::serve(&s, &method, &headers, &a, false, Cache::Until(c.e)).await
+    super::attachments::serve(&s, &method, &headers, &a, false, false, Cache::Until(c.e)).await
 }
 
 #[utoipa::path(head, path = "/api/v1/media/{token}", tag = "attachments", operation_id = "media_head",

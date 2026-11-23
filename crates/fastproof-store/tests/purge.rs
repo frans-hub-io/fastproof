@@ -73,7 +73,7 @@ impl Drop for TestDb {
 }
 
 /// `purge_seed(project, key)` writes a project with rows in every table under it: 7 launches
-/// (uploads, ingest jobs, results, attempts, containers, attachment links and refs, log chunks,
+/// (uploads, ingest jobs, results, attempts, containers, attachment links, refs and media rows, log chunks,
 /// gates, sync queue entries), a managed plan with a manual run (run items, step results,
 /// executions), cases with versions, keys, suggestions and attachments in a folder tree, and
 /// the analysis and integration rows. `purge_audit_on()` records every later delete and update.
@@ -97,6 +97,8 @@ begin
         select gen_random_uuid(), p, t.id, t.full_name, '' from test_cases t where t.project_id = p;
     insert into attachments (id, project_id, sha256, size, content_type, blob_key)
         select gen_random_uuid(), p, k || 'sha' || gs, 1, 'text/plain', 'b/' || k || gs from generate_series(1, 4) gs;
+    insert into attachment_media (attachment_id, project_id, status)
+        select a.id, p, 'native' from attachments a where a.project_id = p;
     for n in 1..7 loop
         l := gen_random_uuid();
         u := gen_random_uuid();

@@ -8,6 +8,7 @@ members = [
     "crates/fastproof-server",
     "crates/fastproof-stream",
     "crates/fastproof-tm-import",
+    "crates/fastproof-media",
 ]
 
 [workspace.package]
@@ -23,6 +24,7 @@ fastproof-blob = { path = "crates/fastproof-blob" }
 fastproof-store = { path = "crates/fastproof-store" }
 fastproof-stream = { path = "crates/fastproof-stream" }
 fastproof-tm-import = { path = "crates/fastproof-tm-import" }
+fastproof-media = { path = "crates/fastproof-media" }
 franshub-access = { path = "../franshub-platform/crates/franshub-access" }
 franshub-auth = { path = "../franshub-platform/crates/franshub-auth" }
 franshub-oidc = { path = "../franshub-platform/crates/franshub-oidc" }
@@ -79,3 +81,4 @@ lettre = { version = "=0.11.24", default-features = false, features = ["smtp-tra
 ring = "0.17.14"
 rmcp = { version = "=3.9.0", default-features = false, features = ["server", "macros", "transport-streamable-http-server"] }
 schemars = { version = "1", features = ["uuid1"] }
+matroska-demuxer = "=0.8.1"

@@ -75,6 +75,9 @@ PostgreSQL 14 to 18 is supported; 18 is recommended. PostgreSQL 14 reached end o
 | `FASTPROOF_MEDIA_STREAM_TIMEOUT_SECONDS` | `60` | A body stream that makes no progress for this long is closed |
 | `FASTPROOF_MEDIA_KEY_RELOAD_SECONDS` | `30` | How often replicas re-read the signing keys |
 | `FASTPROOF_BLOB_BACKEND_MIGRATED` | `false` | Set to `true` for one start after the attachments were copied to a different blob store (see [Blob store identity](#blob-store-identity)) |
+| `FASTPROOF_MEDIA_PREPARE` | `true` | Make [seekable copies of videos](../reference/api.md#seekable-videos) in the background (`media.prepare` job) |
+| `FASTPROOF_MEDIA_PREPARE_MAX_BYTES` | `1073741824` | Larger videos keep only their original (at least 1024) |
+| `FASTPROOF_MEDIA_PREPARE_TIMEOUT_SECONDS` | `300` | Time for one video, download and upload included, 10 to 3600; a video that takes longer keeps its original |
 
 Attachments are content-addressed by SHA-256 and stored once per project. There is no key prefix setting:
 FastProof uses the whole bucket, so give every installation its own bucket.

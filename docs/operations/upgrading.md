@@ -24,6 +24,18 @@ What to know:
 - Metrics gain `media_urls_issued_total`, `media_url_rejections_total{reason}`, `attachment_bytes_served_total`
   and `attachment_streams_refused_total`.
 
+### Seekable copies of videos
+
+A new background job, `media.prepare`, makes [seekable copies](../reference/api.md#seekable-videos) of WebM
+and MP4 attachments that need them, existing ones included: after the upgrade it works through the stored videos a
+few at a time, oldest first. Two migrations add the column `attachments.media_state`, the table
+`attachment_media` and a partial index built concurrently. Each copy is stored next to its original (under
+`projects/<key>/derived/`) and needs as much space again as the videos that get one; recordings that already seek
+well get none. The job downloads one video at a time to `FASTPROOF_SPOOL_DIR` and writes the copy there, so the
+spool needs twice the size of the largest video (the job takes two of the spool slots that uploads share, and leftover
+files of a stopped process are removed after the job's time limit). Set `FASTPROOF_MEDIA_PREPARE=false` to turn it off. Metrics gain
+`media_prepare_total{outcome}`, `media_prepare_seconds` and `media_prepare_bytes_total`.
+
 ### Attachments default to S3
 
 The Helm chart's attachment storage default changes from a volume (`blob.backend: fs`) to object storage:

@@ -461,7 +461,7 @@ async fn start_inner(cfg: Config, pool: PgPool, boot: Boot) -> anyhow::Result<Ru
             }
         });
     }
-    for sub in ["incoming", "work", "attachments"] {
+    for sub in ["incoming", "work", "attachments", "media"] {
         let d = cfg.spool_dir.join(sub);
         std::fs::create_dir_all(&d)
             .with_context(|| format!("FASTPROOF_SPOOL_DIR: creating {}", d.display()))?;
@@ -614,6 +614,11 @@ async fn local_maintenance(s: AppState, stop: CancellationToken) {
         if tick.is_multiple_of(360) {
             s.platform.maintain().await;
             crate::ingest::clean_local_spool(&s.cfg.spool_dir, Duration::from_secs(6 * 3600)).await;
+            crate::media_prepare::clean_spool(
+                &s.cfg.spool_dir,
+                s.cfg.media_prepare.timeout + Duration::from_secs(300),
+            )
+            .await;
         }
         if let Ok(d) = s.store.queue_depth().await {
             metrics::gauge!("fastproof_ingest_jobs", "state" => "queued").set(d.queued as f64);

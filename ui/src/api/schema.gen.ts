@@ -5332,8 +5332,10 @@ export interface operations {
     attachments_content: {
         parameters: {
             query?: {
-                /** @description `1` forces a download. */
+                /** @description `1` forces a download (of the original). */
                 download?: string;
+                /** @description `1` serves the original even when a seekable copy of a video is ready. */
+                original?: string;
             };
             header?: never;
             path: {
@@ -5393,8 +5395,10 @@ export interface operations {
     attachments_content_head: {
         parameters: {
             query?: {
-                /** @description `1` forces a download. */
+                /** @description `1` forces a download (of the original). */
                 download?: string;
+                /** @description `1` serves the original even when a seekable copy of a video is ready. */
+                original?: string;
             };
             header?: never;
             path: {

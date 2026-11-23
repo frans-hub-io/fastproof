@@ -170,8 +170,53 @@ pub async fn store_attachment(
 #[derive(Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct ContentQuery {
-    /// `1` forces a download.
+    /// `1` forces a download (of the original).
     pub download: Option<String>,
+    /// `1` serves the original even when a seekable copy of a video is ready.
+    pub original: Option<String>,
+}
+
+/// The blob a content request serves, with the validators of its bytes.
+pub struct ServedBlob {
+    pub key: BlobKey,
+    pub sha256: String,
+    pub size: u64,
+    /// The bytes behind this address no longer change: false while a video still waits for its
+    /// seekable copy (the response must then be revalidated).
+    pub settled: bool,
+}
+
+/// Chooses what serves an attachment: the seekable copy of a video when one is ready (see
+/// `crate::media_prepare`) unless `original`, else the stored original.
+pub async fn blob_to_serve(
+    s: &AppState,
+    a: &fastproof_store::StoredAttachment,
+    original: bool,
+) -> ApiResult<ServedBlob> {
+    let ct = clean_content_type(Some(&a.content_type));
+    let mut settled = true;
+    if !original && fastproof_store::media::VIDEO_TYPES.contains(&ct.as_str()) {
+        match s.store.media_state(a.project_id, &a.sha256).await? {
+            Some(m) if m.status == "ready" => {
+                if let (Some(k), Some(sha), Some(n)) = (m.blob_key, m.sha256, m.size) {
+                    return Ok(ServedBlob {
+                        key: BlobKey::parse(&k)?,
+                        sha256: sha,
+                        size: n.max(0) as u64,
+                        settled: true,
+                    });
+                }
+            }
+            Some(m) => settled = m.status != "running",
+            None => settled = !s.cfg.media_prepare.enabled,
+        }
+    }
+    Ok(ServedBlob {
+        key: BlobKey::parse(&a.blob_key)?,
+        sha256: a.sha256.clone(),
+        size: a.size.max(0) as u64,
+        settled,
+    })
 }
 
 fn disposition(kind: &str, name: &str) -> HeaderValue {
@@ -224,11 +269,18 @@ pub async fn content(
         .attachment(project.id, id)
         .await?
         .ok_or_else(|| ApiError::not_found("attachment"))?;
-    let force = q
-        .download
-        .as_deref()
-        .is_some_and(|v| v == "1" || v == "true");
-    serve(&s, &method, &headers, &a, force, Cache::Immutable).await
+    let flag = |v: &Option<String>| v.as_deref().is_some_and(|v| v == "1" || v == "true");
+    let force = flag(&q.download);
+    serve(
+        &s,
+        &method,
+        &headers,
+        &a,
+        force,
+        force || flag(&q.original),
+        Cache::Immutable,
+    )
+    .await
 }
 
 #[utoipa::path(head, path = "/api/v1/projects/{key}/attachments/{id}/content", tag = "attachments", operation_id = "attachments_content_head",
@@ -253,12 +305,16 @@ pub enum Cache {
     Immutable,
     /// Until this time (unix milliseconds): the lifetime of a media URL.
     Until(i64),
+    /// Cached only with revalidation: the bytes behind the address may still change (a video
+    /// whose seekable copy is being made).
+    Revalidate,
 }
 
 impl Cache {
     fn header(self) -> HeaderValue {
         match self {
             Cache::Immutable => HeaderValue::from_static("private, max-age=31536000, immutable"),
+            Cache::Revalidate => HeaderValue::from_static("private, no-cache"),
             Cache::Until(ms) => {
                 let left = ((ms - chrono::Utc::now().timestamp_millis()) / 1000).max(0);
                 HeaderValue::from_str(&format!("private, max-age={left}"))
@@ -353,22 +409,30 @@ fn paced(
 
 /// Serves a stored attachment: 200, 206 for one byte range (a ranged read of the store), 304,
 /// 416, `HEAD`, always with the sandboxing headers. Used by the content route and by media URLs.
+/// The bytes come from [`blob_to_serve`]; the ETag is the SHA-256 of those bytes.
 pub async fn serve(
     s: &AppState,
     method: &Method,
     req: &HeaderMap,
     a: &fastproof_store::StoredAttachment,
     force_download: bool,
+    original: bool,
     cache: Cache,
 ) -> ApiResult<Response> {
-    let key = BlobKey::parse(&a.blob_key)?;
+    let blob = blob_to_serve(s, a, original).await?;
+    let cache = if blob.settled {
+        cache
+    } else {
+        Cache::Revalidate
+    };
+    let key = blob.key;
     let ct = clean_content_type(Some(&a.content_type));
     let download = force_download || !inline_safe(&ct);
     let name = a
         .original_name
         .clone()
         .unwrap_or_else(|| format!("attachment-{}", &a.sha256[..12]));
-    let etag = format!("\"{}\"", a.sha256);
+    let etag = format!("\"{}\"", blob.sha256);
     let mut h = HeaderMap::new();
     sandbox(
         &mut h,
@@ -378,7 +442,7 @@ pub async fn serve(
         cache,
     );
     let head = method == Method::HEAD;
-    let size = a.size.max(0) as u64;
+    let size = blob.size;
 
     if header_str(req, header::IF_NONE_MATCH).is_some_and(|v| range::none_match(v, &etag)) {
         return Ok((StatusCode::NOT_MODIFIED, h).into_response());

@@ -39,6 +39,7 @@ async fn start(db: &TestDb, s3: bool, extra: &[(&str, &str)]) -> Option<Fx> {
         vars.extend(env);
     }
     vars.push(("FASTPROOF_MEDIA_URL_KEY".into(), OUTSIDE_KEY.into()));
+    vars.push(("FASTPROOF_MEDIA_PREPARE".into(), "false".into()));
     for (k, v) in extra {
         vars.push((k.to_string(), v.to_string()));
     }

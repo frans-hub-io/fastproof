@@ -59,10 +59,34 @@ once and seeks anywhere:
 - `HEAD` returns the headers only.
 - `ETag: "<sha256>"` (strong). `If-None-Match` with it answers `304`; `If-Range` with it keeps the range, any
   other value (or a date) sends the whole content.
-- `Cache-Control: private, max-age=31536000, immutable`: the content behind an id never changes.
+- `Cache-Control: private, max-age=31536000, immutable`: the content behind an id never changes. A video that
+  still waits for its seekable copy (see below) is sent with `private, no-cache` instead, so the browser asks again
+  once the copy is ready.
 - `X-Content-Type-Options: nosniff`, `Content-Security-Policy: sandbox; default-src 'none'`,
   `Cross-Origin-Resource-Policy: same-origin` and `Content-Disposition` on every status. HTML, SVG and
   XML are always `attachment`; `?download=1` forces a download.
+- Videos are served from a seekable copy once the server has made one (see below); `?original=1` serves the
+  uploaded bytes instead, and `?download=1` always downloads the uploaded bytes. The `ETag` is the SHA-256 of the
+  bytes served, so it changes when the copy becomes ready.
+
+### Seekable videos
+
+Some recorders leave WebM files without an index or a duration (MediaRecorder, an interrupted muxer): a browser
+then shows an unknown length and can only seek into what it has loaded. After ingest the server checks every
+attachment of type `video/webm`, `video/x-matroska`, `video/mp4` or `video/quicktime` in the background, existing
+ones included:
+
+- WebM/Matroska without `Cues`, without `Duration`, with elements of unknown size, cut off, or with cues the
+  player cannot find is rewritten with an index (`Cues` in front of the clusters, one point per cluster with a
+  keyframe) and a `Duration`. The frames are copied byte for byte; nothing is re-encoded.
+- MP4/MOV whose `moov` follows the media data gets `moov` in front ("faststart").
+- Files that already seek well (such as Playwright's own screen recordings), other types and videos larger than
+  `FASTPROOF_MEDIA_PREPARE_MAX_BYTES` keep their original. A file that cannot be prepared keeps its original too
+  and is not tried again. An error of the server's own storage or database is not held against the file: it is
+  tried again later, with growing pauses, up to five times.
+
+The copy is checked by parsing it again before it is used, and it is deleted with the attachment. Videos are
+taken one per project at a time, so one project's backlog does not hold back the others.
 
 Elements such as `<video>` cannot send an `Authorization` header, so a client with a token asks for a media
 URL:

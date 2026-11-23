@@ -9,6 +9,7 @@ import { useProject } from '../api/hooks';
 import { useDefectTypes, useDeleteDefectType, useSaveDefectType, useSaveSettings, useSecrets, useSettings, useWriteSecret } from '../api/stageC';
 import type { DefectGroup, DefectType, IssueTracker, IssueTrackerType, ProjectSettings, SecretPurpose, VcsSettings } from '../api/types-next';
 import { DEFECT_GROUPS } from '../api/types-next';
+import { CopyValue } from '../components/CopyButton';
 import { DefectChip } from '../components/Defect';
 import { PageHeader } from '../components/PageHeader';
 import { QueryState } from '../components/QueryState';
@@ -239,8 +240,10 @@ function DefectTypes({ project, canWrite }: { project: string; canWrite: boolean
                             </Badge>
                           )}
                         </Group>
-                        {canWrite && (
-                          <Group gap={4} wrap="nowrap">
+                        <Group gap={4} wrap="nowrap">
+                          <CopyValue value={t.id} label={`Copy the id of ${t.name}`} />
+                          {canWrite && (
+                          <>
                             <Tooltip label={`Edit ${t.name}`}>
                               <ActionIcon variant="subtle" aria-label={`Edit ${t.name}`} onClick={() => setDraft({ id: t.id, builtIn: t.builtIn, group: t.group, name: t.name, shortName: t.shortName, color: /^#[0-9a-fA-F]{6}$/.test(t.color) ? t.color : GROUP_COLOR[t.group] })}>
                                 <IconEdit size={16} />
@@ -255,8 +258,9 @@ function DefectTypes({ project, canWrite }: { project: string; canWrite: boolean
                                 </ActionIcon>
                               </Tooltip>
                             )}
-                          </Group>
-                        )}
+                          </>
+                          )}
+                        </Group>
                       </Group>
                     ))}
                 </Stack>

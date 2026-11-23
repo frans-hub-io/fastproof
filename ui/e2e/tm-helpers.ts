@@ -27,8 +27,7 @@ export async function openManualLaunch(page: Page): Promise<string> {
 export async function expectNoAxeViolations(page: Page, label: string): Promise<void> {
   // Modals and drawers fade in; contrast is only meaningful once transitions have finished.
   await page.waitForFunction(() => document.getAnimations().every((a) => a.playState !== 'running'));
-  // The shell header (ui-shell, outside this UI) is excluded: its search button's visible text differs from its label.
-  const result = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa']).exclude('header').analyze();
+  const result = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa']).analyze();
   const summary = result.violations.map((v) => `${v.id} (${v.impact ?? ''}): ${v.nodes.slice(0, 3).map((n) => n.target.join(' ')).join(' | ')}`);
   expect(summary, `axe on ${label}`).toEqual([]);
 }

@@ -35,12 +35,25 @@ test('phone width: every page fits and the navigation drawer works', async ({ pa
   await noHorizontalScroll(page);
 });
 
-test('phone width: notification deliveries show their event', async ({ page }) => {
+test('390 px: notification deliveries show their event in the visible part of the table', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 800 });
   await page.goto('/p/web-shop/notifications');
-  const row = page.getByTestId('delivery-row').first();
-  await expect(row).toBeVisible();
-  const event = row.locator('td').nth(2);
-  await expect(event).not.toHaveText(/^\s*(—)?\s*$/);
+  const rows = page.getByTestId('delivery-row');
+  await expect(rows.first()).toBeVisible();
+  const count = await rows.count();
+  for (let i = 0; i < Math.min(count, 12); i++) {
+    const event = rows.nth(i).locator('td').nth(2);
+    await expect(event).toHaveText(/^(Launch finished|Gate failed|New failures|Manual run closed)$/);
+    const box = await event.boundingBox();
+    expect(box && box.x >= 0 && box.x < 390 - 40, `Event cell of row ${String(i)} starts inside the screen`).toBe(true);
+    const visible = await event.evaluate((td) => {
+      const el = td.firstElementChild ?? td;
+      const color = getComputedStyle(el).color;
+      const bg = getComputedStyle(document.body).backgroundColor;
+      return color !== bg && getComputedStyle(el).visibility === 'visible' && Number(getComputedStyle(el).opacity) > 0.5;
+    });
+    expect(visible).toBe(true);
+  }
   await noHorizontalScroll(page);
 });
 

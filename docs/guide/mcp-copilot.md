@@ -69,6 +69,11 @@ Copy the `.vscode` and `.github` folders into your repository and adjust the URL
 | `triage` | Set the defect type, comment, issue or mute of results or a whole cluster | `results:triage` |
 | `create_rule_draft` | Create a disabled triage rule for people to review and enable; the audit log records it as AI-created (`"source": "ai"`) | `rules:write` |
 
+`triage` and `create_rule_draft` take a defect type **id**, not a group name. Every project has its own ids
+(the built-in types get them when the project is created) and no MCP tool lists them yet. Get them from
+**Settings → Defect types** (the copy button next to a type), from `GET /api/v1/projects/{key}/defect-types`, or from the `defect.typeId` of results that
+already have the type; the example prompt takes them as an input, and the example agent never guesses one.
+
 A `viewer` token is enough to investigate; give an `editor` token only to agents that should triage. Every
 tool checks the permission in the project's scope, exactly like the API. Writes through MCP are recorded with
 `source: ai`, so people can tell them apart and change them, are never replaced by rules, and are written to

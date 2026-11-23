@@ -49,6 +49,10 @@ pub fn catalog() -> anyhow::Result<Catalog> {
         )
         .permission("plans:write", "Create and change test plans")
         .permission("runs:execute", "Execute manual runs")
+        .permission(
+            "dashboards:write",
+            "Create, change, lock and delete dashboards",
+        )
         .role_described(
             "viewer",
             "Read projects, launches and test cases",
@@ -90,6 +94,7 @@ pub fn catalog() -> anyhow::Result<Catalog> {
                 "cases:import",
                 "plans:write",
                 "runs:execute",
+                "dashboards:write",
             ],
         )
         .role_described("admin", "Everything", &["*"])
@@ -113,6 +118,7 @@ pub struct Perms {
     pub cases_sync: Permission,
     pub plans_write: Permission,
     pub runs_execute: Permission,
+    pub dashboards_write: Permission,
 }
 
 impl Perms {
@@ -132,6 +138,7 @@ impl Perms {
             cases_sync: p.permission("cases:sync"),
             plans_write: p.permission("plans:write"),
             runs_execute: p.permission("runs:execute"),
+            dashboards_write: p.permission("dashboards:write"),
         }
     }
 }

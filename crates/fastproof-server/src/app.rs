@@ -119,6 +119,7 @@ pub fn api_router() -> (Router<AppState>, utoipa::openapi::OpenApi) {
         .merge(api::case_folders::router())
         .merge(api::case_fields::router())
         .merge(api::plans::router())
+        .merge(api::dashboards::router())
         .merge(api::runs::router())
         .merge(api::imports::router())
         .merge(api::exports::router())

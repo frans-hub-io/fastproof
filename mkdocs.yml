@@ -111,6 +111,7 @@ nav:
   - Triage and integrations:
       - guide/rules-and-triage.md
       - guide/quality-gates.md
+      - guide/dashboards.md
       - guide/notifications.md
       - guide/mcp-copilot.md
   - Operations:

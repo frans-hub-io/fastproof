@@ -463,14 +463,25 @@ pub fn direct_upload_jobs(sch: &mut Scheduler) -> anyhow::Result<()> {
         if s.blobs.backend() != "s3" {
             return Ok(());
         }
-        let st = crate::direct_uploads::sweep(&s, crate::direct_uploads::ORPHAN_AGE).await?;
+        let st = crate::direct_uploads::sweep(&s).await?;
         if st != crate::direct_uploads::SweepStats::default() {
             tracing::info!(
                 expired = st.expired,
-                orphans = st.orphans,
+                finished = st.finished,
+                oversize = st.oversize,
                 pruned = st.pruned,
                 "direct uploads swept"
             );
+        }
+        Ok(())
+    })?;
+    sch.register("direct_uploads.orphans", "1d", |s: AppState| async move {
+        if s.blobs.backend() != "s3" {
+            return Ok(());
+        }
+        let n = crate::direct_uploads::sweep_orphans(&s, crate::direct_uploads::ORPHAN_AGE).await?;
+        if n > 0 {
+            tracing::info!(deleted = n, "orphaned direct upload objects deleted");
         }
         Ok(())
     })

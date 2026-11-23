@@ -132,7 +132,7 @@ describe('client against a live server', () => {
     const probe = await new FakeServer().start();
     const dead = probe.url;
     await probe.stop();
-    for (const o of [{ direct: true, storeUrl: dead }, { direct: false }]) {
+    for (const o of [{ direct: true, storeUrl: dead }, { direct: false }, { direct: true, redirect: true }]) {
       const srv = await new FakeServer({ running: true, ...o }).start();
       servers.push(srv);
       const lines: string[] = [];
@@ -143,7 +143,9 @@ describe('client against a live server', () => {
       assert.equal(s.sent, 2, JSON.stringify(o));
       assert.equal(srv.uploads, 2, 'both went through the server');
       assert.equal(srv.directPuts, 0);
-      if (o.direct) {
+      if ('redirect' in o) {
+        assert.ok(lines.some((l) => l.includes('answered 307')), lines.join('\n'));
+      } else if (o.direct) {
         assert.ok(lines.some((l) => l.includes('not reachable')), lines.join('\n'));
         assert.ok(srv.requests.filter((r) => r.includes('/attachments/direct')).length <= 2, 'stops asking after the store failed');
       }

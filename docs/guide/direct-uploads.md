@@ -15,7 +15,8 @@ setting on their side.
 
 1. The client hashes the file and asks the server for an upload URL, declaring SHA-256, size, content type
    and name: `POST /api/v1/projects/{key}/launches/{id}/attachments/direct`. Content the project already
-   stores is linked to the launch at once (`exists`) and needs no upload.
+   stores and still uses (in a launch, a test case or a manual step) is linked to the launch at once
+   (`exists`) and needs no upload.
 2. The client PUTs the file to the returned URL with exactly the returned headers. The URL is valid for 15
    minutes by default and can write only one temporary object.
 3. The client completes the upload: `POST .../attachments/direct/{uploadId}/complete`. The server copies the
@@ -32,20 +33,24 @@ bucket.
 | Variable | Default | Meaning |
 |---|---|---|
 | `FASTPROOF_DIRECT_UPLOADS` | `true` | Offer direct uploads (S3 backend only) |
-| `FASTPROOF_S3_PUBLIC_ENDPOINT` | none | Endpoint written into upload URLs when CI reaches the bucket under another address than the server, for example `https://s3.example.com` |
+| `FASTPROOF_S3_PUBLIC_ENDPOINT` | none | Endpoint written into upload URLs when CI reaches the bucket under another address than the server: an origin such as `https://s3.example.com`, without user, path or query |
+| `FASTPROOF_DIRECT_UPLOAD_ALLOW_HTTP` | `false` | Hand out `http://` upload URLs; without it, direct uploads are offered only when the URLs use https |
 | `FASTPROOF_DIRECT_UPLOAD_URL_TTL_SECONDS` | `900` | Lifetime of an upload URL, 60 to 21600 |
-| `FASTPROOF_DIRECT_UPLOAD_MAX_BYTES` | `1073741824` | Largest attachment sent directly, at most 5 GiB (one PUT) |
-| `FASTPROOF_DIRECT_UPLOAD_MAX_OPEN_PER_LAUNCH` | `1000` | Upload URLs of one launch that are not completed or expired yet |
+| `FASTPROOF_DIRECT_UPLOAD_MAX_BYTES` | `1073741824` | Largest attachment sent directly, at most 5 GiB (one PUT), and never more than `FASTPROOF_MAX_UPLOAD_BYTES` or the per-entry limit of the server path (512 MiB) |
+| `FASTPROOF_DIRECT_UPLOAD_MAX_OPEN_PER_LAUNCH` | `1000` | Uploads of one launch that are not completed, failed or expired yet |
 | `FASTPROOF_DIRECT_UPLOAD_MAX_OPEN_PER_PROJECT` | `10000` | The same per project |
+| `FASTPROOF_DIRECT_UPLOAD_MAX_OPEN_BYTES_PER_PROJECT` | `107374182400` | Declared bytes of such open uploads per project |
 | `FASTPROOF_DIRECT_UPLOAD_MAX_BYTES_PER_LAUNCH` | `53687091200` | Declared bytes of open and completed direct uploads of one launch |
-| `FASTPROOF_DIRECT_UPLOAD_CHECKSUM` | `true` | Bind `x-amz-checksum-sha256` to the URL, so a store that checks checksums refuses other content at once; turn off for a store that rejects the header |
+| `FASTPROOF_DIRECT_UPLOAD_CHECKSUM` | `true` | Bind `x-amz-checksum-sha256` to the URL. Each replica checks once that the store refuses other content, and offers direct uploads only then. Turn it off for a store that rejects or ignores the header; lower open limits (100 per launch, 1000 and 10 GiB per project) then apply |
 | `FASTPROOF_DIRECT_UPLOAD_VERIFY_CONCURRENCY` | `4` | Completions verified at once per replica (others wait up to 10 s, then get `503` with `Retry-After`) |
 | `FASTPROOF_DIRECT_UPLOAD_VERIFY_TIMEOUT_SECONDS` | `600` | Time allowed for one verification |
 
 The bucket needs nothing special for PUTs with pre-signed URLs. Browsers are not involved, so no CORS rules are
-needed. With the Helm chart, set `blob.directUploads.publicEndpoint` when the bundled Garage is exposed to CI
-(without it the chart keeps direct uploads off for the bundled Garage, whose address only the cluster knows);
-an external S3 endpoint is used as it is. `blob.directUploads.enabled: false` turns them off.
+needed. Objects live under `direct/<installation>/` while they are uploaded and verified; each installation
+has its own id there. With the Helm chart, direct uploads are on when `blob.directUploads.publicEndpoint` is set
+(the bundled Garage exposed to CI, or the address CI uses for an external S3), or with
+`blob.directUploads.enabled: true` for an external S3 endpoint that CI reaches as it is configured;
+`enabled: false` turns them off, `allowHttp: true` permits an `http://` endpoint.
 
 Each completion reads the object back once from the store, so the server still downloads what is uploaded
 directly; what it saves is the upload from CI and the request body handling. Place replicas close to the
@@ -63,6 +68,11 @@ the archive, except Allure `*-attachment*` files.
 | `--direct-min-bytes N` | `FASTPROOF_DIRECT_UPLOAD_MIN_BYTES` | `1048576` |
 
 Uploads of a single file or an archive and `fastproof watch` send everything through the server.
+
+A reference in the archive is a file whose whole content is `fastproof-attachment-ref:v1:<attachment id>`
+followed by a newline (at most 80 bytes). The server reads such a file in any uploaded report as a reference
+to an attachment of the same launch, never as content; a reference to anything else is reported as an upload
+warning and the result has no attachment for it.
 
 ## Reporters
 
@@ -88,7 +98,7 @@ and answers an item per request item, in order:
 ]}
 ```
 
-`refused` codes: `too_large`, `launch_bytes`, `launch_open`, `project_open`. A refused item, a `422` on
+`refused` codes: `too_large`, `launch_bytes`, `project_bytes`, `launch_open`, `project_open`. A refused item, a `422` on
 completion or a failed PUT means: send that attachment through `POST .../attachments`.
 
 | Completion | Meaning |

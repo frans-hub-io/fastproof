@@ -531,6 +531,9 @@ async fn start_inner(cfg: Config, pool: PgPool, boot: Boot) -> anyhow::Result<Ru
         direct: crate::direct_uploads::DirectState::new(&cfg.direct_uploads),
         cfg: Arc::new(cfg),
     }));
+    if state.cfg.roles.api {
+        tokio::spawn(crate::direct_uploads::warm(state.clone()));
+    }
     let sched = if state.cfg.roles.scheduler {
         let mut sched = crate::scheduler::standard_jobs()?;
         sched.register_all(&state.store).await?;

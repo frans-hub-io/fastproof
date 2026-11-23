@@ -96,7 +96,7 @@ tests:
           path: data.FASTPROOF_DIRECT_UPLOAD_MAX_BYTES
           value: "1073741824"
 
-  - it: offers direct uploads with an external S3 unless turned off
+  - it: keeps direct uploads off for an external S3 unless asked
     template: templates/configmap.yaml
     documentIndex: 0
     set:
@@ -106,7 +106,29 @@ tests:
     asserts:
       - equal:
           path: data.FASTPROOF_DIRECT_UPLOADS
+          value: "false"
+
+  - it: offers direct uploads with an external S3 when enabled explicitly
+    template: templates/configmap.yaml
+    documentIndex: 0
+    set:
+      blob.s3.endpoint: https://s3.example.com
+      blob.s3.bucket: reports
+      blob.s3.credentials.existingSecret: s3-creds
+      blob.directUploads.enabled: true
+    asserts:
+      - equal:
+          path: data.FASTPROOF_DIRECT_UPLOADS
           value: "true"
+      - notExists:
+          path: data.FASTPROOF_DIRECT_UPLOAD_ALLOW_HTTP
+
+  - it: refuses a public endpoint with a path
+    template: templates/configmap.yaml
+    set:
+      blob.directUploads.publicEndpoint: https://s3.example.com/bucket
+    asserts:
+      - failedTemplate: {}
 
   - it: turns direct uploads off when asked
     template: templates/configmap.yaml

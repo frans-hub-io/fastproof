@@ -760,7 +760,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description Pre-signed S3 PUT URLs for attachments of the launch. Content the project already stores is linked at once (`exists`, only for callers who may read the launch). URLs are bound to `content-type: application/octet-stream` and, unless turned off, to `x-amz-checksum-sha256`; the object is verified on completion. 501 when the server has no S3 store or direct uploads are off: use POST .../attachments. */
+        /** @description Pre-signed S3 PUT URLs for attachments of the launch. Content the project already stores is linked at once (`exists`, only for callers who may read the launch, and only for content still in use). URLs are bound to `content-type: application/octet-stream` and, unless turned off, to `x-amz-checksum-sha256`; the object is verified on completion. 501 when the server has no S3 store or direct uploads are off: use POST .../attachments. */
         post: operations["attachments_direct_create"];
         delete?: never;
         options?: never;
@@ -2568,7 +2568,7 @@ export interface components {
         DirectUploadStatus: "exists" | "upload" | "refused";
         /** @description The answer for one attachment, in request order. */
         DirectUploadTarget: {
-            /** @description `refused`: `too_large`, `launch_bytes`, `launch_open` or `project_open`. */
+            /** @description `refused`: `too_large`, `launch_bytes`, `project_bytes`, `launch_open` or `project_open`. */
             code?: string | null;
             /**
              * Format: date-time

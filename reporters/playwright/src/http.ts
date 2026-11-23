@@ -104,8 +104,9 @@ export class Http {
 }
 
 /**
- * A PUT of a file or buffer to a pre-signed URL: no FastProof token, exactly the given headers. Never throws;
- * `status` 0 means the store did not answer (not reachable from here).
+ * A PUT of a file or buffer to a pre-signed URL: no FastProof token, exactly the given headers, redirects not
+ * followed (a 3xx is a failed PUT). Never throws; `status` 0 means the store did not answer (not reachable from
+ * here).
  */
 export async function putPresigned(
   url: string,
@@ -127,6 +128,7 @@ export async function putPresigned(
       method: 'PUT',
       headers: h,
       body: payload,
+      redirect: 'manual',
       signal: AbortSignal.timeout(timeoutMs),
     };
     if (duplex) init.duplex = 'half';

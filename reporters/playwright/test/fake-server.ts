@@ -11,6 +11,8 @@ export interface FakeOptions {
   /** Offer direct uploads; `storeUrl` overrides where the pre-signed URLs point (an unreachable store). */
   direct?: boolean;
   storeUrl?: string;
+  /** Pre-signed URLs answer with a redirect to the store. */
+  redirect?: boolean;
 }
 
 export interface StoredResult {
@@ -69,6 +71,11 @@ export class FakeServer {
       this.failNext--;
       return this.send(res, 503, { code: 'unavailable', message: 'try later' });
     }
+    if (url.startsWith('/redirect/') && req.method === 'PUT') {
+      res.writeHead(307, { location: `${this.url}/store/${url.slice('/redirect/'.length)}` });
+      res.end();
+      return;
+    }
     const store = /^\/store\/([^/?]+)\?sig=ok$/.exec(url);
     if (store && req.method === 'PUT') {
       const d = this.direct.get(store[1]!);
@@ -97,7 +104,9 @@ export class FakeServer {
               sha256: it.sha256,
               status: 'upload',
               uploadId,
-              url: `${this.o.storeUrl ?? this.url}/store/${uploadId}?sig=ok`,
+              url: this.o.redirect
+                ? `${this.url}/redirect/${uploadId}?sig=ok`
+                : `${this.o.storeUrl ?? this.url}/store/${uploadId}?sig=ok`,
               method: 'PUT',
               headers: { 'content-type': 'application/octet-stream' },
             };

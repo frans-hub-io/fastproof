@@ -90,16 +90,17 @@ async fn put(url: &str, headers: &[(String, String)], body: &[u8]) -> reqwest::S
 async fn s3_direct_put_is_bound_to_its_headers_and_copied_by_the_server() {
     let Some(cfg) = s3_config() else { return };
     let store = BlobStore::open(&BlobConfig::S3(cfg)).unwrap();
+    let inst = format!("{:032x}", rand::random::<u128>());
     let id = format!("{:032x}", rand::random::<u128>());
-    let incoming = BlobKey::direct_incoming(&id).unwrap();
-    let check = BlobKey::direct_check(&id).unwrap();
+    let incoming = BlobKey::direct_incoming(&inst, &id).unwrap();
+    let check = BlobKey::direct_check(&inst, &id, "n1").unwrap();
     let body = b"direct upload body".to_vec();
     let dir = tempfile::tempdir().unwrap();
     let f = dir.path().join("b");
     std::fs::write(&f, &body).unwrap();
     let (sha, _) = sha256_file(&f).unwrap();
     let p = store
-        .presign_direct_put(&incoming, Duration::from_secs(300), Some(&sha))
+        .presign_direct_put(&incoming, Duration::from_secs(300), Some(&sha), false)
         .await
         .unwrap()
         .expect("S3 signs URLs");
@@ -133,7 +134,12 @@ async fn s3_direct_put_is_bound_to_its_headers_and_copied_by_the_server() {
         .collect();
     assert!(!put(&p.url, &other_type, &body).await.is_success());
     let tampered = put(&p.url, &p.headers, b"other content").await;
-    eprintln!("a PUT of other content with the signed checksum answered {tampered}");
+    assert_eq!(
+        tampered,
+        reqwest::StatusCode::BAD_REQUEST,
+        "the store refuses content that does not match the signed checksum"
+    );
+    assert_eq!(store.head(&incoming).await.unwrap(), None);
     assert!(
         put(&p.url, &p.headers, &body).await.is_success(),
         "the declared body is accepted"
@@ -151,12 +157,12 @@ async fn s3_direct_put_is_bound_to_its_headers_and_copied_by_the_server() {
         check,
         "direct keys parse back"
     );
-    assert!(
+    assert_eq!(
         store
-            .delete_prefix(&BlobKey::direct_prefix())
+            .delete_prefix(&BlobKey::direct_prefix(&inst).unwrap())
             .await
-            .unwrap()
-            >= 2
+            .unwrap(),
+        2
     );
 }
 
@@ -168,12 +174,35 @@ async fn s3_public_endpoint_is_used_for_signing_only() {
     store.check().await.unwrap();
     let p = store
         .presign_direct_put(
-            &BlobKey::direct_incoming("abc").unwrap(),
+            &BlobKey::direct_incoming("inst", "abc").unwrap(),
             Duration::from_secs(60),
             None,
+            false,
         )
         .await
         .unwrap()
         .unwrap();
     assert!(p.url.starts_with("https://s3.example.com/"), "{}", p.url);
+    assert_eq!(store.client_urls_https(), Some(true));
+    let internal = store
+        .presign_direct_put(
+            &BlobKey::direct_incoming("inst", "abc").unwrap(),
+            Duration::from_secs(60),
+            None,
+            true,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!internal.url.starts_with("https://s3.example.com/"));
+}
+
+#[tokio::test]
+async fn s3_checksum_probe_reports_enforcement_and_cleans_up() {
+    let Some(cfg) = s3_config() else { return };
+    let store = BlobStore::open(&BlobConfig::S3(cfg)).unwrap();
+    let inst = format!("{:032x}", rand::random::<u128>());
+    let key = BlobKey::direct_incoming(&inst, "probe-1").unwrap();
+    assert_eq!(store.checksum_enforced(&key).await.unwrap(), Some(true));
+    assert_eq!(store.head(&key).await.unwrap(), None);
 }

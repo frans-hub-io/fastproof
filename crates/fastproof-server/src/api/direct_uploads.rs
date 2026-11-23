@@ -19,7 +19,7 @@ use uuid::Uuid;
 use super::attachments::{AttachmentCreated, clean_content_type};
 use super::uploads::clean_file_name;
 use super::{ErrorBody, P};
-use crate::direct_uploads::available;
+use crate::direct_uploads::ready;
 use crate::state::AppState;
 
 /// Attachments per request.
@@ -83,7 +83,7 @@ pub struct DirectUploadTarget {
     /// `upload`: when the URL stops working.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<DateTime<Utc>>,
-    /// `refused`: `too_large`, `launch_bytes`, `launch_open` or `project_open`.
+    /// `refused`: `too_large`, `launch_bytes`, `project_bytes`, `launch_open` or `project_open`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
     /// `refused`: the limit that applied.
@@ -133,7 +133,7 @@ fn unavailable() -> ApiError {
 
 #[utoipa::path(post, path = "/api/v1/projects/{key}/launches/{id}/attachments/direct", tag = "attachments",
     operation_id = "attachments_direct_create", request_body = DirectUploadRequest,
-    description = "Pre-signed S3 PUT URLs for attachments of the launch. Content the project already stores is linked at once (`exists`, only for callers who may read the launch). URLs are bound to `content-type: application/octet-stream` and, unless turned off, to `x-amz-checksum-sha256`; the object is verified on completion. 501 when the server has no S3 store or direct uploads are off: use POST .../attachments.",
+    description = "Pre-signed S3 PUT URLs for attachments of the launch. Content the project already stores is linked at once (`exists`, only for callers who may read the launch, and only for content still in use). URLs are bound to `content-type: application/octet-stream` and, unless turned off, to `x-amz-checksum-sha256`; the object is verified on completion. 501 when the server has no S3 store or direct uploads are off: use POST .../attachments.",
     params(("key" = String, Path), ("id" = Uuid, Path)),
     responses((status = 200, body = DirectUploadResponse), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),
         (status = 404, body = ErrorBody), (status = 501, body = ErrorBody)))]
@@ -145,9 +145,9 @@ pub async fn create(
 ) -> ApiResult<Json<DirectUploadResponse>> {
     let project = s.project_for(&auth, &key, &s.perms.launches_write).await?;
     let launch = s.launch_of(&project, id).await?;
-    if !available(&s) {
+    let Some(inst) = ready(&s).await? else {
         return Err(unavailable());
-    }
+    };
     let settings = &s.cfg.direct_uploads;
     if body.items.is_empty() || body.items.len() > MAX_ITEMS {
         return Err(ApiError::bad_request(format!(
@@ -187,7 +187,13 @@ pub async fn create(
     let mut existing = std::collections::HashMap::new();
     if may_read {
         let shas: Vec<String> = body.items.iter().map(|i| i.sha256.clone()).collect();
-        let known = s.store.touch_attachments(project.id, &shas).await?;
+        let in_use: Vec<String> = s
+            .store
+            .referenced_attachment_hashes(project.id, &shas)
+            .await?
+            .into_iter()
+            .collect();
+        let known = s.store.touch_attachments(project.id, &in_use).await?;
         if !known.is_empty() {
             let mut rows = Vec::new();
             for (it, (ct, name)) in body.items.iter().zip(&meta) {
@@ -252,13 +258,14 @@ pub async fn create(
                 id: upload_id,
                 expires_at,
             } => {
-                let key = BlobKey::direct_incoming(&upload_id.to_string())?;
+                let key = BlobKey::direct_incoming(&inst, &upload_id.to_string())?;
                 let put = s
                     .blobs
                     .presign_direct_put(
                         &key,
                         settings.url_ttl,
                         settings.checksum.then_some(w.sha256.as_str()),
+                        false,
                     )
                     .await?
                     .ok_or_else(unavailable)?;
@@ -312,10 +319,11 @@ pub async fn complete(
 ) -> ApiResult<(StatusCode, Json<AttachmentCreated>)> {
     let project = s.project_for(&auth, &key, &s.perms.launches_write).await?;
     let launch = s.launch_of(&project, id).await?;
-    if !available(&s) {
+    let Some(inst) = ready(&s).await? else {
         return Err(unavailable());
-    }
-    let c = crate::direct_uploads::complete(&s, &auth, &project, launch.id, upload_id).await?;
+    };
+    let c =
+        crate::direct_uploads::complete(&s, &auth, &project, launch.id, upload_id, &inst).await?;
     Ok((
         if c.new {
             StatusCode::CREATED

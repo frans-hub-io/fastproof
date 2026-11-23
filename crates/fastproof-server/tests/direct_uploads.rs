@@ -33,12 +33,29 @@ async fn s3_server(db: &TestDb, extra: &[(&str, &str)]) -> Option<Server> {
     };
     let mut vars: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     vars.push(("FASTPROOF_BLOB_BACKEND_MIGRATED", "true"));
+    vars.push(("FASTPROOF_DIRECT_UPLOAD_ALLOW_HTTP", "true"));
     vars.extend_from_slice(extra);
     Some(Server::start_with(db, &vars).await)
 }
 
 fn state(s: &Server) -> &fastproof_server::state::AppState {
     &s.running.as_ref().unwrap().state
+}
+
+/// Objects under this installation's `direct/` prefix that belong to an upload.
+async fn direct_objects(s: &Server, upload: &str) -> Vec<String> {
+    let st = state(s);
+    let inst = fastproof_server::direct_uploads::installation(st)
+        .await
+        .unwrap();
+    st.blobs
+        .list(&fastproof_blob::BlobKey::direct_prefix(&inst).unwrap())
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|(k, _)| k)
+        .filter(|k| k.contains(upload))
+        .collect()
 }
 
 async fn ask(s: &Server, project: &str, lid: &str, items: Value) -> (StatusCode, Value) {
@@ -200,12 +217,10 @@ async fn direct_upload_is_verified_and_behaves_like_any_attachment() {
 
     let st8 = state(&s);
     let id = t["uploadId"].as_str().unwrap();
-    for k in [
-        fastproof_blob::BlobKey::direct_incoming(id).unwrap(),
-        fastproof_blob::BlobKey::direct_check(id).unwrap(),
-    ] {
-        assert_eq!(st8.blobs.head(&k).await.unwrap(), None, "{k} is gone");
-    }
+    assert!(
+        direct_objects(&s, id).await.is_empty(),
+        "the upload's objects are gone"
+    );
     let project = st8.store.project(&p).await.unwrap().unwrap();
     let media = st8
         .store
@@ -245,6 +260,25 @@ async fn direct_upload_is_verified_and_behaves_like_any_attachment() {
     assert_eq!(b2["items"][0]["id"], done["id"]);
     assert_eq!(b2["items"][1]["status"], "exists");
     assert_eq!(st8.store.attachment_count(project.id).await.unwrap(), 1);
+    sqlx::query("delete from attachment_links")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    sqlx::query("delete from attachment_refs")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let (_, b3) = ask(
+        &s,
+        &p,
+        lid,
+        json!([{"sha256": vsha, "size": video.len(), "contentType": "video/webm"}]),
+    )
+    .await;
+    assert_eq!(
+        b3["items"][0]["status"], "upload",
+        "content no launch uses any more needs its bytes again: {b3}"
+    );
 
     let viewer = s.token("v", "viewer", &[&p]).await;
     let (st, _) = s
@@ -321,12 +355,7 @@ async fn objects_that_differ_from_the_declaration_are_rejected_and_deleted() {
     assert_eq!(st8.store.attachment_count(project.id).await.unwrap(), 0);
     for i in &items[..2] {
         let id = i["uploadId"].as_str().unwrap();
-        for k in [
-            fastproof_blob::BlobKey::direct_incoming(id).unwrap(),
-            fastproof_blob::BlobKey::direct_check(id).unwrap(),
-        ] {
-            assert_eq!(st8.blobs.head(&k).await.unwrap(), None, "{k} was deleted");
-        }
+        assert!(direct_objects(&s, id).await.is_empty(), "{id} was deleted");
     }
     assert!(
         st8.blobs
@@ -356,18 +385,46 @@ async fn objects_that_differ_from_the_declaration_are_rejected_and_deleted() {
         good,
         "writing the URL again after completion changes nothing that is stored"
     );
-    let swept = fastproof_server::direct_uploads::sweep(st8, Duration::ZERO)
+    let id = items[2]["uploadId"].as_str().unwrap();
+    assert_eq!(direct_objects(&s, id).await.len(), 1);
+
+    let (_, big) = ask(&s, &p, lid, json!([{"sha256": sha(b"x"), "size": 10}])).await;
+    let big = &big["items"][0];
+    assert!(put(big, body(20_000, 3)).await.is_success());
+    let swept = fastproof_server::direct_uploads::sweep(st8).await.unwrap();
+    assert_eq!(swept.oversize, 1, "{swept:?}");
+    let big_id = big["uploadId"].as_str().unwrap();
+    assert!(direct_objects(&s, big_id).await.is_empty());
+    let (st, e) = complete(&s, &p, lid, &big["uploadId"]).await;
+    assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{e}");
+
+    sqlx::query(
+        "update direct_uploads set expires_at = now() - interval '2 hours' where status = 'done'",
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let swept = fastproof_server::direct_uploads::sweep(st8).await.unwrap();
+    assert_eq!(swept.finished, 1, "{swept:?}");
+    assert!(
+        direct_objects(&s, id).await.is_empty(),
+        "what a PUT left after completion is deleted once the URL is dead"
+    );
+
+    let inst = fastproof_server::direct_uploads::installation(st8)
         .await
         .unwrap();
-    assert!(swept.orphans >= 1, "{swept:?}");
-    let id = items[2]["uploadId"].as_str().unwrap();
-    assert_eq!(
-        st8.blobs
-            .head(&fastproof_blob::BlobKey::direct_incoming(id).unwrap())
-            .await
-            .unwrap(),
-        None
-    );
+    let stray =
+        fastproof_blob::BlobKey::direct_incoming(&inst, &uuid::Uuid::now_v7().to_string()).unwrap();
+    st8.blobs
+        .put_bytes(&stray, bytes::Bytes::from_static(b"left"))
+        .await
+        .unwrap();
+    let n = fastproof_server::direct_uploads::sweep_orphans(st8, Duration::ZERO)
+        .await
+        .unwrap();
+    assert!(n >= 1);
+    assert_eq!(st8.blobs.head(&stray).await.unwrap(), None);
     st8.blobs
         .delete_prefix(&fastproof_blob::BlobKey::project_prefix(&p).unwrap())
         .await
@@ -386,6 +443,7 @@ async fn limits_validation_and_expiry() {
             ("FASTPROOF_DIRECT_UPLOAD_MAX_OPEN_PER_LAUNCH", "2"),
             ("FASTPROOF_DIRECT_UPLOAD_MAX_BYTES", "1000"),
             ("FASTPROOF_DIRECT_UPLOAD_MAX_BYTES_PER_LAUNCH", "1500"),
+            ("FASTPROOF_DIRECT_UPLOAD_MAX_OPEN_BYTES_PER_PROJECT", "2500"),
         ],
     )
     .await
@@ -430,6 +488,17 @@ async fn limits_validation_and_expiry() {
     let (_, b) = ask(&s, &p, olid, json!([it(5, 1000), it(6, 600)])).await;
     assert_eq!(b["items"][1]["code"], "launch_bytes", "{b}");
     assert_eq!(b["items"][1]["limit"], 1500);
+    let third = s.launch(&p, Some("project-bytes")).await;
+    let (_, b3) = ask(
+        &s,
+        &p,
+        third["id"].as_str().unwrap(),
+        json!([it(9, 1000), it(10, 500)]),
+    )
+    .await;
+    assert_eq!(b3["items"][0]["status"], "upload", "{b3}");
+    assert_eq!(b3["items"][1]["code"], "project_bytes", "{b3}");
+    assert_eq!(b3["items"][1]["limit"], 2500);
 
     for bad in [
         json!({"items": []}),
@@ -461,10 +530,15 @@ async fn limits_validation_and_expiry() {
     let (st, e) = complete(&s, &p, olid, &first).await;
     assert_eq!(st, StatusCode::GONE, "{e}");
     assert_eq!(e["code"], "upload_expired");
-    let swept = fastproof_server::direct_uploads::sweep(state(&s), Duration::from_secs(3600))
+    let (_, b) = ask(&s, &p, lid, json!([it(11, 10)])).await;
+    assert_eq!(
+        b["items"][0]["code"], "launch_open",
+        "expired uploads count until the sweep removed their objects: {b}"
+    );
+    let swept = fastproof_server::direct_uploads::sweep(state(&s))
         .await
         .unwrap();
-    assert_eq!(swept.expired, 3, "{swept:?}");
+    assert_eq!(swept.expired, 4, "{swept:?}");
     let (st, b) = ask(&s, &p, lid, json!([it(7, 10), it(8, 10)])).await;
     assert_eq!(st, StatusCode::OK);
     assert!(

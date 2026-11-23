@@ -70,7 +70,7 @@ See [Live logs](../guide/live-logs.md) for the log fields.
 | OpenSearch search | 30 s | 503 |
 | SQL statement of a heavy read | `FASTPROOF_DATABASE_STATEMENT_TIMEOUT_SECONDS` | 503 `timeout` |
 | [Direct uploads](../guide/direct-uploads.md) per request | 1 to 100 attachments | 400 |
-| Direct upload size, open uploads per launch and project, declared bytes per launch | `FASTPROOF_DIRECT_UPLOAD_MAX_BYTES` (1 GiB, at most 5 GiB), `_MAX_OPEN_PER_LAUNCH` (1000), `_MAX_OPEN_PER_PROJECT` (10000), `_MAX_BYTES_PER_LAUNCH` (50 GiB) | the item is `refused` with the limit; the client sends it through the server |
+| Direct upload size, open uploads per launch and project, declared bytes per launch and of open uploads per project | `FASTPROOF_DIRECT_UPLOAD_MAX_BYTES` (1 GiB, at most 5 GiB and never above the server path's limits), `_MAX_OPEN_PER_LAUNCH` (1000), `_MAX_OPEN_PER_PROJECT` (10000), `_MAX_BYTES_PER_LAUNCH` (50 GiB), `_MAX_OPEN_BYTES_PER_PROJECT` (100 GiB) | the item is `refused` with the limit; the client sends it through the server |
 | Direct upload verifications per replica | `FASTPROOF_DIRECT_UPLOAD_VERIFY_CONCURRENCY` (4), each at most `_VERIFY_TIMEOUT_SECONDS` (600) | 503 with `Retry-After` |
 
 ## Test management

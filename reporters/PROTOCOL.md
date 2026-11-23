@@ -173,6 +173,7 @@ POST /api/v1/projects/{key}/launches/{id}/attachments/direct
 
 1. Hash the file (after masking, for text attachments), then ask with 1 to 100 items. Answers come in request
    order: `exists` (use `id` at once), `upload`, or `refused` (`code`, `limit`: use section 5 for that file).
+   Do not follow redirects of the PUT; a 3xx is a failed PUT.
 2. `PUT` the bytes to `url` with exactly `headers` plus `Content-Length`; send **no** `Authorization` header and
    never log the URL (it is a credential until `expiresAt`). Stream from disk.
 3. `POST .../attachments/direct/{uploadId}/complete` (no body): `201 {id, sha256, size}`, or `200` with the same

@@ -387,6 +387,31 @@ impl fmt::Debug for Config {
     }
 }
 
+/// `FASTPROOF_S3_PUBLIC_ENDPOINT`: an https origin (http only when allowed), without user
+/// info, path, query or fragment.
+fn public_endpoint(v: &str, allow_http: bool) -> anyhow::Result<String> {
+    let k = "FASTPROOF_S3_PUBLIC_ENDPOINT";
+    let u = url::Url::parse(v).map_err(|err| anyhow!("{k}: not a URL: {err}"))?;
+    match u.scheme() {
+        "https" => {}
+        "http" if allow_http => {}
+        "http" => bail!("{k}: expected https (http needs FASTPROOF_DIRECT_UPLOAD_ALLOW_HTTP=true)"),
+        _ => bail!("{k}: expected an https URL"),
+    }
+    if u.host_str().is_none()
+        || !u.username().is_empty()
+        || u.password().is_some()
+        || u.query().is_some()
+        || u.fragment().is_some()
+        || !matches!(u.path(), "" | "/")
+    {
+        bail!(
+            "{k}: expected an origin such as https://s3.example.com, without user, path or query"
+        );
+    }
+    Ok(u.as_str().trim_end_matches('/').to_string())
+}
+
 /// Reads environment variables through a lookup function (tests pass a map).
 pub struct Env<'a> {
     get: &'a dyn Fn(&str) -> Option<String>,
@@ -523,18 +548,14 @@ impl Config {
                     access_key,
                     secret_key,
                     public_endpoint: match env.var("FASTPROOF_S3_PUBLIC_ENDPOINT") {
-                        Some(v) => {
-                            let v = v.trim().to_string();
-                            let u = url::Url::parse(&v).map_err(|err| {
-                                anyhow!("FASTPROOF_S3_PUBLIC_ENDPOINT: not a URL: {err}")
-                            })?;
-                            if !matches!(u.scheme(), "http" | "https") || u.host_str().is_none() {
-                                bail!(
-                                    "FASTPROOF_S3_PUBLIC_ENDPOINT: expected an http(s) URL with a host"
-                                );
-                            }
-                            Some(v)
-                        }
+                        Some(v) => Some(public_endpoint(
+                            v.trim(),
+                            crate::direct_uploads::flag(
+                                &env,
+                                "FASTPROOF_DIRECT_UPLOAD_ALLOW_HTTP",
+                                false,
+                            )?,
+                        )?),
                         None => None,
                     },
                 })
@@ -747,6 +768,8 @@ impl Config {
                 _ => bail!("FASTPROOF_SHUTDOWN_TIMEOUT_SECONDS: 1..=3600"),
             },
         };
+        let mut direct_uploads = crate::direct_uploads::DirectSettings::from_env(&env)?;
+        direct_uploads.clamp(max_upload_bytes, limits.max_entry_bytes);
         Ok(Self {
             listen,
             ops_listen,
@@ -795,7 +818,7 @@ impl Config {
                 DEFAULT_TM_BACKFILL_DELAY,
             )?,
             shutdown_timeout,
-            direct_uploads: crate::direct_uploads::DirectSettings::from_env(&env)?,
+            direct_uploads,
         })
     }
 }
@@ -803,6 +826,25 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+
+    #[test]
+    fn public_endpoint_is_an_https_origin() {
+        assert_eq!(
+            super::public_endpoint("https://s3.example.com/", false).unwrap(),
+            "https://s3.example.com"
+        );
+        assert!(super::public_endpoint("http://s3.example.com", false).is_err());
+        assert!(super::public_endpoint("http://s3.example.com", true).is_ok());
+        for bad in [
+            "https://user:pw@s3.example.com",
+            "https://s3.example.com/bucket",
+            "https://s3.example.com/?x=1",
+            "https://s3.example.com/#f",
+            "ftp://s3.example.com",
+        ] {
+            assert!(super::public_endpoint(bad, true).is_err(), "{bad}");
+        }
+    }
 
     use super::*;
 

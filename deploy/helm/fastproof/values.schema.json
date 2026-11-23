@@ -739,11 +739,18 @@
           "additionalProperties": false,
           "properties": {
             "enabled": {
-              "type": "boolean"
+              "enum": [
+                "auto",
+                true,
+                false
+              ]
             },
             "publicEndpoint": {
               "type": "string",
-              "pattern": "^$|^https?://"
+              "pattern": "^$|^https?://[^/?#@]+/?$"
+            },
+            "allowHttp": {
+              "type": "boolean"
             },
             "urlTtlSeconds": {
               "type": "integer",

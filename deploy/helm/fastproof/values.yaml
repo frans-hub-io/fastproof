@@ -213,8 +213,9 @@ blob:
       existingConfigMap: ""
       key: ca.crt
   directUploads:
-    enabled: true
+    enabled: auto
     publicEndpoint: ""
+    allowHttp: false
     urlTtlSeconds: 900
     maxBytes: 1073741824
 

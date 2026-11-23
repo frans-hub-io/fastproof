@@ -85,6 +85,15 @@ pub async fn refresh(s: &AppState) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Histograms whose buckets differ from the latency default of `_seconds` metrics: launches run
+/// for minutes to hours.
+pub fn histogram_buckets() -> Vec<(String, Vec<f64>)> {
+    vec![(
+        "fastproof_launch_duration_seconds".into(),
+        franshub_observe::LONG_DURATION_BUCKETS.to_vec(),
+    )]
+}
+
 /// Records the duration of a finished launch.
 pub fn launch_finished(project: &str, duration_ms: Option<i64>) {
     if let Some(ms) = duration_ms {

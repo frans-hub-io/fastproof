@@ -2,13 +2,21 @@ publicUrl: https://fastproof.example.com
 
 postgresql:
   enabled: true
+  config:
+    postgresql:
+      max_connections: 80
+      shared_buffers: 192MB
+      effective_cache_size: 512MB
   resources:
     requests:
       cpu: 100m
-      memory: 256Mi
+      memory: 512Mi
     limits:
       cpu: "1"
-      memory: 768Mi
+      memory: 1Gi
+
+database:
+  maxConnections: 12
 
 garage:
   enabled: true

@@ -263,11 +263,21 @@ pub struct Running {
 }
 
 impl Running {
-    /// Stops the listeners and background tasks and waits for them.
+    /// Stops the listeners and background tasks and waits for them, all at once and for at
+    /// most [`crate::Config::shutdown_timeout`]: the listeners stop accepting, requests in
+    /// flight finish, event streams end and workers finish the batch they hold.
     pub async fn shutdown(self) {
+        let started = std::time::Instant::now();
+        let timeout = self.state.cfg.shutdown_timeout;
         self.stop.cancel();
-        for t in self.tasks {
-            let _ = tokio::time::timeout(Duration::from_secs(20), t).await;
+        let tasks = self.tasks.len();
+        let all = futures::future::join_all(self.tasks);
+        match tokio::time::timeout(timeout, all).await {
+            Ok(_) => tracing::info!(ms = started.elapsed().as_millis() as u64, tasks, "stopped"),
+            Err(_) => tracing::warn!(
+                seconds = timeout.as_secs(),
+                "stopping took longer than FASTPROOF_SHUTDOWN_TIMEOUT_SECONDS; exiting with work still running"
+            ),
         }
     }
 
@@ -327,6 +337,18 @@ pub async fn platform(
     )?))
 }
 
+/// Listener options: open connections get the shutdown timeout, less a second for the rest of
+/// the stop, to finish.
+fn serve_options(cfg: &Config) -> ServeOptions {
+    ServeOptions {
+        drain: cfg
+            .shutdown_timeout
+            .saturating_sub(Duration::from_secs(1))
+            .max(Duration::from_secs(1)),
+        ..ServeOptions::default()
+    }
+}
+
 /// The ops listener started before anything else, so probes get answers while start-up waits.
 struct Boot {
     stop: CancellationToken,
@@ -343,17 +365,11 @@ async fn boot(cfg: &Config, prometheus: Option<PrometheusHandle>) -> anyhow::Res
     let stop = CancellationToken::new();
     let started = crate::ops::Started::default();
     let ops = crate::ops::router(started.clone(), prometheus);
+    let opts = serve_options(cfg);
     let ops_task = {
         let stop = stop.clone();
         tokio::spawn(async move {
-            franshub_http::serve(
-                ops_listener,
-                ops,
-                None,
-                stop.cancelled_owned(),
-                ServeOptions::default(),
-            )
-            .await;
+            franshub_http::serve(ops_listener, ops, None, stop.cancelled_owned(), opts).await;
         })
     };
     Ok(Boot {
@@ -488,6 +504,7 @@ async fn start_inner(cfg: Config, pool: PgPool, boot: Boot) -> anyhow::Result<Ru
         kafka,
         search,
         guards: crate::limits::Guards::new(cfg.guards, cfg.db.heavy_slots()),
+        stopping: boot.stop.clone(),
         cfg: Arc::new(cfg),
     }));
     let sched = if state.cfg.roles.scheduler {
@@ -546,15 +563,9 @@ async fn start_inner(cfg: Config, pool: PgPool, boot: Boot) -> anyhow::Result<Ru
     let app = router(state.clone());
     if state.cfg.roles.api {
         let stop = stop.clone();
+        let opts = serve_options(&state.cfg);
         tasks.push(tokio::spawn(async move {
-            franshub_http::serve(
-                listener,
-                app,
-                tls,
-                stop.cancelled_owned(),
-                ServeOptions::default(),
-            )
-            .await;
+            franshub_http::serve(listener, app, tls, stop.cancelled_owned(), opts).await;
         }));
     } else {
         drop(listener);

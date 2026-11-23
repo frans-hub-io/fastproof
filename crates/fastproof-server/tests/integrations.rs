@@ -616,6 +616,10 @@ async fn gates_baselines_and_cli_exit_codes() {
         .await
         .unwrap();
     assert!(text.contains("fastproof_launch_duration_seconds"), "{text}");
+    assert!(
+        text.contains("fastproof_launch_duration_seconds_bucket{project=\"shop\",le=\"14400\"}"),
+        "launch durations have buckets up to hours: {text}"
+    );
 }
 
 #[tokio::test]

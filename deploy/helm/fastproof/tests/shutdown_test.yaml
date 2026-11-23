@@ -1,0 +1,38 @@
+suite: shutdown
+templates:
+  - templates/deployment.yaml
+  - templates/configmap.yaml
+release:
+  name: fp
+  namespace: qa
+values:
+  - ../ci/minimal-fs-values.yaml
+tests:
+  - it: stops within the termination grace period
+    template: templates/deployment.yaml
+    documentSelector:
+      path: kind
+      value: Deployment
+    asserts:
+      - equal:
+          path: spec.template.spec.terminationGracePeriodSeconds
+          value: 60
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: FASTPROOF_SHUTDOWN_TIMEOUT_SECONDS
+            value: "55"
+
+  - it: follows a shorter grace period
+    template: templates/deployment.yaml
+    documentSelector:
+      path: kind
+      value: Deployment
+    set:
+      terminationGracePeriodSeconds: 3
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: FASTPROOF_SHUTDOWN_TIMEOUT_SECONDS
+            value: "1"

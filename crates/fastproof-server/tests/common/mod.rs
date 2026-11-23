@@ -377,8 +377,9 @@ pub fn prometheus() -> metrics_exporter_prometheus::PrometheusHandle {
     static H: std::sync::OnceLock<metrics_exporter_prometheus::PrometheusHandle> =
         std::sync::OnceLock::new();
     H.get_or_init(|| {
-        franshub_observe::install_prometheus().unwrap_or_else(|_| {
-            franshub_observe::prometheus_builder()
+        let buckets = fastproof_server::integrations::quality::histogram_buckets();
+        franshub_observe::install_prometheus_with(&buckets).unwrap_or_else(|_| {
+            franshub_observe::prometheus_builder_with(&buckets)
                 .unwrap()
                 .build_recorder()
                 .handle()

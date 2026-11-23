@@ -180,6 +180,9 @@ pub struct Inner {
     pub search: Option<Arc<dyn fastproof_stream::sink::SearchBackend>>,
     /// Per-caller and per-replica guards (`crate::limits`).
     pub guards: crate::limits::Guards,
+    /// Cancelled when the process starts to stop: event streams end so that the HTTP drain
+    /// waits only for real requests.
+    pub stopping: tokio_util::sync::CancellationToken,
 }
 
 /// The axum state.

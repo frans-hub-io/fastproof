@@ -48,6 +48,14 @@ Exactly one of these:
 With an external database, give the CA with `database.ca.existingSecret` or `database.ca.existingConfigMap`
 and put `sslmode=verify-full` in the URL (or set `database.sslMode`).
 
+The bundled PostgreSQL (`postgresql.enabled`) comes sized for a 1536Mi memory limit (`max_connections` 120,
+`shared_buffers` 256MB, `work_mem` 4MB, `maintenance_work_mem` 64MB under `postgresql.config.postgresql`). The
+chart counts the connections the FastProof pods can open (`database.maxConnections` + 1 per pod at the most
+replicas, + 1 for the migration Job) and fails when they exceed `max_connections` or when the estimated memory
+exceeds `postgresql.resources.limits.memory`; with `cnpg.enabled` it checks the connections against
+`cnpg.cluster.postgresql.parameters.max_connections`. See [PostgreSQL memory and connections](scaling.md#postgresql-memory-and-connections)
+for the numbers; `database.sizingCheck: false` turns the check off.
+
 ### Attachments
 
 | Option | Values | When |
@@ -86,6 +94,18 @@ Optional, for large installations; see [Scaling and big data](scaling.md) for wh
 Set either `kafka.enabled` or `kafka.external.brokers`; the chart fails with a clear message when both are set,
 when `ingest.mode: kafka` has neither, or when Kafka is configured with `ingest.mode: direct`.
 
+FastProof produces Snappy-compressed record batches, so your brokers must accept Snappy. A broker started with
+a read-only root filesystem needs a writable temporary directory (`java.io.tmpdir`, `/tmp` by default) where
+snappy-java unpacks its native library; without one the broker answers produce requests with
+`UnknownServerError` and FastProof answers uploads with 503 `ingest queue is not available`. Mount an
+`emptyDir` at `/tmp`, as the bundled broker does.
+
+With topic creation on (`kafka.topics.create`, always on with the bundled broker) a FastProof topic that
+disappears while the pods run (deleted, or lost with a broker's data) is created again by the next producer or
+reader that misses it (counted in `fastproof_kafka_topic_recoveries_total{topic}`); consumers whose stored
+offset is past the end of the new topic read it from the start.
+Without topic creation the pods report the missing topic and wait until you create it.
+
 The bundled OpenSearch keeps the official chart's fixed names (`fastproof-opensearch-node`, Secrets
 `fastproof-opensearch-tls`, `fastproof-opensearch-security`, `fastproof-opensearch-credentials`), so install
 one per namespace or change `opensearch.clusterName`, `opensearch.masterService`, `opensearch.secretMounts`,
@@ -110,6 +130,8 @@ FastProof at the `<release>-kafka` Service. FastProof's own settings (`kafka.top
 | `kafka.serviceAccount.create` | `true` | Dedicated ServiceAccount; `automountServiceAccountToken` is `false` |
 | `kafka.replicaCount` | `1` | Brokers. Replication factors follow the broker count, and a PodDisruptionBudget is added from two brokers |
 | `kafka.persistence.enabled`, `kafka.persistence.size` | `true`, `10Gi` | Broker volume |
+| `kafka.persistence.mountPath`, `kafka.persistence.dataDir` | `/var/lib/kafka/data`, `/var/lib/kafka/data/kraft` | The volume is mounted over the data volume the `apache/kafka` image declares, and the log and KRaft metadata live in a directory on it, so topics and offsets survive restarts. Keep both |
+| `kafka.extraVolumes`, `kafka.extraVolumeMounts` | an `emptyDir` of 128Mi named `tmp` at `/tmp` | Writable `/tmp` for the compression libraries on the read-only root filesystem. Helm replaces lists, so keep the `tmp` entries when you add volumes |
 | `kafka.heapOpts`, `kafka.resources` | `-Xmx512m -Xms512m`, requests `100m`/`768Mi`, limits `1`/`1Gi` | Keep the memory limit about twice the heap |
 | `kafka.kafkaConfig.autoCreateTopicsEnable` | `false` | FastProof creates its topics with `kafka.topics.partitions` and `kafka.topics.replication`, so the broker does not create topics on first use |
 | `kafka.kafkaConfig.logRetentionHours` | `72` | How long records stay; writers normally consume them within seconds |
@@ -316,9 +338,8 @@ Releases that used the removed `kafka.bundled` values switch to `kafka.enabled: 
 name `<release>-kafka`, but its StatefulSet changes fields Kubernetes cannot update in place and its old volume
 belongs to another cluster. Wait until the consumer lag is 0, delete the StatefulSet `<release>-kafka` and the
 PVC `data-<release>-kafka-0`, then run `helm upgrade`; records still in the old broker are lost. FastProof keeps
-consumer offsets in PostgreSQL, so on the new, empty topics each consumer logs
-`Kafka offset out of range; resetting` once and continues from the end of each partition: hold uploads until the
-writers are ready.
+consumer offsets in PostgreSQL, so on the new, empty topics each consumer logs once that its offset is beyond
+the end of the log and reads the new topic from the start.
 
 ## Several replicas
 
@@ -348,8 +369,9 @@ topologySpreadConstraints:
 - More than one replica needs S3 or a ReadWriteMany volume; the chart refuses a ReadWriteOnce volume.
 - With a ReadWriteOnce volume the Deployment uses the `Recreate` strategy; otherwise rolling updates with
   `maxUnavailable: 0`.
-- Size the database connections: replicas × `database.maxConnections` plus the migration Job must stay below
-  the server's `max_connections` (the CloudNativePG values set 200).
+- Size the database connections: replicas × (`database.maxConnections` + 1) plus the migration Job must stay
+  below the server's `max_connections` (the CloudNativePG values set 200); the chart checks this for the
+  bundled PostgreSQL and CloudNativePG.
 - A PodDisruptionBudget (`maxUnavailable: 1`) is rendered when there is more than one replica.
 
 ### Separate roles

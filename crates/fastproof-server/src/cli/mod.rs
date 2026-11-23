@@ -301,6 +301,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<i32> {
             let cfg = crate::Config::from_env()?;
             let mut tc = TelemetryConfig::new("fastproof", cfg.log_format);
             tc.build_info = Some(("fastproof_build_info".into(), crate::VERSION.into()));
+            tc.histogram_buckets = crate::integrations::quality::histogram_buckets();
             let telemetry = franshub_observe::init(tc)?;
             tracing::info!(config = ?cfg, "starting");
             let running = crate::start(cfg, Some(telemetry.prometheus.clone())).await?;

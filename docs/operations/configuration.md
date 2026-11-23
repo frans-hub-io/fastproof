@@ -14,12 +14,19 @@ names the variable.
 | `FASTPROOF_TLS_CERT_FILE`, `FASTPROOF_TLS_KEY_FILE` | none | Serve TLS on the main listener (PEM files) |
 | `FASTPROOF_TLS_CLIENT_CA_FILE` | none | Require client certificates signed by this CA on the main listener |
 | `FASTPROOF_UI` | `on` | Serve the embedded web UI (`off` leaves the API only) |
+| `FASTPROOF_SHUTDOWN_TIMEOUT_SECONDS` | `25` | Longest stop after `SIGTERM` (1 to 3600). The Helm chart sets it to `terminationGracePeriodSeconds` minus 5 |
 
 Keep the operations port internal: it is unauthenticated by design. Expose only port 8080.
 
 The operations listener answers from the first moment of start-up. While FastProof waits for PostgreSQL (and
 Kafka in Kafka mode), `/healthz` returns 200 and `/readyz` returns 503 with `"status": "starting"`, so a pod
 that starts before its database is not restarted by its liveness probe and gets no traffic.
+
+On `SIGTERM` (or Ctrl-C) the listeners stop accepting connections, requests in flight finish, open event
+streams (`/events`, `/logs/stream`) end so that browsers reconnect to another replica, ingest workers and
+Kafka consumers finish the batch they hold, and the process exits; whatever still runs after
+`FASTPROOF_SHUTDOWN_TIMEOUT_SECONDS` is cut off and picked up again after a restart (uploads are re-queued,
+Kafka batches are read again from the committed offset).
 
 ## Database
 
@@ -103,7 +110,7 @@ Used only with `FASTPROOF_INGEST_MODE=kafka`.
 | `FASTPROOF_KAFKA_USERNAME` | none | SASL user |
 | `FASTPROOF_KAFKA_PASSWORD_FILE` | none | File with the SASL password |
 | `FASTPROOF_KAFKA_TOPIC_PREFIX` | `fastproof.` | Prefix of the topics `ingest.results`, `ingest.logs`, `ingest.uploads` and `events` |
-| `FASTPROOF_KAFKA_CREATE_TOPICS` | `false` | Create missing topics at start (needs the Kafka `Create` permission) |
+| `FASTPROOF_KAFKA_CREATE_TOPICS` | `false` | Create missing topics at start, and again when a topic disappears while running (needs the Kafka `Create` permission) |
 | `FASTPROOF_KAFKA_PARTITIONS` | `12` | Partitions of topics FastProof creates (1 to 1000) |
 | `FASTPROOF_KAFKA_REPLICATION` | `-1` | Replication factor of topics FastProof creates; `-1` uses the broker default |
 | `FASTPROOF_KAFKA_TRUSTED_PRODUCERS` | `false` | Accept records written straight to Kafka by other producers. Leave it off unless Kafka ACLs restrict who can write |

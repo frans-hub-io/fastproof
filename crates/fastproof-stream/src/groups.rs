@@ -292,10 +292,12 @@ impl Group {
                 _ = tokio::time::sleep(HEARTBEAT) => {}
             }
         }
-        for (_, h) in std::mem::take(&mut held) {
+        let held = std::mem::take(&mut held);
+        for h in held.values() {
             h.stop.cancel();
-            let _ = tokio::time::timeout(Duration::from_secs(20), h.task).await;
         }
+        let tasks = futures::future::join_all(held.into_values().map(|h| h.task));
+        let _ = tokio::time::timeout(Duration::from_secs(20), tasks).await;
         self.leave().await;
     }
 

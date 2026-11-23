@@ -86,8 +86,59 @@ fn hostile(dir: &std::path::Path) -> Vec<(String, Vec<u8>)> {
         })
         .collect();
     out.push(("many-clusters".into(), many.bytes()));
+    out.push(("dense-cue-point".into(), dense_cue_point(&header)));
+    out.push(("huge-stco".into(), huge_stco()));
     let _ = dir;
     out
+}
+
+/// One CuePoint holding as many CueTrackPositions as fit in a Cues element under the cap.
+fn dense_cue_point(header: &[u8]) -> Vec<u8> {
+    let mut one = Vec::new();
+    let mut tp = Vec::new();
+    write_uint(&mut tp, CUE_TRACK, 1);
+    write_uint(&mut tp, CUE_CLUSTER_POSITION, 1);
+    write_element(&mut one, CUE_TRACK_POSITIONS, &tp);
+    let n = (CAP as usize - 4096) / one.len();
+    let mut cp = Vec::with_capacity(n * one.len() + 16);
+    write_uint(&mut cp, CUE_TIME, 0);
+    for _ in 0..n {
+        cp.extend_from_slice(&one);
+    }
+    let mut cues = Vec::new();
+    write_element(&mut cues, CUE_POINT, &cp);
+    let mut v = header.to_vec();
+    write_id(&mut v, SEGMENT);
+    v.push(0xFF);
+    write_element(&mut v, CUES, &cues);
+    v
+}
+
+fn mp4_box(kind: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+    let mut v = ((payload.len() + 8) as u32).to_be_bytes().to_vec();
+    v.extend_from_slice(kind);
+    v.extend_from_slice(payload);
+    v
+}
+
+/// A valid file whose moov after the media data is one stco table just under the cap.
+fn huge_stco() -> Vec<u8> {
+    let ftyp = mp4_box(b"ftyp", b"isom\0\0\x02\0isomiso2");
+    let mdat = mp4_box(b"mdat", &[7u8; 64]);
+    let chunk = (ftyp.len() + 8) as u32;
+    let n = (CAP as usize - (256 << 10)) / 4;
+    let mut t = Vec::with_capacity(8 + n * 4);
+    t.extend_from_slice(&0u32.to_be_bytes());
+    t.extend_from_slice(&(n as u32).to_be_bytes());
+    for _ in 0..n {
+        t.extend_from_slice(&chunk.to_be_bytes());
+    }
+    let stbl = mp4_box(b"stbl", &mp4_box(b"stco", &t));
+    let trak = mp4_box(b"trak", &mp4_box(b"mdia", &mp4_box(b"minf", &stbl)));
+    let mut v = ftyp;
+    v.extend(mdat);
+    v.extend(mp4_box(b"moov", &trak));
+    v
 }
 
 #[test]
@@ -122,6 +173,12 @@ fn peak_heap_stays_under_the_cap() {
         );
         if name == "many-clusters" {
             assert!(matches!(res, Err(Error::Limit(_))), "{res:?}");
+        }
+        if name == "dense-cue-point" {
+            assert!(matches!(res, Err(Error::Limit(_))), "{res:?}");
+        }
+        if name == "huge-stco" {
+            assert!(matches!(res, Ok(Outcome::Prepared { .. })), "{res:?}");
         }
         if name.ends_with("over") || name == "info-huge" {
             assert!(

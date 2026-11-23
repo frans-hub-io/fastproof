@@ -14,6 +14,7 @@ import { HttpExchangeView } from './HttpExchangeView';
 import { safeDataImage } from '../lib/images';
 import { ImageCompare } from './ImageCompare';
 import { JsonTree } from './JsonTree';
+import { VideoPlayer } from './player/VideoPlayer';
 import { useAttachmentJson, useAttachmentText } from './useAttachmentText';
 
 function Problem({ message }: { message: string }) {
@@ -138,15 +139,8 @@ function ImageView({ url, name }: { url: string; name: string }) {
   );
 }
 
-function VideoView({ url }: { url: string }) {
-  const { src, error } = useAuthedUrl(url);
-  if (error) return <Problem message={error} />;
-  if (!src) return <Loading />;
-  return (
-    <video src={src} controls preload="metadata" style={{ width: '100%', maxHeight: '70vh', borderRadius: 8, background: '#000' }} data-testid="video-viewer">
-      <track kind="captions" />
-    </video>
-  );
+function VideoView({ project, a }: { project: string; a: Attachment }) {
+  return <VideoPlayer project={project} attachment={a} />;
 }
 
 function CompareView({ name, urls }: { name: string; urls: { expected: string; actual: string; diff?: string } }) {
@@ -166,7 +160,7 @@ export function AttachmentBody({ project, attachment: a }: { project: string; at
     case 'image':
       return <ImageView url={url} name={a.name} />;
     case 'video':
-      return <VideoView url={url} />;
+      return <VideoView project={project} a={a} />;
     case 'imageDiff':
       return <AllureDiffView project={project} a={a} />;
     case 'httpExchange':

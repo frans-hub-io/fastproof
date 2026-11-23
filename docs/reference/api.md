@@ -31,7 +31,7 @@ Everything the UI and the CLI do goes through the HTTP API at `/api/v1`. It is d
 | Launches | `POST /api/v1/projects/{key}/launches` (idempotent by `externalId`), `GET .../launches` with filters `branch`, `environment`, `status`, `attr=k:v`, `q`, `debug`; `GET/DELETE .../launches/{id}`, `POST .../launches/{id}/finish` |
 | Uploads | `POST .../launches/{id}/uploads?format=auto\|allure\|junit\|ctrf\|playwright&fileName=` (raw body or multipart field `file`, answers `202`), `GET .../launches/{id}/uploads` |
 | Streaming results | `POST .../launches/{id}/results` (FastProof JSON: one object, an array, or NDJSON); `POST/GET .../launches/{id}/logs`, `GET .../logs/stream` (see [Live logs](../guide/live-logs.md)) |
-| Attachments | `POST .../launches/{id}/attachments`, `GET`/`HEAD /api/v1/projects/{key}/attachments/{id}/content` (byte ranges, see [below](#attachment-content-and-media-urls)), `POST .../attachments/{sha256}/media-url`, `GET`/`HEAD /api/v1/media/{token}` |
+| Attachments | `POST .../launches/{id}/attachments`, `GET`/`HEAD /api/v1/projects/{key}/attachments/{id}/content` (byte ranges, see [below](#attachment-content-and-media-urls)), `POST .../attachments/{attachment}/media-url`, `GET`/`HEAD /api/v1/media/{token}` |
 | Results | `GET .../launches/{id}/results` with `status`, `q`, `suite`, `label=k:v`, `flaky`, `fingerprint` (items list the `clientIds` of their attempts, the ids reporters send and live log lines use); `GET .../launches/{id}/tree?groupBy=suite\|feature\|package\|<labels>` (up to five label names; with `includeTests=true` the groups carry their tests as leaves, `testCount` and `durationMs`; groups that do not fit one response, about 5000 tests, are read page by page from `GET .../launches/{id}/tree/tests?path=<JSON array>`); the tree, its pages and the list take the explorer filters (`retried`, `muted`, `newFailures`, `severity`, `owner`, `tag`, `minDurationMs`, `maxDurationMs`, `defect`, `attachment`, `message`, `env`, see [Launch explorer](../guide/launch-explorer.md#api)); `GET .../launches/{id}/labels`, `.../facets`, `.../environments`; `GET /api/v1/projects/{key}/results/{id}` (with `muteUntil` and `muteReason` when muted) |
 | Triage and analysis | defect types, `POST .../triage`, clusters, rules, flaky tests, compare, dashboard, test plans (see [Rules and triage](../guide/rules-and-triage.md)) |
 | Integrations | `GET .../launches/{id}/gate`, project secrets, deliveries (see [Quality gates](../guide/quality-gates.md), [Notifications](../guide/notifications.md)) |
@@ -59,7 +59,9 @@ once and seeks anywhere:
 - `HEAD` returns the headers only.
 - `ETag: "<sha256>"` (strong). `If-None-Match` with it answers `304`; `If-Range` with it keeps the range, any
   other value (or a date) sends the whole content.
-- `Cache-Control: private, max-age=31536000, immutable`: the content behind an id never changes.
+- `Cache-Control: private, max-age=31536000, immutable`: the content behind an id never changes. A video that
+  still waits for its seekable copy (see below) is sent with `private, no-cache` instead, so the browser asks again
+  once the copy is ready.
 - `X-Content-Type-Options: nosniff`, `Content-Security-Policy: sandbox; default-src 'none'`,
   `Cross-Origin-Resource-Policy: same-origin` and `Content-Disposition` on every status. HTML, SVG and
   XML are always `attachment`; `?download=1` forces a download.
@@ -80,28 +82,35 @@ ones included:
 - MP4/MOV whose `moov` follows the media data gets `moov` in front ("faststart").
 - Files that already seek well (such as Playwright's own screen recordings), other types and videos larger than
   `FASTPROOF_MEDIA_PREPARE_MAX_BYTES` keep their original. A file that cannot be prepared keeps its original too
-  and is not tried again.
+  and is not tried again. An error of the server's own storage or database is not held against the file: it is
+  tried again later, with growing pauses, up to five times.
 
-The copy is checked by parsing it again before it is used, and it is deleted with the attachment.
+The copy is checked by parsing it again before it is used, and it is deleted with the attachment. Videos are
+taken one per project at a time, so one project's backlog does not hold back the others.
 
 Elements such as `<video>` cannot send an `Authorization` header, so a client with a token asks for a media
 URL:
 
 ```text
-POST /api/v1/projects/{key}/attachments/{sha256}/media-url
--> 200 {"url": "/api/v1/media/<token>", "expiresAt": "2026-11-22T10:15:00.000Z"}
+POST /api/v1/projects/{key}/attachments/{attachment}/media-url
+-> 200 {"url": "/api/v1/media/<token>", "expiresAt": "2026-11-22T10:05:00.000Z"}
 ```
 
-It needs the same permission as reading the content (`launches:read` in the project) and answers `404` when the
-attachment (by its SHA-256, as `GET .../results/{id}` lists it) is not in the project. `GET` and `HEAD` of the
-returned URL need no `Authorization` header and no cookie and serve exactly like the content route, ranges and
-validators included; they ignore any header with credentials. The token is opaque and URL-safe and carries the
-project, the SHA-256, the expiry and the principal that asked, signed with HMAC-SHA256. The lifetime is
-`FASTPROOF_MEDIA_URL_TTL_SECONDS` (900 by default, 3600 at most). A URL that is malformed, expired, altered,
-for an attachment that is gone, or whose principal can no longer read the project is `404` with the same body
-as an unknown path. A revoked token or a removed binding takes effect within about five seconds on each
-replica. An OIDC user's URL is checked against the access file again, but a sign-out at the identity provider
-does not end it: it ends at its expiry.
+`{attachment}` is the attachment id (a UUID, as in the content route) or its SHA-256 (64 hex digits); the two
+forms cannot be confused. The call needs the same permission as reading the content (`launches:read` in the
+project) and answers `404` when the attachment is not in the project. `GET` and `HEAD` of the returned URL need
+no `Authorization` header and no cookie and serve like the content route, ranges and validators included, with
+`Cache-Control: private, max-age=<seconds until expiresAt>`; headers with credentials are ignored.
+
+The token is opaque and URL-safe and carries the project, the SHA-256, the expiry and the principal that asked,
+signed with HMAC-SHA256 under a key that combines a database secret with `FASTPROOF_MEDIA_URL_KEY`. A URL is
+valid until `expiresAt`: `FASTPROOF_MEDIA_URL_TTL_SECONDS` after the request (300 by default, 3600 at most), or
+the end of the caller's session or bearer token when that comes first. A URL stops working when the attachment
+is deleted or when the principal that asked no longer reads the project (a revoked or expired API token, a
+removed binding, a signed-out session); this is checked on every request and takes effect within a few seconds.
+A URL that is malformed, expired, altered, or no longer allowed is `404` with the same body as an unknown path.
+At most `FASTPROOF_MEDIA_MAX_STREAMS` bodies are streamed at once per replica; beyond that the answer is `503`
+with `Retry-After`.
 
 ## Project settings
 

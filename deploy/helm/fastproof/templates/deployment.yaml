@@ -228,6 +228,12 @@ spec:
                     - key: {{ $c.key }}
                       path: opensearch-password
               {{- end }}
+              {{- $mk := include "fastproof.mediaKey" . | fromJson }}
+              - secret:
+                  name: {{ $mk.name }}
+                  items:
+                    - key: {{ $mk.key }}
+                      path: media-url-key
               {{- with include "fastproof.secretsKey" . }}
               {{- $k := . | fromJson }}
               - secret:
@@ -324,6 +330,7 @@ metadata:
     {{- include "fastproof.labels" . | nindent 4 }}
   annotations:
     helm.sh/resource-policy: keep
+    argocd.argoproj.io/sync-options: Prune=false
     {{- with .Values.blob.fs.persistence.annotations }}
     {{- toYaml . | nindent 4 }}
     {{- end }}

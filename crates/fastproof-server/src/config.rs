@@ -144,6 +144,19 @@ pub struct Config {
     pub media_url_ttl: Duration,
     /// Seekable copies of video attachments (`FASTPROOF_MEDIA_PREPARE*`).
     pub media_prepare: MediaPrepare,
+    /// Secret mixed into the signing key of media URLs (`FASTPROOF_MEDIA_URL_KEY[_FILE]`); without
+    /// it every process uses its own random one and media URLs only work on the replica that
+    /// issued them.
+    pub media_url_key: Option<Secret>,
+    /// Concurrent attachment body streams per replica (`FASTPROOF_MEDIA_MAX_STREAMS`).
+    pub media_max_streams: usize,
+    /// A body stream that makes no progress for this long is closed
+    /// (`FASTPROOF_MEDIA_STREAM_TIMEOUT_SECONDS`).
+    pub media_stream_timeout: Duration,
+    /// How often replicas re-read the media signing keys (`FASTPROOF_MEDIA_KEY_RELOAD_SECONDS`).
+    pub media_key_reload: Duration,
+    /// The blob data was moved to the configured store on purpose (`FASTPROOF_BLOB_BACKEND_MIGRATED`).
+    pub blob_migrated: bool,
     pub ingest_workers: usize,
     pub access_file: Option<PathBuf>,
     pub admin_tokens_file: Option<PathBuf>,
@@ -323,6 +336,12 @@ impl fmt::Debug for Config {
             .field("max_upload_bytes", &self.max_upload_bytes)
             .field("media_url_ttl", &self.media_url_ttl)
             .field("media_prepare", &self.media_prepare)
+            .field(
+                "media_url_key",
+                &self.media_url_key.as_ref().map(|_| "<redacted>"),
+            )
+            .field("media_max_streams", &self.media_max_streams)
+            .field("blob_migrated", &self.blob_migrated)
             .field("ingest_workers", &self.ingest_workers)
             .field("access_file", &self.access_file)
             .field("admin_tokens_file", &self.admin_tokens_file)
@@ -525,6 +544,24 @@ impl Config {
                 timeout: Duration::from_secs(timeout),
             }
         };
+        let media_url_key = env.secret("FASTPROOF_MEDIA_URL_KEY")?;
+        if let Some(k) = &media_url_key
+            && k.expose().len() < 16
+        {
+            bail!("FASTPROOF_MEDIA_URL_KEY: at least 16 characters");
+        }
+        let media_max_streams: usize = env.parse("FASTPROOF_MEDIA_MAX_STREAMS", 256)?;
+        if !(1..=100_000).contains(&media_max_streams) {
+            bail!("FASTPROOF_MEDIA_MAX_STREAMS: 1..=100000");
+        }
+        let media_stream_timeout: u64 = env.parse("FASTPROOF_MEDIA_STREAM_TIMEOUT_SECONDS", 60)?;
+        if !(1..=3600).contains(&media_stream_timeout) {
+            bail!("FASTPROOF_MEDIA_STREAM_TIMEOUT_SECONDS: 1..=3600");
+        }
+        let media_key_reload: u64 = env.parse("FASTPROOF_MEDIA_KEY_RELOAD_SECONDS", 30)?;
+        if !(1..=3600).contains(&media_key_reload) {
+            bail!("FASTPROOF_MEDIA_KEY_RELOAD_SECONDS: 1..=3600");
+        }
         let ingest_workers: usize = env.parse("FASTPROOF_INGEST_WORKERS", 2)?;
         if ingest_workers > 64 {
             bail!("FASTPROOF_INGEST_WORKERS: at most 64");
@@ -686,6 +723,11 @@ impl Config {
             max_upload_bytes,
             media_url_ttl: Duration::from_secs(media_url_ttl),
             media_prepare,
+            media_url_key,
+            media_max_streams,
+            media_stream_timeout: Duration::from_secs(media_stream_timeout),
+            media_key_reload: Duration::from_secs(media_key_reload),
+            blob_migrated: env.bool("FASTPROOF_BLOB_BACKEND_MIGRATED", false)?,
             ingest_workers,
             access_file: env.path("FASTPROOF_ACCESS_FILE"),
             admin_tokens_file: env.path("FASTPROOF_ADMIN_TOKENS_FILE"),
@@ -794,7 +836,7 @@ mod tests {
         assert_eq!(c.ops_listen.port(), 9090);
         assert_eq!(c.ingest_workers, 2);
         assert_eq!(c.max_upload_bytes, 1_073_741_824);
-        assert_eq!(c.media_url_ttl, Duration::from_secs(900));
+        assert_eq!(c.media_url_ttl, Duration::from_secs(300));
         assert_eq!(c.media_prepare, MediaPrepare::default());
         assert_eq!(c.migrate, MigrateMode::Auto);
         assert!(c.ui);

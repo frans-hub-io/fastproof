@@ -127,6 +127,41 @@ fn files_left_alone() {
 }
 
 #[test]
+fn offsets_into_moov_and_item_locations_are_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut v, _) = Mp4Synth::default().bytes(&mut rng(9));
+    let moov = v.windows(4).rposition(|w| w == b"moov").unwrap() - 4;
+    let stco = v.windows(4).position(|w| w == b"stco").unwrap();
+    let last = stco + 12 + 4 * 4;
+    v[last..last + 4].copy_from_slice(&(moov as u32 + 8).to_be_bytes());
+    let p = write(dir.path(), "into-moov.mp4", &v);
+    let r = fastproof_media::prepare(&p, &dir.path().join("o"), &Limits::default());
+    assert!(matches!(r, Err(Error::Invalid(_))), "{r:?}");
+
+    let mut iloc = vec![0u8; 4];
+    iloc.extend_from_slice(&16u32.to_be_bytes());
+    iloc.extend_from_slice(b"iloc");
+    iloc.extend_from_slice(&[0u8; 8]);
+    let mut meta = 28u32.to_be_bytes().to_vec();
+    meta.extend_from_slice(b"meta");
+    meta.extend_from_slice(&iloc);
+    meta.extend_from_slice(&[0u8; 4]);
+    for (i, udta) in [meta.clone(), meta[..meta.len() - 4].to_vec()]
+        .into_iter()
+        .enumerate()
+    {
+        let (_, _, r, _) = run(
+            &Mp4Synth {
+                extra: Some((*b"udta", udta)),
+                ..Mp4Synth::default()
+            },
+            10 + i as u64,
+        );
+        assert!(matches!(r, Ok(Outcome::Unsupported(_))), "{r:?}");
+    }
+}
+
+#[test]
 fn malformed_mp4() {
     let dir = tempfile::tempdir().unwrap();
     let (bytes, _) = Mp4Synth::default().bytes(&mut rng(4));

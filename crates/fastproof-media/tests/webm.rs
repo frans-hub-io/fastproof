@@ -302,6 +302,28 @@ fn malformed_files() {
 }
 
 #[test]
+fn block_time_overflow_is_an_error() {
+    let dir = tempfile::tempdir().unwrap();
+    for ts in [i64::MAX as u64, 1 << 63] {
+        let mut s = Synth::random(&mut rng(12));
+        s.clusters = vec![(
+            ts,
+            vec![SynthBlock {
+                track: 1,
+                rel: if ts == i64::MAX as u64 { 1 } else { -1 },
+                key: true,
+                group: false,
+                duration: None,
+                payload: vec![1, 2],
+            }],
+        )];
+        let p = write(dir.path(), "overflow.webm", &s.bytes());
+        let r = fastproof_media::prepare(&p, &dir.path().join("o"), &Limits::default());
+        assert!(matches!(r, Err(Error::Invalid(_))), "{ts}: {r:?}");
+    }
+}
+
+#[test]
 fn many_tiny_elements_hit_the_element_limit() {
     let dir = tempfile::tempdir().unwrap();
     let mut s = Synth::random(&mut rng(9));

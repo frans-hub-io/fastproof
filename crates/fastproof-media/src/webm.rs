@@ -17,9 +17,10 @@ use crate::{Budget, Error, Format, Limits, Outcome};
 const MAX_EBML_HEADER: u64 = 4096;
 const MAX_TRACKS: usize = 64;
 const MAX_OTHERS: usize = 16;
-/// Bytes charged to the memory budget per cluster and per cue point kept in the index.
+/// Bytes charged to the memory budget per cluster and per cue point kept in the index, before
+/// they are stored (an entry plus the slack of a growing vector).
 const CLUSTER_COST: u64 = 128;
-const CUE_COST: u64 = 32;
+const CUE_COST: u64 = 80;
 
 /// A block (`SimpleBlock`, or the `Block` of a `BlockGroup`) as found by [`scan`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -91,6 +92,8 @@ pub struct Scan {
     pub blocks: u64,
     /// The latest end of a block (its timestamp plus its duration when known).
     pub end_time: Option<i64>,
+    /// Bytes charged to the memory budget while scanning (what this index holds).
+    pub memory: u64,
 }
 
 impl Scan {
@@ -269,6 +272,7 @@ pub fn scan<R: Read + Seek>(
         }
         pos = end;
     }
+    s.memory = budget.used();
     Ok(s)
 }
 
@@ -396,39 +400,46 @@ fn cues(buf: &[u8], s: &mut Scan, budget: &mut Budget) -> Result<(), Error> {
             continue;
         }
         let mut time = None;
-        let mut positions = Vec::new();
         for c in ebml::children(v) {
             let (id, _, v) = c?;
-            match id {
-                CUE_TIME => time = Some(read_uint(v)?),
-                CUE_TRACK_POSITIONS => {
-                    let (mut track, mut pos) = (None, None);
-                    for c in ebml::children(v) {
-                        let (id, _, v) = c?;
-                        match id {
-                            CUE_TRACK => track = Some(read_uint(v)?),
-                            CUE_CLUSTER_POSITION => pos = Some(read_uint(v)?),
-                            _ => {}
-                        }
-                    }
-                    if let (Some(t), Some(p)) = (track, pos) {
-                        positions.push((t, p));
-                    }
-                }
-                _ => {}
+            if id == CUE_TIME {
+                time = Some(read_uint(v)?);
             }
         }
         let time = time.ok_or_else(|| Error::invalid("CuePoint without CueTime"))?;
-        for (track, position) in positions {
-            budget.charge(CUE_COST)?;
-            s.cues.push(CuePoint {
-                time,
-                track,
-                position,
-            });
+        for c in ebml::children(v) {
+            let (id, _, v) = c?;
+            if id != CUE_TRACK_POSITIONS {
+                continue;
+            }
+            let (mut track, mut pos) = (None, None);
+            for c in ebml::children(v) {
+                let (id, _, v) = c?;
+                match id {
+                    CUE_TRACK => track = Some(read_uint(v)?),
+                    CUE_CLUSTER_POSITION => pos = Some(read_uint(v)?),
+                    _ => {}
+                }
+            }
+            if let (Some(track), Some(position)) = (track, pos) {
+                budget.charge(CUE_COST)?;
+                s.cues.push(CuePoint {
+                    time,
+                    track,
+                    position,
+                });
+            }
         }
     }
     Ok(())
+}
+
+/// Absolute time of a block: the cluster timestamp plus the block's relative one.
+fn block_time(cluster_ts: u64, rel: i16) -> Result<i64, Error> {
+    i64::try_from(cluster_ts)
+        .ok()
+        .and_then(|t| t.checked_add(i64::from(rel)))
+        .ok_or_else(|| Error::invalid("block time overflows"))
 }
 
 /// Parses a cluster; returns where the next element of the segment starts, and whether the
@@ -495,7 +506,7 @@ fn cluster<R: Read + Seek>(
                     ts.ok_or_else(|| Error::invalid("a block before the cluster timestamp"))?;
                 let (b, duration) = if c.id == SIMPLE_BLOCK {
                     let (track, rel, flags, frames) = block_header(r, c.data, size)?;
-                    let time = cluster_ts as i64 + i64::from(rel);
+                    let time = block_time(cluster_ts, rel)?;
                     let key = flags & 0x80 != 0;
                     let element = c.start..end;
                     (
@@ -624,7 +635,7 @@ fn block_group<R: Read + Seek>(
     Ok((
         Block {
             track,
-            time: cluster_ts as i64 + i64::from(rel),
+            time: block_time(cluster_ts, rel)?,
             key: !referenced,
             frames,
             element: g.start..end,
@@ -683,11 +694,13 @@ pub fn write<R: Read + Seek, W: Write>(
         .ok_or_else(|| Error::invalid("no Tracks"))?;
     let cue_track = s.cue_track.ok_or_else(|| Error::invalid("no tracks"))?;
     let end_time = s.end_time.ok_or_else(|| Error::invalid("no blocks"))?;
+    let mut budget = Budget::new(r.limits().max_memory_bytes);
+    budget.charge(s.memory)?;
+    budget.charge(s.clusters.len() as u64 * 16)?;
     let points = cue_points(s);
     if points.is_empty() {
         return Err(Error::invalid("no keyframe on the indexed track"));
     }
-    let mut budget = Budget::new(r.limits().max_memory_bytes);
 
     let info_payload = s.info_children.len() as u64 + element_len(DURATION, 8);
     let info_len = element_len(INFO, info_payload);
@@ -807,6 +820,9 @@ pub fn prepare_file(input: &Path, output: &Path, limits: &Limits) -> Result<Outc
     }
     let expected = crate::write_file(output, |w| write(&mut r, &s, w).map(|_| ()))?;
     drop(r);
+    let (clusters, blocks, end_time, cues) =
+        (s.clusters.len(), s.blocks, s.end_time, cue_points(&s).len());
+    drop(s);
     let check_limits = Limits {
         max_input_bytes: u64::MAX,
         ..limits.clone()
@@ -820,13 +836,13 @@ pub fn prepare_file(input: &Path, output: &Path, limits: &Limits) -> Result<Outc
     if let Some(why) = o.needs_index() {
         return fail(why);
     }
-    if o.clusters.len() != s.clusters.len() || o.blocks != s.blocks {
+    if o.clusters.len() != clusters || o.blocks != blocks {
         return fail("clusters or blocks differ");
     }
-    if o.end_time != s.end_time || o.duration != s.end_time.map(|t| t as f64) {
+    if o.end_time != end_time || o.duration != end_time.map(|t| t as f64) {
         return fail("duration differs");
     }
-    if o.cues.len() != cue_points(&s).len() {
+    if o.cues.len() != cues {
         return fail("cue count differs");
     }
     Ok(Outcome::Prepared {

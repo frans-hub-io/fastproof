@@ -2,8 +2,10 @@
 //! (`attachments.media_state = 0`, served by the partial index `attachments_media_pending`); the
 //! `media.prepare` job claims it into `attachment_media` (`running`) and records the result:
 //! `ready` (a derived blob is served instead of the original), `native` (the original already
-//! seeks well), `skipped` (not handled, such as too large) or `failed`. Each attachment is
-//! claimed once; a claim whose runner died is retried at most [`MAX_ATTEMPTS`] times in all.
+//! seeks well), `skipped` (not handled, such as too large) or `failed` (the file cannot be
+//! prepared; final). An error of the spool, blob store or database is not a verdict on the
+//! file: the claim stays `running` and is retried with backoff, like a claim whose runner died,
+//! at most [`MAX_ATTEMPTS`] times in all.
 //! Deleting an attachment removes its row (cascade) and queues the derived blob in
 //! `blob_deletions` together with the original.
 
@@ -22,8 +24,8 @@ pub const VIDEO_TYPES: [&str; 4] = [
     "video/x-matroska",
 ];
 
-/// Claims of one attachment, counting runs that were interrupted.
-pub const MAX_ATTEMPTS: i32 = 3;
+/// Claims of one attachment, counting interrupted runs and infrastructure errors.
+pub const MAX_ATTEMPTS: i32 = 5;
 
 /// An attachment claimed for preparation.
 #[derive(Clone, Debug)]
@@ -83,13 +85,25 @@ pub struct MediaState {
     pub error: Option<String>,
 }
 
-const CLAIM_NEW: &str = "with picked as (select a.id, a.project_id from attachments a \
-       join projects p on p.id = a.project_id \
-     where a.media_state = 0 \
-       and a.content_type in ('video/webm', 'video/mp4', 'video/quicktime', 'video/x-matroska') \
-       and p.deleted_at is null \
-     order by a.created_at limit $1 for update of a skip locked), \
-   marked as (update attachments a set media_state = 1 from picked where a.id = picked.id \
+/// Running claims that are due again: a retry whose time came, or a run that stopped
+/// (no retry time, started more than `$1` seconds ago).
+const DUE: &str = "status = 'running' and ((retry_at is not null and retry_at <= now()) \
+     or (retry_at is null and started_at < now() - make_interval(secs => $1)))";
+
+/// New claims, one per project: the oldest pending video of each project, projects served
+/// longest ago first, so one project's backlog does not hold back the others.
+const CLAIM_NEW: &str = "with pending as (select x.id from projects p \
+       cross join lateral (select a.id, a.created_at from attachments a \
+         where a.project_id = p.id and a.media_state = 0 \
+           and a.content_type in ('video/webm', 'video/mp4', 'video/quicktime', 'video/x-matroska') \
+         order by a.created_at limit 1) x \
+     where p.deleted_at is null \
+     order by (select max(m.started_at) from attachment_media m where m.project_id = p.id) nulls first, \
+       x.created_at \
+     limit $1), \
+   locked as (select a.id from attachments a join pending on pending.id = a.id \
+     where a.media_state = 0 for update of a skip locked), \
+   marked as (update attachments a set media_state = 1 from locked where a.id = locked.id \
      returning a.id, a.project_id) \
  insert into attachment_media (attachment_id, project_id, status, attempts, started_at) \
  select id, project_id, 'running', 1, now() from marked \
@@ -97,30 +111,30 @@ const CLAIM_NEW: &str = "with picked as (select a.id, a.project_id from attachme
  returning attachment_id";
 
 impl Store {
-    /// Claims up to `batch` attachments to prepare: claims older than `stale` whose runner
-    /// stopped (again, while under [`MAX_ATTEMPTS`]; else they fail), then new videos.
+    /// Claims up to `batch` attachments to prepare: due retries and claims whose runner stopped
+    /// more than `stale` ago (again, while under [`MAX_ATTEMPTS`]; else they fail), then new
+    /// videos, one per project.
     pub async fn claim_media_jobs(
         &self,
         batch: i64,
         stale: Duration,
     ) -> anyhow::Result<Vec<MediaJob>> {
-        sqlx::query(
-            "update attachment_media set status = 'failed', finished_at = now(), \
-               error = 'the preparation was interrupted ' || attempts || ' times' \
-             where status = 'running' and started_at < now() - make_interval(secs => $1) \
-               and attempts >= $2",
-        )
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "update attachment_media set status = 'failed', finished_at = now(), retry_at = null, \
+               error = 'gave up after ' || attempts || ' attempts: ' \
+                 || coalesce(error, 'the preparation was interrupted') \
+             where {DUE} and attempts >= $2"
+        )))
         .bind(stale.as_secs_f64())
         .bind(MAX_ATTEMPTS)
         .execute(&self.pool)
         .await?;
-        let mut ids: Vec<Uuid> = sqlx::query_scalar(
-            "update attachment_media set attempts = attempts + 1, started_at = now() \
+        let mut ids: Vec<Uuid> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            "update attachment_media set attempts = attempts + 1, started_at = now(), retry_at = null \
              where attachment_id in (select attachment_id from attachment_media \
-               where status = 'running' and started_at < now() - make_interval(secs => $1) \
-               order by started_at limit $2 for update skip locked) \
-             returning attachment_id",
-        )
+               where {DUE} order by started_at limit $2 for update skip locked) \
+             returning attachment_id"
+        )))
         .bind(stale.as_secs_f64())
         .bind(batch)
         .fetch_all(&self.pool)
@@ -163,20 +177,24 @@ impl Store {
     }
 
     /// Records how a claimed preparation ended. Returns false when the attachment is gone
-    /// (collected meanwhile): its derived blob, if one was stored, is then the caller's to
-    /// delete. The attachment row is locked first, so the collector cannot delete it between
-    /// this check and the update and miss the derived blob.
+    /// (collected meanwhile) or its project is deleted: its derived blob, if one was stored, is
+    /// then the caller's to delete. The attachment and project rows are locked first, so neither
+    /// the collector nor a project deletion can slip between this check and the update and miss
+    /// the derived blob. A key recorded by [`Store::media_upload_started`] stays on the row
+    /// whatever the result, so collecting the attachment queues it.
     pub async fn finish_media_job(
         &self,
         attachment_id: Uuid,
         result: &MediaResult,
     ) -> anyhow::Result<bool> {
         let mut tx = self.pool.begin().await?;
-        let present: Option<Uuid> =
-            sqlx::query_scalar("select id from attachments where id = $1 for share")
-                .bind(attachment_id)
-                .fetch_optional(&mut *tx)
-                .await?;
+        let present: Option<Uuid> = sqlx::query_scalar(
+            "select a.id from attachments a join projects p on p.id = a.project_id \
+             where a.id = $1 and p.deleted_at is null for share of a, p",
+        )
+        .bind(attachment_id)
+        .fetch_optional(&mut *tx)
+        .await?;
         if present.is_none() {
             tx.rollback().await?;
             return Ok(false);
@@ -200,8 +218,8 @@ impl Store {
             }
         };
         sqlx::query(
-            "update attachment_media set status = $2, format = $3, blob_key = $4, sha256 = $5, \
-               size = $6, error = $7, finished_at = now() \
+            "update attachment_media set status = $2, format = $3, blob_key = coalesce($4, blob_key), \
+               sha256 = $5, size = $6, error = $7, finished_at = now(), retry_at = null \
              where attachment_id = $1",
         )
         .bind(attachment_id)
@@ -215,6 +233,58 @@ impl Store {
         .await?;
         tx.commit().await?;
         Ok(true)
+    }
+
+    /// Records the derived blob key before it is uploaded, so a stored copy is never left without
+    /// a row naming it (an upload cut off by the time limit may still complete).
+    pub async fn media_upload_started(
+        &self,
+        attachment_id: Uuid,
+        blob_key: &str,
+    ) -> anyhow::Result<()> {
+        sqlx::query("update attachment_media set blob_key = $2 where attachment_id = $1")
+            .bind(attachment_id)
+            .bind(blob_key)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Puts a claim back after an error of the infrastructure (spool, blob store, database):
+    /// it stays `running` and is claimed again after `base * 2^(attempts-1)` (at most an hour);
+    /// after [`MAX_ATTEMPTS`] it fails with the last error.
+    pub async fn retry_media_job(
+        &self,
+        attachment_id: Uuid,
+        error: &str,
+        base: Duration,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "update attachment_media set error = $2, retry_at = now() + make_interval(secs => \
+               least($3 * power(2, greatest(attempts - 1, 0)), 3600)) \
+             where attachment_id = $1 and status = 'running'",
+        )
+        .bind(attachment_id)
+        .bind(no_nul(&truncate(error, 500)))
+        .bind(base.as_secs_f64())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Hands back claims that were not worked on: due at once, the attempt not counted.
+    pub async fn release_media_jobs(&self, attachment_ids: &[Uuid]) -> anyhow::Result<()> {
+        if attachment_ids.is_empty() {
+            return Ok(());
+        }
+        sqlx::query(
+            "update attachment_media set attempts = greatest(attempts - 1, 0), retry_at = now() \
+             where attachment_id = any($1) and status = 'running'",
+        )
+        .bind(attachment_ids)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     /// The ready seekable copy of the project's attachment with this SHA-256.

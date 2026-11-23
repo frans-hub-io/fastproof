@@ -1,6 +1,6 @@
 import { Alert, Anchor, Badge, Button, Card, Group, Progress, SimpleGrid, Stack, Table, Tabs, Text, Title, Tooltip, UnstyledButton } from '@mantine/core';
 import { useCan } from '@franshub/ui-shell';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { IconBellOff, IconBug, IconExternalLink, IconHistory, IconLink, IconListCheck, IconTag, IconTopologyStar3 } from '@tabler/icons-react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
 import { useLaunch, useProject, useResult } from '../api/hooks';
@@ -25,6 +25,8 @@ import { formatDateTime, formatDuration, formatRelative, isHttpUrl } from '../li
 import { renderSafeHtml } from '../lib/safeHtml';
 import { STATUS_LABEL, statusVar } from '../lib/status';
 import { AttachmentList } from '../viewers/AttachmentList';
+import { AttemptVideo } from '../viewers/player/AttemptVideo';
+import { videosOf } from '../viewers/player/videos';
 
 export function HistoryStrip({ project, history, currentLaunch, fullName }: { project: string; history: SeriesHistoryItem[]; currentLaunch: string | undefined; fullName: string }) {
   const navigate = useNavigate();
@@ -369,6 +371,7 @@ function AttemptView({ project, attempt, r, launch }: { project: string; attempt
   const timeline = start !== null && attempt.durationMs ? { start, total: attempt.durationMs } : null;
   const [sp, setSp] = useSearchParams();
   const section = sp.get('section') ?? 'steps';
+  const hasVideo = useMemo(() => videosOf(attempt.attachments).length > 0, [attempt.attachments]);
   return (
     <Stack gap="md" data-testid={`attempt-${String(attempt.no)}`}>
       <Group gap="md" wrap="wrap">
@@ -411,6 +414,11 @@ function AttemptView({ project, attempt, r, launch }: { project: string; attempt
           <Tabs.Tab value="attachments" rightSection={attempt.attachments.length ? <Badge size="xs" variant="light" color="gray">{attempt.attachments.length}</Badge> : undefined}>
             Attachments
           </Tabs.Tab>
+          {hasVideo && (
+            <Tabs.Tab value="video" data-testid="tab-result-video">
+              Video
+            </Tabs.Tab>
+          )}
           <Tabs.Tab value="logs" data-testid="tab-result-logs">
             {launch?.status === 'running' ? 'Live logs' : 'Logs'}
           </Tabs.Tab>
@@ -431,6 +439,11 @@ function AttemptView({ project, attempt, r, launch }: { project: string; attempt
             </Text>
           )}
         </Tabs.Panel>
+        {hasVideo && (
+          <Tabs.Panel value="video" pt="sm">
+            <AttemptVideo project={project} attempt={attempt} />
+          </Tabs.Panel>
+        )}
         <Tabs.Panel value="logs" pt="sm">
           {r.launchId ? (
             <LogConsole project={project} launchId={r.launchId} live={launch?.status === 'running'} resultId={attempt.clientId ?? r.id} attempt={attempt.clientId ? undefined : attempt.no - 1} height="min(55vh, 520px)" fileName={`${r.name}-attempt-${String(attempt.no)}.log`} />

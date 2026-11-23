@@ -3,7 +3,6 @@
 {{- $bundled := list -}}
 {{- if .Values.postgresql.enabled }}{{ $bundled = append $bundled "postgresql" }}{{ end -}}
 {{- if .Values.valkey.enabled }}{{ $bundled = append $bundled "valkey" }}{{ end -}}
-{{- if include "fastproof.garageEnabled" . }}{{ $bundled = append $bundled "garage" }}{{ end -}}
 {{- $kafkaBundled := and (include "fastproof.kafkaMode" .) .Values.kafka.enabled -}}
 {{- $chBundled := and .Values.sinks.clickhouse.enabled .Values.sinks.clickhouse.bundled.enabled -}}
 {{- $chPort := ternary 8443 8123 (not (empty .Values.sinks.clickhouse.bundled.tls.existingSecret)) -}}
@@ -202,4 +201,35 @@ spec:
               app.kubernetes.io/instance: {{ $.Release.Name }}
     {{- end }}
 {{- end }}
+{{- end }}
+{{- if and $np.storage (include "fastproof.garageEnabled" .) }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-garage
+  labels:
+    {{- include "fastproof.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: garage
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "fastproof.name" . }}
+              app.kubernetes.io/instance: {{ .Release.Name }}
+            matchExpressions:
+              - key: app.kubernetes.io/component
+                operator: In
+                values: ["server", "migrate"]
+      ports:
+        {{- range (default (list 3900) $np.garagePorts) }}
+        - port: {{ . }}
+          protocol: TCP
+        {{- end }}
 {{- end }}

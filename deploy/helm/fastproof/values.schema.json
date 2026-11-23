@@ -446,6 +446,35 @@
           "minimum": 1,
           "maximum": 3600
         },
+        "mediaMaxStreams": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "mediaStreamTimeoutSeconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3600
+        },
+        "mediaKeyReloadSeconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3600
+        },
+        "blobBackendMigrated": {
+          "type": "boolean"
+        },
+        "mediaUrlKey": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "existingSecret": {
+              "type": "string"
+            },
+            "key": {
+              "$ref": "#/definitions/nonEmptyString"
+            }
+          }
+        },
         "ingestWorkers": {
           "type": "integer",
           "minimum": 1,
@@ -1211,6 +1240,14 @@
         },
         "storage": {
           "type": "boolean"
+        },
+        "garagePorts": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65535
+          }
         }
       }
     },

@@ -62,7 +62,12 @@ PostgreSQL 14 to 18 is supported; 18 is recommended. PostgreSQL 14 reached end o
 | `FASTPROOF_S3_CA_FILE` | none | Custom CA for the S3 endpoint |
 | `FASTPROOF_S3_PATH_STYLE` | `true` | Path-style addressing (`https://s3.example.com/bucket/key`) |
 
-| `FASTPROOF_MEDIA_URL_TTL_SECONDS` | `900` | Lifetime of [signed media URLs](../reference/api.md#attachment-content-and-media-urls), 1 to 3600 |
+| `FASTPROOF_MEDIA_URL_TTL_SECONDS` | `300` | Lifetime of [signed media URLs](../reference/api.md#attachment-content-and-media-urls), 1 to 3600 |
+| `FASTPROOF_MEDIA_URL_KEY`, `FASTPROOF_MEDIA_URL_KEY_FILE` | random per process | Secret (at least 16 characters) that is combined with the database secret into the signing key of media URLs. Set the same value on every replica; the Helm chart creates it once |
+| `FASTPROOF_MEDIA_MAX_STREAMS` | `256` | Attachment bodies streamed at once per replica; more requests get `503` with `Retry-After` |
+| `FASTPROOF_MEDIA_STREAM_TIMEOUT_SECONDS` | `60` | A body stream that makes no progress for this long is closed |
+| `FASTPROOF_MEDIA_KEY_RELOAD_SECONDS` | `30` | How often replicas re-read the signing keys |
+| `FASTPROOF_BLOB_BACKEND_MIGRATED` | `false` | Set to `true` for one start after the attachments were copied to a different blob store (see [Blob store identity](#blob-store-identity)) |
 | `FASTPROOF_MEDIA_PREPARE` | `true` | Make [seekable copies of videos](../reference/api.md#seekable-videos) in the background (`media.prepare` job) |
 | `FASTPROOF_MEDIA_PREPARE_MAX_BYTES` | `1073741824` | Larger videos keep only their original (at least 1024) |
 | `FASTPROOF_MEDIA_PREPARE_TIMEOUT_SECONDS` | `300` | Time for one video, download and upload included, 10 to 3600; a video that takes longer keeps its original |
@@ -71,10 +76,35 @@ Attachments are content-addressed by SHA-256 and stored once per project. There 
 FastProof uses the whole bucket, so give every installation its own bucket.
 
 Content is read with ranged requests (`Range` on S3, a seek on `fs`), so a seek in a long video reads only
-the bytes the player asks for from either backend. The signing key of media URLs is the row `media-url` of the
-`stream_keys` table, created at first start and shared by all replicas the way the Kafka signing key is; no
-setting is needed. Removing the row (`delete from stream_keys where name = 'media-url'`) and restarting every
-replica rotates it, and the media URLs issued before stop working (the player asks for new ones).
+the bytes the player asks for from either backend.
+
+### Media URL signing keys
+
+The signing key of media URLs is derived (HKDF-SHA256) from two secrets: the row `media-url` of the
+`stream_keys` table, created at first start and shared by all replicas, and `FASTPROOF_MEDIA_URL_KEY`, which
+lives outside the database. A token names the key it was signed with, and a server accepts the current key and
+the previous one (row `media-url-previous`); every replica re-reads both rows every
+`FASTPROOF_MEDIA_KEY_RELOAD_SECONDS`. To rotate without a restart and without breaking URLs in use:
+
+```sql
+begin;
+delete from stream_keys where name = 'media-url-previous';
+update stream_keys set name = 'media-url-previous' where name = 'media-url';
+commit;
+```
+
+Within the reload interval the replicas create a new `media-url` row, sign with it and keep accepting URLs of
+the old one. Run it again after the longest URL lifetime to drop the old key. Changing `FASTPROOF_MEDIA_URL_KEY`
+changes every key at once: URLs issued before stop working and players ask for new ones.
+
+### Blob store identity
+
+The server records which blob store the attachments live in (`fs:<directory>` or `s3:<endpoint>/<bucket>`) in
+the table `blob_identity`. At start it compares the configured store with the record: while attachments exist,
+a different store stops the start with a message that names both. The same check runs the first time after an
+upgrade, when nothing is recorded yet: if none of the newest attachments can be found in the configured store,
+the start is refused. After copying the attachments to a new store on purpose, start once with
+`FASTPROOF_BLOB_BACKEND_MIGRATED=true` (Helm: `server.blobBackendMigrated: true`), then remove the setting.
 
 ## Ingest
 

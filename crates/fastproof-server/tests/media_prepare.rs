@@ -117,6 +117,45 @@ async fn scenario(extra: &[(&str, &str)]) {
         .unwrap();
     assert_eq!(r.status(), StatusCode::CREATED);
 
+    let pending: Vec<(uuid::Uuid, Option<String>)> = sqlx::query_as(
+        "select id, original_name from attachments where content_type = 'video/webm'",
+    )
+    .fetch_all(&db.pool)
+    .await
+    .unwrap();
+    for (id, name) in &pending {
+        let r = s
+            .req(
+                Method::HEAD,
+                &format!("/api/v1/projects/{key}/attachments/{id}/content"),
+                Some(ADMIN_TOKEN),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            r.headers()["cache-control"],
+            "private, no-cache",
+            "{name:?}: not prepared yet, so revalidated"
+        );
+        let r = s
+            .req(
+                Method::HEAD,
+                &format!("/api/v1/projects/{key}/attachments/{id}/content?original=1"),
+                Some(ADMIN_TOKEN),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert!(
+            r.headers()["cache-control"]
+                .to_str()
+                .unwrap()
+                .contains("immutable"),
+            "{name:?}: the original never changes"
+        );
+    }
+
     let rows = prepared(&db).await;
     let status = |name: &str| {
         rows.iter()
@@ -179,6 +218,10 @@ async fn scenario(extra: &[(&str, &str)]) {
         format!("\"{derived_sha}\"")
     );
     assert_eq!(r.headers()["content-type"], "video/webm");
+    assert_eq!(
+        r.headers()["cache-control"],
+        "private, max-age=31536000, immutable"
+    );
     let body = r.bytes().await.unwrap().to_vec();
     assert_eq!(body.len() as i64, derived_size);
     assert_eq!(sha(&body), derived_sha);
@@ -377,4 +420,168 @@ async fn videos_are_prepared_and_served_s3() {
     };
     let extra: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     scenario(&extra).await;
+}
+
+async fn upload_video(s: &Server, key: &str, lid: &str, name: &str, body: Vec<u8>) {
+    let r = s
+        .req(
+            Method::POST,
+            &format!("/api/v1/projects/{key}/launches/{lid}/attachments"),
+            Some(ADMIN_TOKEN),
+        )
+        .header("content-type", "video/webm")
+        .header("x-fastproof-attachment-name", name)
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::CREATED);
+}
+
+fn clip() -> Vec<u8> {
+    let dir = report_dir()
+        .join("test-results/mediarecorder-canvas-recorded-with-MediaRecorder/attachments");
+    std::fs::read(
+        std::fs::read_dir(dir)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path(),
+    )
+    .unwrap()
+}
+
+/// A spool that cannot be written is not a verdict on the file: the claim stays `running`
+/// with a retry time and is prepared once the spool works again.
+#[tokio::test]
+async fn infrastructure_errors_are_retried() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = Server::start(&db).await;
+    db.hold_jobs(&["media.prepare"]).await;
+    s.project("retry").await;
+    let lid = s.launch("retry", None).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    upload_video(&s, "retry", &lid, "clip.webm", clip()).await;
+    let media = s.dir.path().join("spool/media");
+    std::fs::remove_dir_all(&media).unwrap();
+    std::fs::write(&media, b"not a directory").unwrap();
+
+    let row = || async {
+        sqlx::query_as::<_, (String, i32, Option<String>, bool)>(
+            "select status, attempts, error, retry_at is not null from attachment_media",
+        )
+        .fetch_optional(&db.pool)
+        .await
+        .unwrap()
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    let first = loop {
+        run_job(&db, "media.prepare").await;
+        if let Some(r) = row().await
+            && r.3
+        {
+            break r;
+        }
+        assert!(std::time::Instant::now() < deadline, "no retry recorded");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    };
+    assert_eq!((first.0.as_str(), first.1), ("running", 1), "{first:?}");
+    assert!(first.2.is_some());
+
+    std::fs::remove_file(&media).unwrap();
+    sqlx::query("update attachment_media set retry_at = now()")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let rows = prepared(&db).await;
+    assert_eq!(rows.len(), 1);
+    assert_eq!((rows[0].1.as_str(), rows[0].2), ("ready", 2), "{rows:?}");
+}
+
+/// Claims take one video per project, projects served longest ago first; a finish for a
+/// deleted project is refused (the caller then deletes the copy it stored).
+#[tokio::test]
+async fn claims_are_fair_and_finish_checks_the_project() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = Server::start(&db).await;
+    db.hold_jobs(&["media.prepare"]).await;
+    for p in ["busy", "quiet"] {
+        s.project(p).await;
+    }
+    let busy = s.launch("busy", None).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let quiet = s.launch("quiet", None).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    for i in 0..5u8 {
+        let mut v = clip();
+        v.push(i);
+        upload_video(&s, "busy", &busy, &format!("b{i}.webm"), v).await;
+    }
+    upload_video(&s, "quiet", &quiet, "q.webm", clip()).await;
+    let store = fastproof_store::Store::new(db.pool.clone());
+    let stale = Duration::from_secs(3600);
+    let first = store.claim_media_jobs(4, stale).await.unwrap();
+    let keys: Vec<&str> = first.iter().map(|j| j.project_key.as_str()).collect();
+    assert_eq!(first.len(), 2, "one per project: {keys:?}");
+    assert!(
+        keys.contains(&"busy") && keys.contains(&"quiet"),
+        "{keys:?}"
+    );
+    let second = store.claim_media_jobs(4, stale).await.unwrap();
+    assert_eq!(second.len(), 1);
+    assert_eq!(second[0].project_key, "busy");
+
+    store
+        .release_media_jobs(&[second[0].attachment_id])
+        .await
+        .unwrap();
+    let again = store.claim_media_jobs(4, stale).await.unwrap();
+    let back = again
+        .iter()
+        .find(|j| j.attachment_id == second[0].attachment_id)
+        .expect("a released claim is due at once");
+    assert_eq!(back.attempt, 1, "a released claim does not count");
+
+    let q = first.iter().find(|j| j.project_key == "quiet").unwrap();
+    sqlx::query("update projects set deleted_at = now() where key = 'quiet'")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let ready = fastproof_store::media::MediaResult::Ready {
+        format: "webm".into(),
+        blob_key: format!(
+            "projects/quiet/derived/{}/{}/seekable.webm",
+            &q.sha256[..2],
+            q.sha256
+        ),
+        sha256: q.sha256.clone(),
+        size: 1,
+    };
+    assert!(
+        !store
+            .finish_media_job(q.attachment_id, &ready)
+            .await
+            .unwrap()
+    );
+    let b = first.iter().find(|j| j.project_key == "busy").unwrap();
+    assert!(
+        store
+            .finish_media_job(
+                b.attachment_id,
+                &fastproof_store::media::MediaResult::Native
+            )
+            .await
+            .unwrap()
+    );
 }

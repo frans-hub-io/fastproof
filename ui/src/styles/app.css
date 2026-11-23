@@ -1161,6 +1161,15 @@
     break-inside: avoid;
   }
 
+  .fp-print-item {
+    break-inside: avoid;
+  }
+
+  .fp-print-item > :first-child,
+  .fp-print-item > :first-child + * {
+    break-after: avoid;
+  }
+
   .fp-print-table {
     overflow: visible !important;
   }
@@ -1188,6 +1197,7 @@
     max-height: 240px;
   }
 
+  html,
   body {
     background: #fff !important;
     color: #000 !important;

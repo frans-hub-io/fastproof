@@ -693,7 +693,8 @@ function buildResults(def: LaunchDef): StoredResult[] {
     const { status, flaky, attempts: attemptCount } = statusFor(t, def.seed);
     const id = uuid(`result:${def.launch.id}:${t.testCaseId}`);
     const r = rng(def.seed * 31 + t.index);
-    const duration = status === 'skipped' ? 0 : Math.round(t.baseDuration * (0.7 + r() * 0.8));
+    const richRun = def.launch.id === RICH_LAUNCH && t.index === 0;
+    const duration = status === 'skipped' ? 0 : richRun ? 11_000 : Math.round(t.baseDuration * (0.7 + r() * 0.8));
     const start = launchStart + offset;
     offset += Math.round(duration / 4) + 300;
     const failing = status === 'failed' || status === 'broken';

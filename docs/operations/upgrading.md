@@ -10,10 +10,19 @@ This page lists what needs attention per release.
 ## Next release: video serving and S3 by default
 
 The content route of attachments now answers byte ranges and conditional requests, and `<video>` elements load
-attachments through short-lived signed [media URLs](../reference/api.md#attachment-content-and-media-urls). Nothing
-needs to be done for these: there is no migration (the signing key is created in `stream_keys` at first start),
-and the new setting `FASTPROOF_MEDIA_URL_TTL_SECONDS` has a default. Metrics gain `media_urls_issued_total`,
-`media_url_rejections_total{reason}` and `attachment_bytes_served_total`.
+attachments through short-lived signed [media URLs](../reference/api.md#attachment-content-and-media-urls).
+What to know:
+
+- Migration `0700_blob_identity` adds the table that records which blob store holds the attachments (see
+  [Blob store identity](configuration.md#blob-store-identity)).
+- Media URLs are signed with a key that combines a database secret and `FASTPROOF_MEDIA_URL_KEY`. The Helm chart
+  creates that secret once (`<release>-fastproof-media-key`) and keeps it; outside Helm, set the same value on
+  every replica. Without it each process signs with a key of its own and URLs only work on the replica that issued
+  them.
+- New settings with defaults: `FASTPROOF_MEDIA_URL_TTL_SECONDS` (300), `FASTPROOF_MEDIA_MAX_STREAMS` (256),
+  `FASTPROOF_MEDIA_STREAM_TIMEOUT_SECONDS` (60), `FASTPROOF_MEDIA_KEY_RELOAD_SECONDS` (30).
+- Metrics gain `media_urls_issued_total`, `media_url_rejections_total{reason}`, `attachment_bytes_served_total`
+  and `attachment_streams_refused_total`.
 
 ### Seekable copies of videos
 
@@ -23,7 +32,8 @@ few at a time, oldest first. Two migrations add the column `attachments.media_st
 `attachment_media` and a partial index built concurrently. Each copy is stored next to its original (under
 `projects/<key>/derived/`) and needs as much space again as the videos that get one; recordings that already seek
 well get none. The job downloads one video at a time to `FASTPROOF_SPOOL_DIR` and writes the copy there, so the
-spool needs twice the size of the largest video. Set `FASTPROOF_MEDIA_PREPARE=false` to turn it off. Metrics gain
+spool needs twice the size of the largest video (the job takes two of the spool slots that uploads share, and leftover
+files of a stopped process are removed after the job's time limit). Set `FASTPROOF_MEDIA_PREPARE=false` to turn it off. Metrics gain
 `media_prepare_total{outcome}`, `media_prepare_seconds` and `media_prepare_bytes_total`.
 
 ### Attachments default to S3
@@ -31,29 +41,30 @@ spool needs twice the size of the largest video. Set `FASTPROOF_MEDIA_PREPARE=fa
 The Helm chart's attachment storage default changes from a volume (`blob.backend: fs`) to object storage:
 with `blob.backend` unset, the chart deploys the bundled Garage and uses it, unless `blob.s3.endpoint` names an
 external S3 service. The setting `garage.enabled` is now `true` by default and only has an effect while the
-backend is `s3` and no endpoint is set. Setting `blob.backend: fs` keeps the volume, as before.
+backend is `s3` and no endpoint is set. Setting `blob.backend: fs` keeps the volume, as before; the volume
+claim then carries `helm.sh/resource-policy: keep` and `argocd.argoproj.io/sync-options: Prune=false`.
 
-An upgrade must not point FastProof at an empty bucket while the attachments sit on a volume, so the chart
-checks the existing release:
+The chart decides the backend of an existing release from the release itself:
 
-- **Existing release with `blob.backend` unset and attachments on a volume.** The chart reads the
-  `FASTPROOF_BLOB_BACKEND` of the release's ConfigMap with `lookup` and keeps `fs`. It prints a warning in the
-  notes: add `blob.backend: fs` to your values to make the choice explicit.
-- **`helm template`, `--dry-run=client` and similar renders that mark an upgrade (`--is-upgrade`) without
-  cluster access** cannot read the release. The render fails with a message asking for an explicit
-  `blob.backend`.
-- **GitOps tools that render with `helm template` as an install** (no `--is-upgrade`, no `lookup`) cannot see the
-  existing release at all. Before updating the chart there, set `blob.backend` to what the release uses: `fs`
-  to keep the volume, or `s3` with an endpoint. If you upgraded without doing so, the volume is still there:
-  set `blob.backend: fs` and sync again, and attachments uploaded in between are in Garage.
+- **`helm upgrade` with `blob.backend` unset.** The chart reads `FASTPROOF_BLOB_BACKEND` from the release's
+  ConfigMap with `lookup` and keeps `fs` for a release that stores attachments on a volume. The notes then
+  suggest adding `blob.backend: fs` to your values.
+- **`helm template --is-upgrade` and similar renders without cluster access** cannot read the release; the render
+  stops with a message asking for an explicit `blob.backend`.
+- **GitOps tools that render with `helm template` without `lookup`** have no view of the release. In such setups
+  set `blob.backend` explicitly (`fs`, or `s3` with an endpoint) before updating the chart, and give the bundled
+  Garage its keys through `garage.credentials.existingSecret` (a render without `lookup` creates new generated
+  keys each time). The server adds a second line of defence: it records the blob store it uses, and a start
+  against a different store while attachments exist is refused with a message (see
+  [Blob store identity](configuration.md#blob-store-identity)).
 - **Existing releases that already use `blob.backend: s3`** with an endpoint or with `garage.enabled: true` are
   unchanged.
 
 To move attachments from a volume to S3, keep `blob.backend: fs` until you have copied the blob directory into
 the bucket (the object keys are the same relative paths: `projects/<key>/attachments/<aa>/<sha256>`, for
 example `rclone copy /var/lib/fastproof/blobs s3:<bucket>`), then switch to `s3` with the endpoint (or the
-bundled Garage) and verify a few attachments. The `fs` volume is kept on uninstall, so there is no hurry to
-delete it.
+bundled Garage) together with `server.blobBackendMigrated: true` for one rollout, and verify a few attachments.
+The `fs` volume is kept on uninstall.
 
 ## Earlier in the next release: faster Kafka writers
 

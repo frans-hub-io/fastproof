@@ -30,13 +30,10 @@ pub struct TopBox {
 }
 
 /// Lists the top-level boxes of the input.
-pub fn top_boxes<R: Read + Seek>(
-    r: &mut R,
-    len: u64,
-    limits: &Limits,
-) -> Result<Vec<TopBox>, Error> {
+pub fn top_boxes(r: &mut BufReader<File>, len: u64, limits: &Limits) -> Result<Vec<TopBox>, Error> {
     let mut out = Vec::new();
     let mut pos = 0u64;
+    let mut at = r.seek(SeekFrom::Start(0))?;
     while pos < len {
         if out.len() as u64 >= MAX_BOXES {
             return Err(Error::limit("too many boxes"));
@@ -47,9 +44,11 @@ pub fn top_boxes<R: Read + Seek>(
         if len - pos < 8 {
             return Err(Error::Truncated);
         }
-        r.seek(SeekFrom::Start(pos))?;
+        let delta = i64::try_from(pos - at).map_err(|_| Error::invalid("box size overflows"))?;
+        r.seek_relative(delta)?;
         let mut h = [0u8; 16];
         r.read_exact(&mut h[..8])?;
+        at = pos + 8;
         let size32 = u32::from_be_bytes([h[0], h[1], h[2], h[3]]);
         let kind = [h[4], h[5], h[6], h[7]];
         if !kind.iter().all(|b| b.is_ascii_graphic() || *b == b' ') {
@@ -62,6 +61,7 @@ pub fn top_boxes<R: Read + Seek>(
                     return Err(Error::Truncated);
                 }
                 r.read_exact(&mut h[8..16])?;
+                at += 8;
                 let mut b = [0u8; 8];
                 b.copy_from_slice(&h[8..16]);
                 (u64::from_be_bytes(b), 16)
@@ -151,11 +151,48 @@ fn offset_tables(
             }
             b"stco" | b"co64" => f(&kind, payload)?,
             b"meta" if payload.len() >= 4 => offset_tables(&mut payload[4..], depth + 1, boxes, f)?,
+            b"udta" if has_iloc(payload, depth + 1) => {
+                return Err(Error::Invalid("absolute offsets outside stco".into()));
+            }
             k if CONTAINERS.contains(&k) => offset_tables(payload, depth + 1, boxes, f)?,
             _ => {}
         }
     }
     Ok(())
+}
+
+/// Whether user data holds an `iloc` (item locations: absolute offsets) in any box nested in
+/// it. User data need not be well-formed boxes (QuickTime ends it with a zero word), so this
+/// stops quietly at the first thing that is not a box; `meta` is tried as a full box and as a
+/// plain one.
+fn has_iloc(buf: &[u8], depth: u32) -> bool {
+    if depth > MAX_DEPTH {
+        return false;
+    }
+    let mut pos = 0usize;
+    while buf.len() - pos >= 8 {
+        let size =
+            u32::from_be_bytes([buf[pos], buf[pos + 1], buf[pos + 2], buf[pos + 3]]) as usize;
+        let size = if size == 0 { buf.len() - pos } else { size };
+        if size < 8 || size > buf.len() - pos {
+            return false;
+        }
+        let kind = &buf[pos + 4..pos + 8];
+        let body = &buf[pos + 8..pos + size];
+        if kind == b"iloc" {
+            return true;
+        }
+        let nested = if kind == b"meta" && body.len() >= 4 {
+            has_iloc(&body[4..], depth + 1) || has_iloc(body, depth + 1)
+        } else {
+            has_iloc(body, depth + 1)
+        };
+        if nested {
+            return true;
+        }
+        pos += size;
+    }
+    false
 }
 
 /// Entries of a chunk-offset table: `(entry width, count)`, checked against the payload.
@@ -191,16 +228,30 @@ fn entry(payload: &[u8], width: usize, i: usize) -> u64 {
     }
 }
 
-/// Every chunk offset of a `moov` box (whole box in `buf`), in order.
-fn offsets(buf: &mut [u8], header: usize) -> Result<Vec<u64>, Error> {
-    let mut out = Vec::new();
+/// Walks every chunk offset of a `moov` box (whole box in `buf`) through `check` and returns
+/// their count with every `step`-th of them (nothing else is held in memory).
+fn sample_offsets(
+    buf: &mut [u8],
+    header: usize,
+    step: usize,
+    check: &mut dyn FnMut(u64) -> Result<(), Error>,
+) -> Result<(usize, Vec<u64>), Error> {
+    let mut count = 0usize;
+    let mut sample = Vec::new();
     let mut boxes = 0;
     offset_tables(&mut buf[header..], 1, &mut boxes, &mut |kind, p| {
         let (w, n) = table(kind, p)?;
-        out.extend((0..n).map(|i| entry(p, w, i)));
+        for i in 0..n {
+            let o = entry(p, w, i);
+            check(o)?;
+            if count.is_multiple_of(step) {
+                sample.push(o);
+            }
+            count += 1;
+        }
         Ok(())
     })?;
-    Ok(out)
+    Ok((count, sample))
 }
 
 fn copy_range<R: Read + Seek, W: Write>(
@@ -263,8 +314,21 @@ pub fn prepare_file(input: &Path, output: &Path, limits: &Limits) -> Result<Outc
     }
     let shifted = mdat.start..moov.start;
     let header = moov.header as usize;
-    let original = match offsets(&mut buf, header) {
-        Ok(v) => v,
+    let old_moov = moov.start..moov.end;
+    let mut valid = |o: u64| {
+        if o >= len {
+            return Err(Error::invalid("a chunk offset lies outside the file"));
+        }
+        if old_moov.contains(&o) {
+            return Err(Error::invalid("a chunk offset points into moov"));
+        }
+        if o < mdat.start {
+            return Err(Error::invalid("a chunk offset lies before the media data"));
+        }
+        Ok(())
+    };
+    let count = match sample_offsets(&mut buf, header, usize::MAX, &mut valid) {
+        Ok((n, _)) => n,
         Err(Error::Invalid(m)) if m == "fragmented" => {
             return Ok(Outcome::AlreadySeekable(Format::Mp4));
         }
@@ -273,10 +337,9 @@ pub fn prepare_file(input: &Path, output: &Path, limits: &Limits) -> Result<Outc
         }
         Err(e) => return Err(e),
     };
-    budget.charge(original.len() as u64 * 8)?;
-    if original.iter().any(|o| *o >= len) {
-        return Err(Error::invalid("a chunk offset lies outside the file"));
-    }
+    let step = (count / SAMPLED_OFFSETS).max(1);
+    budget.charge(((count / step + 1) * 16) as u64)?;
+    let (_, original) = sample_offsets(&mut buf, header, step, &mut |_| Ok(()))?;
     let mut boxes_seen = 0;
     let patched = offset_tables(&mut buf[header..], 1, &mut boxes_seen, &mut |kind, p| {
         let (w, n) = table(kind, p)?;
@@ -307,7 +370,7 @@ pub fn prepare_file(input: &Path, output: &Path, limits: &Limits) -> Result<Outc
         copy_range(&mut r, mdat.start, moov.start - mdat.start, w, limits)?;
         copy_range(&mut r, moov.end, len - moov.end, w, limits)
     })?;
-    let moved = offsets(&mut buf, header)?;
+    let (_, moved) = sample_offsets(&mut buf, header, step, &mut |_| Ok(()))?;
     drop(buf);
     check(&mut r, output, len, &original, &moved, limits)?;
     Ok(Outcome::Prepared {
@@ -339,10 +402,9 @@ fn check<R: Read + Seek>(
     if original.len() != moved.len() {
         return Err(fail("chunk count differs"));
     }
-    let step = (original.len() / SAMPLED_OFFSETS).max(1);
     let mut a = [0u8; 16];
     let mut b = [0u8; 16];
-    for i in (0..original.len()).step_by(step) {
+    for i in 0..original.len() {
         limits.check_deadline()?;
         let n = (in_len - original[i]).min(16) as usize;
         if moved[i] + n as u64 > out_len {

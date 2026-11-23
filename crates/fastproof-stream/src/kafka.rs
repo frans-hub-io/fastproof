@@ -313,7 +313,15 @@ pub struct Kafka {
     budget: Arc<ByteBudget>,
     /// When this process last checked for missing topics after an unknown-topic error.
     recovered: Mutex<Option<Instant>>,
+    /// Per topic, how often this process saw it missing; per partition, the count its last
+    /// fetch saw. A partition fetched again after its topic went missing reads from the
+    /// earliest offset: the topic was (or will be) created again empty, and an offset kept
+    /// from the old log may still lie inside the new one and skip its first records.
+    lost: std::sync::Mutex<LostTopics>,
 }
+
+/// Times each topic was seen missing, and the count each partition's last fetch saw.
+type LostTopics = (HashMap<String, u64>, HashMap<(String, i32), u64>);
 
 /// Smallest fetch request: the broker still returns at least one whole record batch.
 pub const MIN_FETCH_BYTES: usize = 16 * 1024;
@@ -400,6 +408,7 @@ impl Kafka {
             clients: Mutex::new(HashMap::new()),
             budget: ByteBudget::new(cfg.max_inflight_bytes),
             recovered: Mutex::new(None),
+            lost: std::sync::Mutex::new((HashMap::new(), HashMap::new())),
         })
     }
 
@@ -522,6 +531,13 @@ impl Kafka {
     /// missing (deleted, or lost with the broker's data). Runs at most once per
     /// [`RECOVERY_INTERVAL`] in this process; concurrent callers wait for the running one.
     pub async fn recover_topic(&self, topic: &str) -> anyhow::Result<()> {
+        *self
+            .lost
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .0
+            .entry(topic.to_string())
+            .or_default() += 1;
         self.forget(topic).await;
         if !self.cfg.create_topics {
             return Ok(());
@@ -797,6 +813,39 @@ impl Kafka {
     ) -> anyhow::Result<(Vec<RecordAndOffset>, i64, i64)> {
         let pc = self.partition(topic, partition).await?;
         let bytes = 1..max_bytes.max(1024);
+        let (lost_now, lost_seen) = {
+            let l = self.lost.lock().unwrap_or_else(|e| e.into_inner());
+            (
+                l.0.get(topic).copied().unwrap_or(0),
+                l.1.get(&(topic.to_string(), partition)).copied(),
+            )
+        };
+        let offset = if lost_seen.is_some_and(|seen| seen != lost_now) {
+            match pc.get_offset(OffsetAt::Earliest).await {
+                Ok(earliest) => {
+                    tracing::warn!(
+                        topic,
+                        partition,
+                        offset,
+                        reset = earliest,
+                        "Kafka topic was missing since the last fetch; reading from the earliest offset"
+                    );
+                    earliest
+                }
+                Err(e) => {
+                    let e =
+                        anyhow::Error::new(e).context(format!("fetching from {topic}/{partition}"));
+                    return Err(self.on_error(topic, e).await);
+                }
+            }
+        } else {
+            offset
+        };
+        self.lost
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .1
+            .insert((topic.to_string(), partition), lost_now);
         let r = match pc.fetch_records(offset, bytes.clone(), max_wait_ms).await {
             Ok((records, hwm)) => Ok((records, hwm, offset)),
             Err(ClientError::ServerError {

@@ -33,16 +33,18 @@ signals below appears.
 | Extra moving parts | none | Kafka |
 | Back pressure | PostgreSQL queue depth | Kafka retention absorbs bursts; writers catch up |
 | Live logs to the UI | PostgreSQL `LISTEN/NOTIFY` | Each API replica reads `ingest.logs` from the latest offset |
-| Ordering | per upload | per launch (records are keyed by launch id) |
+| Ordering | per upload | per test (records are keyed by launch and test) |
 
 In Kafka mode only the gateway produces, after token authentication, unless
 `FASTPROOF_KAFKA_TRUSTED_PRODUCERS=true`. Consumer groups are coordinated by FastProof in PostgreSQL (Kafka
 consumer groups are not used), and the writer commits its offset in the same transaction as the data, so
 retries never duplicate results and a writer killed in the middle of a batch loses nothing: the next owner of
-the partition starts again from the last committed offset. Records of one launch share a partition and are
-read in the order they were produced; results sent through the API are stored in that order, while results
-parsed from uploaded archives are stored together per upload, so within one batch they can land before or
-after results sent directly. FastProof exports consumer lag on `/metrics`.
+the partition starts again from the last committed offset. Result records are keyed by launch and test, and
+log lines by launch and result, so a big launch spreads over every partition and every writer, while the
+attempts of one test (and the lines of one result) share a partition and are stored in the order they were
+produced. Results of different tests of a launch can be stored in another order than they were sent, and
+results parsed from uploaded archives are stored together per upload. FastProof exports consumer lag on
+`/metrics`.
 
 Launches that run the same tests are written at the same time by several writers (or ingest workers) without
 waiting on each other for long. Test cases and series that exist and need no change are only share-locked
@@ -50,8 +52,12 @@ waiting on each other for long. Test cases and series that exist and need no cha
 those tests updates, are locked last, right before they are written, so such launches wait for each other
 only for that final step. When another launch of the same tests committed in the meantime, the history of
 those tests is read again under the lock, so transitions and flaky verdicts follow the order in which the
-launches commit. Rows are locked in key order, and a transaction that still meets a deadlock or a
-serialization failure runs again after a short pause (counted in `fastproof_db_tx_retries_total`).
+launches commit. Several writers of one launch run side by side as well: the launch row is only
+share-locked while they work and updated by their change of the counters right before the commit, and two
+of them wait for each other only when they store the same test. Rows are locked in key order (result rows
+in id order, then the launch row, as triage, rule tasks and mute expiry lock them too), and a transaction
+that still meets a deadlock or a serialization failure, or finds that another writer created the same
+result meanwhile, runs again after a short pause (counted in `fastproof_db_tx_retries_total`).
 
 Topics (after `FASTPROOF_KAFKA_TOPIC_PREFIX`, default `fastproof.`): `ingest.results`, `ingest.logs`,
 `ingest.uploads` and `events`. FastProof produces them with Snappy compression and reads any codec; a
@@ -270,6 +276,38 @@ VM shared with other work, PostgreSQL 18 on the same VM, the writers held to hal
 `ci/bigdata-values.yaml` limits `roles.writer`. PostgreSQL needs about as much CPU time as the table shows
 for the writers' statements, so a PostgreSQL with one CPU is busy for most of such a burst: size it together
 with the writers.
+
+#### One big launch
+
+A single launch of 100,000 results used to go through one partition, one writer and one transaction at a
+time (each held the launch row to its end and recounted the whole launch), so it was stored at the speed
+of one writer whatever the number of writers. Its records are now keyed by launch and test, every writer
+takes part, the counters change by what each transaction changed, and the launch row is held only for
+that final update.
+
+| `fastproof bench --launches 1 --results 100000 --log-lines 2 --parallel 1`, two writers of half a CPU each, 6 partitions | Before | After |
+|---|---|---|
+| Lag after the last request | 44 to 59 s | 1 to 6 s |
+| From the first request until everything is stored | 66 to 109 s | 37 to 64 s (mostly the sending) |
+| Records per writer | all on one writer | half on each |
+| PostgreSQL CPU of the writers | 51 to 60 s | 57 to 82 s |
+
+PostgreSQL works more for the same launch, because its writers now meet on the launch row (the foreign
+key checks of every stored row read it); spread over the writers, that still stores the launch several
+times faster. The 100-launch bench above is unchanged within the noise of the shared VM. Every run stored
+every result and log line exactly once.
+
+The statistics lock: `fastproof_analysis_stats_lock_wait_seconds` is the wait for the statistics rows
+of a batch, `fastproof_analysis_stats_locked_seconds` the work done while holding them. In the 100-launch
+bench a batch waits 50 to 75 ms and holds them 13 to 18 ms; series that another launch changed are judged
+again before the lock when it is seen in time (a quarter of them,
+`fastproof_analysis_rechecked_series_total{phase="before_lock"}`), the others under it.
+
+#### Outbox volume
+
+`FASTPROOF_OUTBOX_LOG_EVENTS=batch` writes one `log.chunks` event per launch and write instead of one
+`log.chunk` event per stored chunk: the 100-launch bench writes about 204,000 outbox rows instead of
+309,000. The sinks read both formats; see [Upgrading](upgrading.md) before switching.
 
 ## Benchmark
 

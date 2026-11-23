@@ -541,16 +541,33 @@ pub async fn after_persist_deferred(
     if !new_mutes.is_empty() {
         upsert_mutes(conn, launch.project_id, &new_mutes, SYSTEM, false).await?;
     }
+    // Series whose statistics another launch changed since the snapshot are judged again
+    // before the lock, from a fresh look at their rows: under the lock, only the few that
+    // changed in the short time since need it.
+    let fresh = stats::read_rows(conn, &series_sorted).await?;
+    let moved = changed_since(&series_sorted, &seen, &fresh);
+    if !moved.is_empty() {
+        recheck(
+            conn,
+            launch,
+            branch.as_deref(),
+            depth,
+            &opts,
+            &rows,
+            &moved,
+            &fresh,
+            &mut stat_updates,
+            false,
+        )
+        .await?;
+    }
     let create = (!debug).then_some(launch.project_id);
+    let waited = std::time::Instant::now();
     let stats_rows = stats::lock_rows(conn, &series_sorted, create).await?;
-    let changed: Vec<Uuid> = series_sorted
-        .iter()
-        .filter(|id| {
-            stats_rows.get(*id).cloned().unwrap_or_default()
-                != seen.get(*id).cloned().unwrap_or_default()
-        })
-        .copied()
-        .collect();
+    metrics::histogram!("fastproof_analysis_stats_lock_wait_seconds")
+        .record(waited.elapsed().as_secs_f64());
+    let locked = std::time::Instant::now();
+    let changed = changed_since(&series_sorted, &fresh, &stats_rows);
     if !changed.is_empty() {
         recheck(
             conn,
@@ -562,6 +579,7 @@ pub async fn after_persist_deferred(
             &changed,
             &stats_rows,
             &mut stat_updates,
+            true,
         )
         .await?;
     }
@@ -583,7 +601,24 @@ pub async fn after_persist_deferred(
     if !stat_updates.is_empty() {
         stats::record(conn, launch, &stat_updates, &stats_rows, &settings, now).await?;
     }
+    metrics::histogram!("fastproof_analysis_stats_locked_seconds")
+        .record(locked.elapsed().as_secs_f64());
     Ok(hits)
+}
+
+/// Series whose statistics row differs between two reads.
+fn changed_since(
+    series: &[Uuid],
+    a: &HashMap<Uuid, SeriesStatsRow>,
+    b: &HashMap<Uuid, SeriesStatsRow>,
+) -> Vec<Uuid> {
+    series
+        .iter()
+        .filter(|id| {
+            a.get(*id).cloned().unwrap_or_default() != b.get(*id).cloned().unwrap_or_default()
+        })
+        .copied()
+        .collect()
 }
 
 /// Transition and cross-run flakiness of a result from the history of its series.
@@ -619,8 +654,11 @@ async fn recheck(
     changed: &[Uuid],
     stats_rows: &HashMap<Uuid, SeriesStatsRow>,
     stat_updates: &mut [(Uuid, Status, bool)],
+    locked: bool,
 ) -> anyhow::Result<()> {
-    metrics::counter!("fastproof_analysis_rechecked_series_total").increment(changed.len() as u64);
+    let phase = if locked { "locked" } else { "before_lock" };
+    metrics::counter!("fastproof_analysis_rechecked_series_total", "phase" => phase)
+        .increment(changed.len() as u64);
     let history = past_statuses(
         conn,
         launch.project_id,

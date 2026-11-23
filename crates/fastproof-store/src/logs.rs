@@ -1,6 +1,6 @@
 //! Live logs of attempts: zstd-compressed chunks per attempt (`attempt_log_chunks`), idempotent
-//! by `(resultId, attempt, seq)`, with a `log.chunk` outbox event per chunk and a notification
-//! on [`LOGS_CHANNEL`] for the live fan-out of every replica.
+//! by `(resultId, attempt, seq)`, announced in the outbox ([`LogChunkEvents`]), with a
+//! notification on [`LOGS_CHANNEL`] for the live fan-out of every replica.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -25,6 +25,36 @@ const NOTIFY_INLINE_BYTES: usize = 7000;
 pub const MAX_SCAN_CHUNKS: i64 = 400;
 /// Decoded bytes a read or search handles per request, at most.
 pub const MAX_SCAN_BYTES: usize = 64 * 1024 * 1024;
+
+/// How stored log chunks are announced in the outbox (`FASTPROOF_OUTBOX_LOG_EVENTS`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LogChunkEvents {
+    /// One `log.chunk` event per chunk (event format 1, read by every FastProof version).
+    #[default]
+    PerChunk,
+    /// One `log.chunks` event per launch and transaction listing its chunks (format 2, read
+    /// by sinks of this version on): far fewer outbox rows for the same lines.
+    PerBatch,
+}
+
+impl LogChunkEvents {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim() {
+            "chunk" => Some(Self::PerChunk),
+            "batch" => Some(Self::PerBatch),
+            _ => None,
+        }
+    }
+}
+
+/// Type of a format 1 log event (one chunk; payload `id`, `launchId`, `resultId`, `attempt`,
+/// `firstSeq`, `lastSeq`, `lines`).
+pub const LOG_CHUNK_EVENT: &str = "log.chunk";
+/// Type of a format 2 log event (payload `v` 2, `launchId`, `lines` and `chunks`: the format
+/// 1 payloads of its chunks without `launchId`).
+pub const LOG_CHUNKS_EVENT: &str = "log.chunks";
+/// Chunks listed in one format 2 event, at most.
+pub const CHUNKS_PER_EVENT: usize = 200;
 
 /// Severity of a log line.
 #[derive(
@@ -241,7 +271,7 @@ fn decode_lines(result_id: &str, attempt: i32, z: &[u8]) -> anyhow::Result<Vec<L
 }
 
 /// Writes lines of one launch as chunks, skipping `(resultId, attempt, seq)` already stored,
-/// and records a `log.chunk` outbox event per chunk. Call inside a transaction; notify with
+/// and records their outbox events as `events` says. Call inside a transaction; notify with
 /// [`notify_log_chunks`] in the same transaction. Three statements whatever the number of
 /// results: the stored chunks that overlap, the new chunks and their events.
 pub async fn insert_log_lines(
@@ -250,6 +280,7 @@ pub async fn insert_log_lines(
     project_key: &str,
     launch_id: Uuid,
     lines: Vec<LogLine>,
+    events: LogChunkEvents,
 ) -> anyhow::Result<Vec<WrittenChunk>> {
     let mut groups: BTreeMap<(String, u32), BTreeMap<u64, LogLine>> = BTreeMap::new();
     for mut l in lines {
@@ -388,15 +419,35 @@ pub async fn insert_log_lines(
         .into_iter()
         .map(|(id, r, a, f)| ((r, a, f), id))
         .collect();
-    let mut events = Vec::with_capacity(out.len());
+    let mut payloads = Vec::with_capacity(out.len());
     for (i, c) in out.iter_mut().enumerate() {
         c.id = *by_key
             .get(&(c.result_id.clone(), c_attempt[i], c_first[i]))
             .ok_or_else(|| anyhow::anyhow!("log chunk row missing"))?;
-        events.push(serde_json::json!({"id": c.id, "launchId": launch_id, "resultId": c.result_id,
-            "attempt": c.attempt, "firstSeq": c_first[i], "lastSeq": c_last[i], "lines": c.lines.len()}));
+        let mut p = serde_json::json!({"id": c.id, "resultId": c.result_id, "attempt": c.attempt,
+            "firstSeq": c_first[i], "lastSeq": c_last[i], "lines": c.lines.len()});
+        if events == LogChunkEvents::PerChunk {
+            p["launchId"] = serde_json::json!(launch_id);
+        }
+        payloads.push(p);
     }
-    crate::events::emit_many(&mut *conn, "log.chunk", Some(project_key), events).await?;
+    match events {
+        LogChunkEvents::PerChunk => {
+            crate::events::emit_many(&mut *conn, LOG_CHUNK_EVENT, Some(project_key), payloads)
+                .await?
+        }
+        LogChunkEvents::PerBatch => {
+            let batched: Vec<serde_json::Value> = payloads
+                .chunks(CHUNKS_PER_EVENT)
+                .map(|part| {
+                    let lines: u64 = part.iter().filter_map(|p| p["lines"].as_u64()).sum();
+                    serde_json::json!({"v": 2, "launchId": launch_id, "lines": lines, "chunks": part})
+                })
+                .collect();
+            crate::events::emit_many(&mut *conn, LOG_CHUNKS_EVENT, Some(project_key), batched)
+                .await?
+        }
+    }
     Ok(out)
 }
 
@@ -564,7 +615,15 @@ impl Store {
         lines: Vec<LogLine>,
     ) -> anyhow::Result<Vec<WrittenChunk>> {
         let mut tx = self.pool.begin().await?;
-        let chunks = insert_log_lines(&mut tx, project_id, project_key, launch_id, lines).await?;
+        let chunks = insert_log_lines(
+            &mut tx,
+            project_id,
+            project_key,
+            launch_id,
+            lines,
+            self.log_chunk_events(),
+        )
+        .await?;
         notify_log_chunks(&mut tx, project_key, launch_id, &chunks).await?;
         tx.commit().await?;
         Ok(chunks)

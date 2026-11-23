@@ -180,6 +180,9 @@ pub struct Config {
     pub opensearch: Option<fastproof_stream::OpenSearchConfig>,
     pub sink_tuning: fastproof_stream::SinkTuning,
     pub log_limits: LogLimits,
+    /// How stored log chunks are announced in the outbox (`FASTPROOF_OUTBOX_LOG_EVENTS`:
+    /// `chunk`, the default, or `batch`).
+    pub log_chunk_events: fastproof_store::logs::LogChunkEvents,
     /// Per-caller and per-replica guards (`crate::limits::GuardSettings`).
     pub guards: crate::limits::GuardSettings,
     /// Limits of test management (`FASTPROOF_TM_*`).
@@ -346,6 +349,7 @@ impl fmt::Debug for Config {
             .field("clickhouse", &self.clickhouse)
             .field("opensearch", &self.opensearch)
             .field("log_limits", &self.log_limits)
+            .field("log_chunk_events", &self.log_chunk_events)
             .field("guards", &self.guards)
             .field("tm", &self.tm)
             .field("tm_backfill_delay", &self.tm_backfill_delay)
@@ -672,6 +676,11 @@ impl Config {
         if log_limits.max_bytes_per_launch < 1024 {
             bail!("FASTPROOF_LOG_MAX_BYTES_PER_LAUNCH: at least 1024");
         }
+        let log_chunk_events = match env.var("FASTPROOF_OUTBOX_LOG_EVENTS") {
+            None => fastproof_store::logs::LogChunkEvents::default(),
+            Some(v) => fastproof_store::logs::LogChunkEvents::parse(&v)
+                .ok_or_else(|| anyhow::anyhow!("FASTPROOF_OUTBOX_LOG_EVENTS: chunk or batch"))?,
+        };
         let shutdown_timeout = match env.var("FASTPROOF_SHUTDOWN_TIMEOUT_SECONDS") {
             None => DEFAULT_SHUTDOWN_TIMEOUT,
             Some(v) => match v.trim().parse::<u64>() {
@@ -717,6 +726,7 @@ impl Config {
             opensearch,
             sink_tuning: fastproof_stream::SinkTuning::from_vars(&vars)?,
             log_limits,
+            log_chunk_events,
             guards: crate::limits::GuardSettings::from_env(&env)?,
             tm: tm_limits(&env)?,
             testops_allow_http: env.bool("FASTPROOF_TESTOPS_ALLOW_HTTP", false)?,

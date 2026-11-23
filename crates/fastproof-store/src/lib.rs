@@ -157,6 +157,7 @@ pub async fn check_schema(pool: &PgPool) -> anyhow::Result<()> {
 pub struct Store {
     pool: PgPool,
     purge_batch: i64,
+    log_chunk_events: logs::LogChunkEvents,
 }
 
 impl Store {
@@ -164,7 +165,19 @@ impl Store {
         Self {
             pool,
             purge_batch: purge::PURGE_BATCH,
+            log_chunk_events: logs::LogChunkEvents::default(),
         }
+    }
+
+    /// Sets how stored log chunks are announced in the outbox (default one event per chunk).
+    pub fn with_log_chunk_events(mut self, e: logs::LogChunkEvents) -> Self {
+        self.log_chunk_events = e;
+        self
+    }
+
+    /// How stored log chunks are announced in the outbox.
+    pub fn log_chunk_events(&self) -> logs::LogChunkEvents {
+        self.log_chunk_events
     }
 
     /// Sets how many rows one statement of a large delete may touch (default

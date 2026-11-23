@@ -899,6 +899,11 @@ fn sink_vars(ch_db: &str, os_prefix: &str) -> Option<Vec<(String, String)>> {
 }
 
 async fn sinks_fill_and_search(kafka: bool) {
+    sinks_fill_and_search_with(kafka, false).await;
+}
+
+/// `batched`: log lines announced with format 2 events (`log.chunks`).
+async fn sinks_fill_and_search_with(kafka: bool, batched: bool) {
     let Some(db) = TestDb::new().await else {
         return;
     };
@@ -917,6 +922,9 @@ async fn sinks_fill_and_search(kafka: bool) {
             return;
         };
         vars.extend(k);
+    }
+    if batched {
+        vars.push(("FASTPROOF_OUTBOX_LOG_EVENTS".into(), "batch".into()));
     }
     let s = start(&db, &vars, &[("FASTPROOF_SEARCH_BACKEND", "clickhouse")]).await;
     s.project("sk").await;
@@ -985,6 +993,22 @@ async fn sinks_fill_and_search(kafka: bool) {
             && ch_count("steps").await == 60
     })
     .await;
+    let events = |kind: &'static str| {
+        let pool = db.pool.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>("select count(*) from events where type = $1")
+                .bind(kind)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+        }
+    };
+    if batched {
+        assert_eq!(events("log.chunk").await, 0);
+        assert!(events("log.chunks").await > 0);
+    } else {
+        assert_eq!(events("log.chunks").await, 0);
+    }
     let rollup = ch
         .exec(
             &format!("SELECT uniqMerge(runs), uniqIfMerge(failed) FROM {ch_db}.series_daily"),
@@ -1093,6 +1117,16 @@ async fn sinks_fill_clickhouse_and_opensearch_in_direct_mode() {
 #[tokio::test]
 async fn sinks_fill_clickhouse_and_opensearch_in_kafka_mode() {
     sinks_fill_and_search(true).await;
+}
+
+#[tokio::test]
+async fn sinks_take_batched_log_events_in_direct_mode() {
+    sinks_fill_and_search_with(false, true).await;
+}
+
+#[tokio::test]
+async fn sinks_take_batched_log_events_in_kafka_mode() {
+    sinks_fill_and_search_with(true, true).await;
 }
 
 async fn bench(

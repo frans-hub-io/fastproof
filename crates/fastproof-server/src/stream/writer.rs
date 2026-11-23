@@ -9,7 +9,10 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use fastproof_store::ingest::{NewAttempt, TX_ATTEMPTS, launch_maybe_gone, retry_pause, retryable};
+use fastproof_store::ingest::{
+    NewAttempt, TX_ATTEMPTS, ensure_launch_partition, launch_maybe_gone, reserve_attempt_seq,
+    retry_pause, retryable,
+};
 use fastproof_store::logs::LogLine;
 use fastproof_store::stream::WriterLaunch;
 use fastproof_stream::Kafka;
@@ -214,16 +217,20 @@ impl Writer {
         attempts: Vec<NewAttempt>,
         offset: Option<(i64, i64)>,
     ) -> anyhow::Result<u64> {
+        let mut conn = self.s.store.pool().acquire().await?;
+        ensure_launch_partition(&mut conn, wl.launch.created_at).await?;
+        let seq0 = reserve_attempt_seq(&mut conn, wl.launch.id, attempts.len()).await?;
         let mut n = 0;
         loop {
             n += 1;
             let r = async {
-                let mut tx = self.s.store.pool().begin().await?;
+                let mut tx = sqlx::Connection::begin(&mut *conn).await?;
                 let out = fastproof_store::ingest::persist_attempts_in(
                     &mut tx,
                     &wl.launch,
                     upload,
                     attempts.clone(),
+                    seq0,
                 )
                 .await?;
                 if let Some((next, hwm)) = offset {
@@ -233,6 +240,20 @@ impl Writer {
                 Ok::<_, anyhow::Error>(out.accepted)
             }
             .await;
+            if let Ok(n) = &r
+                && *n > 0
+            {
+                // After the commit, outside the transaction: see `persist_attempts_in`.
+                if let Err(e) = fastproof_store::events::notify_launch(
+                    &mut conn,
+                    &wl.launch.project_key,
+                    wl.launch.id,
+                )
+                .await
+                {
+                    tracing::debug!(error = %format!("{e:#}"), "live notification failed");
+                }
+            }
             match r {
                 Err(e) if n < TX_ATTEMPTS && retryable(&e).is_some() => {
                     retry_pause("writer", &e, n).await
@@ -320,6 +341,7 @@ impl Writer {
                         &wl.launch.project_key,
                         wl.launch.id,
                         lines.clone(),
+                        self.s.store.log_chunk_events(),
                     )
                     .await?;
                     n += chunks.iter().map(|c| c.lines.len() as u64).sum::<u64>();

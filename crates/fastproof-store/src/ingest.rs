@@ -53,18 +53,80 @@ pub struct PersistOutcome {
 /// Attempts of a transaction that hit a deadlock or a serialization failure, at most.
 pub const TX_ATTEMPTS: u32 = 5;
 
-/// `Some("deadlock")` or `Some("serialization")` when `e` is a PostgreSQL error after which
-/// the whole transaction can simply run again (SQLSTATE 40P01 or 40001).
+/// Another transaction wrote the same result of a launch (or completed the same running
+/// attempt) after this one looked: the transaction runs again and then sees that write.
+#[derive(Debug)]
+pub struct Contended;
+
+impl std::fmt::Display for Contended {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("another writer stored the same result meanwhile")
+    }
+}
+
+impl std::error::Error for Contended {}
+
+/// `Some("deadlock")`, `Some("serialization")` or `Some("contended")` when `e` is an error after
+/// which the whole transaction can simply run again (SQLSTATE 40P01 or 40001, or [`Contended`]).
 pub fn retryable(e: &anyhow::Error) -> Option<&'static str> {
-    e.chain()
-        .find_map(|c| match c.downcast_ref::<sqlx::Error>() {
+    e.chain().find_map(|c| {
+        if c.is::<Contended>() {
+            return Some("contended");
+        }
+        match c.downcast_ref::<sqlx::Error>() {
             Some(sqlx::Error::Database(d)) => match d.code().as_deref() {
                 Some("40P01") => Some("deadlock"),
                 Some("40001") => Some("serialization"),
                 _ => None,
             },
             _ => None,
-        })
+        }
+    })
+}
+
+/// Creates the monthly partition of results and attempts that holds a launch when the launch
+/// is older than the partitions kept around now (`fastproof_ensure_partitions` keeps the last
+/// month and the next ones): its partition may have been dropped by retention while the launch
+/// stayed (a closed manual run that is reopened, results arriving long after their launch).
+/// Without it the rows would land in the default partitions, which retention never drops.
+/// Recent launches cost nothing here.
+pub async fn ensure_launch_partition(
+    conn: &mut sqlx::PgConnection,
+    created_at: DateTime<Utc>,
+) -> anyhow::Result<()> {
+    let now = Utc::now();
+    let months = (chrono::Datelike::year(&now) - chrono::Datelike::year(&created_at)) * 12
+        + chrono::Datelike::month(&now) as i32
+        - chrono::Datelike::month(&created_at) as i32;
+    if months <= 1 {
+        return Ok(());
+    }
+    sqlx::query("select fastproof_ensure_partitions($1, -$1)")
+        .bind(months)
+        .execute(&mut *conn)
+        .await?;
+    Ok(())
+}
+
+/// Reserves `n` attempt sequence numbers of a launch and returns the number before the first.
+/// Run it on a connection outside a transaction (its own short commit), before the
+/// transaction that writes the attempts: writers of one launch then hold the launch row only
+/// for their final counter update, so they run side by side. Numbers of a transaction that
+/// rolls back are skipped; `seq` stays unique and orders the attempts of each result.
+pub async fn reserve_attempt_seq(
+    conn: &mut sqlx::PgConnection,
+    launch_id: Uuid,
+    n: usize,
+) -> anyhow::Result<i64> {
+    let n = n as i64;
+    let end: i64 = sqlx::query_scalar(
+        "update launches set attempt_seq = attempt_seq + $2 where id = $1 returning attempt_seq",
+    )
+    .bind(launch_id)
+    .bind(n)
+    .fetch_one(&mut *conn)
+    .await?;
+    Ok(end - n)
 }
 
 /// True when `e` may mean that a launch row is gone: a foreign key violation (SQLSTATE 23503)
@@ -211,16 +273,21 @@ impl Store {
         if attempts.is_empty() {
             return Ok(PersistOutcome::default());
         }
+        let mut conn = self.pool.acquire().await?;
+        ensure_launch_partition(&mut conn, launch.created_at).await?;
+        let seq0 = reserve_attempt_seq(&mut conn, launch.id, attempts.len()).await?;
         let mut attempt = 0;
         loop {
             attempt += 1;
             let r = async {
-                let mut tx = self.pool.begin().await?;
-                let out = persist_attempts_in(&mut tx, launch, upload_id, attempts.clone()).await?;
+                let mut tx = sqlx::Acquire::begin(&mut *conn).await?;
+                let out =
+                    persist_attempts_in(&mut tx, launch, upload_id, attempts.clone(), seq0).await?;
                 if out.accepted == 0 {
                     tx.rollback().await?;
                 } else {
                     tx.commit().await?;
+                    crate::events::notify_launch(&mut conn, &launch.project_key, launch.id).await?;
                 }
                 Ok::<_, anyhow::Error>(out)
             }
@@ -376,9 +443,16 @@ async fn refresh_vacated(
     conn: &mut sqlx::PgConnection,
     launch: &LaunchRef,
     vacated: &HashMap<Uuid, Uuid>,
+    before: &mut HashMap<Uuid, Counted>,
 ) -> anyhow::Result<Vec<(Uuid, Uuid, bool)>> {
     if vacated.is_empty() {
         return Ok(Vec::new());
+    }
+    // Locked before their attempts are counted, so a writer adding to them waits for this one.
+    let mut ids: Vec<Uuid> = vacated.values().copied().collect();
+    ids.sort();
+    for (id, c) in counted(&mut *conn, launch, &ids, true).await? {
+        before.entry(id).or_insert(c);
     }
     let mut series: Vec<Uuid> = vacated.keys().copied().collect();
     series.sort();
@@ -484,9 +558,6 @@ async fn refresh_vacated(
     Ok(out)
 }
 
-/// As [`Store::persist_attempts`], inside the caller's transaction (the Kafka writer commits its
-/// consumer offset in the same transaction). Nothing is written when no attempt is new; the
-/// caller decides whether to commit.
 /// Recomputes the counters of a launch: the automated ones from its results (the first and
 /// last result times from automated results only, so manual work does not stretch the launch
 /// duration), the manual ones from its run items; sets `attempt_seq` when given. The caller
@@ -562,23 +633,191 @@ fn pick<T: Clone>(v: &[T], at: &[usize]) -> Vec<T> {
     at.iter().map(|&i| v[i].clone()).collect()
 }
 
+/// The columns of a result row that the launch counters and result times are made of.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Counted {
+    pub counted: crate::tm::projection::CountedResult,
+    /// `started_at`, and `stopped_at` else `started_at`, of an automated result.
+    pub first: Option<DateTime<Utc>>,
+    pub last: Option<DateTime<Utc>>,
+}
+
+type OptTime = Option<DateTime<Utc>>;
+
+type CountedRow = (Uuid, String, bool, bool, OptTime, OptTime);
+
+const COUNTED_COLUMNS: &str = "id, status, flaky_in_run, muted, \
+    case when run_item_id is null then started_at end, \
+    case when run_item_id is null then coalesce(stopped_at, started_at) end";
+
+fn counted_row(r: CountedRow) -> (Uuid, Counted) {
+    (
+        r.0,
+        Counted {
+            counted: crate::tm::projection::CountedResult {
+                status: r.1,
+                flaky_in_run: r.2,
+                muted: r.3,
+            },
+            first: r.4,
+            last: r.5,
+        },
+    )
+}
+
+/// The counted columns of result rows of a launch, locked (`for no key update`, id order)
+/// when `lock`.
+async fn counted(
+    conn: &mut sqlx::PgConnection,
+    launch: &LaunchRef,
+    ids: &[Uuid],
+    lock: bool,
+) -> anyhow::Result<Vec<(Uuid, Counted)>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let sql = format!(
+        "select {COUNTED_COLUMNS} from results where id = any($1) and launch_created_at = $2{}",
+        if lock {
+            " order by id for no key update"
+        } else {
+            ""
+        }
+    );
+    let rows: Vec<CountedRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
+        .bind(ids)
+        .bind(launch.created_at)
+        .fetch_all(&mut *conn)
+        .await?;
+    Ok(rows.into_iter().map(counted_row).collect())
+}
+
+/// Applies the change of result rows (`before` -> `after`, `None` = no row) to the counters
+/// and result times of the launch with one update of its row. Run it last before the commit:
+/// the launch row stays locked until then, and nothing in the transaction waits for another
+/// lock after it but the rule rows (ingest and manual runs take those last too). The result
+/// times are recomputed from all results only when a result that may have held the earliest
+/// or latest time moved or went away.
+async fn apply_result_changes(
+    conn: &mut sqlx::PgConnection,
+    launch: &LaunchRef,
+    before: &HashMap<Uuid, Counted>,
+    after: &HashMap<Uuid, Counted>,
+) -> anyhow::Result<()> {
+    use crate::tm::projection::CountDelta;
+    let mut delta = CountDelta::default();
+    let mut first: Option<DateTime<Utc>> = None;
+    let mut last: Option<DateTime<Utc>> = None;
+    for (id, a) in after {
+        delta.add(&CountDelta::result_change(
+            before.get(id).map(|b| &b.counted),
+            Some(&a.counted),
+        ));
+        if let Some(t) = a.first {
+            first = Some(first.map_or(t, |f| f.min(t)));
+        }
+        last = last.max(a.last);
+    }
+    let mut moved_first = Vec::new();
+    let mut moved_last = Vec::new();
+    for (id, b) in before {
+        let a = after.get(id);
+        if a.is_none() {
+            delta.add(&CountDelta::result_change(Some(&b.counted), None));
+        }
+        if b.first.is_some() && a.and_then(|a| a.first) != b.first {
+            moved_first.extend(b.first);
+        }
+        if b.last.is_some() && a.and_then(|a| a.last) != b.last {
+            moved_last.extend(b.last);
+        }
+    }
+    let (old_first, old_last, status): (OptTime, OptTime, String) = sqlx::query_as(
+        "with old as (select first_result_at, last_result_at from launches where id = $1 for no key update) \
+         update launches l set count_total = count_total + $2, count_passed = count_passed + $3, \
+           count_failed = count_failed + $4, count_broken = count_broken + $5, \
+           count_skipped = count_skipped + $6, count_unknown = count_unknown + $7, \
+           count_flaky = count_flaky + $8, count_muted = count_muted + $9, \
+           first_result_at = least(l.first_result_at, $10), last_result_at = greatest(l.last_result_at, $11), \
+           updated_at = now() \
+         from old where l.id = $1 returning old.first_result_at, old.last_result_at, l.status",
+    )
+    .bind(launch.id)
+    .bind(delta.total)
+    .bind(delta.passed)
+    .bind(delta.failed)
+    .bind(delta.broken)
+    .bind(delta.skipped)
+    .bind(delta.unknown)
+    .bind(delta.flaky)
+    .bind(delta.muted)
+    .bind(first)
+    .bind(last)
+    .fetch_one(&mut *conn)
+    .await?;
+    let shrinks = moved_first
+        .iter()
+        .any(|t| old_first.is_some_and(|o| *t <= o))
+        || moved_last.iter().any(|t| old_last.is_some_and(|o| *t >= o));
+    if shrinks {
+        sqlx::query(
+            "update launches l set first_result_at = t.mn, last_result_at = t.mx \
+             from (select min(started_at) filter (where run_item_id is null) as mn, \
+               max(coalesce(stopped_at, started_at)) filter (where run_item_id is null) as mx \
+               from results where launch_id = $1 and launch_created_at = $2) t where l.id = $1",
+        )
+        .bind(launch.id)
+        .bind(launch.created_at)
+        .execute(&mut *conn)
+        .await?;
+    }
+    if status != "running" {
+        // Results that arrive after the launch finished (Kafka writers catching up, late
+        // reporters): code sync runs again for the launch. A sync in progress keeps its
+        // lease; the launch is taken again once it ends.
+        sqlx::query(
+            "insert into case_sync_queue (launch_id) select $2 \
+             where (select settings -> 'caseSync' -> 'enabled' from projects where id = $1) is distinct from 'false'::jsonb \
+             on conflict (launch_id) do update set queued_at = now(), lease_owner = null, attempts = 0",
+        )
+        .bind(launch.project_id)
+        .bind(launch.id)
+        .execute(&mut *conn)
+        .await?;
+    }
+    Ok(())
+}
+
+/// As [`Store::persist_attempts`], inside the caller's transaction (the Kafka writer commits its
+/// consumer offset in the same transaction), with attempt sequence numbers after `seq0`
+/// reserved by [`reserve_attempt_seq`] (at least as many as `attempts`). Nothing is written
+/// when no attempt is new; the caller decides whether to commit.
+///
+/// It sends no live notification: the caller notifies after the commit
+/// ([`crate::events::notify_launch`] on its connection, outside the transaction), so the
+/// transaction does not take PostgreSQL's notification lock, which serializes the commits of
+/// all notifying transactions including their WAL flush.
+///
+/// Writers of one launch run side by side: the launch row is only share-locked (so the launch
+/// is not deleted meanwhile) until the counters are updated by their change at the very end.
+/// Results of the launch that exist are locked first (id order), so two writers of the
+/// same test take turns; a writer that finds a result or a running attempt another writer
+/// created after it looked fails with [`Contended`] and runs again.
 pub async fn persist_attempts_in(
     conn: &mut sqlx::PgConnection,
     launch: &LaunchRef,
     upload_id: Option<Uuid>,
     attempts: Vec<NewAttempt>,
+    seq0: i64,
 ) -> anyhow::Result<PersistOutcome> {
     let mut out = PersistOutcome::default();
     if attempts.is_empty() {
         return Ok(out);
     }
-    // `no key update` serializes the writers of this launch without blocking the foreign key
-    // checks of rows that reference it (log chunks of the launch written meanwhile).
-    let seq0: i64 =
-        sqlx::query_scalar("select attempt_seq from launches where id = $1 for no key update")
-            .bind(launch.id)
-            .fetch_one(&mut *conn)
-            .await?;
+    let _: i32 = sqlx::query_scalar("select 1 from launches where id = $1 for key share")
+        .bind(launch.id)
+        .fetch_one(&mut *conn)
+        .await?;
 
     let mut seen: HashMap<String, usize> = HashMap::new();
     let mut prepared: Vec<Prepared> = Vec::with_capacity(attempts.len());
@@ -813,18 +1052,34 @@ pub async fn persist_attempts_in(
     let series_ids: Vec<Uuid> = series_by_key.values().map(|v| v.0).collect();
     let mut tc_of_series: HashMap<Uuid, Uuid> = series_by_key.values().copied().collect();
 
-    // Results that exist for these series.
-    let existing: Vec<(Uuid, Uuid)> = sqlx::query_as(
-            "select id, series_id from results where launch_id = $1 and launch_created_at = $2 and series_id = any($3)",
-        )
+    // Results that exist for these series, locked in id order (as triage and rule tasks lock
+    // them): another writer of the launch storing the same test waits here until this one
+    // commits.
+    let existing: Vec<(Uuid, Uuid, String, bool, bool, OptTime, OptTime)> =
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select series_id, {COUNTED_COLUMNS} from results \
+             where launch_id = $1 and launch_created_at = $2 and series_id = any($3) \
+             order by id for no key update"
+        )))
         .bind(launch.id)
         .bind(launch.created_at)
         .bind(&series_ids)
         .fetch_all(&mut *conn)
         .await?;
-    let mut result_of: HashMap<Uuid, Uuid> = existing.into_iter().map(|(r, s)| (s, r)).collect();
-    for s in &series_ids {
-        result_of.entry(*s).or_insert_with(Uuid::now_v7);
+    let mut before: HashMap<Uuid, Counted> = HashMap::with_capacity(existing.len());
+    let mut result_of: HashMap<Uuid, Uuid> = HashMap::with_capacity(series_ids.len());
+    for (s, id, st, fl, mu, first, last) in existing {
+        result_of.insert(s, id);
+        let (id, c) = counted_row((id, st, fl, mu, first, last));
+        before.insert(id, c);
+    }
+    let created: HashSet<Uuid> = series_ids
+        .iter()
+        .filter(|s| !result_of.contains_key(*s))
+        .copied()
+        .collect();
+    for s in &created {
+        result_of.insert(*s, Uuid::now_v7());
     }
 
     // Attempts stored as `running` under another identity: the client id wins, so they move to
@@ -951,10 +1206,15 @@ pub async fn persist_attempts_in(
         .bind(&a_logs)
         .fetch_all(&mut *conn)
         .await?;
-    // A result reported as running and sent again keeps its attempt row (id and order).
+    // A result reported as running and sent again keeps its attempt row (id and order). A
+    // running attempt that was not there when this transaction looked was stored by another
+    // writer meanwhile: its old result is not known here, so the transaction runs again.
     let stored_id: HashMap<String, Uuid> = inserted.into_iter().map(|(i, k)| (k, i)).collect();
     for p in prepared.iter_mut() {
         if let Some(id) = stored_id.get(&p.client_key) {
+            if *id != p.id && !open_before.contains_key(&p.client_key) {
+                return Err(Contended.into());
+            }
             p.id = *id;
         }
     }
@@ -982,7 +1242,7 @@ pub async fn persist_attempts_in(
             vacated.insert(*old_series, *old_result);
         }
     }
-    let vacated_rows = refresh_vacated(&mut *conn, launch, &vacated).await?;
+    let vacated_rows = refresh_vacated(&mut *conn, launch, &vacated, &mut before).await?;
     let mut removed_events = Vec::new();
     for (series_id, result_id, remains) in &vacated_rows {
         if *remains {
@@ -1110,6 +1370,11 @@ pub async fn persist_attempts_in(
                     "attemptCount": count, "startedAt": ts_ms(r.start), "durationMs": duration(r),
                     "uploadId": upload_id, "attempts": new_attempts}));
         } else {
+            if created.contains(&series_id) {
+                // The latest attempt of a result this transaction creates is another
+                // writer's: that writer created the result meanwhile.
+                return Err(Contended.into());
+            }
             partial.0.push(result_id);
             partial_kinds.push(kinds);
             partial.1.push(count);
@@ -1122,7 +1387,7 @@ pub async fn persist_attempts_in(
         }
     }
     if !full.0.is_empty() {
-        sqlx::query(
+        let stored: Vec<(Uuid, Uuid)> = sqlx::query_as(
                 "insert into results (id, launch_created_at, project_id, launch_id, test_case_id, series_id, name, \
                    full_name, suite_path, status, flaky_in_run, attempt_count, started_at, stopped_at, duration_ms, \
                    message, labels, attachment_kinds) \
@@ -1136,7 +1401,8 @@ pub async fn persist_attempts_in(
                    flaky_in_run = excluded.flaky_in_run, attempt_count = excluded.attempt_count, \
                    started_at = excluded.started_at, stopped_at = excluded.stopped_at, \
                    duration_ms = excluded.duration_ms, message = excluded.message, labels = excluded.labels, \
-                   attachment_kinds = results.attachment_kinds | excluded.attachment_kinds, updated_at = now()",
+                   attachment_kinds = results.attachment_kinds | excluded.attachment_kinds, updated_at = now() \
+                 returning id, series_id",
             )
             .bind(launch.created_at)
             .bind(launch.project_id)
@@ -1156,8 +1422,16 @@ pub async fn persist_attempts_in(
             .bind(&times.3)
             .bind(&times.4)
             .bind(&full_kinds)
-            .execute(&mut *conn)
+            .fetch_all(&mut *conn)
             .await?;
+        // A result this transaction meant to create that another writer created meanwhile:
+        // the attempts written here point at the wrong row, so run again.
+        if stored
+            .iter()
+            .any(|(id, s)| created.contains(s) && result_of.get(s) != Some(id))
+        {
+            return Err(Contended.into());
+        }
     }
     if !partial.0.is_empty() {
         sqlx::query(
@@ -1194,17 +1468,21 @@ pub async fn persist_attempts_in(
             trace: p.r.status_details.trace.as_deref(),
         })
         .collect();
-    crate::analysis::after_persist(&mut *conn, launch, &analyzed, &affected_v).await?;
+    let hits =
+        crate::analysis::after_persist_deferred(&mut *conn, launch, &analyzed, &affected_v).await?;
     drop(analyzed);
     out.accepted_keys = accepted;
 
-    recount(
-        &mut *conn,
-        launch.id,
-        launch.created_at,
-        Some(seq0 + prepared.len() as i64),
-    )
-    .await?;
+    let mut touched: Vec<Uuid> = groups.iter().map(|g| result_of[&all[g.latest].0]).collect();
+    touched.extend(before.keys().copied());
+    touched.sort();
+    touched.dedup();
+    let after: HashMap<Uuid, Counted> = counted(&mut *conn, launch, &touched, false)
+        .await?
+        .into_iter()
+        .collect();
+    apply_result_changes(&mut *conn, launch, &before, &after).await?;
+    crate::analysis::rules::add_hits(&mut *conn, &hits).await?;
     // The outbox rows last: their ids are taken at insert, and the outbox reader waits at the
     // first id whose transaction is still open, so they go in right before the commit.
     crate::events::emit_many(
@@ -1230,7 +1508,6 @@ pub async fn persist_attempts_in(
         stored,
     )
     .await?;
-    crate::events::notify_launch(&mut *conn, &launch.project_key, launch.id).await?;
     Ok(out)
 }
 

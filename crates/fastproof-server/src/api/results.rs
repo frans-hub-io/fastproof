@@ -115,7 +115,13 @@ impl ResultBatch<'_> {
                 &self.launch,
                 prep.accepted
                     .iter()
-                    .map(|(pos, index, _)| (*index, originals[*pos].clone()))
+                    .map(|(pos, index, a)| {
+                        (
+                            *index,
+                            originals[*pos].clone(),
+                            a.result.identity.series_key.clone(),
+                        )
+                    })
                     .collect(),
             )
             .await?;

@@ -12,7 +12,7 @@ use fastproof_blob::{BlobKey, HashingWriter};
 use fastproof_ingest::{AttachmentSink, IngestError, IngestOptions, ingest_path};
 use fastproof_model::{AttachmentId, SourceFormat};
 use fastproof_store::attachments::NewAttachment;
-use fastproof_store::ingest::{LaunchRef, NewAttempt};
+use fastproof_store::ingest::{LaunchRef, NewAttempt, launch_maybe_gone};
 use fastproof_store::uploads::{ClaimedJob, UploadDone};
 use fastproof_store::{UploadError, UploadItemCounts};
 use futures::StreamExt;
@@ -98,6 +98,9 @@ pub(crate) enum JobFailure {
     Retry(anyhow::Error),
     /// Another worker took the job over.
     LeaseLost,
+    /// The launch (and with it the upload) was deleted while the upload was processed: nothing
+    /// is left to record, the work stops without retries.
+    LaunchGone,
 }
 
 impl From<anyhow::Error> for JobFailure {
@@ -263,8 +266,12 @@ async fn process_impl(s: &AppState, worker_id: &str, job: ClaimedJob, stop: &Can
             tracing::warn!(upload = %job.upload_id, "ingest lease lost; another worker continues");
             "lost"
         }
+        Err(JobFailure::LaunchGone) => {
+            tracing::info!(upload = %job.upload_id, launch = %job.launch_id, "launch deleted while its upload was processed; stopped");
+            "launch_deleted"
+        }
     };
-    if matches!(outcome, "done" | "failed")
+    if matches!(outcome, "done" | "failed" | "launch_deleted")
         && let Some(p) = s
             .local_uploads
             .lock()
@@ -318,6 +325,25 @@ async fn raw_file(s: &AppState, job: &ClaimedJob, work: &Path) -> Result<PathBuf
     }
 }
 
+/// `r`, or [`JobFailure::LaunchGone`] when it failed because the launch of the upload was
+/// deleted meanwhile.
+async fn gone_on_error<T>(
+    s: &AppState,
+    job: &ClaimedJob,
+    r: anyhow::Result<T>,
+) -> Result<T, JobFailure> {
+    match r {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            if launch_maybe_gone(&e) && !s.store.upload_exists(job.upload_id).await? {
+                Err(JobFailure::LaunchGone)
+            } else {
+                Err(e.into())
+            }
+        }
+    }
+}
+
 /// Persists (direct mode) or produces to `ingest.results` (Kafka mode) one chunk of parsed
 /// results. A result too large for a Kafka record is persisted directly.
 async fn emit_chunk(
@@ -337,6 +363,7 @@ async fn emit_chunk(
     let mut records = Vec::with_capacity(attempts.len());
     let mut direct = Vec::new();
     for a in attempts {
+        let key = fastproof_stream::messages::result_key(launch.id, &a.result.identity.series_key);
         let rec = fastproof_stream::messages::ResultRecord {
             v: fastproof_stream::messages::VERSION,
             project: launch.project_key.clone(),
@@ -354,10 +381,7 @@ async fn emit_chunk(
             });
             continue;
         }
-        records.push(fastproof_stream::kafka::Outgoing {
-            key: launch.id.to_string().into_bytes(),
-            value,
-        });
+        records.push(fastproof_stream::kafka::Outgoing { key, value });
     }
     kafka
         .produce(
@@ -406,6 +430,9 @@ pub(crate) async fn process_inner(
     if lost.load(Ordering::SeqCst) || stop.is_cancelled() {
         return Err(JobFailure::LeaseLost);
     }
+    if !s.store.upload_exists(job.upload_id).await? {
+        return Err(JobFailure::LaunchGone);
+    }
 
     // Attachments: upload the bodies the project does not have yet, then record them.
     let shas: Vec<String> = sink.items.keys().cloned().collect();
@@ -451,11 +478,24 @@ pub(crate) async fn process_inner(
     }
     let mut ids: HashMap<String, uuid::Uuid> = HashMap::new();
     for chunk in rows.chunks(5000) {
-        ids.extend(
-            s.store
-                .insert_attachments(job.project_id, job.launch_id, chunk)
-                .await?,
-        );
+        match s
+            .store
+            .insert_attachments(job.project_id, job.launch_id, chunk)
+            .await
+        {
+            Ok(m) => ids.extend(m),
+            Err(e) => {
+                if launch_maybe_gone(&e) && !s.store.upload_exists(job.upload_id).await? {
+                    // The blobs stored above stay known to an attachment row, which is
+                    // collected like any unlinked attachment.
+                    s.store
+                        .keep_unlinked_attachments(job.project_id, &rows)
+                        .await?;
+                    return Err(JobFailure::LaunchGone);
+                }
+                return Err(e.into());
+            }
+        }
     }
     let mut rewrite = |a: &mut fastproof_model::AttachmentRef| {
         if let Some(id) = a.id.as_ref().and_then(|i| ids.get(&i.0)) {
@@ -482,9 +522,12 @@ pub(crate) async fn process_inner(
         project_key: job.project_key.clone(),
         created_at: job.launch_created_at,
     };
-    s.store
-        .upsert_containers(&launch, &batch.containers)
-        .await?;
+    gone_on_error(
+        s,
+        job,
+        s.store.upsert_containers(&launch, &batch.containers).await,
+    )
+    .await?;
 
     let format = batch.format;
     let total = batch.results.len();
@@ -503,18 +546,23 @@ pub(crate) async fn process_inner(
             if lost.load(Ordering::SeqCst) || stop.is_cancelled() {
                 return Err(JobFailure::LeaseLost);
             }
-            emit_chunk(
+            if !s.store.upload_exists(job.upload_id).await? {
+                return Err(JobFailure::LaunchGone);
+            }
+            let r = emit_chunk(
                 s,
                 kafka,
                 &launch,
                 job.upload_id,
                 std::mem::take(&mut attempts),
             )
-            .await?;
+            .await;
+            gone_on_error(s, job, r).await?;
         }
     }
     if !attempts.is_empty() {
-        emit_chunk(s, kafka, &launch, job.upload_id, attempts).await?;
+        let r = emit_chunk(s, kafka, &launch, job.upload_id, attempts).await;
+        gone_on_error(s, job, r).await?;
     }
 
     let mut warnings: Vec<String> = batch

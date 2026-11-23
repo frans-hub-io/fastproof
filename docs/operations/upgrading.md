@@ -7,6 +7,44 @@ version has migrated the schema.
 
 This page lists what needs attention per release.
 
+## Next release: big launches on every writer
+
+A launch with many results used to go through one Kafka partition and one writer, and every
+transaction storing results of a launch held the launch row to its end, so a single launch of 100,000
+results was stored one batch after another; see [Kafka writer](scaling.md#kafka-writer). What changes:
+
+- **Record keys.** The gateway and the upload workers key `ingest.results` records by launch and test
+  (`<launch id>/<series key>`) and `ingest.logs` records by launch and result id, so a launch spreads over
+  every partition. The attempts of one test, and the lines of one result, still share a partition and keep
+  their order; results of different tests of a launch may now be stored in another order than they were
+  sent. Records keyed by the launch id alone (previous versions, producers outside FastProof) are stored as
+  before.
+- **Launch counters by their change.** Storing results no longer recounts the whole launch each time: the
+  counters and result times change by what the transaction changed, and the launch row is taken only for
+  that last update. Writers lock result rows in id order before the launch row, the order triage, rule tasks
+  and mute expiry now take as well. During the rolling update, writers of the previous version (which take
+  the launch row first) and of this version may meet in a deadlock on the same launch; PostgreSQL breaks
+  it and the transaction runs again (`fastproof_db_tx_retries_total`).
+- **Live notifications** of stored results are sent right after the commit instead of inside the
+  transaction, so the commits of writers no longer queue behind PostgreSQL's notification lock.
+- **Late results.** Results stored after their launch finished queue the launch for code sync again.
+- **Old launches.** Results written into a launch whose monthly partition retention already dropped
+  (a reopened manual run) recreate that partition instead of landing in the default partition.
+- **Uploads of deleted launches.** An upload whose launch is deleted while it is processed stops at once
+  (metric `fastproof_ingest_jobs_total{outcome="launch_deleted"}`); attachment content it had stored is
+  collected like other unlinked attachments.
+- **Metrics.** `fastproof_analysis_rechecked_series_total` gains a `phase` label (`before_lock`, `locked`);
+  new histograms `fastproof_analysis_stats_lock_wait_seconds` and `fastproof_analysis_stats_locked_seconds`.
+
+### Log events in batches (optional)
+
+`FASTPROOF_OUTBOX_LOG_EVENTS=batch` makes the writers announce stored log lines with one `log.chunks`
+event per launch and write instead of one `log.chunk` event per chunk (format 2: `{"v": 2, "launchId",
+"lines", "chunks": [{"id", "resultId", "attempt", "firstSeq", "lastSeq", "lines"}]}`, at most 200 chunks
+per event). The sinks of this release read both. The default stays `chunk` for this release: sinks of
+earlier versions and consumers of the `events` topic outside FastProof skip events they do not know, so
+switch to `batch` only once every sink replica runs this release and outside consumers read `log.chunks`.
+
 ## Next release: video serving and S3 by default
 
 The content route of attachments now answers byte ranges and conditional requests, and `<video>` elements load
@@ -69,7 +107,7 @@ locks; see [Kafka writer](scaling.md#kafka-writer). Things to know before upgrad
 During the rolling update, replicas of the previous version keep charging `launches.log_bytes` while new
 ones charge `launch_log_bytes`, so a launch that receives logs from both may take up to twice its log budget
 until the old replicas are gone. Rolling back leaves the previous version counting from what it charged
-before the upgrade. `launches.log_bytes` is no longer written and will be dropped in a later release.
+before the upgrade. `launches.log_bytes` is no longer written; a later release drops it.
 
 ### Kafka compression
 

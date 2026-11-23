@@ -56,6 +56,42 @@ impl PartitionCtx {
         .await?)
     }
 
+    /// The stored next offset with the offset and timestamp (milliseconds) of the record before
+    /// it, when [`PartitionCtx::note_last_record`] recorded them for that offset.
+    pub async fn stored_position(&self) -> anyhow::Result<Option<(i64, Option<(i64, i64)>)>> {
+        let r: Option<(i64, Option<i64>, Option<i64>)> = sqlx::query_as(
+            "select next_offset, last_record_offset, last_record_ms from kafka_offsets \
+             where group_name = $1 and topic = $2 and partition = $3",
+        )
+        .bind(&self.group)
+        .bind(&self.topic)
+        .bind(self.partition)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(r.map(|(next, o, ms)| match (o, ms) {
+            (Some(o), Some(ms)) if o + 1 == next => (next, Some((o, ms))),
+            _ => (next, None),
+        }))
+    }
+
+    /// Remembers which record the committed offset follows (its offset and timestamp), when
+    /// the stored offset is right after it. A consumer that starts on this partition again
+    /// compares it with the record now at that offset ([`crate::Kafka::record_timestamp_at`]).
+    pub async fn note_last_record(&self, offset: i64, timestamp_ms: i64) -> anyhow::Result<()> {
+        sqlx::query(
+            "update kafka_offsets set last_record_offset = $4, last_record_ms = $5 \
+             where group_name = $1 and topic = $2 and partition = $3 and next_offset = $4 + 1",
+        )
+        .bind(&self.group)
+        .bind(&self.topic)
+        .bind(self.partition)
+        .bind(offset)
+        .bind(timestamp_ms)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     /// Commits `next_offset` inside the caller's transaction after checking (and renewing) the
     /// lease; fails with [`LeaseLost`] when another member owns the partition now.
     pub async fn commit_in(

@@ -634,10 +634,22 @@ async fn late_results_queue_code_sync_again() {
         .persist_attempts(&l, None, vec![attempt(2, "r:b", Status::Passed, BASE)])
         .await
         .unwrap();
-    assert_eq!(queued(db.pool.clone(), l.id).await, Some((None, false)));
-    // A sync in progress: it keeps its lease, the launch stays queued after it.
+    // Queued, but taken only a minute after the last late result (one sync per backlog).
+    assert_eq!(queued(db.pool.clone(), l.id).await, Some((None, true)));
+    let claimable: bool = sqlx::query_scalar(
+        "select lease_until between now() + interval '50 seconds' and now() + interval '70 seconds' \
+         from case_sync_queue where launch_id = $1",
+    )
+    .bind(l.id)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert!(claimable);
+    // A sync in progress: it keeps its lease, the launch stays queued after it; failed
+    // attempts keep counting.
     sqlx::query(
-        "update case_sync_queue set lease_owner = 'w1', lease_until = now() + interval '10 minutes' where launch_id = $1",
+        "update case_sync_queue set lease_owner = 'w1', lease_until = now() + interval '10 minutes', attempts = 3 \
+         where launch_id = $1",
     )
     .bind(l.id)
     .execute(&db.pool)
@@ -659,6 +671,13 @@ async fn late_results_queue_code_sync_again() {
         0,
         "the finished sync must not take the late results off the queue"
     );
+    let attempts: i32 =
+        sqlx::query_scalar("select attempts from case_sync_queue where launch_id = $1")
+            .bind(l.id)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(attempts, 3, "late results do not reset the failed attempts");
 }
 
 /// Results of a launch whose monthly partition is gone (retention dropped it while the launch
@@ -709,4 +728,298 @@ async fn results_of_an_old_launch_do_not_land_in_the_default_partition() {
         .await
         .unwrap();
     assert_eq!(n, 1);
+}
+
+/// An old launch whose month has rows in the default partition (written before partitions
+/// were added back): no partition is attempted (it could not be attached), the rows go to the
+/// default partition, and nothing waits on the parents.
+#[tokio::test]
+async fn an_old_month_with_rows_in_the_default_partition_is_left_alone() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let store = Store::new(db.pool.clone());
+    let p = project(&store).await;
+    let old = Utc::now() - chrono::Duration::days(1200);
+    let mut a = launch(&store, &p).await;
+    let mut b = launch(&store, &p).await;
+    for l in [&mut a, &mut b] {
+        sqlx::query("update launches set created_at = $2 where id = $1")
+            .bind(l.id)
+            .bind(old)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        l.created_at = old;
+    }
+    // A row of that month already in the default partition.
+    sqlx::query(
+        "insert into results (id, launch_created_at, project_id, launch_id, test_case_id, series_id, name, full_name, status) \
+         values ($1, $2, $3, $4, $5, $6, 'x', 'x', 'passed')",
+    )
+    .bind(Uuid::now_v7())
+    .bind(old)
+    .bind(p.id)
+    .bind(a.id)
+    .bind(Uuid::now_v7())
+    .bind(Uuid::now_v7())
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        store.persist_attempts(&b, None, vec![attempt(1, "r:a", Status::Passed, BASE)]),
+    )
+    .await
+    .expect("the writer waited")
+    .unwrap();
+    let part = format!("results_p{}", old.format("%Y%m"));
+    let exists: bool = sqlx::query_scalar("select to_regclass($1) is not null")
+        .bind(&part)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert!(
+        !exists,
+        "{part} must not be created over rows in the default partition"
+    );
+    let n: i64 = sqlx::query_scalar("select count(*) from results_default where launch_id = $1")
+        .bind(b.id)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 1);
+}
+
+/// A long reader of the default partition holds a lock the attach needs: the writer gives up
+/// adding the partition after a second, stores its rows in the default partition and other
+/// statements on the parents do not queue behind it.
+#[tokio::test]
+async fn adding_a_partition_does_not_wait_behind_a_long_reader() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let store = Store::new(db.pool.clone());
+    let p = project(&store).await;
+    let mut l = launch(&store, &p).await;
+    let old = Utc::now() - chrono::Duration::days(1500);
+    sqlx::query("update launches set created_at = $2 where id = $1")
+        .bind(l.id)
+        .bind(old)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    l.created_at = old;
+    let mut reader = db.pool.begin().await.unwrap();
+    let _: i64 = sqlx::query_scalar("select count(*) from results_default")
+        .fetch_one(&mut *reader)
+        .await
+        .unwrap();
+    let started = std::time::Instant::now();
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        store.persist_attempts(&l, None, vec![attempt(1, "r:a", Status::Passed, BASE)]),
+    )
+    .await
+    .expect("the writer waited for the reader")
+    .unwrap();
+    assert!(started.elapsed() < Duration::from_secs(5));
+    // Meanwhile a statement on the parent is not blocked by a queued lock.
+    let n: i64 = tokio::time::timeout(
+        Duration::from_secs(5),
+        sqlx::query_scalar::<_, i64>("select count(*) from results").fetch_one(&db.pool),
+    )
+    .await
+    .expect("reads of results waited")
+    .unwrap();
+    assert_eq!(n, 1);
+    reader.rollback().await.unwrap();
+}
+
+/// Mute expiry while a launch stores a result of the muted test: the launches whose rows
+/// expiry unmutes are recounted, whatever launch they belong to, so `count_muted` of every
+/// launch equals a recount (it used to recount the launches seen before the rows were locked).
+#[tokio::test]
+async fn mute_expiry_recounts_the_launches_it_unmutes() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let store = Store::new(db.pool.clone());
+    let p = project(&store).await;
+    let l1 = launch(&store, &p).await;
+    store
+        .persist_attempts(&l1, None, vec![attempt(1, "r:a", Status::Failed, BASE)])
+        .await
+        .unwrap();
+    let ids: Vec<Uuid> = sqlx::query_scalar("select id from results where launch_id = $1")
+        .bind(l1.id)
+        .fetch_all(&db.pool)
+        .await
+        .unwrap();
+    let req = TriageRequest {
+        result_ids: Some(ids),
+        mute: Some(MuteRequest {
+            until: Some(Utc::now() + chrono::Duration::seconds(2)),
+            reason: "ends soon".into(),
+        }),
+        ..Default::default()
+    };
+    store
+        .triage(p.id, &p.key, &req, "ann")
+        .await
+        .unwrap()
+        .unwrap();
+    // A launch row held: an expiry that waits on launch rows first sees only L1.
+    let mut hold = db.pool.begin().await.unwrap();
+    sqlx::query("select 1 from launches where id = $1 for update")
+        .bind(l1.id)
+        .execute(&mut *hold)
+        .await
+        .unwrap();
+    // L2 stores a muted result of the same test (the mute has not ended yet).
+    let l2 = launch(&store, &p).await;
+    let w = open_writer(
+        &db.pool,
+        &l2,
+        vec![attempt(1, "r:b", Status::Failed, BASE + 10)],
+    )
+    .await;
+    // The mute ends; expiry runs while L2 is not committed yet.
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    let expiry = tokio::spawn({
+        let store = store.clone();
+        async move { store.expire_mutes().await }
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    w.commit().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    hold.commit().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(10), expiry)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    for l in [l1.id, l2.id] {
+        assert_eq!(
+            counters(&db.pool, l).await,
+            recounted(&db.pool, l).await,
+            "launch {l}"
+        );
+    }
+}
+
+/// Eight writers keep storing results of one launch while it is deleted: the delete gets the
+/// launch within seconds (writers queue behind it), instead of waiting until no writer holds
+/// the launch row any more; the writers then drop the launch's records.
+#[tokio::test]
+async fn a_launch_is_deleted_while_writers_store_it() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let store = Store::new(db.pool.clone());
+    let p = project(&store).await;
+    let l = launch(&store, &p).await;
+    let stop = Arc::new(AtomicBool::new(false));
+    let mut writers = Vec::new();
+    for w in 0..WRITERS {
+        let store = store.clone();
+        let l = l.clone();
+        let stop = stop.clone();
+        writers.push(tokio::spawn(async move {
+            let mut n = 0usize;
+            while !stop.load(Ordering::SeqCst) {
+                let batch: Vec<NewAttempt> = (0..200)
+                    .map(|i| {
+                        let t = w * 1_000_000 + n * 200 + i;
+                        attempt(t, &format!("r:{t}"), Status::Passed, BASE)
+                    })
+                    .collect();
+                n += 1;
+                if store.persist_attempts(&l, None, batch).await.is_err() {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            }
+        }));
+    }
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let started = std::time::Instant::now();
+    let deleted = tokio::time::timeout(
+        Duration::from_secs(30),
+        store.delete_launch(p.id, &p.key, l.id),
+    )
+    .await
+    .expect("the delete waited more than 30 s")
+    .unwrap();
+    let took = started.elapsed();
+    stop.store(true, Ordering::SeqCst);
+    for w in writers {
+        tokio::time::timeout(Duration::from_secs(30), w)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+    assert!(deleted);
+    assert!(took < Duration::from_secs(5), "the delete took {took:?}");
+    let left: i64 = sqlx::query_scalar("select count(*) from results where launch_id = $1")
+        .bind(l.id)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(left, 0);
+}
+
+/// A running attempt moved to another test by one writer while another writer completes it
+/// under a third identity: the second waits for the first (the running attempts it reads are
+/// locked), so it vacates the result the attempt really left and no result keeps an attempt
+/// it no longer has.
+#[tokio::test]
+async fn a_running_attempt_moved_twice_leaves_no_phantom_result() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let store = Store::new(db.pool.clone());
+    let p = project(&store).await;
+    let l = launch(&store, &p).await;
+    store
+        .persist_attempts(&l, None, vec![running(1, "r:k", BASE)])
+        .await
+        .unwrap();
+    // The second writer reserved its numbers before the first one started (so it does not
+    // wait at the reservation) and reads the running attempts while the first is still open.
+    let mut c = db.pool.acquire().await.unwrap();
+    let seq0 = reserve_attempt_seq(&mut c, l.id, 1).await.unwrap();
+    drop(c);
+    let w3 = open_writer(&db.pool, &l, vec![running(3, "r:k", BASE)]).await;
+    let task = tokio::spawn({
+        let pool = db.pool.clone();
+        let l = l.clone();
+        async move {
+            let mut tx = pool.begin().await?;
+            persist_attempts_in(
+                &mut tx,
+                &l,
+                None,
+                vec![attempt(2, "r:k", Status::Passed, BASE)],
+                seq0,
+            )
+            .await?;
+            tx.commit().await?;
+            Ok::<_, anyhow::Error>(())
+        }
+    });
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    w3.commit().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(10), task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let names: Vec<String> =
+        sqlx::query_scalar("select name from results where launch_id = $1 order by name")
+            .bind(l.id)
+            .fetch_all(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(names, vec!["t2".to_string()]);
+    assert_consistent(&db.pool, l.id).await;
 }

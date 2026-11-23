@@ -30,6 +30,13 @@ results was stored one batch after another; see [Kafka writer](scaling.md#kafka-
 - **Late results.** Results stored after their launch finished queue the launch for code sync again.
 - **Old launches.** Results written into a launch whose monthly partition retention already dropped
   (a reopened manual run) recreate that partition instead of landing in the default partition.
+- **Deleting a launch while it is written.** Writers of a launch share an advisory lock of it;
+  deleting the launch, closing or reopening its manual run, adding items to it and rolling it up take
+  it exclusively first, so they wait only for the writers in flight, not for a burst of writers to end.
+- **Topics created again.** The writers remember the record their committed offset follows
+  (migration `0801_kafka_offsets_last_record`, two nullable columns on `kafka_offsets`); a consumer that
+  finds another record there (the topic was deleted and created again, or the broker lost its data) reads
+  the new log from its start (`fastproof_kafka_offset_resets_total`).
 - **Uploads of deleted launches.** An upload whose launch is deleted while it is processed stops at once
   (metric `fastproof_ingest_jobs_total{outcome="launch_deleted"}`); attachment content it had stored is
   collected like other unlinked attachments.
@@ -44,6 +51,10 @@ event per launch and write instead of one `log.chunk` event per chunk (format 2:
 per event). The sinks of this release read both. The default stays `chunk` for this release: sinks of
 earlier versions and consumers of the `events` topic outside FastProof skip events they do not know, so
 switch to `batch` only once every sink replica runs this release and outside consumers read `log.chunks`.
+Before rolling back to an earlier release (or starting sinks of one) after `batch` was on, set `chunk` again
+and wait until the sinks have caught up (`fastproof_sink_lag_seconds`, or the outbox and `events` consumer
+lag at 0): an earlier sink skips `log.chunks` events and moves past them, and those log lines never reach
+ClickHouse or OpenSearch.
 
 ## Next release: video serving and S3 by default
 

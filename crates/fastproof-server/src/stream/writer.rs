@@ -217,8 +217,8 @@ impl Writer {
         attempts: Vec<NewAttempt>,
         offset: Option<(i64, i64)>,
     ) -> anyhow::Result<u64> {
+        ensure_launch_partition(self.s.store.pool(), wl.launch.created_at).await;
         let mut conn = self.s.store.pool().acquire().await?;
-        ensure_launch_partition(&mut conn, wl.launch.created_at).await?;
         let seq0 = reserve_attempt_seq(&mut conn, wl.launch.id, attempts.len()).await?;
         let mut n = 0;
         loop {

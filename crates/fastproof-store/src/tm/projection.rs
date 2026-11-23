@@ -409,7 +409,6 @@ pub async fn project_run_items(
     if item_ids.is_empty() {
         return Ok(out);
     }
-    crate::ingest::ensure_launch_partition(&mut *conn, launch.created_at).await?;
     let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
         "select ri.id, ri.case_id, ri.case_version, ri.series_id, s.test_case_id, ri.status, ri.execution_no, \
            ri.executed_by, ri.comment, ri.started_at, ri.finished_at, ri.defect, c.number, \

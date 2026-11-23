@@ -66,8 +66,36 @@ impl<H: BatchHandler> PartitionRunner for KafkaConsumer<H> {
         ctx: PartitionCtx,
         stop: CancellationToken,
     ) -> anyhow::Result<()> {
-        let mut offset = match ctx.stored_offset().await? {
-            Some(o) => o,
+        let mut offset = match ctx.stored_position().await? {
+            Some((o, Some((last, ms)))) => {
+                // The record the stored offset follows is gone or another one: the topic was
+                // created again (deleted, or lost with the broker's data), and the stored
+                // offset may lie inside the new log and skip its first records.
+                // A log that no longer reaches the record (and was not cut from the front by
+                // retention) was created again too.
+                let at = self
+                    .kafka
+                    .record_timestamp_at(&ctx.topic, ctx.partition, last)
+                    .await?;
+                let earliest = self
+                    .kafka
+                    .offset(&ctx.topic, ctx.partition, Start::Earliest)
+                    .await?;
+                let recreated = match at {
+                    Some(ts) => ts != ms,
+                    None => earliest <= last,
+                };
+                if recreated {
+                    tracing::warn!(topic = %ctx.topic, partition = ctx.partition, offset = o, reset = earliest,
+                            "the record before the stored offset changed (topic created again); reading from the earliest offset");
+                    metrics::counter!("fastproof_kafka_offset_resets_total", "group" => ctx.group.clone(), "topic" => ctx.topic.clone())
+                            .increment(1);
+                    earliest
+                } else {
+                    o
+                }
+            }
+            Some((o, None)) => o,
             None => {
                 self.kafka
                     .offset(&ctx.topic, ctx.partition, self.start)
@@ -103,8 +131,16 @@ impl<H: BatchHandler> PartitionRunner for KafkaConsumer<H> {
                     break;
                 };
                 let n = batch.len();
+                let last = batch
+                    .last()
+                    .map(|r| (r.offset, r.record.timestamp.timestamp_millis()));
                 let started = Instant::now();
                 self.handler.handle(&ctx, batch, next, hwm).await?;
+                if let Some((o, ms)) = last
+                    && let Err(e) = ctx.note_last_record(o, ms).await
+                {
+                    tracing::debug!(error = %format!("{e:#}"), "noting the last record failed");
+                }
                 reservation.release(bytes);
                 metrics::counter!("fastproof_kafka_consumed_total", "group" => ctx.group.clone(), "topic" => ctx.topic.clone())
                     .increment(n as u64);

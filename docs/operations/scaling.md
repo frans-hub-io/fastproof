@@ -54,10 +54,14 @@ only for that final step. When another launch of the same tests committed in the
 those tests is read again under the lock, so transitions and flaky verdicts follow the order in which the
 launches commit. Several writers of one launch run side by side as well: the launch row is only
 share-locked while they work and updated by their change of the counters right before the commit, and two
-of them wait for each other only when they store the same test. Rows are locked in key order (result rows
-in id order, then the launch row, as triage, rule tasks and mute expiry lock them too), and a transaction
-that still meets a deadlock or a serialization failure, or finds that another writer created the same
-result meanwhile, runs again after a short pause (counted in `fastproof_db_tx_retries_total`).
+of them wait for each other only when they store the same test. Writers lock the results that exist in id
+order and the launch row last, as triage, rule tasks and mute expiry do. Results a writer creates, and
+results a running attempt leaves when it is completed under another identity, are locked later in the
+transaction, so two writers can still meet in a deadlock in those cases (two writers creating the same
+results, a moved running attempt); such a transaction, and one that finds that another writer created the
+same result meanwhile, runs again after a short pause (counted in `fastproof_db_tx_retries_total`).
+Deleting a launch, or closing its manual run, waits only for the writers in flight: new writers of that
+launch queue behind it.
 
 Topics (after `FASTPROOF_KAFKA_TOPIC_PREFIX`, default `fastproof.`): `ingest.results`, `ingest.logs`,
 `ingest.uploads` and `events`. FastProof produces them with Snappy compression and reads any codec; a

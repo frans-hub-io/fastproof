@@ -84,25 +84,160 @@ pub fn retryable(e: &anyhow::Error) -> Option<&'static str> {
     })
 }
 
-/// Creates the monthly partition of results and attempts that holds a launch when the launch
-/// is older than the partitions kept around now (`fastproof_ensure_partitions` keeps the last
-/// month and the next ones): its partition may have been dropped by retention while the launch
-/// stayed (a closed manual run that is reopened, results arriving long after their launch).
-/// Without it the rows would land in the default partitions, which retention never drops.
-/// Recent launches cost nothing here.
-pub async fn ensure_launch_partition(
-    conn: &mut sqlx::PgConnection,
-    created_at: DateTime<Utc>,
-) -> anyhow::Result<()> {
-    let now = Utc::now();
-    let months = (chrono::Datelike::year(&now) - chrono::Datelike::year(&created_at)) * 12
-        + chrono::Datelike::month(&now) as i32
-        - chrono::Datelike::month(&created_at) as i32;
-    if months <= 1 {
-        return Ok(());
+/// What this process knows about the monthly partition of a month: it exists, or it could
+/// not be added (rows of that month in the default partition, a lock not granted in time) and
+/// is not tried again before the instant.
+#[derive(Clone, Copy)]
+enum MonthPartition {
+    Exists,
+    SkipUntil(std::time::Instant),
+}
+
+/// Partition knowledge per database (name), year and month.
+type MonthKey = (Option<String>, i32, u32);
+
+fn month_partitions() -> &'static std::sync::Mutex<HashMap<MonthKey, MonthPartition>> {
+    static M: std::sync::OnceLock<std::sync::Mutex<HashMap<MonthKey, MonthPartition>>> =
+        std::sync::OnceLock::new();
+    M.get_or_init(Default::default)
+}
+
+/// How long a month whose partition could not be added is left alone.
+const PARTITION_RETRY: Duration = Duration::from_secs(300);
+
+/// Makes sure the monthly partitions of `results` and `attempts` that hold a launch created at
+/// `created_at` exist, so its rows do not land in the default partitions, which retention
+/// never drops: retention may have dropped the month while the launch stayed (a closed manual
+/// run that is reopened, results arriving long after their launch).
+///
+/// Call it on the pool, outside any transaction. A missing partition is created on its own and
+/// attached (`ATTACH PARTITION` locks the parent only `SHARE UPDATE EXCLUSIVE`, so reads and
+/// writes go on), in a transaction of its own that waits at most a second for its locks. A
+/// month with rows in the default partition is skipped (attaching would fail), and so is a
+/// month that failed, for a few minutes; the rows then go to the default partition as before.
+/// The answer is cached per process, so a month costs one lookup.
+pub async fn ensure_launch_partition(pool: &sqlx::PgPool, created_at: DateTime<Utc>) {
+    let month = (
+        chrono::Datelike::year(&created_at),
+        chrono::Datelike::month(&created_at),
+    );
+    let key: MonthKey = (
+        pool.connect_options().get_database().map(str::to_string),
+        month.0,
+        month.1,
+    );
+    let known = month_partitions()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&key)
+        .copied();
+    match known {
+        Some(MonthPartition::Exists) => return,
+        Some(MonthPartition::SkipUntil(t)) if std::time::Instant::now() < t => return,
+        _ => {}
     }
-    sqlx::query("select fastproof_ensure_partitions($1, -$1)")
-        .bind(months)
+    let state = match attach_month(pool, month).await {
+        Ok(true) => MonthPartition::Exists,
+        Ok(false) => MonthPartition::SkipUntil(std::time::Instant::now() + PARTITION_RETRY),
+        Err(e) => {
+            tracing::warn!(year = month.0, month = month.1, error = %format!("{e:#}"),
+                "adding the partition of an old launch failed; its rows go to the default partition");
+            MonthPartition::SkipUntil(std::time::Instant::now() + PARTITION_RETRY)
+        }
+    };
+    month_partitions()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(key, state);
+}
+
+/// Adds the partitions of `month` to `results` and `attempts`; false when one of them cannot
+/// be added because the default partition holds rows of that month.
+async fn attach_month(pool: &sqlx::PgPool, (year, month): (i32, u32)) -> anyhow::Result<bool> {
+    let from = chrono::NaiveDate::from_ymd_opt(year, month, 1)
+        .ok_or_else(|| anyhow::anyhow!("no such month"))?;
+    let to = from
+        .checked_add_months(chrono::Months::new(1))
+        .ok_or_else(|| anyhow::anyhow!("no such month"))?;
+    let (from_at, to_at) = (
+        from.and_hms_opt(0, 0, 0).unwrap_or_default().and_utc(),
+        to.and_hms_opt(0, 0, 0).unwrap_or_default().and_utc(),
+    );
+    for parent in ["results", "attempts"] {
+        let name = format!("{parent}_p{}", from.format("%Y%m"));
+        let attached: bool = sqlx::query_scalar(
+            "select exists (select 1 from pg_inherits i join pg_class c on c.oid = i.inhrelid \
+             join pg_class p on p.oid = i.inhparent where p.relname = $1 and c.relname = $2)",
+        )
+        .bind(parent)
+        .bind(&name)
+        .fetch_one(pool)
+        .await?;
+        if attached {
+            continue;
+        }
+        let in_default: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            "select exists (select 1 from {parent}_default where launch_created_at >= $1 and launch_created_at < $2)"
+        )))
+        .bind(from_at)
+        .bind(to_at)
+        .fetch_one(pool)
+        .await?;
+        if in_default {
+            return Ok(false);
+        }
+        let mut tx = pool.begin().await?;
+        sqlx::query("set local lock_timeout = '1s'")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "create table if not exists {name} (like {parent} including defaults including constraints)"
+        )))
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "alter table {parent} attach partition {name} for values from ('{from} 00:00:00+00') to ('{to} 00:00:00+00')"
+        )))
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+    }
+    Ok(true)
+}
+
+/// Advisory lock class of launches (with a key from the launch id, see [`launch_lock_key`]).
+const LAUNCH_LOCK_CLASS: i32 = 0x4650_4c43;
+
+fn launch_lock_key(id: Uuid) -> i32 {
+    let b = id.as_bytes();
+    i32::from_be_bytes([b[8], b[9], b[10], b[11]])
+        ^ i32::from_be_bytes([b[12], b[13], b[14], b[15]])
+}
+
+/// Taken (shared, until commit) by every transaction that stores results of a launch, before
+/// it share-locks the launch row. Writers of a launch share it; [`lock_launch_exclusive`] waits
+/// for the writers that hold it and makes new ones queue behind it. Without it, a `for update`
+/// on the launch row (delete, closing a manual run) could wait forever while several writers
+/// keep the row share-locked one after another.
+pub async fn share_launch(conn: &mut sqlx::PgConnection, launch_id: Uuid) -> anyhow::Result<()> {
+    sqlx::query("select pg_advisory_xact_lock_shared($1, $2)")
+        .bind(LAUNCH_LOCK_CLASS)
+        .bind(launch_lock_key(launch_id))
+        .execute(&mut *conn)
+        .await?;
+    Ok(())
+}
+
+/// Taken (exclusive, until commit) before a transaction locks a launch row `for update`
+/// (deleting the launch, closing or reopening its manual run, rolling it up): see
+/// [`share_launch`]. Take it before any other lock of the transaction.
+pub async fn lock_launch_exclusive(
+    conn: &mut sqlx::PgConnection,
+    launch_id: Uuid,
+) -> anyhow::Result<()> {
+    sqlx::query("select pg_advisory_xact_lock($1, $2)")
+        .bind(LAUNCH_LOCK_CLASS)
+        .bind(launch_lock_key(launch_id))
         .execute(&mut *conn)
         .await?;
     Ok(())
@@ -273,8 +408,8 @@ impl Store {
         if attempts.is_empty() {
             return Ok(PersistOutcome::default());
         }
+        ensure_launch_partition(&self.pool, launch.created_at).await;
         let mut conn = self.pool.acquire().await?;
-        ensure_launch_partition(&mut conn, launch.created_at).await?;
         let seq0 = reserve_attempt_seq(&mut conn, launch.id, attempts.len()).await?;
         let mut attempt = 0;
         loop {
@@ -287,7 +422,13 @@ impl Store {
                     tx.rollback().await?;
                 } else {
                     tx.commit().await?;
-                    crate::events::notify_launch(&mut conn, &launch.project_key, launch.id).await?;
+                    // Committed: a notification that fails only delays the live views.
+                    if let Err(e) =
+                        crate::events::notify_launch(&mut conn, &launch.project_key, launch.id)
+                            .await
+                    {
+                        tracing::debug!(error = %format!("{e:#}"), "live notification failed");
+                    }
                 }
                 Ok::<_, anyhow::Error>(out)
             }
@@ -773,12 +914,15 @@ async fn apply_result_changes(
     }
     if status != "running" {
         // Results that arrive after the launch finished (Kafka writers catching up, late
-        // reporters): code sync runs again for the launch. A sync in progress keeps its
-        // lease; the launch is taken again once it ends.
+        // reporters): code sync runs again for the launch, a minute after the last of them
+        // (one sync for a whole backlog, not one per batch). A sync in progress keeps its
+        // lease; the launch is taken again once it ends. Failed attempts keep counting, so a
+        // launch whose sync keeps failing is still dropped.
         sqlx::query(
-            "insert into case_sync_queue (launch_id) select $2 \
+            "insert into case_sync_queue (launch_id, lease_until) select $2, now() + interval '1 minute' \
              where (select settings -> 'caseSync' -> 'enabled' from projects where id = $1) is distinct from 'false'::jsonb \
-             on conflict (launch_id) do update set queued_at = now(), lease_owner = null, attempts = 0",
+             on conflict (launch_id) do update set queued_at = now(), lease_owner = null, \
+               lease_until = greatest(coalesce(case_sync_queue.lease_until, now()), now() + interval '1 minute')",
         )
         .bind(launch.project_id)
         .bind(launch.id)
@@ -814,6 +958,7 @@ pub async fn persist_attempts_in(
     if attempts.is_empty() {
         return Ok(out);
     }
+    share_launch(&mut *conn, launch.id).await?;
     let _: i32 = sqlx::query_scalar("select 1 from launches where id = $1 for key share")
         .bind(launch.id)
         .fetch_one(&mut *conn)
@@ -1087,7 +1232,8 @@ pub async fn persist_attempts_in(
     let keys: Vec<String> = prepared.iter().map(|p| p.client_key.clone()).collect();
     let open_before: HashMap<String, (Uuid, Uuid)> = sqlx::query_as::<_, (String, Uuid, Uuid)>(
         "select client_key, series_id, result_id from attempts \
-         where launch_id = $1 and launch_created_at = $2 and client_key = any($3) and status = 'running'",
+         where launch_id = $1 and launch_created_at = $2 and client_key = any($3) and status = 'running' \
+         order by id for no key update",
     )
     .bind(launch.id)
     .bind(launch.created_at)

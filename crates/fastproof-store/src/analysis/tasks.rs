@@ -519,15 +519,8 @@ impl Store {
         if ending.is_empty() {
             return Ok(0);
         }
-        // The order every writer of results takes (`triage::lock_launches`): launch rows
-        // share-locked, result rows in id order, then the mutes, the launch rows at the end.
-        let launches: Vec<Uuid> = sqlx::query_scalar(
-            "select l.id from launches l where l.id in (select distinct launch_id from results \
-               where series_id = any($1) and muted) order by l.id for key share",
-        )
-        .bind(&ending)
-        .fetch_all(&mut *tx)
-        .await?;
+        // The order every writer of results takes (`triage::lock_launches`): result rows in
+        // id order, then the mutes, the launch rows at the end.
         let muted: Vec<(Uuid, DateTime<Utc>, Uuid)> = sqlx::query_as(
             "select id, launch_created_at, series_id from results \
              where series_id = any($1) and muted order by id for no key update",
@@ -551,15 +544,21 @@ impl Store {
             .filter(|r| expired_set.contains(&r.2))
             .map(|r| (r.0, r.1))
             .unzip();
-        sqlx::query(
+        // The launches of the rows actually unmuted, whatever launch they belong to.
+        let launches: Vec<Uuid> = sqlx::query_scalar(
             "update results r set muted = false, mute_until = null, updated_at = now() \
              from unnest($1::uuid[], $2::timestamptz[]) as t(i, c) \
-             where r.id = t.i and r.launch_created_at = t.c and r.muted",
+             where r.id = t.i and r.launch_created_at = t.c and r.muted returning r.launch_id",
         )
         .bind(&ids)
         .bind(&created)
-        .execute(&mut *tx)
+        .fetch_all(&mut *tx)
         .await?;
+        let launches: Vec<Uuid> = launches
+            .into_iter()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
         recount_muted(&mut tx, &launches).await?;
         tx.commit().await?;
         Ok(expired.len() as u64)

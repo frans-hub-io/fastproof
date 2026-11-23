@@ -883,6 +883,7 @@ impl Store {
             _ => None,
         };
         let mut tx = self.pool.begin().await?;
+        crate::ingest::lock_launch_exclusive(&mut tx, launch_id).await?;
         let launch = open_launch(&mut tx, project, launch_id, true).await?;
         let mut wanted: BTreeMap<Uuid, Option<String>> = BTreeMap::new();
         let mut skips: Vec<RunItemSkip> = Vec::new();
@@ -1660,6 +1661,7 @@ impl Store {
         untested_to: ManualUntestedTo,
     ) -> TmResult<Option<ManualCloseOutcome>> {
         let mut tx = self.pool.begin().await?;
+        crate::ingest::lock_launch_exclusive(&mut tx, launch_id).await?;
         let state_of = |state: Option<&str>| match state {
             Some("open") => Ok(()),
             Some(_) => Err(closed()),
@@ -1788,7 +1790,19 @@ impl Store {
 
     /// Reopens a closed manual run.
     pub async fn reopen_manual_run(&self, project: &Project, launch_id: Uuid) -> TmResult<()> {
+        // Before the transaction: retention may have dropped the month of an old run, and
+        // projecting its items again would put their results into the default partition.
+        let created: Option<DateTime<Utc>> =
+            sqlx::query_scalar("select created_at from launches where id = $1 and project_id = $2")
+                .bind(launch_id)
+                .bind(project.id)
+                .fetch_optional(&self.pool)
+                .await?;
+        if let Some(at) = created {
+            crate::ingest::ensure_launch_partition(&self.pool, at).await;
+        }
         let mut tx = self.pool.begin().await?;
+        crate::ingest::lock_launch_exclusive(&mut tx, launch_id).await?;
         let state: Option<Option<String>> = sqlx::query_scalar(
             "select manual_state from launches where id = $1 and project_id = $2 for update",
         )

@@ -60,6 +60,7 @@ export type Project = Omit<S['Project'], 'lastLaunch' | 'description'> & {
 };
 
 export type Launch = Omit<S['Launch'], 'status'> & { status: LaunchStatus };
+export type LaunchExport = Omit<S['LaunchExport'], 'status'> & { status: 'queued' | 'running' | 'done' | 'failed' | 'expired' };
 
 export interface LaunchFilters {
   branch?: string;

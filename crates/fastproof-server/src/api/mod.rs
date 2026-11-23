@@ -10,6 +10,7 @@ pub mod events;
 pub mod exports;
 pub mod imports;
 pub mod integrations;
+pub mod launch_exports;
 pub mod launches;
 pub mod logs;
 pub mod media;

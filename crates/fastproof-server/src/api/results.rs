@@ -489,18 +489,13 @@ pub struct ResultQuery {
     pub limit: Option<i64>,
 }
 
-#[utoipa::path(get, path = "/api/v1/projects/{key}/launches/{id}/results", tag = "results", operation_id = "results_list",
-    params(("key" = String, Path), ("id" = Uuid, Path), ResultQuery, ExplorerQuery),
-    responses((status = 200, body = Page<ResultSummary>), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
-pub async fn list(
-    State(s): State<AppState>,
-    auth: Auth,
-    P((key, id)): P<(String, Uuid)>,
-    Q(q): Q<ResultQuery>,
-    Q(explorer): Q<ExplorerQuery>,
-) -> ApiResult<Json<Page<ResultSummary>>> {
-    let project = s.project_for(&auth, &key, &s.perms.launches_read).await?;
-    let launch = s.launch_of(&project, id).await?;
+/// The filter of a result list (or export) from its two query parts, validated.
+pub(crate) async fn result_filter(
+    s: &AppState,
+    launch: &Launch,
+    q: ResultQuery,
+    explorer: &ExplorerQuery,
+) -> ApiResult<ResultFilter> {
     let statuses: Vec<String> = q
         .status
         .as_deref()
@@ -541,10 +536,26 @@ pub async fn list(
         flaky: q.flaky,
         fingerprint: q.fingerprint,
         source: q.source,
-        extra: explorer.filter(&s, &launch).await?,
+        extra: explorer.filter(s, launch).await?,
         before: q.before,
         limit: page_limit(q.limit)?,
     };
+    Ok(f)
+}
+
+#[utoipa::path(get, path = "/api/v1/projects/{key}/launches/{id}/results", tag = "results", operation_id = "results_list",
+    params(("key" = String, Path), ("id" = Uuid, Path), ResultQuery, ExplorerQuery),
+    responses((status = 200, body = Page<ResultSummary>), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
+pub async fn list(
+    State(s): State<AppState>,
+    auth: Auth,
+    P((key, id)): P<(String, Uuid)>,
+    Q(q): Q<ResultQuery>,
+    Q(explorer): Q<ExplorerQuery>,
+) -> ApiResult<Json<Page<ResultSummary>>> {
+    let project = s.project_for(&auth, &key, &s.perms.launches_read).await?;
+    let launch = s.launch_of(&project, id).await?;
+    let f = result_filter(&s, &launch, q, &explorer).await?;
     Ok(Json(s.store.results(&launch, &f).await?))
 }
 

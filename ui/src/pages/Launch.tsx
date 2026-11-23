@@ -30,6 +30,7 @@ import { Clusters } from './launch/Clusters';
 import { envName, useEnvironment } from './launch/environment';
 import { EnvironmentSwitch } from './launch/Environments';
 import { Explorer } from './launch/Explorer';
+import { ExportMenu } from './launch/ExportMenu';
 import { ActiveFilters, FilterMenu } from './launch/Filters';
 import { TestPlanModal } from './launch/TestPlanModal';
 import { TransitionBadge } from './launch/TransitionBadge';
@@ -505,6 +506,7 @@ export default function LaunchPage() {
               subtitle={<Meta launch={l} />}
               actions={
                 <>
+                  <ExportMenu project={key} launch={l} />
                   <Button component={Link} to={`/p/${key}/compare?b=${l.id}`} variant="default" size="xs" leftSection={<IconGitCompare size={14} />}>
                     Compare
                   </Button>

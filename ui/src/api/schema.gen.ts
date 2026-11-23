@@ -784,6 +784,74 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{key}/launches/{id}/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Exports the results of a launch (the filters of the result list apply) as one self-contained HTML file (no scripts, no external fetches; print-optimised, so a browser prints it to PDF) or as an XLSX workbook with a summary sheet. Only for launches of at most 10 000 results (else 409 `export_too_large`: use `POST .../exports`). Needs `launches:read`. */
+        get: operations["launches_export"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/launches/{id}/exports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Starts a background export of a launch of any size (at most 500 000 results) with the same `format` and filters as `GET .../export`. The file is downloadable by its creator for 24 hours once the job is `done`. A caller has at most 2 and a project at most 4 exports queued or running (else 409 `export_busy`). Needs `launches:read`. */
+        post: operations["launches_export_create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/launches/{id}/exports/{export_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Status and progress of an export job. Visible only to its creator (404 for anyone else). */
+        get: operations["launches_export_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/launches/{id}/exports/{export_id}/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Downloads a finished export: only its creator, within 24 hours. */
+        get: operations["launches_export_download"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{key}/launches/{id}/facets": {
         parameters: {
             query?: never;
@@ -2990,6 +3058,37 @@ export interface components {
             values?: {
                 [key: string]: string;
             };
+        };
+        /** @description A background export of a launch. */
+        LaunchExport: {
+            /** Format: date-time */
+            createdAt: string;
+            createdBy: string;
+            /**
+             * Format: int64
+             * @description Results written so far.
+             */
+            done: number;
+            /** @description Set only in the answer that creates the job and in the status of a done job. */
+            downloadUrl?: string | null;
+            error?: string | null;
+            /** Format: date-time */
+            finishedAt?: string | null;
+            /** @description `html` or `xlsx`. */
+            format: string;
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            launchId: string;
+            /** Format: int64 */
+            sizeBytes?: number | null;
+            /** @description `queued`, `running`, `done`, `failed` or `expired`. */
+            status: string;
+            /**
+             * Format: int64
+             * @description Results to write (the launch's total when the export started).
+             */
+            total: number;
         };
         /** @description Counts per value of the explorer filters, over the launch (in the environment asked for). */
         LaunchFacets: {
@@ -8268,6 +8367,209 @@ export interface operations {
                 };
             };
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    launches_export: {
+        parameters: {
+            query: {
+                /** @description `html` (print-optimised, a browser prints it to PDF) or `xlsx`. */
+                format: string;
+                /** @description `true`: show the HTML in the browser (sandboxed) instead of downloading it. */
+                inline?: boolean;
+            };
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description the file */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    launches_export_create: {
+        parameters: {
+            query: {
+                /** @description `html` (print-optimised, a browser prints it to PDF) or `xlsx`. */
+                format: string;
+                /** @description `true`: show the HTML in the browser (sandboxed) instead of downloading it. */
+                inline?: boolean;
+            };
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LaunchExport"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    launches_export_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+                export_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LaunchExport"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    launches_export_download: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+                export_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description the file */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description unknown, not done, expired or another caller's */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -168,28 +168,59 @@ impl Store {
         params: &Value,
         by: &str,
     ) -> TmResult<TmJob> {
+        self.create_tm_job_owned(id, project_id, project_key, kind, params, by, by)
+            .await
+    }
+
+    /// Like [`Store::create_tm_job`], with the stable identity of the creator (`owner`, for
+    /// example `token:<id>` or `user:<name>`) that limits and visibility compare, not the
+    /// display name `by`.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_tm_job_owned(
+        &self,
+        id: Uuid,
+        project_id: Uuid,
+        project_key: &str,
+        kind: TmJobKind,
+        params: &Value,
+        by: &str,
+        owner: &str,
+    ) -> TmResult<TmJob> {
         let mut tx = self.pool.begin().await?;
         super::lock_project(&mut tx, project_id, "imports").await?;
         match kind {
             TmJobKind::Import => busy(&mut tx, project_id, None).await?,
-            TmJobKind::Export => exports_busy(&mut tx, project_id, by).await?,
+            TmJobKind::Export => exports_busy(&mut tx, project_id, owner).await?,
             TmJobKind::Backfill => {}
         }
         let r = sqlx::query(sqlx::AssertSqlSafe(format!(
-            "insert into tm_jobs (id, project_id, kind, params, status, progress, created_by) \
-             values ($1, $2, $3, $4, 'queued', '{{\"done\": 0}}', $5) returning {COLS}"
+            "insert into tm_jobs (id, project_id, kind, params, status, progress, created_by, owner_key) \
+             values ($1, $2, $3, $4, 'queued', '{{\"done\": 0}}', $5, $6) returning {COLS}"
         )))
         .bind(id)
         .bind(project_id)
         .bind(kind.as_str())
         .bind(crate::json_no_nul(params.clone()))
         .bind(no_nul(by))
+        .bind(no_nul(owner))
         .fetch_one(&mut *tx)
         .await?;
         let job = job_of(&r)?;
         job_event(&mut tx, project_key, &job).await?;
         tx.commit().await?;
         Ok(job)
+    }
+
+    /// The stable owner of a job (its `owner_key`, else the creator's name of older rows).
+    pub async fn tm_job_owner(&self, project_id: Uuid, id: Uuid) -> anyhow::Result<Option<String>> {
+        Ok(sqlx::query_scalar(
+            "select coalesce(owner_key, created_by) from tm_jobs where project_id = $1 and id = $2",
+        )
+        .bind(project_id)
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?
+        .flatten())
     }
 
     /// A job of the project with its parameters.
@@ -453,7 +484,7 @@ impl Store {
         let blob: Option<String> = sqlx::query_scalar(
             "update tm_jobs set params = params || '{\"downloaded\": true}'::jsonb \
              where project_id = $1 and id = $2 and kind = 'export' and status = 'done' \
-               and created_by = $3 and params ->> 'tokenSha256' = $4 \
+               and coalesce(owner_key, created_by) = $3 and params ->> 'tokenSha256' = $4 \
                and coalesce((params ->> 'downloaded')::boolean, false) = false \
                and finished_at > now() - make_interval(hours => $5) \
              returning params ->> 'blob'",
@@ -560,7 +591,7 @@ async fn busy(
 
 async fn exports_busy(conn: &mut sqlx::PgConnection, project_id: Uuid, by: &str) -> TmResult<()> {
     let (mine, all): (i64, i64) = sqlx::query_as(
-        "select count(*) filter (where created_by = $2), count(*) from tm_jobs \
+        "select count(*) filter (where coalesce(owner_key, created_by) = $2), count(*) from tm_jobs \
          where project_id = $1 and kind = 'export' and status in ('queued', 'running')",
     )
     .bind(project_id)

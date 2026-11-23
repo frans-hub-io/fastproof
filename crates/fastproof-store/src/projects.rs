@@ -206,6 +206,16 @@ impl Store {
         .bind(id)
         .execute(&mut *tx)
         .await?;
+        sqlx::query(
+            "insert into blob_deletions (prefix, project_id) \
+             select k, null from launch_exports e, lateral (values (e.blob_key), \
+               ('tm-jobs/' || e.id::text || '/launch-export.' || e.format)) as v(k) \
+             where e.project_id = $1 and k is not null \
+               and (k = e.blob_key or e.status in ('queued', 'running'))",
+        )
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
         sqlx::query("update ingest_jobs set status = 'failed', last_error = 'project deleted', updated_at = now() \
              where status in ('queued', 'running') and upload_id in (select id from uploads where project_id = $1)")
             .bind(id)

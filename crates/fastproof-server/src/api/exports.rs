@@ -214,13 +214,14 @@ pub async fn create_case_export(
     let id = Uuid::now_v7();
     let mut job = s
         .store
-        .create_tm_job(
+        .create_tm_job_owned(
             id,
             p.id,
             &p.key,
             TmJobKind::Export,
             &serde_json::to_value(&params).map_err(anyhow::Error::from)?,
             &auth.principal.name,
+            &crate::limits::caller_key(&auth),
         )
         .await
         .map_err(tm_error)?;
@@ -267,7 +268,7 @@ pub async fn download_case_export(
         .take_export_download(
             p.id,
             id,
-            &auth.principal.name,
+            &crate::limits::caller_key(&auth),
             &token_hash(&q.token.to_ascii_lowercase()),
         )
         .await?
@@ -319,7 +320,8 @@ pub async fn get_tm_job(
         .await?
         .ok_or_else(|| ApiError::not_found("job"))?;
     if job.kind == TmJobKind::Export
-        && job.created_by.as_deref() != Some(auth.principal.name.as_str())
+        && s.store.tm_job_owner(p.id, id).await?.as_deref()
+            != Some(crate::limits::caller_key(&auth).as_str())
     {
         return Err(ApiError::not_found("job"));
     }

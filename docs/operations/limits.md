@@ -109,6 +109,10 @@ Fixed caps that are not settings:
 
 | Cap | Value | Answer |
 |---|---|---|
+| Launch export jobs (HTML, XLSX) queued or running | 2 per caller, 4 per project, 8 per server | `409 export_busy` |
+| Launch exports created per 24 hours | 20 per caller, 100 per project | `409 export_quota` |
+| Launch export file | 2 GiB (`FASTPROOF_LAUNCH_EXPORT_MAX_BYTES`) | the job fails |
+| Results of an inline launch export / of a launch export job | 10 000 / 500 000 | `409 export_too_large` (inline), job `failed` |
 | Zip export jobs queued or running | 2 per caller and project, 4 per project | `409 export_busy` (`details.limit`: `exportsPerCaller` or `exportsPerProject`) |
 | Pending AI suggestions per case | 20 | `409 limit_reached` (`maxPendingSuggestions`) |
 | Unreviewed AI draft cases per principal and project | 200 | `409 limit_reached` (`maxUnreviewedAiDrafts`) |

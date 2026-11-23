@@ -80,7 +80,8 @@ const CASE_LEAVES: [Leaf; 5] = [
 /// Tables of a project with nothing left under them once launches, plans, test cases and
 /// cases are gone, by `project_id`. Attachments come after cases (case attachments restrict
 /// their deletion) and after their media rows; the last ones are normally empty by then.
-const PROJECT_LEAVES: [&str; 12] = [
+const PROJECT_LEAVES: [&str; 13] = [
+    "launch_exports",
     "attachment_media",
     "attachments",
     "case_field_defs",

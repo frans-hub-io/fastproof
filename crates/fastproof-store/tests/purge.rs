@@ -169,6 +169,7 @@ begin
     update results r set run_item_id = (select ri.id from run_items ri where ri.launch_id = ml limit 1)
         where r.project_id = p and r.full_name = 'T1';
     insert into tm_jobs (id, project_id, kind, params) values (gen_random_uuid(), p, 'import', '{}'), (gen_random_uuid(), p, 'export', '{}');
+    insert into launch_exports (id, project_id, launch_id, format, created_by, status) select gen_random_uuid(), p, l.id, 'html', 'u', 'failed' from launches l where l.project_id = p limit 2;
     return ml;
 end
 $f$;

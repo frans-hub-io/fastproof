@@ -11,10 +11,19 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List
 
 ROUTE = re.compile(r"^/api/v1/projects/([^/]+)/launches(?:/([^/]+)/(results|logs|attachments|finish))?$")
+DIRECT = re.compile(r"^/api/v1/projects/[^/]+/launches/[^/]+/attachments/direct(?:/([^/]+)/complete)?$")
+STORE = re.compile(r"^/store/([^/?]+)\?sig=ok$")
 
 
 class FakeServer:
-    def __init__(self, token: str = "", logs: bool = True, running: bool = True, port: int = 0) -> None:
+    def __init__(
+        self, token: str = "", logs: bool = True, running: bool = True, port: int = 0, direct: bool = False,
+        store_url: str = "",
+    ) -> None:
+        self.direct_enabled = direct
+        self.store_url = store_url
+        self.direct: Dict[str, Dict[str, Any]] = {}
+        self.direct_puts = 0
         self.token = token
         self.logs_enabled = logs
         self.running_enabled = running
@@ -40,11 +49,28 @@ class FakeServer:
                 self.end_headers()
                 self.wfile.write(data)
 
+            def do_PUT(self):
+                n = int(self.headers.get("Content-Length") or 0)
+                body = self.rfile.read(n) if n else b""
+                m = STORE.match(self.path)
+                with fake.lock:
+                    d = fake.direct.get(m.group(1)) if m else None
+                    if d is None or self.headers.get("Content-Type") != "application/octet-stream":
+                        return self.send(403, {})
+                    d["body"] = body
+                    d["auth"] = self.headers.get("Authorization")
+                    fake.direct_puts += 1
+                return self.send(200, {})
+
             def do_POST(self):
                 n = int(self.headers.get("Content-Length") or 0)
                 body = self.rfile.read(n) if n else b""
                 if fake.token and self.headers.get("Authorization") != f"Bearer {fake.token}":
                     return self.send(401, {"code": "unauthorized", "message": "no"})
+                d = DIRECT.match(self.path)
+                if d:
+                    with fake.lock:
+                        return fake.handle_direct(self, d.group(1), body)
                 m = ROUTE.match(self.path)
                 if not m:
                     return self.send(404, {"code": "not_found", "message": "resource not found"})
@@ -114,6 +140,36 @@ class FakeServer:
             self.results[r["id"]] = r
             summary["accepted"] += 1
         return h.send(202, summary)
+
+    def handle_direct(self, h, upload_id, body: bytes):
+        if not self.direct_enabled:
+            return h.send(404, {"code": "not_found", "message": "resource not found"})
+        if upload_id is None:
+            out = []
+            for it in json.loads(body)["items"]:
+                known = self.attachments.get(it["sha256"])
+                if known:
+                    out.append({"sha256": it["sha256"], "status": "exists", "id": known["id"]})
+                    continue
+                uid = str(uuid.uuid4())
+                self.direct[uid] = dict(it)
+                out.append({"sha256": it["sha256"], "status": "upload", "uploadId": uid, "method": "PUT",
+                            "url": f"{self.store_url or self.url}/store/{uid}?sig=ok",
+                            "headers": {"content-type": "application/octet-stream"}})
+            return h.send(200, {"items": out})
+        d = self.direct.get(upload_id)
+        if d is None:
+            return h.send(404, {"code": "not_found", "message": "direct upload"})
+        if "body" not in d:
+            return h.send(409, {"code": "not_uploaded", "message": "PUT first"})
+        sha = hashlib.sha256(d["body"]).hexdigest()
+        if sha != d["sha256"] or len(d["body"]) != d["size"]:
+            return h.send(422, {"code": "verification_failed", "message": "mismatch"})
+        a = self.attachments.get(sha)
+        if a is None:
+            a = {"id": str(uuid.uuid4()), "name": d["name"], "contentType": d["contentType"], "body": d["body"]}
+            self.attachments[sha] = a
+        return h.send(201, {"id": a["id"], "sha256": sha, "size": d["size"]})
 
     def finals(self) -> List[Dict[str, Any]]:
         return [r for r in self.results.values() if r["status"] != "running"]

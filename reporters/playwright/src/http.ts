@@ -103,6 +103,44 @@ export class Http {
   }
 }
 
+/**
+ * A PUT of a file or buffer to a pre-signed URL: no FastProof token, exactly the given headers, redirects not
+ * followed (a 3xx is a failed PUT). Never throws; `status` 0 means the store did not answer (not reachable from
+ * here).
+ */
+export async function putPresigned(
+  url: string,
+  headers: Record<string, string>,
+  body: { file?: string; raw?: Buffer },
+  size: number,
+  timeoutMs: number,
+): Promise<HttpResult> {
+  const h: Record<string, string> = { ...headers, 'content-length': String(size) };
+  let payload: RequestInit['body'];
+  let duplex = false;
+  if (body.raw) payload = new Uint8Array(body.raw.buffer, body.raw.byteOffset, body.raw.byteLength);
+  else {
+    payload = Readable.toWeb(createReadStream(body.file!)) as unknown as RequestInit['body'];
+    duplex = true;
+  }
+  try {
+    const init: RequestInit & { duplex?: 'half' } = {
+      method: 'PUT',
+      headers: h,
+      body: payload,
+      redirect: 'manual',
+      signal: AbortSignal.timeout(timeoutMs),
+    };
+    if (duplex) init.duplex = 'half';
+    const res = await fetch(url, init);
+    await res.arrayBuffer().catch(() => undefined);
+    return { status: res.status, body: undefined };
+  } catch (e) {
+    const err = e as { name?: string; message?: string; cause?: { code?: string } };
+    return { status: 0, body: undefined, error: String(err.cause?.code ?? err.name ?? err.message ?? 'network error') };
+  }
+}
+
 /** Exponential backoff with full jitter, capped. */
 export function backoffMs(attempt: number, baseMs = 250, capMs = 8000): number {
   const exp = Math.min(capMs, baseMs * 2 ** Math.min(attempt, 16));

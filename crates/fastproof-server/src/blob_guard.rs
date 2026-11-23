@@ -92,6 +92,7 @@ mod tests {
             ca_file: None,
             access_key: None,
             secret_key: None,
+            public_endpoint: None,
         });
         assert_eq!(identity(&c), "s3:http://garage:3900/b");
     }

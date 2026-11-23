@@ -183,6 +183,8 @@ begin
     insert into tracker_issue_links (id, issue_id, project_id, launch_id, fingerprint, created_by)
         values (gen_random_uuid(), f1, p, ml, 'f1', 't'), (gen_random_uuid(), f2, p, null, null, 't');
     insert into tracker_requests (id, project_id, kind) values (gen_random_uuid(), p, 'create'), (gen_random_uuid(), p, 'link');
+    insert into direct_uploads (id, project_id, launch_id, sha256, size, content_type, created_by, expires_at)
+        select gen_random_uuid(), p, gen_random_uuid(), k || 'd' || gs, 1, 'text/plain', 'ci', now() from generate_series(1, 4) gs;
     return ml;
 end
 $f$;

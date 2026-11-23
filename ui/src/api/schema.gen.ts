@@ -903,6 +903,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{key}/launches/{id}/attachments/direct": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Pre-signed S3 PUT URLs for attachments of the launch. Content the project already stores is linked at once (`exists`, only for callers who may read the launch, and only for content still in use). URLs are bound to `content-type: application/octet-stream` and, unless turned off, to `x-amz-checksum-sha256`; the object is verified on completion. 501 when the server has no S3 store or direct uploads are off: use POST .../attachments. */
+        post: operations["attachments_direct_create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/launches/{id}/attachments/direct/{uploadId}/complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Verifies the object PUT to the upload URL (size and SHA-256, read back from a copy the URL cannot change) and records it as an attachment of the launch. Idempotent: a completed upload answers 200 with the same attachment. */
+        post: operations["attachments_direct_complete"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{key}/launches/{id}/clusters": {
         parameters: {
             query?: never;
@@ -3053,6 +3087,69 @@ export interface components {
             responseStatus?: number | null;
             /** @description `pending`, `sending`, `delivered` or `failed`. */
             status: string;
+        };
+        /** @description One attachment the client wants to upload. */
+        DirectUploadItem: {
+            /** @description `type/subtype`; anything else is stored as `application/octet-stream`. */
+            contentType?: string | null;
+            /** @description File name shown for the attachment. */
+            name?: string | null;
+            /** @description SHA-256 of the content, lowercase hex. */
+            sha256: string;
+            /**
+             * Format: int64
+             * @description Size in bytes.
+             */
+            size: number;
+        };
+        /** @description Body of `POST .../launches/{id}/attachments/direct`. */
+        DirectUploadRequest: {
+            /** @description 1 to 100 attachments. */
+            items: components["schemas"]["DirectUploadItem"][];
+        };
+        /** @description Answer of `POST .../launches/{id}/attachments/direct`, an item per requested attachment. */
+        DirectUploadResponse: {
+            items: components["schemas"]["DirectUploadTarget"][];
+        };
+        /**
+         * @description What to do with one attachment.
+         * @enum {string}
+         */
+        DirectUploadStatus: "exists" | "upload" | "refused";
+        /** @description The answer for one attachment, in request order. */
+        DirectUploadTarget: {
+            /** @description `refused`: `too_large`, `launch_bytes`, `project_bytes`, `launch_open` or `project_open`. */
+            code?: string | null;
+            /**
+             * Format: date-time
+             * @description `upload`: when the URL stops working.
+             */
+            expiresAt?: string | null;
+            /** @description `upload`: headers the PUT must carry with exactly these values (they are signed). */
+            headers?: {
+                [key: string]: string;
+            } | null;
+            /**
+             * Format: uuid
+             * @description The attachment id to reference in results (`exists`).
+             */
+            id?: string | null;
+            /**
+             * Format: int64
+             * @description `refused`: the limit that applied.
+             */
+            limit?: number | null;
+            /** @description `upload`: always `PUT`. */
+            method?: string | null;
+            sha256: string;
+            status: components["schemas"]["DirectUploadStatus"];
+            /**
+             * Format: uuid
+             * @description `upload`: the id to complete.
+             */
+            uploadId?: string | null;
+            /** @description `upload`: the pre-signed URL (a secret until it expires: do not log it). */
+            url?: string | null;
         };
         /** @description Result of a dry run. */
         DryRun: {
@@ -9994,6 +10091,155 @@ export interface operations {
                 };
             };
             413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    attachments_direct_create: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DirectUploadRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DirectUploadResponse"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    attachments_direct_complete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+                uploadId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description completed before */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AttachmentCreated"];
+                };
+            };
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AttachmentCreated"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `not_uploaded` (PUT first) or `verification_in_progress` (retry) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `upload_expired` */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `verification_failed`: the object was deleted; upload through POST .../attachments */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            501: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -66,6 +66,7 @@ off.
 | `FASTPROOF_SECRET_ENV`, `FASTPROOF_SECRET_PATTERNS` | Extra environment variable names (globs) and regular expressions to mask |
 | `FASTPROOF_TESTPLAN` | Path of an Allure-format `testplan.json` (`ALLURE_TESTPLAN_PATH` is read too) |
 | `FASTPROOF_QUIET` | `true` prints nothing but errors |
+| `FASTPROOF_DIRECT_UPLOAD_MODE`, `FASTPROOF_DIRECT_UPLOAD_MIN_BYTES` | `off` sends every attachment through the server; by default attachments of 1 MiB and more go straight to the S3 store when the server offers it ([Direct uploads](direct-uploads.md)) |
 
 Give the token through your CI system's secret store, never in the repository.
 

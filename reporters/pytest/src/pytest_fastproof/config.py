@@ -57,6 +57,10 @@ class Config:
     secret_patterns: List[str] = field(default_factory=list)
     env: Mapping[str, str] = field(default_factory=dict)
     max_attachment_bytes: int = 512 * 1024 * 1024
+    #: ``auto``: attachments from ``direct_upload_min_bytes`` up go straight to the server's S3 store through
+    #: pre-signed URLs when the server offers it; ``off``: always through the server.
+    direct_uploads: str = "auto"
+    direct_upload_min_bytes: int = 1024 * 1024
     quiet: bool = False
 
 
@@ -137,5 +141,7 @@ def resolve_config(opts: Optional[Mapping[str, Any]] = None, env: Optional[Mappi
         secret_values=[token] if token else [],
         secret_patterns=patterns,
         env=env,
+        direct_uploads="off" if (env.get("FASTPROOF_DIRECT_UPLOAD_MODE") or "").strip().lower() == "off" else "auto",
+        direct_upload_min_bytes=max(1, int(_num(env.get("FASTPROOF_DIRECT_UPLOAD_MIN_BYTES"), 1024 * 1024))),
         quiet=bool(_flag(env.get("FASTPROOF_QUIET"))),
     )

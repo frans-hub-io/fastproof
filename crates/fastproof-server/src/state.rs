@@ -230,6 +230,8 @@ pub struct Inner {
     /// Cancelled when the process starts to stop: event streams end so that the HTTP drain
     /// waits only for real requests.
     pub stopping: tokio_util::sync::CancellationToken,
+    /// Verification slots of direct uploads (`crate::direct_uploads`).
+    pub direct: crate::direct_uploads::DirectState,
 }
 
 /// The axum state.

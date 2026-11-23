@@ -4,7 +4,10 @@
 //! Keys are built only through [`BlobKey`] constructors that validate every component, so a key
 //! can never escape its prefix: `projects/<key>/attachments/<sha256[0..2]>/<sha256>`,
 //! `projects/<key>/derived/<sha256[0..2]>/<sha256>/<name>` (a copy made from an attachment, such
-//! as a seekable video) and `uploads/<uuid>`.
+//! as a seekable video), `uploads/<uuid>` and, for attachments a client uploads straight to S3,
+//! `direct/<installation>/<uuid>/in` (written by the client through a pre-signed URL) and
+//! `direct/<installation>/<uuid>/check-<nonce>` (the server's copy that one verification attempt
+//! checks).
 
 use std::fmt;
 use std::io::Write;
@@ -22,7 +25,7 @@ use object_store::aws::{AmazonS3, AmazonS3Builder};
 use object_store::buffered::BufWriter;
 use object_store::local::LocalFileSystem;
 use object_store::path::Path as ObjPath;
-use object_store::signer::{Method, Signer};
+use object_store::signer::{Method, SignedUrlOptions, Signer};
 use object_store::{
     ClientOptions, GetOptions, GetRange, ObjectStore, ObjectStoreExt, PutPayload, RetryConfig,
 };
@@ -71,6 +74,9 @@ pub struct S3Config {
     pub ca_file: Option<PathBuf>,
     pub access_key: Option<Secret>,
     pub secret_key: Option<Secret>,
+    /// Endpoint written into pre-signed URLs when clients reach the store under another
+    /// address than the server does (`None`: the endpoint above).
+    pub public_endpoint: Option<String>,
 }
 
 /// Where blobs live.
@@ -164,6 +170,32 @@ impl BlobKey {
         Self("uploads".into())
     }
 
+    /// `direct/<installation>/<id>/in`: where a client puts an attachment through a pre-signed
+    /// URL.
+    pub fn direct_incoming(installation: &str, id: &str) -> anyhow::Result<Self> {
+        if !valid_id(installation) || !valid_id(id) {
+            bail!("invalid direct upload id in a blob key");
+        }
+        Ok(Self(format!("direct/{installation}/{id}/in")))
+    }
+
+    /// `direct/<installation>/<id>/check-<nonce>`: the server's copy of a direct upload that one
+    /// verification attempt (`nonce`) checks; the client's URL cannot write it.
+    pub fn direct_check(installation: &str, id: &str, nonce: &str) -> anyhow::Result<Self> {
+        if !valid_id(installation) || !valid_id(id) || !valid_id(nonce) || nonce.len() > 32 {
+            bail!("invalid direct upload id in a blob key");
+        }
+        Ok(Self(format!("direct/{installation}/{id}/check-{nonce}")))
+    }
+
+    /// `direct/<installation>/`: the direct uploads of one installation.
+    pub fn direct_prefix(installation: &str) -> anyhow::Result<Self> {
+        if !valid_id(installation) {
+            bail!("invalid installation id in a blob key");
+        }
+        Ok(Self(format!("direct/{installation}")))
+    }
+
     /// `tm-jobs/<id>/<name>`: a file of a test-management import or export job (`name` of
     /// lowercase letters, digits, dots and dashes).
     pub fn tm_job(id: &str, name: &str) -> anyhow::Result<Self> {
@@ -186,6 +218,10 @@ impl BlobKey {
         let parts: Vec<&str> = s.split('/').collect();
         match parts.as_slice() {
             ["uploads", id] => Self::upload(id),
+            ["direct", inst, id, "in"] => Self::direct_incoming(inst, id),
+            ["direct", inst, id, check] if check.starts_with("check-") => {
+                Self::direct_check(inst, id, &check["check-".len()..])
+            }
             ["tm-jobs", id, name] => Self::tm_job(id, name),
             ["projects", p, "attachments", aa, sha] if sha.len() == 64 && &sha[..2] == *aa => {
                 Self::attachment(p, sha)
@@ -232,6 +268,12 @@ pub struct BlobRange {
 pub struct BlobStore {
     inner: Arc<dyn ObjectStore>,
     s3: Option<Arc<AmazonS3>>,
+    /// Signs URLs for clients (the public endpoint when one is configured).
+    signer: Option<Arc<AmazonS3>>,
+    /// Whether URLs for clients use https (`None` for the filesystem).
+    signer_https: Option<bool>,
+    /// Extra trusted CAs of the S3 endpoint (PEM), for the server's own signed requests.
+    ca_pem: Option<Arc<Vec<u8>>>,
     streamed: Arc<AtomicU64>,
     backend: &'static str,
     description: String,
@@ -250,6 +292,63 @@ fn is_not_found(e: &object_store::Error) -> bool {
     matches!(e, object_store::Error::NotFound { .. })
 }
 
+/// An S3 client of the configured bucket at `endpoint`.
+fn s3_client(c: &S3Config, endpoint: Option<&str>) -> anyhow::Result<AmazonS3> {
+    let mut opts = ClientOptions::new()
+        .with_connect_timeout(Duration::from_secs(10))
+        .with_timeout(Duration::from_secs(300));
+    if let Some(ep) = endpoint {
+        if ep.starts_with("http://") {
+            opts = opts.with_allow_http(true);
+        } else if !ep.starts_with("https://") {
+            bail!("the S3 endpoint must start with https:// or http://");
+        }
+    }
+    if let Some(ca) = &c.ca_file {
+        let pem = std::fs::read(ca)
+            .with_context(|| format!("reading the S3 CA file {}", ca.display()))?;
+        let certs = object_store::Certificate::from_pem_bundle(&pem)
+            .with_context(|| format!("parsing the S3 CA file {}", ca.display()))?;
+        if certs.is_empty() {
+            bail!("the S3 CA file {} has no certificate", ca.display());
+        }
+        for cert in certs {
+            opts = opts.with_root_certificate(cert);
+        }
+    }
+    let mut b = AmazonS3Builder::new()
+        .with_region(&c.region)
+        .with_bucket_name(&c.bucket)
+        .with_virtual_hosted_style_request(!c.path_style)
+        .with_client_options(opts)
+        .with_retry(RetryConfig {
+            max_retries: 5,
+            retry_timeout: Duration::from_secs(60),
+            ..RetryConfig::default()
+        });
+    if let Some(ep) = endpoint {
+        b = b.with_endpoint(ep);
+    }
+    if let Some(k) = &c.access_key {
+        b = b.with_access_key_id(k.expose());
+    }
+    if let Some(k) = &c.secret_key {
+        b = b.with_secret_access_key(k.expose());
+    }
+    b.build().context("configuring the S3 client")
+}
+
+/// A pre-signed PUT: the URL and the headers the request must carry exactly.
+#[derive(Clone, Debug)]
+pub struct PresignedPut {
+    pub url: String,
+    pub headers: Vec<(String, String)>,
+}
+
+/// The content type every direct upload is stored with (bound to its URL): stored objects are
+/// never served by the store itself, and an inert type keeps them so if that ever changes.
+pub const DIRECT_CONTENT_TYPE: &str = "application/octet-stream";
+
 impl BlobStore {
     /// Opens the store (creating the directory of the `fs` backend).
     pub fn open(cfg: &BlobConfig) -> anyhow::Result<Self> {
@@ -263,6 +362,9 @@ impl BlobStore {
                 Ok(Self {
                     inner: Arc::new(fs),
                     s3: None,
+                    signer: None,
+                    signer_https: None,
+                    ca_pem: None,
                     streamed: Arc::default(),
                     backend: "fs",
                     description: dir.display().to_string(),
@@ -270,51 +372,31 @@ impl BlobStore {
             }
             BlobConfig::S3(c) => {
                 install_crypto_provider();
-                let mut opts = ClientOptions::new()
-                    .with_connect_timeout(Duration::from_secs(10))
-                    .with_timeout(Duration::from_secs(300));
-                if let Some(ep) = &c.endpoint {
-                    if ep.starts_with("http://") {
-                        opts = opts.with_allow_http(true);
-                    } else if !ep.starts_with("https://") {
-                        bail!("the S3 endpoint must start with https:// or http://");
+                let s3 = Arc::new(s3_client(c, c.endpoint.as_deref())?);
+                let signer = match &c.public_endpoint {
+                    Some(ep) => {
+                        Arc::new(s3_client(c, Some(ep)).context("FASTPROOF_S3_PUBLIC_ENDPOINT")?)
                     }
-                }
-                if let Some(ca) = &c.ca_file {
-                    let pem = std::fs::read(ca)
-                        .with_context(|| format!("reading the S3 CA file {}", ca.display()))?;
-                    let certs = object_store::Certificate::from_pem_bundle(&pem)
-                        .with_context(|| format!("parsing the S3 CA file {}", ca.display()))?;
-                    if certs.is_empty() {
-                        bail!("the S3 CA file {} has no certificate", ca.display());
-                    }
-                    for cert in certs {
-                        opts = opts.with_root_certificate(cert);
-                    }
-                }
-                let mut b = AmazonS3Builder::new()
-                    .with_region(&c.region)
-                    .with_bucket_name(&c.bucket)
-                    .with_virtual_hosted_style_request(!c.path_style)
-                    .with_client_options(opts)
-                    .with_retry(RetryConfig {
-                        max_retries: 5,
-                        retry_timeout: Duration::from_secs(60),
-                        ..RetryConfig::default()
-                    });
-                if let Some(ep) = &c.endpoint {
-                    b = b.with_endpoint(ep);
-                }
-                if let Some(k) = &c.access_key {
-                    b = b.with_access_key_id(k.expose());
-                }
-                if let Some(k) = &c.secret_key {
-                    b = b.with_secret_access_key(k.expose());
-                }
-                let s3 = Arc::new(b.build().context("configuring the S3 client")?);
+                    None => s3.clone(),
+                };
                 Ok(Self {
                     inner: s3.clone(),
                     s3: Some(s3),
+                    signer: Some(signer),
+                    ca_pem: match &c.ca_file {
+                        Some(f) => {
+                            Some(Arc::new(std::fs::read(f).with_context(|| {
+                                format!("reading the S3 CA file {}", f.display())
+                            })?))
+                        }
+                        None => None,
+                    },
+                    signer_https: Some(
+                        c.public_endpoint
+                            .as_deref()
+                            .or(c.endpoint.as_deref())
+                            .is_none_or(|e| e.starts_with("https://")),
+                    ),
                     streamed: Arc::default(),
                     backend: "s3",
                     description: format!("{}/{}", c.endpoint.as_deref().unwrap_or("aws"), c.bucket),
@@ -326,6 +408,11 @@ impl BlobStore {
     /// `fs` or `s3`.
     pub fn backend(&self) -> &'static str {
         self.backend
+    }
+
+    /// Whether pre-signed URLs for clients use https (`None` for the filesystem backend).
+    pub fn client_urls_https(&self) -> Option<bool> {
+        self.signer_https
     }
 
     /// Uploads a local file, streaming it (multipart above [`SINGLE_PUT_MAX`]).
@@ -520,6 +607,104 @@ impl BlobStore {
         self.presign(Method::PUT, key, ttl).await
     }
 
+    /// A pre-signed PUT of a direct upload (S3 only): the URL binds `content-type` to
+    /// [`DIRECT_CONTENT_TYPE`] and, with `sha256` (lowercase hex), `x-amz-checksum-sha256`, so a
+    /// store that checks checksums refuses any other body. The server still verifies the object.
+    /// `internal` signs for the server's own endpoint instead of the public one (self-checks).
+    pub async fn presign_direct_put(
+        &self,
+        key: &BlobKey,
+        ttl: Duration,
+        sha256: Option<&str>,
+        internal: bool,
+    ) -> anyhow::Result<Option<PresignedPut>> {
+        use base64::Engine;
+        use reqwest::header::{HeaderName, HeaderValue};
+        let signer = if internal { &self.s3 } else { &self.signer };
+        let Some(signer) = signer else {
+            return Ok(None);
+        };
+        let mut headers = vec![("content-type".to_string(), DIRECT_CONTENT_TYPE.to_string())];
+        if let Some(sha) = sha256 {
+            if !valid_sha256(sha) {
+                bail!("invalid sha256 for a pre-signed PUT");
+            }
+            let raw = hex::decode(sha).context("decoding the sha256")?;
+            headers.push((
+                "x-amz-checksum-sha256".to_string(),
+                base64::engine::general_purpose::STANDARD.encode(raw),
+            ));
+        }
+        let mut opts = SignedUrlOptions::default();
+        for (k, v) in &headers {
+            opts = opts.with_signed_header(
+                HeaderName::from_bytes(k.as_bytes())?,
+                HeaderValue::from_str(v)?,
+            );
+        }
+        let url = signer
+            .signed_url_opts(Method::PUT, &key.path(), ttl, &opts)
+            .await
+            .context("signing a URL")?;
+        Ok(Some(PresignedPut {
+            url: url.to_string(),
+            headers,
+        }))
+    }
+
+    /// Whether the store refuses a PUT whose body does not match a signed
+    /// `x-amz-checksum-sha256` (`None` for the filesystem). Writes `key` through the server's own
+    /// endpoint and deletes it afterwards; fails when the store refuses even the matching body.
+    pub async fn checksum_enforced(&self, key: &BlobKey) -> anyhow::Result<Option<bool>> {
+        if self.s3.is_none() {
+            return Ok(None);
+        }
+        install_crypto_provider();
+        let good: &[u8] = b"fastproof checksum probe";
+        let wrong: &[u8] = b"fastproof checksum probX";
+        let sha = hex::encode(Sha256::digest(good));
+        let p = self
+            .presign_direct_put(key, Duration::from_secs(120), Some(&sha), true)
+            .await?
+            .context("signing the probe")?;
+        let mut b = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(30))
+            .redirect(reqwest::redirect::Policy::none());
+        if let Some(pem) = &self.ca_pem {
+            for cert in reqwest::Certificate::from_pem_bundle(pem)? {
+                b = b.add_root_certificate(cert);
+            }
+        }
+        let http = b.build()?;
+        let put = |body: &'static [u8]| {
+            let mut rb = http.put(&p.url).body(body);
+            for (k, v) in &p.headers {
+                rb = rb.header(k, v);
+            }
+            rb.send()
+        };
+        let refused = !put(wrong)
+            .await
+            .context("probing the store")?
+            .status()
+            .is_success();
+        let right = put(good).await.context("probing the store")?.status();
+        let _ = self.delete(key).await;
+        if !right.is_success() {
+            bail!("the store answered {right} to a signed PUT of the declared body");
+        }
+        Ok(Some(refused))
+    }
+
+    /// Copies a blob inside the store (a server-side copy on S3).
+    pub async fn copy(&self, from: &BlobKey, to: &BlobKey) -> anyhow::Result<()> {
+        self.inner
+            .copy(&from.path(), &to.path())
+            .await
+            .with_context(|| format!("copying {from} to {to}"))
+    }
+
     async fn presign(
         &self,
         method: Method,
@@ -700,6 +885,26 @@ mod tests {
             BlobKey::parse(&format!("projects/team-a/derived/cd/{sha}/seekable.webm")).is_err()
         );
         assert!(BlobKey::parse(&format!("projects/team-a/derived/ab/{sha}/x.sh")).is_err());
+        let id = "0193a1b2-0000-7000-8000-000000000000";
+        let inst = "0f1e2d3c4b5a69788796a5b4c3d2e1f0";
+        let i = BlobKey::direct_incoming(inst, id).unwrap();
+        assert_eq!(i.as_str(), format!("direct/{inst}/{id}/in"));
+        assert_eq!(BlobKey::parse(i.as_str()).unwrap(), i);
+        let c = BlobKey::direct_check(inst, id, "a1b2c3").unwrap();
+        assert_eq!(c.as_str(), format!("direct/{inst}/{id}/check-a1b2c3"));
+        assert_eq!(BlobKey::parse(c.as_str()).unwrap(), c);
+        assert!(BlobKey::direct_incoming(inst, "../x").is_err());
+        assert!(BlobKey::direct_incoming("../x", id).is_err());
+        assert!(BlobKey::direct_check(inst, id, "").is_err());
+        assert!(BlobKey::direct_check(inst, id, "a/b").is_err());
+        assert!(BlobKey::parse(&format!("direct/{inst}/{id}/other")).is_err());
+        assert!(BlobKey::parse(&format!("direct/{inst}/{id}/check-")).is_err());
+        assert!(BlobKey::parse(&format!("direct/{id}/in")).is_err());
+        assert!(BlobKey::parse("direct/../x/in").is_err());
+        assert_eq!(
+            BlobKey::direct_prefix(inst).unwrap().as_str(),
+            format!("direct/{inst}")
+        );
     }
 
     #[test]
@@ -712,6 +917,7 @@ mod tests {
             ca_file: None,
             access_key: Some(Secret::new("AKIDEXAMPLE")),
             secret_key: Some(Secret::new("wJalrXUtnFEMI")),
+            public_endpoint: None,
         };
         let s = format!("{:?}", BlobConfig::S3(c));
         assert!(

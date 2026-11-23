@@ -46,6 +46,21 @@ data:
   {{- end }}
   FASTPROOF_S3_ACCESS_KEY_FILE: /etc/fastproof/secrets/s3-access-key
   FASTPROOF_S3_SECRET_KEY_FILE: /etc/fastproof/secrets/s3-secret-key
+  {{- $direct := .Values.blob.directUploads }}
+  {{- $mode := toString $direct.enabled }}
+  {{- if and (ne $mode "false") (or $direct.publicEndpoint (and (eq $mode "true") (not (include "fastproof.garageEnabled" .)))) }}
+  FASTPROOF_DIRECT_UPLOADS: "true"
+  {{- if $direct.allowHttp }}
+  FASTPROOF_DIRECT_UPLOAD_ALLOW_HTTP: "true"
+  {{- end }}
+  {{- with $direct.publicEndpoint }}
+  FASTPROOF_S3_PUBLIC_ENDPOINT: {{ . | quote }}
+  {{- end }}
+  FASTPROOF_DIRECT_UPLOAD_URL_TTL_SECONDS: {{ $direct.urlTtlSeconds | default 900 | int64 | quote }}
+  FASTPROOF_DIRECT_UPLOAD_MAX_BYTES: {{ $direct.maxBytes | default 1073741824 | int64 | quote }}
+  {{- else }}
+  FASTPROOF_DIRECT_UPLOADS: "false"
+  {{- end }}
   {{- end }}
   FASTPROOF_SPOOL_DIR: /tmp/fastproof
   FASTPROOF_MEDIA_URL_TTL_SECONDS: {{ .Values.server.mediaUrlTtlSeconds | default 300 | int64 | quote }}

@@ -63,6 +63,8 @@ pub fn api_router() -> (Router<AppState>, utoipa::openapi::OpenApi) {
         .routes(routes!(api::results::detail))
         .routes(routes!(api::results::history))
         .routes(routes!(api::attachments::upload))
+        .routes(routes!(api::direct_uploads::create))
+        .routes(routes!(api::direct_uploads::complete))
         .routes(routes!(
             api::attachments::content,
             api::attachments::content_head
@@ -533,8 +535,12 @@ async fn start_inner(cfg: Config, pool: PgPool, boot: Boot) -> anyhow::Result<Ru
         search,
         guards: crate::limits::Guards::new(cfg.guards, cfg.db.heavy_slots()),
         stopping: boot.stop.clone(),
+        direct: crate::direct_uploads::DirectState::new(&cfg.direct_uploads),
         cfg: Arc::new(cfg),
     }));
+    if state.cfg.roles.api {
+        tokio::spawn(crate::direct_uploads::warm(state.clone()));
+    }
     let sched = if state.cfg.roles.scheduler {
         let mut sched = crate::scheduler::standard_jobs()?;
         sched.register_all(&state.store).await?;

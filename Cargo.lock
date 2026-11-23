@@ -718,6 +718,7 @@ name = "fastproof-blob"
 version = "0.2.0-dev1"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "bytes",
  "chrono",
  "futures",

@@ -192,9 +192,71 @@ class Api:
             raise ApiError("unexpected attachment response", r.status, True)
         return r.body
 
+    def direct_upload(
+        self, launch_id: str, sha256: str, size: int, name: str, content_type: str, retries: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """Asks for a pre-signed URL for one attachment; raises ``ApiError`` 404/405/501 when the server has none."""
+        body = json.dumps(
+            {"items": [{"sha256": sha256, "size": size, "name": name, "contentType": content_type}]}
+        ).encode()
+        r = self.call(
+            lambda: self.request("POST", f"{self._path(launch_id)}/attachments/direct", body, "application/json"),
+            retries,
+        )
+        items = r.body.get("items") if isinstance(r.body, dict) else None
+        if not items or not isinstance(items[0], dict) or not isinstance(items[0].get("status"), str):
+            raise ApiError("unexpected direct upload response", r.status, True)
+        return items[0]
+
+    def complete_direct(self, launch_id: str, upload_id: str, retries: Optional[int] = None) -> str:
+        """The attachment id; retries ``409`` (not visible yet, being verified) a few times."""
+        path = f"{self._path(launch_id)}/attachments/direct/{quote(upload_id, safe='')}/complete"
+        last: Optional[ApiError] = None
+        for i in range(4):
+            try:
+                r = self.call(lambda: self.request("POST", path, timeout=120.0), retries)
+            except ApiError as e:
+                if e.status != 409:
+                    raise
+                last = e
+                time.sleep(backoff(i, 0.5))
+                continue
+            if not isinstance(r.body, dict) or not isinstance(r.body.get("id"), str):
+                raise ApiError("unexpected completion response", r.status, True)
+            return r.body["id"]
+        raise last  # type: ignore[misc]
+
     def finish_launch(self, launch_id: str, status: str, retries: Optional[int] = None) -> None:
         body = json.dumps({"status": status}).encode()
         self.call(lambda: self.request("POST", f"{self._path(launch_id)}/finish", body, "application/json"), retries)
+
+
+def put_presigned(
+    url: str, headers: Dict[str, str], size: int, path: Optional[str] = None, body: Optional[bytes] = None,
+    timeout: float = 120.0,
+) -> int:
+    """PUTs a file or bytes to a pre-signed URL with exactly ``headers`` and no FastProof token. Returns the HTTP
+    status, or 0 when the store did not answer (not reachable from here)."""
+    h = dict(headers)
+    h["Content-Length"] = str(size)
+    fh = None
+    try:
+        data: Any = body
+        if path is not None:
+            fh = open(path, "rb")
+            data = fh
+        req = urllib.request.Request(url, data=data, headers=h, method="PUT")
+        opener = urllib.request.build_opener(_NoRedirect)
+        with opener.open(req, timeout=timeout) as res:
+            res.read()
+            return res.status
+    except urllib.error.HTTPError as e:
+        return e.code
+    except (urllib.error.URLError, OSError, ValueError):
+        return 0
+    finally:
+        if fh is not None:
+            fh.close()
 
 
 def _ndjson(items: Sequence[Dict[str, Any]]) -> bytes:

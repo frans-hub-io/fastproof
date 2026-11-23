@@ -8,6 +8,11 @@ export interface FakeOptions {
   logs?: boolean;
   running?: boolean;
   port?: number;
+  /** Offer direct uploads; `storeUrl` overrides where the pre-signed URLs point (an unreachable store). */
+  direct?: boolean;
+  storeUrl?: string;
+  /** Pre-signed URLs answer with a redirect to the store. */
+  redirect?: boolean;
 }
 
 export interface StoredResult {
@@ -26,6 +31,9 @@ export class FakeServer {
   logs: Record<string, unknown>[] = [];
   attachments = new Map<string, { id: string; name: string; contentType: string; body: Buffer }>();
   uploads = 0;
+  /** Direct uploads issued: upload id -> declaration and what was PUT. */
+  direct = new Map<string, { sha256: string; size: number; name: string; contentType: string; body?: Buffer; auth?: string }>();
+  directPuts = 0;
   requests: string[] = [];
   failNext = 0;
 
@@ -63,8 +71,61 @@ export class FakeServer {
       this.failNext--;
       return this.send(res, 503, { code: 'unavailable', message: 'try later' });
     }
+    if (url.startsWith('/redirect/') && req.method === 'PUT') {
+      res.writeHead(307, { location: `${this.url}/store/${url.slice('/redirect/'.length)}` });
+      res.end();
+      return;
+    }
+    const store = /^\/store\/([^/?]+)\?sig=ok$/.exec(url);
+    if (store && req.method === 'PUT') {
+      const d = this.direct.get(store[1]!);
+      if (!d || req.headers['content-type'] !== 'application/octet-stream') return this.send(res, 403, {});
+      d.body = body;
+      d.auth = req.headers.authorization;
+      this.directPuts++;
+      res.writeHead(200);
+      res.end();
+      return;
+    }
     if (this.o.token && req.headers.authorization !== `Bearer ${this.o.token}`)
       return this.send(res, 401, { code: 'unauthorized', message: 'no' });
+    const dm = /^\/api\/v1\/projects\/[^/]+\/launches\/[^/]+\/attachments\/direct(?:\/([^/]+)\/complete)?$/.exec(url);
+    if (dm && req.method === 'POST') {
+      if (!this.o.direct) return this.send(res, 404, { code: 'not_found', message: 'resource not found' });
+      if (!dm[1]) {
+        const items = (JSON.parse(body.toString()) as { items: { sha256: string; size: number; name: string; contentType: string }[] }).items;
+        return this.send(res, 200, {
+          items: items.map((it) => {
+            const known = this.attachments.get(it.sha256);
+            if (known) return { sha256: it.sha256, status: 'exists', id: known.id };
+            const uploadId = randomUUID();
+            this.direct.set(uploadId, { ...it });
+            return {
+              sha256: it.sha256,
+              status: 'upload',
+              uploadId,
+              url: this.o.redirect
+                ? `${this.url}/redirect/${uploadId}?sig=ok`
+                : `${this.o.storeUrl ?? this.url}/store/${uploadId}?sig=ok`,
+              method: 'PUT',
+              headers: { 'content-type': 'application/octet-stream' },
+            };
+          }),
+        });
+      }
+      const d = this.direct.get(dm[1]);
+      if (!d) return this.send(res, 404, { code: 'not_found', message: 'direct upload' });
+      if (!d.body) return this.send(res, 409, { code: 'not_uploaded', message: 'PUT first' });
+      const sha256 = createHash('sha256').update(d.body).digest('hex');
+      if (sha256 !== d.sha256 || d.body.length !== d.size)
+        return this.send(res, 422, { code: 'verification_failed', message: 'mismatch' });
+      let a = this.attachments.get(sha256);
+      if (!a) {
+        a = { id: randomUUID(), name: d.name, contentType: d.contentType, body: d.body };
+        this.attachments.set(sha256, a);
+      }
+      return this.send(res, 201, { id: a.id, sha256, size: d.size });
+    }
     const m = /^\/api\/v1\/projects\/([^/]+)\/launches(?:\/([^/]+)\/(results|logs|attachments|finish))?$/.exec(url);
     if (!m || req.method !== 'POST') return this.send(res, 404, { code: 'not_found', message: 'resource not found' });
     const [, , launchId, what] = m;

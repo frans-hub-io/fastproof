@@ -28,7 +28,8 @@ new reporters follow it.
 - Report **every retry as its own attempt** with its own status, error, output, attachments and trace id:
   Playwright retries and pytest-rerunfailures alike; the server marks mixed outcomes as flaky.
 - Upload screenshots, videos, Playwright traces and any attached file after the attempt, in the background,
-  streamed from disk and deduplicated by sha256.
+  streamed from disk and deduplicated by sha256. Files of 1 MiB and more go straight to the server's S3 store
+  through pre-signed URLs when the server offers it, and through the server otherwise (PROTOCOL.md §5a).
 - Give every attempt a W3C `traceparent` and `baggage` (launch, test, attempt) and expose it to the test, so a
   FastMock journal or a tracing backend can be joined with the attempt.
 - Mask secrets before anything leaves the process: values of `*TOKEN*`, `*SECRET*`, `*PASSWORD*`, `*_KEY`…
@@ -82,7 +83,7 @@ test('pays', async ({ page, request, fastproofTrace }) => {
 - Options: `url`, `project`, `launch`, `launchName`, `environment`, `attributes`, `debug`, `enabled`,
   `offline`, `spoolDir`, `spoolMaxBytes`, `flushTimeoutMs`, `runningResults`, `liveLogs`, `finishLaunch`
   (`auto|always|never`), `secrets {env, values, patterns}`, `attachments`, `maxAttachmentBytes`,
-  `uploadHint`, `quiet`. The token comes from `FASTPROOF_TOKEN` or `FASTPROOF_TOKEN_FILE`; see PROTOCOL.md §1
+  `directUploads` (`auto|off`), `directUploadMinBytes`, `uploadHint`, `quiet`. The token comes from `FASTPROOF_TOKEN` or `FASTPROOF_TOKEN_FILE`; see PROTOCOL.md §1
   for all variables.
 - Fixture `fastproofTrace`: `traceparent`, `traceId`, `spanId`, `baggage`, `headers({newSpan})`, `env()`.
   Option `fastproofPropagate`: `'off'` (default), `'all'` (adds the headers to `extraHTTPHeaders` of

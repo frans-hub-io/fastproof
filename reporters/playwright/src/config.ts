@@ -50,6 +50,13 @@ export interface FastProofOptions {
   attachments?: boolean;
   /** Largest attachment uploaded, in bytes (default 512 MB). */
   maxAttachmentBytes?: number;
+  /**
+   * Attachments from `directUploadMinBytes` up go straight to the server's S3 store through pre-signed URLs when
+   * the server offers it (`auto`, default), or always through the server (`off`). Env `FASTPROOF_DIRECT_UPLOAD_MODE`.
+   */
+  directUploads?: 'auto' | 'off';
+  /** Smallest attachment sent directly, in bytes (default 1 MiB). Env `FASTPROOF_DIRECT_UPLOAD_MIN_BYTES`. */
+  directUploadMinBytes?: number;
   /** Print the hint about sending the spool later (default true). */
   uploadHint?: boolean;
   /** No messages except warnings. */
@@ -79,6 +86,8 @@ export interface Config {
   env: Env;
   attachments: boolean;
   maxAttachmentBytes: number;
+  directUploads: 'auto' | 'off';
+  directUploadMinBytes: number;
   uploadHint: boolean;
   quiet: boolean;
 }
@@ -172,6 +181,9 @@ export function resolveConfig(o: FastProofOptions = {}, env: Env = process.env, 
     env,
     attachments: o.attachments ?? true,
     maxAttachmentBytes: num(o.maxAttachmentBytes, undefined, 512 * 1024 * 1024),
+    directUploads:
+      o.directUploads ?? (env.FASTPROOF_DIRECT_UPLOAD_MODE?.trim().toLowerCase() === 'off' ? 'off' : 'auto'),
+    directUploadMinBytes: Math.max(1, num(o.directUploadMinBytes, env.FASTPROOF_DIRECT_UPLOAD_MIN_BYTES, 1024 * 1024)),
     uploadHint: o.uploadHint ?? true,
     quiet: o.quiet ?? flag(env.FASTPROOF_QUIET) ?? false,
   };

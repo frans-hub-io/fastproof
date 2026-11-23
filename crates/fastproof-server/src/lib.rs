@@ -7,6 +7,7 @@ pub mod blob_guard;
 pub mod cli;
 pub mod config;
 pub mod db;
+pub mod direct_uploads;
 pub mod ingest;
 pub mod integrations;
 pub mod launch_export;

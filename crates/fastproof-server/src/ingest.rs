@@ -41,6 +41,9 @@ pub struct SpoolSink {
     dir: PathBuf,
     n: u64,
     pub items: HashMap<String, SpooledItem>,
+    /// Files the CLI uploaded directly and replaced by a reference
+    /// ([`crate::direct_uploads::parse_stub`]): attachment id -> (content type, name).
+    pub stubs: HashMap<uuid::Uuid, (Option<String>, String)>,
 }
 
 impl SpoolSink {
@@ -49,6 +52,7 @@ impl SpoolSink {
             dir,
             n: 0,
             items: HashMap::new(),
+            stubs: HashMap::new(),
         }
     }
 }
@@ -61,11 +65,25 @@ impl AttachmentSink for SpoolSink {
         _size: u64,
         body: &mut dyn Read,
     ) -> Result<AttachmentId, IngestError> {
+        let mut head = Vec::with_capacity(crate::direct_uploads::STUB_MAX + 1);
+        (&mut *body)
+            .take(crate::direct_uploads::STUB_MAX as u64 + 1)
+            .read_to_end(&mut head)?;
+        if let Some(id) = crate::direct_uploads::parse_stub(&head) {
+            let name = source.rsplit('/').next().unwrap_or(source).to_string();
+            self.stubs
+                .insert(id, (content_type.map(str::to_string), name));
+            return Ok(AttachmentId(format!(
+                "{}{id}",
+                crate::direct_uploads::STUB_ID
+            )));
+        }
+        let mut body = std::io::Cursor::new(head).chain(body);
         self.n += 1;
         let path = self.dir.join(format!("a{}", self.n));
         let f = std::fs::File::create(&path)?;
         let mut w = HashingWriter::new(BufWriter::with_capacity(64 * 1024, f));
-        if let Err(e) = std::io::copy(body, &mut w) {
+        if let Err(e) = std::io::copy(&mut body, &mut w) {
             let _ = std::fs::remove_file(&path);
             return Err(IngestError::Io(e));
         }
@@ -476,6 +494,50 @@ pub(crate) async fn process_inner(
             blob_key: BlobKey::attachment(&job.project_key, sha)?.to_string(),
         });
     }
+    // Files the CLI uploaded directly: references to attachments already linked to this
+    // launch (anything else is left without an attachment and reported).
+    let mut stub_warnings = Vec::new();
+    let mut stub_sha: HashMap<String, String> = HashMap::new();
+    if !sink.stubs.is_empty() {
+        let wanted: Vec<uuid::Uuid> = sink.stubs.keys().copied().collect();
+        let mut found = HashMap::new();
+        for chunk in wanted.chunks(5000) {
+            found.extend(
+                s.store
+                    .launch_attachments(job.project_id, job.launch_id, chunk)
+                    .await?,
+            );
+        }
+        let mut have: std::collections::HashSet<String> =
+            rows.iter().map(|r| r.sha256.clone()).collect();
+        let mut stubs: Vec<_> = sink.stubs.iter().collect();
+        stubs.sort_by_key(|(id, _)| **id);
+        for (id, (ct, name)) in stubs {
+            let Some((sha, size)) = found.get(id) else {
+                if stub_warnings.len() < 20 {
+                    stub_warnings.push(format!(
+                        "{name}: refers to attachment {id}, which is not an attachment of this launch"
+                    ));
+                }
+                continue;
+            };
+            stub_sha.insert(
+                format!("{}{id}", crate::direct_uploads::STUB_ID),
+                sha.clone(),
+            );
+            if !have.insert(sha.clone()) {
+                continue;
+            }
+            rows.push(NewAttachment {
+                sha256: sha.clone(),
+                size: *size,
+                content_type: crate::api::attachments::clean_content_type(ct.as_deref()),
+                original_name: crate::api::uploads::clean_file_name(name),
+                blob_key: BlobKey::attachment(&job.project_key, sha)?.to_string(),
+            });
+        }
+    }
+    let n_attachments = rows.len();
     let mut ids: HashMap<String, uuid::Uuid> = HashMap::new();
     for chunk in rows.chunks(5000) {
         match s
@@ -498,7 +560,11 @@ pub(crate) async fn process_inner(
         }
     }
     let mut rewrite = |a: &mut fastproof_model::AttachmentRef| {
-        if let Some(id) = a.id.as_ref().and_then(|i| ids.get(&i.0)) {
+        let id = a.id.as_ref().and_then(|i| {
+            let sha = stub_sha.get(&i.0).unwrap_or(&i.0);
+            ids.get(sha)
+        });
+        if let Some(id) = id {
             a.id = Some(AttachmentId(id.to_string()));
         } else {
             a.id = None;
@@ -580,6 +646,7 @@ pub(crate) async fn process_inner(
             batch.warnings.len() - MAX_WARNINGS
         ));
     }
+    warnings.extend(stub_warnings);
     if batch.counts.attachments_missing > 0 {
         warnings.push(format!(
             "{} attachment references point to files that are not in the upload",
@@ -595,7 +662,7 @@ pub(crate) async fn process_inner(
         format: format.map(|f| api_format(f).to_string()),
         counts: UploadItemCounts {
             results: total as i64,
-            attachments: sink.items.len() as i64,
+            attachments: n_attachments as i64,
             ignored: batch.ignored.len() as i64,
         },
         warnings,

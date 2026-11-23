@@ -104,6 +104,54 @@ describe('client against a live server', () => {
     assert.equal(srv.results.get('x')?.status, 'passed');
   });
 
+  it('sends large attachments straight to the store and small ones through the server', async () => {
+    const srv = await new FakeServer({ token: TOKEN, running: true, direct: true }).start();
+    servers.push(srv);
+    const c = new Client(config(srv.url, { directUploadMinBytes: 1000 }), 'test', out);
+    c.start();
+    const dir = mkdtempSync(join(tmpdir(), 'fp-direct-'));
+    const video = join(dir, 'video.webm');
+    writeFileSync(video, Buffer.alloc(5000, 7));
+    c.finish(result('d1', 'failed'), [
+      { name: 'video', contentType: 'video/webm', path: video },
+      { name: 'small', contentType: 'text/plain', body: Buffer.from('tiny') },
+    ], false);
+    c.finish(result('d2', 'failed'), [{ name: 'video', contentType: 'video/webm', path: video }], false);
+    const s = await c.close('finished');
+    assert.equal(s.sent, 2);
+    assert.equal(srv.directPuts, 1, 'the video went to the store once');
+    assert.equal(srv.uploads, 1, 'the small file went through the server');
+    const d = [...srv.direct.values()][0]!;
+    assert.equal(d.auth, undefined, 'the FastProof token is never sent to the store');
+    assert.equal(d.body?.length, 5000);
+    const r1 = srv.results.get('d1')!.body as { attachments: { name: string }[] };
+    assert.equal(r1.attachments.length, 2);
+  });
+
+  it('falls back to the server when the store is unreachable or direct uploads are missing', async () => {
+    const probe = await new FakeServer().start();
+    const dead = probe.url;
+    await probe.stop();
+    for (const o of [{ direct: true, storeUrl: dead }, { direct: false }, { direct: true, redirect: true }]) {
+      const srv = await new FakeServer({ running: true, ...o }).start();
+      servers.push(srv);
+      const lines: string[] = [];
+      const c = new Client(config(srv.url, { directUploadMinBytes: 10 }), 'test', (m) => void lines.push(m));
+      c.start();
+      for (const n of ['a', 'b']) c.finish(result(n), [{ name: n, contentType: 'application/zip', body: Buffer.alloc(100, n.charCodeAt(0)) }], true);
+      const s = await c.close('finished');
+      assert.equal(s.sent, 2, JSON.stringify(o));
+      assert.equal(srv.uploads, 2, 'both went through the server');
+      assert.equal(srv.directPuts, 0);
+      if ('redirect' in o) {
+        assert.ok(lines.some((l) => l.includes('answered 307')), lines.join('\n'));
+      } else if (o.direct) {
+        assert.ok(lines.some((l) => l.includes('not reachable')), lines.join('\n'));
+        assert.ok(srv.requests.filter((r) => r.includes('/attachments/direct')).length <= 2, 'stops asking after the store failed');
+      }
+    }
+  });
+
   it('spools when the server is down and flushes later with attachments', async () => {
     const probe = await new FakeServer().start();
     const port = Number(new URL(probe.url).port);

@@ -12,6 +12,7 @@ pub mod analysis;
 pub mod attachments;
 pub mod blob_identity;
 pub mod codec;
+pub mod direct_uploads;
 pub mod events;
 pub mod explorer;
 pub mod history;

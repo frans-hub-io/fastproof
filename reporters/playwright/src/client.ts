@@ -4,6 +4,7 @@ import { readFile, stat } from 'node:fs/promises';
 import { hostname } from 'node:os';
 
 import { Api, ApiError, USER_AGENT } from './api';
+import { ok, putPresigned } from './http';
 import type { Config } from './config';
 import { Masker } from './mask';
 import { BLOB_PREFIX, SPOOL_VERSION, SpoolSession, flushSpool, type SpoolBlob } from './spool';
@@ -106,6 +107,8 @@ export class Client {
   private pumping: Promise<void> | undefined;
   private oldSpool: Promise<void> | undefined;
   private warned = new Set<string>();
+  /** Why direct uploads stopped for this run, once they did. */
+  private directOff: string | undefined;
   readonly spool: SpoolSession;
   private stats = { sent: 0, lost: 0, attachments: 0, droppedLogs: 0 };
 
@@ -287,7 +290,7 @@ export class Client {
         pending.push(p);
         continue;
       }
-      const id = await this.upload(p.file, p.sha256);
+      const id = await this.upload(p.file, p.sha256, p.size);
       if (id === 'retry') pending.push(p);
       else if (id !== 'skip') refs.push({ id, name: p.file.name, contentType: p.file.contentType });
     }
@@ -300,13 +303,64 @@ export class Client {
     this.kick();
   }
 
-  private upload(file: AttachmentFile, sha256: string): Promise<string> {
+  /**
+   * Sends an attachment straight to the S3 store (see PROTOCOL.md, "Direct uploads"); `undefined` means "use the
+   * server path": no direct uploads on the server, the store not reachable from here, or the file refused or
+   * rejected. Server errors other than those are thrown like those of the server path.
+   */
+  private async direct(launchId: string, file: AttachmentFile, sha256: string, size: number): Promise<string | undefined> {
+    if (this.directOff || this.cfg.directUploads === 'off' || size < this.cfg.directUploadMinBytes) return undefined;
+    let t;
+    try {
+      t = await this.api.directUpload(launchId, { sha256, size, name: file.name, contentType: file.contentType }, 2);
+    } catch (e) {
+      if (!(e instanceof ApiError) || !e.fatal) throw e;
+      if ([404, 405, 501].includes(e.status)) this.directOff = 'the server does not offer direct uploads';
+      else this.warnOnce(`direct:a${e.status}`, `direct upload of ${file.name} refused (${e.message}); sent through the server`);
+      return undefined;
+    }
+    if (t.status === 'exists' && t.id) return t.id;
+    if (t.status !== 'upload' || !t.url || !t.uploadId) return undefined;
+    const put = await putPresigned(
+      t.url,
+      t.headers ?? {},
+      file.body ? { raw: file.body } : { file: file.path! },
+      size,
+      120_000 + Math.floor(size / 512),
+    );
+    if (put.status === 0) {
+      this.directOff = `the S3 store is not reachable (${put.error ?? 'network error'})`;
+      this.warnOnce('direct:unreachable', `direct uploads off: ${this.directOff}; attachments go through the server`);
+      return undefined;
+    }
+    if (!ok(put)) {
+      this.warnOnce(`direct:${put.status}`, `the S3 store answered ${put.status} to a direct upload; sent through the server`);
+      return undefined;
+    }
+    try {
+      return await this.api.completeDirect(launchId, t.uploadId, 2);
+    } catch (e) {
+      if (e instanceof ApiError && e.fatal) {
+        this.warnOnce(`direct:c${e.status}`, `direct upload of ${file.name} not accepted (${e.message}); sent through the server`);
+        return undefined;
+      }
+      throw e;
+    }
+  }
+
+  private upload(file: AttachmentFile, sha256: string, size: number): Promise<string> {
     const known = this.uploads.get(sha256);
     if (known) return known;
     const launchId = this.launchId!;
     const p = this.sem.run(async () => {
       if (this.offline) return 'retry';
       try {
+        const direct = await this.direct(launchId, file, sha256, size);
+        if (direct) {
+          this.failures = 0;
+          this.stats.attachments++;
+          return direct;
+        }
         const r = await this.api.uploadAttachment(launchId, file, 2);
         this.failures = 0;
         this.stats.attachments++;

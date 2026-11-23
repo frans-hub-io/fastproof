@@ -8,12 +8,12 @@ ENV CI=true \
     npm_config_fund=false \
     npm_config_update_notifier=false
 WORKDIR /src/franshub-platform/packages/ui-shell
-COPY franshub-platform/packages/ui-shell/package.json franshub-platform/packages/ui-shell/package-lock.json ./
+COPY franshub-platform/packages/ui-shell/package.json franshub-platform/packages/ui-shell/package-lock.json franshub-platform/packages/ui-shell/.npmrc ./
 RUN npm ci
 COPY franshub-platform/packages/ui-shell/ ./
 RUN npm run build
 WORKDIR /src/fastproof/ui
-COPY fastproof/ui/package.json fastproof/ui/package-lock.json ./
+COPY fastproof/ui/package.json fastproof/ui/package-lock.json fastproof/ui/.npmrc ./
 RUN npm ci
 COPY fastproof/ui/ ./
 RUN npm run build

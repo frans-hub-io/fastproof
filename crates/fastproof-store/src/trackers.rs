@@ -140,7 +140,30 @@ pub struct SyncJob {
     pub remote_id: Option<String>,
     pub etag: Option<String>,
     pub closed: bool,
+    pub closed_at: Option<DateTime<Utc>>,
     pub attempts: i32,
+    /// The lease the read holds; its outcome is stored only while the lease is still its own.
+    pub lease_id: Uuid,
+}
+
+/// The answer to a read asked for by a user.
+#[derive(Clone, Debug)]
+pub enum ReadNow {
+    /// Leased for this read.
+    Job(Box<SyncJob>),
+    /// Not now: read recently, backing off after failures, or being read; try again after this
+    /// many seconds.
+    Later(i64),
+    NotFound,
+}
+
+/// Why a create cannot start.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Limit {
+    /// Too many creates (or links) in the last hour.
+    Hourly,
+    /// Too many issues followed.
+    Total,
 }
 
 /// How a read ended.
@@ -159,6 +182,7 @@ pub enum SyncOutcome {
 pub enum Begin {
     New(Uuid),
     Existing(Box<TrackerIssue>),
+    Limited(Limit),
 }
 
 const COLUMNS: &str = "id, tracker_id, tracker_type, issue_key, url, title, state, category, created_by, \
@@ -199,16 +223,37 @@ fn sync_row(r: &PgRow) -> anyhow::Result<SyncJob> {
         remote_id: r.try_get("remote_id")?,
         etag: r.try_get("etag")?,
         closed: category == "closed",
+        closed_at: r.try_get("closed_at")?,
         attempts: r.try_get("sync_attempts")?,
+        lease_id: r.try_get("lease_id")?,
     })
 }
 
+/// At most `max` bytes, cut at a character boundary.
 fn clip(s: &str, max: usize) -> String {
     let s = no_nul(s);
-    match s.char_indices().nth(max) {
-        Some((i, _)) => s[..i].to_string(),
-        None => s,
+    if s.len() <= max {
+        return s;
     }
+    let mut end = max;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s[..end].to_string()
+}
+
+const JOB_COLUMNS: &str = "i.id, i.project_id, p.key, i.tracker_id, i.tracker_type, i.issue_key, i.remote_id, \
+    i.etag, i.category, i.closed_at, i.sync_attempts, i.lease_id";
+
+/// Serialises the limit checks of one project's creates and links.
+async fn project_lock(tx: &mut sqlx::PgConnection, project_id: Uuid) -> anyhow::Result<()> {
+    sqlx::query(
+        "select pg_advisory_xact_lock(hashtextextended('fastproof-tracker:' || $1::text, 0))",
+    )
+    .bind(project_id)
+    .execute(&mut *tx)
+    .await?;
+    Ok(())
 }
 
 impl Store {
@@ -221,10 +266,11 @@ impl Store {
         let limit = f.limit.clamp(1, 200);
         let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
             "select {COLUMNS} from tracker_issues i where project_id = $1 \
-               and (cardinality($2::text[]) = 0 or url = any($2)) \
+               and (cardinality($2::text[]) = 0 or (md5(url) = any(array(select md5(u) from unnest($2::text[]) u)) \
+                     and url = any($2))) \
                and (cardinality($3::text[]) = 0 or issue_key = any($3)) \
                and ($4::text is null or tracker_id = $4) \
-               and ($5::text is null or category = $5) \
+               and (($5::text is null and category <> 'failed') or category = $5) \
                and ($6::boolean is null or unmute_suggested = $6) \
                and ($7::uuid is null or exists (select 1 from tracker_issue_links k \
                      where k.issue_id = i.id and k.project_id = $1 and k.result_id = $7)) \
@@ -345,25 +391,11 @@ impl Store {
         .await?)
     }
 
-    /// Issues of the project and issues created in it since `since` (for limits).
-    pub async fn tracker_issue_counts(
-        &self,
-        project_id: Uuid,
-        since: DateTime<Utc>,
-    ) -> anyhow::Result<(i64, i64)> {
-        let r = sqlx::query(
-            "select count(*) as total, count(*) filter (where created_at >= $2) as recent \
-             from tracker_issues where project_id = $1",
-        )
-        .bind(project_id)
-        .bind(since)
-        .fetch_one(&self.pool)
-        .await?;
-        Ok((r.try_get("total")?, r.try_get("recent")?))
-    }
-
-    /// Starts a create: inserts a `creating` row for the request id, or returns the issue a
-    /// request with this id already made (a retried request creates nothing twice).
+    /// Starts a create: under the project's lock, checks the hourly and total limits (failed
+    /// attempts count toward the hourly one), records the attempt and inserts a `creating` row
+    /// for the request id. A request id seen before answers the issue it made (or starts again
+    /// when its create failed).
+    #[allow(clippy::too_many_arguments)]
     pub async fn begin_tracker_issue(
         &self,
         project_id: Uuid,
@@ -371,37 +403,141 @@ impl Store {
         tracker_type: &str,
         request_id: Uuid,
         by: &str,
+        per_hour: i64,
+        total: i64,
     ) -> anyhow::Result<Begin> {
-        let id = Uuid::now_v7();
-        let inserted: Option<Uuid> = sqlx::query_scalar(
-            "insert into tracker_issues (id, project_id, tracker_id, tracker_type, request_id, created_by) \
-             values ($1, $2, $3, $4, $5, $6) on conflict (project_id, request_id) do nothing returning id",
-        )
-        .bind(id)
-        .bind(project_id)
-        .bind(tracker_id)
-        .bind(tracker_type)
-        .bind(request_id)
-        .bind(clip(by, 200))
-        .fetch_optional(&self.pool)
-        .await?;
-        if let Some(id) = inserted {
-            return Ok(Begin::New(id));
-        }
-        let r = sqlx::query(sqlx::AssertSqlSafe(format!(
+        let mut tx = self.pool.begin().await?;
+        project_lock(&mut tx, project_id).await?;
+        let prev = sqlx::query(sqlx::AssertSqlSafe(format!(
             "select {COLUMNS} from tracker_issues where project_id = $1 and request_id = $2"
         )))
         .bind(project_id)
         .bind(request_id)
-        .fetch_one(&self.pool)
+        .fetch_optional(&mut *tx)
         .await?;
-        Ok(Begin::Existing(Box::new(issue_row(&r)?)))
+        let prev = prev.as_ref().map(issue_row).transpose()?;
+        if let Some(p) = &prev
+            && p.category != "failed"
+        {
+            return Ok(Begin::Existing(Box::new(p.clone())));
+        }
+        let (followed, recent): (i64, i64) = sqlx::query_as(
+            "select (select count(*) from tracker_issues where project_id = $1 and category <> 'failed'), \
+               (select count(*) from tracker_requests where project_id = $1 and kind = 'create' \
+                  and at > now() - interval '1 hour')",
+        )
+        .bind(project_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if recent >= per_hour {
+            return Ok(Begin::Limited(Limit::Hourly));
+        }
+        if followed >= total {
+            return Ok(Begin::Limited(Limit::Total));
+        }
+        sqlx::query(
+            "insert into tracker_requests (id, project_id, kind) values ($1, $2, 'create')",
+        )
+        .bind(Uuid::now_v7())
+        .bind(project_id)
+        .execute(&mut *tx)
+        .await?;
+        let id = match prev {
+            Some(p) => {
+                sqlx::query(
+                    "update tracker_issues set category = 'creating', tracker_id = $2, tracker_type = $3, \
+                       created_by = $4, created_at = now(), updated_at = now() where id = $1",
+                )
+                .bind(p.id)
+                .bind(tracker_id)
+                .bind(tracker_type)
+                .bind(clip(by, 200))
+                .execute(&mut *tx)
+                .await?;
+                p.id
+            }
+            None => {
+                let id = Uuid::now_v7();
+                sqlx::query(
+                    "insert into tracker_issues (id, project_id, tracker_id, tracker_type, request_id, created_by) \
+                     values ($1, $2, $3, $4, $5, $6)",
+                )
+                .bind(id)
+                .bind(project_id)
+                .bind(tracker_id)
+                .bind(tracker_type)
+                .bind(request_id)
+                .bind(clip(by, 200))
+                .execute(&mut *tx)
+                .await?;
+                id
+            }
+        };
+        tx.commit().await?;
+        Ok(Begin::New(id))
     }
 
-    /// Drops a `creating` row whose create failed.
+    /// Records a link attempt under the project's lock: `None` when allowed, else the limit hit.
+    /// `new_issue` counts the total of followed issues as well.
+    pub async fn take_link_quota(
+        &self,
+        project_id: Uuid,
+        per_hour: i64,
+        total: Option<i64>,
+    ) -> anyhow::Result<Option<Limit>> {
+        let mut tx = self.pool.begin().await?;
+        project_lock(&mut tx, project_id).await?;
+        let (followed, recent): (i64, i64) = sqlx::query_as(
+            "select (select count(*) from tracker_issues where project_id = $1 and category <> 'failed'), \
+               (select count(*) from tracker_requests where project_id = $1 and kind = 'link' \
+                  and at > now() - interval '1 hour')",
+        )
+        .bind(project_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if recent >= per_hour {
+            return Ok(Some(Limit::Hourly));
+        }
+        if total.is_some_and(|t| followed >= t) {
+            return Ok(Some(Limit::Total));
+        }
+        sqlx::query("insert into tracker_requests (id, project_id, kind) values ($1, $2, 'link')")
+            .bind(Uuid::now_v7())
+            .bind(project_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(None)
+    }
+
+    /// Marks a `creating` row whose create failed: it keeps counting toward the hourly limit
+    /// and its request id may start again.
     pub async fn abandon_tracker_issue(&self, id: Uuid) -> anyhow::Result<()> {
-        sqlx::query("delete from tracker_issues where id = $1 and category = 'creating'")
-            .bind(id)
+        sqlx::query(
+            "update tracker_issues set category = 'failed', updated_at = now() \
+             where id = $1 and category = 'creating'",
+        )
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Housekeeping: `creating` rows left by a crash become `failed` after 10 minutes, failed
+    /// rows and attempt records go after two days.
+    pub async fn sweep_tracker_rows(&self) -> anyhow::Result<()> {
+        sqlx::query(
+            "update tracker_issues set category = 'failed', updated_at = now() \
+             where category = 'creating' and created_at < now() - interval '10 minutes'",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "delete from tracker_issues where category = 'failed' and updated_at < now() - interval '2 days'",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query("delete from tracker_requests where at < now() - interval '2 days'")
             .execute(&self.pool)
             .await?;
         Ok(())
@@ -435,7 +571,10 @@ impl Store {
         match r {
             Ok(_) => Ok(true),
             Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {
-                self.abandon_tracker_issue(id).await?;
+                sqlx::query("delete from tracker_issues where id = $1 and category = 'creating'")
+                    .bind(id)
+                    .execute(&self.pool)
+                    .await?;
                 Ok(false)
             }
             Err(e) => Err(e.into()),
@@ -641,29 +780,55 @@ impl Store {
         )
     }
 
-    /// Asks for a read of an issue soon: now, or `min_gap` after the last read. `false` when
-    /// the issue is not tracked or still being created.
-    pub async fn request_tracker_sync(
+    /// Leases one issue for a read asked for by a user: not while another read holds it, not
+    /// within `min_gap` of the last attempt, and not while a failing issue backs off.
+    pub async fn lease_tracker_read(
         &self,
         project_id: Uuid,
         id: Uuid,
         min_gap: Duration,
-    ) -> anyhow::Result<bool> {
-        let n = sqlx::query(
-            "update tracker_issues set next_sync_at = greatest(now(), \
-               coalesce(synced_at, now()) + make_interval(secs => $3)) \
-             where project_id = $1 and id = $2 and category <> 'creating'",
+        lease: Duration,
+    ) -> anyhow::Result<ReadNow> {
+        let r = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "update tracker_issues i set lease_id = gen_random_uuid(), \
+               lease_until = now() + make_interval(secs => $4), last_attempt_at = now() \
+             from projects p where p.id = i.project_id and i.project_id = $1 and i.id = $2 \
+               and i.issue_key is not null and i.category in ('open', 'closed') \
+               and (i.lease_until is null or i.lease_until < now()) \
+               and (i.last_attempt_at is null or i.last_attempt_at < now() - make_interval(secs => $3)) \
+               and (i.sync_attempts = 0 or i.next_sync_at is null or i.next_sync_at <= now()) \
+             returning {JOB_COLUMNS}"
+        )))
+        .bind(project_id)
+        .bind(id)
+        .bind(min_gap.as_secs_f64())
+        .bind(lease.as_secs_f64())
+        .fetch_optional(&self.pool)
+        .await?;
+        if let Some(r) = r {
+            return Ok(ReadNow::Job(Box::new(sync_row(&r)?)));
+        }
+        let wait: Option<Option<f64>> = sqlx::query_scalar(
+            "select extract(epoch from greatest( \
+                 coalesce(lease_until, now()), \
+                 coalesce(last_attempt_at + make_interval(secs => $3), now()), \
+                 case when sync_attempts > 0 then coalesce(next_sync_at, now()) else now() end) - now())::float8 \
+             from tracker_issues where project_id = $1 and id = $2 and issue_key is not null \
+               and category in ('open', 'closed')",
         )
         .bind(project_id)
         .bind(id)
         .bind(min_gap.as_secs_f64())
-        .execute(&self.pool)
-        .await?
-        .rows_affected();
-        Ok(n > 0)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(match wait {
+            None => ReadNow::NotFound,
+            Some(w) => ReadNow::Later(w.unwrap_or(1.0).ceil().max(1.0) as i64),
+        })
     }
 
-    /// The same for a webhook that names an issue by key or tracker id.
+    /// A webhook names an issue (by key or tracker id): it is read soon, at most once per
+    /// `min_gap`, unless a read holds it or it backs off after failures.
     pub async fn request_tracker_sync_by_ref(
         &self,
         project_id: Uuid,
@@ -675,9 +840,10 @@ impl Store {
             return Ok(0);
         }
         Ok(sqlx::query(
-            "update tracker_issues set next_sync_at = greatest(now(), \
-               coalesce(synced_at, now()) + make_interval(secs => $4)) \
-             where project_id = $1 and tracker_id = $2 and category <> 'creating' \
+            "update tracker_issues set next_sync_at = least(coalesce(next_sync_at, 'infinity'), \
+               greatest(now(), coalesce(last_attempt_at, now()) + make_interval(secs => $4))) \
+             where project_id = $1 and tracker_id = $2 and category in ('open', 'closed') \
+               and sync_attempts = 0 and (lease_until is null or lease_until < now()) \
                and (issue_key = any($3) or remote_id = any($3))",
         )
         .bind(project_id)
@@ -689,41 +855,33 @@ impl Store {
         .rows_affected())
     }
 
-    /// The read of one issue (for a read asked for by a user), without claiming it.
-    pub async fn tracker_sync_job(
-        &self,
-        project_id: Uuid,
-        id: Uuid,
-    ) -> anyhow::Result<Option<SyncJob>> {
-        let r = sqlx::query(
-            "select i.id, i.project_id, p.key, i.tracker_id, i.tracker_type, i.issue_key, i.remote_id, \
-               i.etag, i.category, i.sync_attempts from tracker_issues i join projects p on p.id = i.project_id \
-             where i.project_id = $1 and i.id = $2 and i.issue_key is not null and i.category <> 'creating'",
-        )
-        .bind(project_id)
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await?;
-        r.as_ref().map(sync_row).transpose()
-    }
-
-    /// Claims issues due for a read (one replica each, until the lease ends).
+    /// Claims issues due for a read (one replica each, until the lease ends), at most
+    /// `per_tracker` of one project's tracker per round so that one tracker cannot fill it.
     pub async fn claim_tracker_syncs(
         &self,
         limit: i64,
+        per_tracker: i64,
         lease: Duration,
     ) -> anyhow::Result<Vec<SyncJob>> {
-        let rows = sqlx::query(
-            "update tracker_issues i set lease_until = now() + make_interval(secs => $2), \
-               next_sync_at = now() + make_interval(secs => $2) \
-             from projects p where p.id = i.project_id and i.id in (select id from tracker_issues \
-               where next_sync_at <= now() and category <> 'creating' and issue_key is not null \
-               order by next_sync_at limit $1 for update skip locked) \
-             returning i.id, i.project_id, p.key, i.tracker_id, i.tracker_type, i.issue_key, i.remote_id, \
-               i.etag, i.category, i.sync_attempts",
-        )
+        let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "update tracker_issues i set lease_id = gen_random_uuid(), \
+               lease_until = now() + make_interval(secs => $2), last_attempt_at = now() \
+             from projects p where p.id = i.project_id and i.id in ( \
+               select id from tracker_issues where id in ( \
+                 select id from (select id, next_sync_at, row_number() over \
+                     (partition by project_id, tracker_id order by next_sync_at) as n \
+                   from (select id, project_id, tracker_id, next_sync_at from tracker_issues \
+                     where next_sync_at <= now() and category in ('open', 'closed') and issue_key is not null \
+                       and (lease_until is null or lease_until < now()) \
+                     order by next_sync_at limit 2000) due) ranked \
+                 where n <= $3 order by next_sync_at limit $1) \
+               and (lease_until is null or lease_until < now()) \
+               for update skip locked) \
+             returning {JOB_COLUMNS}"
+        )))
         .bind(limit)
         .bind(lease.as_secs_f64())
+        .bind(per_tracker)
         .fetch_all(&self.pool)
         .await?;
         rows.iter().map(sync_row).collect()
@@ -742,11 +900,12 @@ impl Store {
             SyncOutcome::Failed(err, retry_at) => {
                 sqlx::query(
                     "update tracker_issues set sync_error = $2, sync_attempts = sync_attempts + 1, \
-                       next_sync_at = $3, lease_until = null where id = $1",
+                       next_sync_at = $3, lease_until = null, lease_id = null where id = $1 and lease_id = $4",
                 )
                 .bind(job.id)
                 .bind(clip(err, 500))
                 .bind(retry_at)
+                .bind(job.lease_id)
                 .execute(&self.pool)
                 .await?;
                 Ok(false)
@@ -754,10 +913,11 @@ impl Store {
             SyncOutcome::Unchanged => {
                 sqlx::query(
                     "update tracker_issues set synced_at = now(), sync_error = null, sync_attempts = 0, \
-                       next_sync_at = $2, lease_until = null where id = $1",
+                       next_sync_at = $2, lease_until = null, lease_id = null where id = $1 and lease_id = $3",
                 )
                 .bind(job.id)
                 .bind(next)
+                .bind(job.lease_id)
                 .execute(&self.pool)
                 .await?;
                 Ok(false)
@@ -779,9 +939,10 @@ impl Store {
                        unmute_suggested = case when $5 then true when $4 then unmute_suggested else false end, \
                        url = case when $6 = '' then url else $6 end, etag = $7, synced_at = now(), \
                        sync_error = null, sync_attempts = 0, next_sync_at = $8, lease_until = null, \
+                       lease_id = null, \
                        updated_at = case when state is distinct from $3 or title is distinct from $2 \
                          then now() else updated_at end \
-                     where id = $1",
+                     where id = $1 and lease_id = $9",
                 )
                 .bind(job.id)
                 .bind(clip(&s.title, 500))
@@ -791,6 +952,7 @@ impl Store {
                 .bind(clip(&s.url, 2048))
                 .bind(etag.as_deref().map(|e| clip(e, 200)))
                 .bind(next)
+                .bind(job.lease_id)
                 .execute(&self.pool)
                 .await?;
                 Ok(closes)

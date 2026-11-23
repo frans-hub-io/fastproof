@@ -1,8 +1,9 @@
 //! Reads the state of tracked issues back from their trackers: open issues every
 //! `FASTPROOF_TRACKER_POLL_SECONDS` (`sync: poll`), on a webhook from the tracker
-//! (`sync: webhook`, plus a daily read), closed issues daily (they may be reopened). Failed
-//! reads back off exponentially up to six hours; a throttled tracker is left alone for as long
-//! as it asked.
+//! (`sync: webhook`, plus a daily read), closed issues daily for 30 days (they may be
+//! reopened), then no more. Failed reads back off exponentially up to six hours; a throttled
+//! or failing tracker is left alone for a while. A round takes at most five issues of one
+//! project's tracker and reads at most eight at a time.
 //!
 //! A webhook only says "read this issue now": its payload is never trusted for the state,
 //! which always comes from the tracker's API with FastProof's token.
@@ -33,12 +34,28 @@ pub const DAILY: Duration = Duration::from_secs(24 * 3600);
 const MAX_BACKOFF: Duration = Duration::from_secs(6 * 3600);
 /// Least time between two reads of one issue asked for by a user or a webhook.
 pub const MIN_GAP: Duration = Duration::from_secs(5);
+/// Issues of one project's tracker per round, at most.
+pub const PER_TRACKER: i64 = 5;
+/// Reads at the same time, at most.
+pub const PARALLEL: usize = 8;
+/// Days a closed issue is still read (it may be reopened).
+pub const CLOSED_DAYS: i64 = 30;
+/// Lease of a read.
+pub const LEASE_TIME: Duration = LEASE;
 
-/// When to read an issue again after a successful read; `None` with `sync: off`.
-pub fn next_read(api: &TrackerApi, closed: bool, poll: Duration) -> Option<Duration> {
+/// When to read an issue again after a successful read; `None` with `sync: off`, and for an
+/// issue closed more than [`CLOSED_DAYS`] ago.
+pub fn next_read(
+    api: &TrackerApi,
+    closed: bool,
+    closed_at: Option<chrono::DateTime<Utc>>,
+    poll: Duration,
+) -> Option<Duration> {
     match api.sync_mode() {
         "off" => None,
-        _ if closed => Some(DAILY),
+        _ if closed => closed_at
+            .is_none_or(|t| Utc::now() - t < chrono::Duration::days(CLOSED_DAYS))
+            .then_some(DAILY),
         "webhook" => Some(DAILY),
         _ => Some(poll),
     }
@@ -60,24 +77,31 @@ pub async fn sync_one(st: &AppState, tracker: Option<&IssueTracker>, job: &SyncJ
     let poll = st.cfg.integrations.tracker_poll;
     let outcome = match tracker.and_then(|t| t.api.as_ref().map(|a| (t, a))) {
         None => SyncOutcome::Failed(
-            "the tracker is no longer in the project settings".into(),
-            Some(at(DAILY)),
+            "the tracker is no longer in the project settings; the issue is not read any more"
+                .into(),
+            None,
         ),
         Some((t, api)) => match Client::new(st, job.project_id, t).await {
-            Err(e) => SyncOutcome::Failed(
-                e.to_string(),
-                Some(at(backoff(job.attempts).max(DAILY / 24))),
-            ),
+            Err(e) => {
+                tracing::warn!(project = %job.project_key, tracker = %job.tracker_id, error = %e,
+                    "a tracker connection is not usable");
+                SyncOutcome::Failed(e.public(), Some(at(backoff(job.attempts).max(DAILY / 24))))
+            }
             Ok(c) => match c
                 .get(&job.key, job.remote_id.as_deref(), job.etag.as_deref())
                 .await
             {
                 Ok(Some((s, etag))) => {
-                    let next = next_read(api, s.closed, poll).map(at);
+                    let closed_at = if s.closed {
+                        job.closed_at.or(Some(Utc::now()))
+                    } else {
+                        None
+                    };
+                    let next = next_read(api, s.closed, closed_at, poll).map(at);
                     return finish(st, job, &SyncOutcome::Read(s, etag), next).await;
                 }
                 Ok(None) => {
-                    let next = next_read(api, job.closed, poll).map(at);
+                    let next = next_read(api, job.closed, job.closed_at, poll).map(at);
                     return finish(st, job, &SyncOutcome::Unchanged, next).await;
                 }
                 Err(TrackerError::Throttled(d)) => {
@@ -86,7 +110,10 @@ pub async fn sync_one(st: &AppState, tracker: Option<&IssueTracker>, job: &SyncJ
                 Err(e @ TrackerError::NotFound) => {
                     SyncOutcome::Failed(e.to_string(), Some(at(DAILY)))
                 }
-                Err(e) => SyncOutcome::Failed(e.to_string(), Some(at(backoff(job.attempts)))),
+                Err(e) => {
+                    tracing::warn!(project = %job.project_key, issue = %job.id, error = %e, "tracker read failed");
+                    SyncOutcome::Failed(e.public(), Some(at(backoff(job.attempts))))
+                }
             },
         },
     };
@@ -126,7 +153,10 @@ async fn finish(
 
 /// One round: claims due issues and reads them.
 pub async fn tick(st: &AppState) -> anyhow::Result<usize> {
-    let jobs = st.store.claim_tracker_syncs(BATCH, LEASE).await?;
+    let jobs = st
+        .store
+        .claim_tracker_syncs(BATCH, PER_TRACKER, LEASE)
+        .await?;
     let n = jobs.len();
     let mut settings: HashMap<Uuid, IntegrationSettings> = HashMap::new();
     for job in &jobs {
@@ -135,21 +165,35 @@ pub async fn tick(st: &AppState) -> anyhow::Result<usize> {
             e.insert(IntegrationSettings::parse(&doc).unwrap_or_default());
         }
     }
-    let reads = jobs.iter().map(|job| {
-        let trackers = settings
-            .get(&job.project_id)
-            .map(|s| s.issue_trackers.as_slice())
-            .unwrap_or_default();
-        let t = IssueTracker::connected(trackers, &job.tracker_id);
-        sync_one(st, t, job)
-    });
-    futures::future::join_all(reads).await;
+    use futures::StreamExt as _;
+    let reads: Vec<_> = jobs
+        .iter()
+        .map(|job| {
+            let trackers = settings
+                .get(&job.project_id)
+                .map(|s| s.issue_trackers.as_slice())
+                .unwrap_or_default();
+            let t = IssueTracker::connected(trackers, &job.tracker_id);
+            Box::pin(sync_one(st, t, job))
+        })
+        .collect();
+    futures::stream::iter(reads)
+        .buffer_unordered(PARALLEL)
+        .collect::<Vec<_>>()
+        .await;
     Ok(n)
 }
 
 /// Runs until `stop`.
 pub async fn run(st: AppState, stop: CancellationToken) {
+    let mut last_sweep: Option<std::time::Instant> = None;
     loop {
+        if last_sweep.is_none_or(|t| t.elapsed() >= Duration::from_secs(60)) {
+            last_sweep = Some(std::time::Instant::now());
+            if let Err(e) = st.store.sweep_tracker_rows().await {
+                tracing::warn!(error = %format!("{e:#}"), "sweeping tracker rows failed");
+            }
+        }
         let busy = match tick(&st).await {
             Ok(n) => n as i64 >= BATCH,
             Err(e) => {
@@ -318,10 +362,20 @@ mod tests {
             "url": "https://gitlab.example.com", "tokenSecretRef": "t", "project": "g/a"}))
         .unwrap();
         let poll = Duration::from_secs(600);
-        assert_eq!(next_read(&api, false, poll), Some(poll));
-        assert_eq!(next_read(&api, true, poll), Some(DAILY));
+        assert_eq!(next_read(&api, false, None, poll), Some(poll));
+        assert_eq!(next_read(&api, true, Some(Utc::now()), poll), Some(DAILY));
+        assert_eq!(
+            next_read(
+                &api,
+                true,
+                Some(Utc::now() - chrono::Duration::days(31)),
+                poll
+            ),
+            None,
+            "closed issues are read for 30 days only"
+        );
         let mut off = api.clone();
         off.sync = Some("off".into());
-        assert_eq!(next_read(&off, false, poll), None);
+        assert_eq!(next_read(&off, false, None, poll), None);
     }
 }

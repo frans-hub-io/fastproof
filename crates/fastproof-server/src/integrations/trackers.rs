@@ -81,24 +81,80 @@ impl std::fmt::Display for TrackerError {
     }
 }
 
-static PAUSES: LazyLock<Mutex<HashMap<(Uuid, String), Instant>>> =
+impl TrackerError {
+    /// The text for callers without `settings:write` and for the stored sync error: settings,
+    /// secret and egress problems are not detailed (they would name the redacted API origin
+    /// and secrets); the detail goes to the log and the connection test.
+    pub fn public(&self) -> String {
+        match self {
+            TrackerError::Config(_) => {
+                "the tracker settings or secret are not usable; ask a project admin to test the connection".into()
+            }
+            other => other.to_string(),
+        }
+    }
+}
+
+/// Network failures or `5xx` in a row after which a tracker is paused.
+const FAILURES_TO_PAUSE: u32 = 3;
+/// First pause after failures; doubled for each further failure, at most an hour.
+const FAILURE_PAUSE: Duration = Duration::from_secs(120);
+
+#[derive(Clone, Copy, Default)]
+struct Health {
+    until: Option<Instant>,
+    failures: u32,
+}
+
+static PAUSES: LazyLock<Mutex<HashMap<(Uuid, String), Health>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn paused(project: Uuid, tracker: &str) -> Option<Duration> {
     let m = PAUSES.lock().unwrap_or_else(|e| e.into_inner());
     m.get(&(project, tracker.to_string()))
+        .and_then(|h| h.until)
         .and_then(|until| until.checked_duration_since(Instant::now()))
         .filter(|d| !d.is_zero())
 }
 
-fn pause(project: Uuid, tracker: &str, d: Duration) {
+fn with_health(project: Uuid, tracker: &str, f: impl FnOnce(&mut Health)) {
     let mut m = PAUSES.lock().unwrap_or_else(|e| e.into_inner());
     let now = Instant::now();
     if m.len() >= 10_000 {
-        m.retain(|_, until| *until > now);
+        m.retain(|_, h| h.until.is_some_and(|u| u > now) || h.failures > 0);
+        if m.len() >= 10_000 {
+            m.clear();
+        }
     }
-    if m.len() < 10_000 {
-        m.insert((project, tracker.to_string()), now + d.min(MAX_PAUSE));
+    f(m.entry((project, tracker.to_string())).or_default());
+}
+
+fn pause(project: Uuid, tracker: &str, d: Duration) {
+    with_health(project, tracker, |h| {
+        h.until = Some(Instant::now() + d.min(MAX_PAUSE))
+    });
+}
+
+/// Counts a network failure or `5xx`; the third in a row pauses the tracker. Returns the pause.
+fn failed(project: Uuid, tracker: &str) -> Option<Duration> {
+    let mut out = None;
+    with_health(project, tracker, |h| {
+        h.failures = h.failures.saturating_add(1);
+        if h.failures >= FAILURES_TO_PAUSE {
+            let d = FAILURE_PAUSE
+                .saturating_mul(1 << (h.failures - FAILURES_TO_PAUSE).min(5))
+                .min(MAX_PAUSE);
+            h.until = Some(Instant::now() + d);
+            out = Some(d);
+        }
+    });
+    out
+}
+
+fn succeeded(project: Uuid, tracker: &str) {
+    let mut m = PAUSES.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(h) = m.get_mut(&(project, tracker.to_string())) {
+        h.failures = 0;
     }
 }
 
@@ -406,21 +462,30 @@ impl<'a> Client<'a> {
         if self.tracker.tracker == "jira" {
             rb = rb.header("X-Atlassian-Token", "no-check");
         }
-        let r = self
+        let r = match self
             .st
             .egress
             .send_no_redirect(rb, MAX_RESPONSE_BYTES)
             .await
-            .map_err(|e| match e {
-                OutboundError::Denied(d) => TrackerError::Config(d.to_string()),
-                other => TrackerError::Unavailable(other.to_string()),
-            })?;
+        {
+            Ok(r) => r,
+            Err(OutboundError::Denied(d)) => return Err(TrackerError::Config(d.to_string())),
+            Err(other) => {
+                failed(self.project_id, self.id());
+                return Err(TrackerError::Unavailable(other.to_string()));
+            }
+        };
         metrics::counter!("fastproof_tracker_calls_total", "tracker" => self.tracker.tracker.clone(),
             "status" => (r.status / 100).to_string() + "xx")
         .increment(1);
         if let Some(d) = throttle_delay(r.status, &r.headers) {
             pause(self.project_id, self.id(), d);
             return Err(TrackerError::Throttled(d));
+        }
+        if r.status >= 500 {
+            failed(self.project_id, self.id());
+        } else {
+            succeeded(self.project_id, self.id());
         }
         match r.status {
             200..=299 | 304 => Ok(r),
@@ -491,8 +556,7 @@ impl<'a> Client<'a> {
             "jira" => self.create_jira(title, blocks, images).await,
             "gitlab" => self.create_gitlab(title, blocks, images).await,
             "github" => {
-                let body =
-                    json!({"title": title, "body": tpl::markdown(blocks), "labels": self.labels()});
+                let body = json!({"title": title, "body": tpl::markdown(blocks, false), "labels": self.labels()});
                 let r = self
                     .call(
                         Method::POST,
@@ -567,7 +631,7 @@ impl<'a> Client<'a> {
                 .await
             {
                 Ok(_) => attached += 1,
-                Err(e) => notes.push(format!("{}: {e}", img.name)),
+                Err(e) => notes.push(format!("{}: {}", img.name, e.public())),
             }
         }
         let state = match self.get(&key, Some(&id), None).await {
@@ -592,8 +656,18 @@ impl<'a> Client<'a> {
         blocks: &[Block],
         images: &[Image],
     ) -> Result<(IssueState, usize, Vec<String>), TrackerError> {
-        let mut body = tpl::markdown(blocks);
-        let mut attached = 0;
+        let body = tpl::markdown(blocks, true);
+        let r = self
+            .call(
+                Method::POST,
+                &self.gitlab("/issues"),
+                Payload::Json(json!({"title": title, "description": body,
+                    "labels": self.labels().join(",")})),
+                None,
+            )
+            .await?;
+        let v = Self::json(&r)?;
+        let state = self.gitlab_state(&v)?;
         let mut notes = Vec::new();
         let mut uploads = Vec::new();
         for img in images {
@@ -611,6 +685,7 @@ impl<'a> Client<'a> {
                 Ok(v) => {
                     let url = v.get("url").and_then(Value::as_str).unwrap_or_default();
                     if url.starts_with("/uploads/")
+                        && url.len() <= 512
                         && url
                             .bytes()
                             .all(|b| b.is_ascii_alphanumeric() || b"/._-".contains(&b))
@@ -619,29 +694,36 @@ impl<'a> Client<'a> {
                             "![{}]({url})",
                             safe_file_name(&img.name, &img.content_type)
                         ));
-                        attached += 1;
                     } else {
                         notes.push(format!("{}: unexpected upload answer", img.name));
                     }
                 }
-                Err(e) => notes.push(format!("{}: {e}", img.name)),
+                Err(e) => notes.push(format!("{}: {}", img.name, e.public())),
             }
         }
+        let mut attached = 0;
         if !uploads.is_empty() {
-            body.push_str("\n\n");
-            body.push_str(&uploads.join("\n"));
+            let full = format!("{body}\n\n{}", uploads.join("\n"));
+            match self
+                .call(
+                    Method::PUT,
+                    &self.gitlab(&format!(
+                        "/issues/{}",
+                        enc(state.key.trim_start_matches('#'))
+                    )),
+                    Payload::Json(json!({"description": full})),
+                    None,
+                )
+                .await
+            {
+                Ok(_) => attached = uploads.len(),
+                Err(e) => notes.push(format!(
+                    "the screenshots were uploaded but not added to the issue: {}",
+                    e.public()
+                )),
+            }
         }
-        let r = self
-            .call(
-                Method::POST,
-                &self.gitlab("/issues"),
-                Payload::Json(json!({"title": title, "description": body,
-                    "labels": self.labels().join(",")})),
-                None,
-            )
-            .await?;
-        let v = Self::json(&r)?;
-        Ok((self.gitlab_state(&v)?, attached, notes))
+        Ok((state, attached, notes))
     }
 
     async fn create_azure(
@@ -696,7 +778,7 @@ impl<'a> Client<'a> {
                     }
                     _ => notes.push(format!("{}: unexpected upload answer", img.name)),
                 },
-                Err(e) => notes.push(format!("{}: {e}", img.name)),
+                Err(e) => notes.push(format!("{}: {}", img.name, e.public())),
             }
         }
         let r = self
@@ -721,13 +803,13 @@ impl<'a> Client<'a> {
         let number = key.trim_start_matches('#');
         let url = match self.tracker.tracker.as_str() {
             "jira" => self.jira(&format!(
-                "/issue/{}?fields=summary,status,resolution",
+                "/issue/{}?fields=summary,status,resolution,project",
                 enc(key)
             )),
             "gitlab" => self.gitlab(&format!("/issues/{}", enc(number))),
             "github" => self.github(&format!("/issues/{}", enc(number))),
             _ => self.azure(&format!(
-                "/wit/workitems/{}?fields=System.State,System.Title",
+                "/wit/workitems/{}?fields=System.State,System.Title,System.TeamProject",
                 enc(remote_id.unwrap_or(number))
             )),
         };
@@ -759,6 +841,12 @@ impl<'a> Client<'a> {
             .and_then(|k| parse_key("jira", k))
             .ok_or_else(|| TrackerError::Unavailable("the answer has no issue key".into()))?;
         let f = v.get("fields").cloned().unwrap_or_default();
+        let project = f.pointer("/project/key").and_then(Value::as_str);
+        if !key.starts_with(&format!("{}-", self.api.project))
+            || project != Some(self.api.project.as_str())
+        {
+            return Err(TrackerError::NotFound);
+        }
         let status = f.get("status").cloned().unwrap_or_default();
         let category = status
             .pointer("/statusCategory/key")
@@ -788,12 +876,22 @@ impl<'a> Client<'a> {
         })
     }
 
+    /// A link from the tracker's answer, kept only on the API's or the URL template's origin
+    /// and at most 2048 bytes.
+    fn own_url(&self, u: Option<&str>) -> Option<String> {
+        let u = u?;
+        let o = super::secrets::origin_of(u)?;
+        let template = self.tracker.url_template.replace("{key}", "1");
+        let ok = u.len() <= 2048
+            && (Some(&o) == super::secrets::origin_of(&self.api.url).as_ref()
+                || Some(&o) == super::secrets::origin_of(&template).as_ref());
+        ok.then(|| u.to_string())
+    }
+
     fn web_url(&self, v: &Value, field: &str, key: &str) -> String {
-        let fallback = || self.browse_url(key).unwrap_or_default();
-        match v.get(field).and_then(Value::as_str) {
-            Some(u) if u.starts_with("https://") || u.starts_with("http://") => u.to_string(),
-            _ => fallback(),
-        }
+        self.own_url(v.get(field).and_then(Value::as_str))
+            .or_else(|| self.browse_url(key))
+            .unwrap_or_default()
     }
 
     fn gitlab_state(&self, v: &Value) -> Result<IssueState, TrackerError> {
@@ -802,6 +900,22 @@ impl<'a> Client<'a> {
             .and_then(Value::as_u64)
             .ok_or_else(|| TrackerError::Unavailable("the answer has no iid".into()))?;
         let key = format!("#{iid}");
+        let p = self.api.project.as_str();
+        let same = if p.bytes().all(|b| b.is_ascii_digit()) {
+            v.get("project_id").map(|x| x.to_string()).as_deref() == Some(p)
+        } else {
+            let full = v.pointer("/references/full").and_then(Value::as_str);
+            let web = v
+                .get("web_url")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            full.is_some_and(|f| f.eq_ignore_ascii_case(&format!("{p}#{iid}")))
+                || web.contains(&format!("/{}/-/issues/", p.to_ascii_lowercase()))
+        };
+        if !same {
+            return Err(TrackerError::NotFound);
+        }
         let state = v
             .get("state")
             .and_then(Value::as_str)
@@ -827,6 +941,17 @@ impl<'a> Client<'a> {
             .and_then(Value::as_u64)
             .ok_or_else(|| TrackerError::Unavailable("the answer has no number".into()))?;
         let key = format!("#{n}");
+        let repo = format!("/repos/{}", self.api.project.to_ascii_lowercase());
+        let same = match v.get("repository_url").and_then(Value::as_str) {
+            Some(r) => r.to_ascii_lowercase().ends_with(&repo),
+            None => v
+                .get("url")
+                .and_then(Value::as_str)
+                .is_some_and(|u| u.to_ascii_lowercase().contains(&format!("{repo}/issues/"))),
+        };
+        if !same {
+            return Err(TrackerError::NotFound);
+        }
         let state = v
             .get("state")
             .and_then(Value::as_str)
@@ -856,6 +981,12 @@ impl<'a> Client<'a> {
             .and_then(Value::as_u64)
             .ok_or_else(|| TrackerError::Unavailable("the answer has no id".into()))?;
         let key = id.to_string();
+        let team = v
+            .pointer("/fields/System.TeamProject")
+            .and_then(Value::as_str);
+        if !team.is_some_and(|t| t.eq_ignore_ascii_case(&self.api.project)) {
+            return Err(TrackerError::NotFound);
+        }
         let state = v
             .pointer("/fields/System.State")
             .and_then(Value::as_str)
@@ -866,9 +997,9 @@ impl<'a> Client<'a> {
             .closed_states
             .clone()
             .unwrap_or_else(|| vec!["Closed".into(), "Done".into(), "Removed".into()]);
-        let url = match v.pointer("/_links/html/href").and_then(Value::as_str) {
-            Some(u) if u.starts_with("https://") || u.starts_with("http://") => u.to_string(),
-            _ => self.browse_url(&key).unwrap_or_else(|| {
+        let url = match self.own_url(v.pointer("/_links/html/href").and_then(Value::as_str)) {
+            Some(u) => u,
+            None => self.browse_url(&key).unwrap_or_else(|| {
                 format!(
                     "{}/{}/_workitems/edit/{id}",
                     self.base(),
@@ -975,6 +1106,24 @@ mod tests {
         let text = String::from_utf8_lossy(&b);
         assert!(ct.starts_with("multipart/form-data; boundary=fastproof-"));
         assert!(text.contains("filename=\"x__.png\""), "{text}");
+    }
+
+    #[test]
+    fn network_failures_pause_a_tracker() {
+        let p = Uuid::now_v7();
+        assert_eq!(failed(p, "gl"), None);
+        succeeded(p, "gl");
+        assert_eq!(failed(p, "gl"), None);
+        assert_eq!(failed(p, "gl"), None);
+        assert_eq!(failed(p, "gl"), Some(FAILURE_PAUSE));
+        assert!(paused(p, "gl").is_some());
+        assert_eq!(failed(p, "gl"), Some(FAILURE_PAUSE * 2));
+        assert!(paused(p, "gh").is_none());
+        assert!(
+            TrackerError::Config("may only be sent to https://jira.example.com".into())
+                .public()
+                .contains("ask a project admin")
+        );
     }
 
     #[test]

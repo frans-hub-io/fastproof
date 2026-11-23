@@ -173,6 +173,7 @@ begin
         values (f1, p, 'jira', 'jira', 'SHOP-1', 'open', 't'), (f2, p, 'jira', 'jira', 'SHOP-2', 'closed', 't');
     insert into tracker_issue_links (id, issue_id, project_id, launch_id, fingerprint, created_by)
         values (gen_random_uuid(), f1, p, ml, 'f1', 't'), (gen_random_uuid(), f2, p, null, null, 't');
+    insert into tracker_requests (id, project_id, kind) values (gen_random_uuid(), p, 'create'), (gen_random_uuid(), p, 'link');
     return ml;
 end
 $f$;

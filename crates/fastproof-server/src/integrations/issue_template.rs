@@ -205,7 +205,7 @@ fn clean_block(s: &str) -> String {
 }
 
 /// The title: one line of at most 255 characters.
-pub fn render_title(template: &str, c: &IssueContext) -> String {
+pub fn render_title(template: &str, c: &IssueContext, tracker: &str) -> String {
     let mut out = String::new();
     for p in parts(template).unwrap_or_default() {
         match p {
@@ -218,13 +218,49 @@ pub fn render_title(template: &str, c: &IssueContext) -> String {
                 };
                 out.push_str(u.as_deref().unwrap_or_default());
             }
-            Part::Var(v) => out.push_str(&inline_value(c, v)),
+            Part::Var(v) => out.push_str(&title_value(&inline_value(c, v), tracker)),
         }
     }
     let t = one_line(&out);
     let t = t.trim_matches(|ch: char| ch == ':' || ch.is_whitespace());
-    let t = if t.is_empty() { c.name.as_str() } else { t };
+    let fallback = title_value(&c.name, tracker);
+    let t = if t.is_empty() { fallback.as_str() } else { t };
     t.chars().take(255).collect()
+}
+
+/// A value in a title: GitLab parses titles for mentions and references and GitHub renders some
+/// Markdown in them, so a zero-width space follows `@ # ! ~ % $ & [` there (backslashes would
+/// show) and breaks `GH-`. Jira and Azure DevOps titles are plain text.
+pub fn title_value(v: &str, tracker: &str) -> String {
+    if !matches!(tracker, "gitlab" | "github") {
+        return v.to_string();
+    }
+    let mut out = String::with_capacity(v.len() + 8);
+    for ch in v.chars() {
+        out.push(ch);
+        if matches!(ch, '@' | '#' | '!' | '~' | '%' | '$' | '&' | '[') {
+            out.push(ZWSP);
+        }
+    }
+    break_gh(&out, "-")
+}
+
+/// A zero-width space between `GH` and `sep` where `GH` starts a word (GitHub links `GH-123`).
+fn break_gh(s: &str, sep: &str) -> String {
+    let lower = s.to_ascii_lowercase();
+    let pat = format!("gh{sep}");
+    let mut out = String::with_capacity(s.len() + 4);
+    let mut last = 0;
+    for (i, _) in lower.match_indices(&pat) {
+        let word_start = i == 0 || !lower.as_bytes()[i - 1].is_ascii_alphanumeric();
+        if word_start && i >= last {
+            out.push_str(&s[last..i + 2]);
+            out.push(ZWSP);
+            last = i + 2;
+        }
+    }
+    out.push_str(&s[last..]);
+    out
 }
 
 /// The description as blocks.
@@ -311,22 +347,58 @@ pub fn render(template: &str, c: &IssueContext) -> Vec<Block> {
     blocks
 }
 
-fn fence(code: &str) -> String {
+/// Code for a 3-backtick fence: every run of three or more backticks is broken with zero-width
+/// spaces, so the content can never close the fence (GitLab's quick-action parser only knows
+/// 3-backtick fences, so a longer fence would leave the lines exposed to it).
+fn code_for_fence(code: &str) -> String {
+    let mut out = String::with_capacity(code.len() + 8);
     let mut run = 0;
-    let mut longest = 0;
     for ch in code.chars() {
         if ch == '`' {
             run += 1;
-            longest = longest.max(run);
+            if run == 3 {
+                out.push(ZWSP);
+                run = 1;
+            }
         } else {
             run = 0;
         }
+        out.push(ch);
     }
-    "`".repeat((longest + 1).max(3))
+    out
 }
 
-/// Markdown (GitHub, GitLab).
-pub fn markdown(blocks: &[Block]) -> String {
+/// Markdown references that `vcs::md` leaves: `&123` (GitLab epics), `[vulnerability:1]`,
+/// `GH-123` (GitHub). A zero-width space breaks them.
+fn md_value(v: &str) -> String {
+    let m = super::vcs::md(v)
+        .replace("&amp;", "&amp;\u{200B}")
+        .replace("\\[", "\\[\u{200B}");
+    break_gh(&m, "\\-")
+}
+
+/// Markdown (GitHub, GitLab). For GitLab a zero-width space goes before every `/` that starts a
+/// line, so no line can be taken for a quick action (`/close`, `/assign`, `/move`).
+pub fn markdown(blocks: &[Block], gitlab: bool) -> String {
+    let md = markdown_text(blocks);
+    if !gitlab {
+        return md;
+    }
+    md.split('\n')
+        .map(|l| {
+            let trimmed = l.trim_start();
+            if trimmed.starts_with('/') {
+                let pad = l.len() - trimmed.len();
+                format!("{}{ZWSP}{}", &l[..pad], trimmed)
+            } else {
+                l.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn markdown_text(blocks: &[Block]) -> String {
     let mut out: Vec<String> = Vec::new();
     for b in blocks {
         match b {
@@ -337,7 +409,7 @@ pub fn markdown(blocks: &[Block]) -> String {
                         l.iter()
                             .map(|i| match i {
                                 Inline::Text(t) => t.clone(),
-                                Inline::Value(v) => super::vcs::md(v),
+                                Inline::Value(v) => md_value(v),
                                 Inline::Link(u) => format!("<{u}>"),
                             })
                             .collect::<String>()
@@ -345,14 +417,11 @@ pub fn markdown(blocks: &[Block]) -> String {
                     .collect();
                 out.push(text.join("  \n"));
             }
-            Block::Code(c) => {
-                let f = fence(c);
-                out.push(format!("{f}text\n{c}\n{f}"));
-            }
+            Block::Code(c) => out.push(format!("```text\n{}\n```", code_for_fence(c))),
             Block::List(items) => out.push(
                 items
                     .iter()
-                    .map(|n| format!("- {}", super::vcs::md(n)))
+                    .map(|n| format!("- {}", md_value(n)))
                     .collect::<Vec<_>>()
                     .join("\n"),
             ),
@@ -366,8 +435,8 @@ fn wiki_escape(s: &str) -> String {
     let chars: Vec<char> = s.chars().collect();
     for (i, &c) in chars.iter().enumerate() {
         match c {
-            '*' | '_' | '?' | '-' | '+' | '^' | '~' | '{' | '}' | '[' | ']' | '|' | '!' | '#'
-            | '(' | ')' | '@' => {
+            '\\' | '*' | '_' | '?' | '-' | '+' | '^' | '~' | '{' | '}' | '[' | ']' | '|' | '!'
+            | '#' | '(' | ')' | '@' => {
                 out.push('\\');
                 out.push(c);
             }
@@ -392,8 +461,10 @@ pub fn jira_wiki(blocks: &[Block]) -> String {
                     .iter()
                     .map(|l| {
                         l.iter()
-                            .map(|i| match i {
+                            .enumerate()
+                            .map(|(n, i)| match i {
                                 Inline::Text(t) => t.clone(),
+                                Inline::Value(v) if n == 0 => format!("{ZWSP}{}", wiki_escape(v)),
                                 Inline::Value(v) => wiki_escape(v),
                                 Inline::Link(u) => format!("[{u}]"),
                             })
@@ -404,12 +475,12 @@ pub fn jira_wiki(blocks: &[Block]) -> String {
             ),
             Block::Code(c) => out.push(format!(
                 "{{noformat}}\n{}\n{{noformat}}",
-                c.replace("{noformat}", "{ noformat}")
+                c.replace('{', "{\u{200B}")
             )),
             Block::List(items) => out.push(
                 items
                     .iter()
-                    .map(|n| format!("* {}", wiki_escape(n)))
+                    .map(|n| format!("* {ZWSP}{}", wiki_escape(n)))
                     .collect::<Vec<_>>()
                     .join("\n"),
             ),
@@ -590,18 +661,23 @@ mod tests {
 
     #[test]
     fn title_is_one_line() {
-        let t = render_title(DEFAULT_TITLE, &ctx());
+        let t = render_title(DEFAULT_TITLE, &ctx(), "jira");
         assert_eq!(t, "checkout [pays]: expected 200, got 500");
         let mut c = ctx();
         c.message = None;
-        assert_eq!(render_title(DEFAULT_TITLE, &c), "checkout [pays]");
+        assert_eq!(render_title(DEFAULT_TITLE, &c, "jira"), "checkout [pays]");
     }
 
     #[test]
     fn markdown_escapes_values_and_fences_code() {
         let b = render(DEFAULT_BODY, &ctx());
-        let md = markdown(&b);
-        assert!(md.contains("````text\nexpected 200"), "{md}");
+        let md = markdown(&b, false);
+        assert!(md.contains("```text\nexpected 200"), "{md}");
+        assert!(!md.contains("````"), "always a 3-backtick fence: {md}");
+        assert!(
+            md.contains("``\u{200B}`"),
+            "backtick runs in code are broken: {md}"
+        );
         assert!(md.contains("\\@\u{200B}admin"), "{md}");
         assert!(md.contains("&lt;img") && !md.contains("<img"), "{md}");
         assert!(md.contains("<https://fastproof.example.com/p/SHOP/results/2>"));
@@ -621,8 +697,20 @@ mod tests {
         assert!(w.contains("{noformat}\nexpected 200"), "{w}");
         assert!(w.contains("[https://fastproof.example.com/p/SHOP/results/2]"));
         let mut c = ctx();
-        c.message = Some("x {noformat} y".into());
-        assert!(jira_wiki(&render("{{message}}", &c)).contains("x { noformat} y"));
+        c.message = Some("x {NOFORMAT} y {noformat }".into());
+        let code = jira_wiki(&render("{{message}}", &c));
+        assert!(
+            !code.contains("{NOFORMAT}") && !code.contains("{noformat }"),
+            "{code}"
+        );
+        assert_eq!(code.matches("{noformat}").count(), 2);
+        assert_eq!(wiki_escape("a\\*b"), "a\\\\\\*b");
+        c.name = "h1. Big".into();
+        let w = jira_wiki(&render("{{name}}", &c));
+        assert!(
+            w.starts_with('\u{200B}'),
+            "a value at line start cannot start markup: {w}"
+        );
         assert!(wiki_escape("see http://x").contains(&format!(":{ZWSP}//")));
     }
 
@@ -658,5 +746,56 @@ mod tests {
                 .any(|b| matches!(b, Block::List(_)))
         );
         assert!(plain(&render(DEFAULT_BODY, &c)).contains("Status: failed"));
+    }
+
+    #[test]
+    fn gitlab_quick_actions_cannot_run_from_values() {
+        let mut c = ctx();
+        c.message = Some("expected ``` got\n```\n/close".into());
+        c.trace = Some("/assign @attacker\n  /move evil/inbox".into());
+        let md = markdown(&render(DEFAULT_BODY, &c), true);
+        for line in md.lines() {
+            assert!(
+                !line.trim_start().starts_with('/'),
+                "a line starts with a quick action: {line:?}"
+            );
+            assert!(
+                line.trim() == "```" || line.trim() == "```text" || !line.contains("```"),
+                "{line:?}"
+            );
+        }
+        let fences = md.lines().filter(|l| l.starts_with("```")).count();
+        assert_eq!(fences % 2, 0, "{md}");
+    }
+
+    #[test]
+    fn titles_and_values_lose_references() {
+        assert_eq!(
+            title_value("a @all #1 !3 GH-4", "jira"),
+            "a @all #1 !3 GH-4"
+        );
+        let t = title_value("a @all #1 !3 GH-4 ~x &5", "gitlab");
+        for bad in ["@all", "#1", "!3", "GH-4", "~x", "&5"] {
+            assert!(!t.contains(bad), "{bad} in {t}");
+        }
+        let mut c = ctx();
+        c.name = "pay @devs #12".into();
+        assert!(!render_title(DEFAULT_TITLE, &c, "gitlab").contains("@devs"));
+        let md = markdown(
+            &render(
+                "{{name}}",
+                &IssueContext {
+                    name: "see GH-1 &2 [vulnerability:3]".into(),
+                    ..ctx()
+                },
+            ),
+            false,
+        );
+        assert!(
+            !md.contains("GH\\-1") && md.contains("GH\u{200B}\\-1"),
+            "{md}"
+        );
+        assert!(md.contains("&amp;\u{200B}2"), "{md}");
+        assert!(md.contains("\\[\u{200B}vulnerability"), "{md}");
     }
 }

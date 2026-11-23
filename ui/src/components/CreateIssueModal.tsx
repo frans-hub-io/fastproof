@@ -65,6 +65,7 @@ function IssueForm({ project, target, onClose, onCreated }: { project: string; t
   const [key, setKey] = useState('');
   const [requestId] = useState(newRequestId);
   const [showPreview, setShowPreview] = useState(false);
+  const [asSent, setAsSent] = useState(false);
   const create = useCreateTrackerIssue(project);
   const link = useLinkTrackerIssue(project);
   const scope = target.resultIds?.length ? { resultIds: target.resultIds.slice(0, 100) } : { launchId: target.launchId, fingerprint: target.fingerprint };
@@ -183,14 +184,18 @@ function IssueForm({ project, target, onClose, onCreated }: { project: string; t
                     <Text size="sm" fw={600}>
                       {preview.data?.preview.title}
                     </Text>
-                    <Code
-                      block
-                      style={{
-                        whiteSpace: 'pre-wrap',
-                        wordBreak: 'break-word',
-                      }}
-                    >
-                      {preview.data?.preview.text}
+                    <SegmentedControl
+                      size="xs"
+                      value={asSent ? 'sent' : 'text'}
+                      onChange={(v) => setAsSent(v === 'sent')}
+                      data={[
+                        { value: 'text', label: 'Text' },
+                        { value: 'sent', label: `As sent (${preview.data?.preview.markup ?? ''})` },
+                      ]}
+                      data-testid="issue-preview-mode"
+                    />
+                    <Code block style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }} data-testid="issue-preview-body">
+                      {asSent ? preview.data?.preview.body : preview.data?.preview.text}
                     </Code>
                     {preview.data?.preview.screenshots.length ? (
                       <Text size="xs" c="dimmed">

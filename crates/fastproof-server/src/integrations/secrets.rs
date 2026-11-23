@@ -34,6 +34,10 @@ pub enum SecretPurpose {
     /// Issue tracker API credentials (`issueTrackers[].api.tokenSecretRef`): a token, or
     /// `user:token` for basic authentication; needs an origin.
     Tracker,
+    /// Shared secret an issue tracker's webhook proves itself with
+    /// (`issueTrackers[].api.webhookSecretRef`); at least 16 bytes, no origin.
+    #[serde(rename = "tracker-webhook")]
+    TrackerHook,
     /// FastMock admin token (`fastmock.tokenSecretRef`); needs an origin.
     Fastmock,
     /// Slack incoming webhook URL (`targetSecretRef` of a Slack notification).
@@ -56,6 +60,7 @@ impl SecretPurpose {
         match self {
             SecretPurpose::Vcs => "vcs",
             SecretPurpose::Tracker => "tracker",
+            SecretPurpose::TrackerHook => "tracker-webhook",
             SecretPurpose::Fastmock => "fastmock",
             SecretPurpose::Slack => "slack",
             SecretPurpose::Telegram => "telegram",

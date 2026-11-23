@@ -589,7 +589,20 @@ pub async fn put_settings(
         .await
         .map_err(ApiError::bad_request)?;
     let old_doc = s.store.project_settings_json(p.id).await?;
+    crate::integrations::settings::check_tracker_rebinds(&s, p.id, &old_doc, &new_doc)
+        .await
+        .map_err(ApiError::bad_request)?;
     s.store.put_project_settings(p.id, &body).await?;
+    let tracker_changes = crate::integrations::settings::tracker_changes(&old_doc, &new_doc);
+    if !tracker_changes.is_empty() {
+        s.audit(
+            &auth,
+            "project.settings.trackers",
+            Some(&p.key),
+            serde_json::json!({"changes": tracker_changes}),
+        )
+        .await;
+    }
     let url_changes = crate::integrations::settings::url_changes(&old_doc, &new_doc);
     if !url_changes.is_empty() {
         s.audit(

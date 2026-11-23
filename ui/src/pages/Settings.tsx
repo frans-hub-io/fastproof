@@ -361,6 +361,7 @@ const ORIGIN = /^https?:\/\/[^\s/?#@]+\/?$/i;
 const PURPOSES: { value: SecretPurpose; label: string }[] = [
   { value: 'vcs', label: 'GitLab or GitHub token' },
   { value: 'tracker', label: 'Issue tracker token' },
+  { value: 'tracker-webhook', label: 'Issue tracker webhook secret (16+ bytes)' },
   { value: 'fastmock', label: 'FastMock token' },
   { value: 'slack', label: 'Slack webhook URL' },
   { value: 'teams', label: 'Microsoft Teams workflow URL' },

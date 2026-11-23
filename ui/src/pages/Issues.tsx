@@ -74,7 +74,7 @@ function Suggestion({ project, issue, canUnmute }: { project: string; issue: Tra
   );
 }
 
-function Row({ project, issue, canTriage }: { project: string; issue: TrackerIssue; canTriage: boolean }) {
+function Row({ project, issue, canTriage, canIssues }: { project: string; issue: TrackerIssue; canTriage: boolean; canIssues: boolean }) {
   const sync = useSyncTrackerIssue(project);
   const untrack = useUntrackIssue(project);
   return (
@@ -132,6 +132,7 @@ function Row({ project, issue, canTriage }: { project: string; issue: TrackerIss
               </Menu.Item>
               <Menu.Item
                 color="red"
+                disabled={!canIssues}
                 leftSection={<IconUnlink size={14} />}
                 onClick={() =>
                   untrack.mutate(issue.id, {
@@ -160,7 +161,8 @@ export default function IssuesPage() {
   const q = useTrackerIssues(key, FILTER[view]);
   const suggested = useTrackerIssues(key, FILTER.suggested);
   const canTriage = useCan('results:triage', key);
-  const canMute = useCan('results:mute', key) || canTriage;
+  const canMute = useCan('results:mute', key);
+  const canIssues = useCan('issues:write', key);
   const suggestions = suggested.data?.items ?? [];
   return (
     <>
@@ -222,7 +224,7 @@ export default function IssuesPage() {
                   </Table.Thead>
                   <Table.Tbody>
                     {(q.data?.items ?? []).map((i) => (
-                      <Row key={i.id} project={key} issue={i} canTriage={canTriage} />
+                      <Row key={i.id} project={key} issue={i} canTriage={canTriage} canIssues={canIssues} />
                     ))}
                   </Table.Tbody>
                 </Table>

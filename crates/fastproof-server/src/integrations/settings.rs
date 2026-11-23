@@ -235,8 +235,8 @@ pub struct TrackerApi {
     /// `webhook` (the tracker's webhook triggers reads; a daily read as well) or `off`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sync: Option<String>,
-    /// With `sync: webhook`: a secret with purpose `webhook` that the tracker's webhook proves
-    /// itself with (GitHub and Jira sign with it, GitLab sends it as its token, Azure DevOps as
+    /// With `sync: webhook`: a secret with purpose `tracker-webhook` (at least 16 bytes) that
+    /// the tracker's webhook proves itself with (GitHub and Jira sign with it, GitLab sends it as its token, Azure DevOps as
     /// the basic authentication password).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub webhook_secret_ref: Option<String>,
@@ -375,7 +375,7 @@ impl TrackerApi {
             "webhook" => {
                 if self.webhook_secret_ref.is_none() {
                     return Err(
-                        "issueTrackers.api: sync webhook needs webhookSecretRef (a secret with purpose webhook)"
+                        "issueTrackers.api: sync webhook needs webhookSecretRef (a secret with purpose tracker-webhook)"
                             .into(),
                     );
                 }
@@ -782,7 +782,7 @@ impl IntegrationSettings {
                     Some(a.url.clone()),
                 );
                 if let Some(w) = &a.webhook_secret_ref {
-                    add(w, SecretPurpose::Webhook, None);
+                    add(w, SecretPurpose::TrackerHook, None);
                 }
             }
         }
@@ -922,6 +922,110 @@ pub async fn check_secret_uses(
             u.destination.as_deref(),
         )
         .map_err(|e| e.0)?;
+    }
+    Ok(())
+}
+
+/// What a tracker token is used for: the tracker id with its type, deployment, authentication,
+/// project, issue type, API URL and secrets, by tracker id (for the audit log and for
+/// [`check_tracker_rebinds`]).
+fn tracker_targets(
+    doc: &serde_json::Value,
+) -> std::collections::BTreeMap<String, serde_json::Value> {
+    let mut out = std::collections::BTreeMap::new();
+    for (i, t) in doc
+        .get("issueTrackers")
+        .and_then(|x| x.as_array())
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
+        let Some(api) = t.get("api").filter(|a| a.is_object()) else {
+            continue;
+        };
+        let id = t
+            .get("id")
+            .and_then(|x| x.as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("#{i}"));
+        let f = |k: &str| api.get(k).cloned().unwrap_or(serde_json::Value::Null);
+        out.insert(
+            id,
+            serde_json::json!({"type": t.get("type"), "deployment": f("deployment"), "auth": f("auth"),
+                "project": f("project"), "issueType": f("issueType"), "url": f("url"),
+                "tokenSecretRef": f("tokenSecretRef"), "webhookSecretRef": f("webhookSecretRef")}),
+        );
+    }
+    out
+}
+
+/// The tracker connections a settings change adds, changes or removes, with the old and the new
+/// target, for the audit log (`project.settings.trackers`).
+pub fn tracker_changes(old: &serde_json::Value, new: &serde_json::Value) -> Vec<serde_json::Value> {
+    let (a, b) = (tracker_targets(old), tracker_targets(new));
+    let keys: BTreeSet<&String> = a.keys().chain(b.keys()).collect();
+    keys.into_iter()
+        .filter(|k| a.get(*k) != b.get(*k))
+        .take(MAX_TRACKERS * 2)
+        .map(|k| serde_json::json!({"tracker": k, "old": a.get(k), "new": b.get(k)}))
+        .collect()
+}
+
+/// How long after writing a tracker token it may be pointed at a new target.
+pub const REBIND_WINDOW_MINUTES: i64 = 60;
+
+/// A tracker token stays with the target it was configured for: pointing a token at another
+/// tracker type, deployment, authentication, project or API URL (or using it for a tracker
+/// that had another target before) needs the token written again first, within
+/// [`REBIND_WINDOW_MINUTES`], so a settings writer who never sees the token cannot move it to
+/// another project on the same host.
+pub async fn check_tracker_rebinds(
+    st: &crate::state::AppState,
+    project_id: uuid::Uuid,
+    old: &serde_json::Value,
+    new: &serde_json::Value,
+) -> Result<(), String> {
+    let target = |v: &serde_json::Value| {
+        let mut t = v.clone();
+        if let Some(o) = t.as_object_mut() {
+            o.remove("issueType");
+            o.remove("webhookSecretRef");
+        }
+        t
+    };
+    let before = tracker_targets(old);
+    let after = tracker_targets(new);
+    let mut metas = None;
+    for t in after.values() {
+        let Some(secret) = t.get("tokenSecretRef").and_then(|x| x.as_str()) else {
+            continue;
+        };
+        let kept = before.values().any(|o| {
+            o.get("tokenSecretRef").and_then(|x| x.as_str()) == Some(secret)
+                && target(o) == target(t)
+        });
+        if kept {
+            continue;
+        }
+        if metas.is_none() {
+            metas = Some(
+                st.store
+                    .secret_names(project_id)
+                    .await
+                    .map_err(|_| "reading the project secrets failed".to_string())?,
+            );
+        }
+        let fresh = metas
+            .as_ref()
+            .and_then(|m| m.iter().find(|m| m.name == secret))
+            .is_some_and(|m| {
+                chrono::Utc::now() - m.updated_at < chrono::Duration::minutes(REBIND_WINDOW_MINUTES)
+            });
+        if !fresh {
+            return Err(format!(
+                "the tracker token {secret:?} is configured for another tracker, project or URL: write the secret again, then save these settings within {REBIND_WINDOW_MINUTES} minutes"
+            ));
+        }
     }
     Ok(())
 }

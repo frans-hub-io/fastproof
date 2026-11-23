@@ -23,6 +23,8 @@ describe('issues in trackers', () => {
     await userEvent.type(screen.getByTestId('issue-note'), 'Seen after the deploy');
     await userEvent.click(screen.getByTestId('issue-preview-toggle'));
     await waitFor(() => expect(screen.getByTestId('issue-preview')).toHaveTextContent('Seen after the deploy'), { timeout: 5000 });
+    await userEvent.click(screen.getByText(/As sent/));
+    expect(screen.getByTestId('issue-preview-body')).toHaveTextContent('Seen after the deploy');
     await userEvent.click(screen.getByTestId('issue-create'));
     const link = await screen.findByTestId('issue-created-link');
     expect(link).toHaveAttribute('href', expect.stringMatching(/^https:\/\/issues\.example\.com\/browse\/SHOP-\d+$/));

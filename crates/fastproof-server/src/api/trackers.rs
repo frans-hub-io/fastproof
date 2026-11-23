@@ -7,11 +7,11 @@ use axum::Json;
 use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
-use chrono::Utc;
 use fastproof_store::Project;
 use fastproof_store::analysis::triage::{TriageIssue, TriageRequest};
 use fastproof_store::trackers::{
-    Begin, IssueFilter, IssueTarget, MAX_LOOKUP, MAX_TRACKED_ISSUES, NewLink, TrackerIssue,
+    Begin, IssueFilter, IssueTarget, Limit, MAX_LOOKUP, MAX_TRACKED_ISSUES, NewLink, ReadNow,
+    TrackerIssue,
 };
 use franshub_auth::{Auth, require};
 use franshub_http::{ApiError, ApiJson, ApiResult};
@@ -34,8 +34,12 @@ use crate::state::AppState;
 
 /// Results listed in one create or link request, at most.
 pub const MAX_TARGET_RESULTS: usize = 100;
-/// Issues created per project per hour, at most.
+/// Issues created per project per hour (failed attempts included), at most.
 pub const MAX_CREATES_PER_HOUR: i64 = 60;
+/// Existing issues linked per project per hour, at most.
+pub const MAX_LINKS_PER_HOUR: i64 = 120;
+/// Webhook calls per project per minute, at most.
+pub const MAX_WEBHOOKS_PER_MINUTE: u32 = 120;
 /// Largest webhook body.
 pub const MAX_WEBHOOK_BYTES: usize = 256 * 1024;
 
@@ -49,11 +53,44 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(unmute))
         .routes(routes!(dismiss))
         .routes(routes!(test_tracker))
-        .routes(routes!(webhook))
+        .merge(
+            OpenApiRouter::new()
+                .routes(routes!(webhook))
+                .layer(axum::extract::DefaultBodyLimit::max(MAX_WEBHOOK_BYTES)),
+        )
 }
 
+/// Webhook calls per project and tracker in the current minute (per replica).
+static WEBHOOK_CALLS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, u32)>>,
+> = std::sync::LazyLock::new(Default::default);
+
+fn webhook_allowed(key: &str, tracker: &str) -> bool {
+    let mut m = WEBHOOK_CALLS.lock().unwrap_or_else(|e| e.into_inner());
+    let now = std::time::Instant::now();
+    if m.len() >= 10_000 {
+        m.retain(|_, (t, _)| now.duration_since(*t) < std::time::Duration::from_secs(60));
+        if m.len() >= 10_000 {
+            m.clear();
+        }
+    }
+    let e = m.entry(format!("{key}/{tracker}")).or_insert((now, 0));
+    if now.duration_since(e.0) >= std::time::Duration::from_secs(60) {
+        *e = (now, 0);
+    }
+    e.1 += 1;
+    e.1 <= MAX_WEBHOOKS_PER_MINUTE
+}
+
+/// Refusals of the webhook take at least this long, whether the project and tracker exist or
+/// not.
+const WEBHOOK_REFUSAL_FLOOR: std::time::Duration = std::time::Duration::from_millis(250);
+
 fn tracker_error(e: TrackerError) -> ApiError {
-    let msg = e.to_string();
+    if let TrackerError::Config(detail) = &e {
+        tracing::warn!(error = %detail, "a tracker connection is not usable");
+    }
+    let msg = e.public();
     match e {
         TrackerError::Config(_) => ApiError::new(StatusCode::CONFLICT, "tracker_settings", msg),
         TrackerError::Refused(..) => ApiError::new(StatusCode::BAD_GATEWAY, "tracker_refused", msg),
@@ -80,6 +117,14 @@ fn connected<'a>(settings: &'a IntegrationSettings, id: &str) -> ApiResult<&'a I
             format!("no issue tracker with id {id:?} and an api connection is configured"),
         )
     })
+}
+
+/// Create, link and untrack act in an external tracker with the project's token: they need
+/// `issues:write` (not held by the `agent` role) besides `results:triage`.
+async fn issues_project(s: &AppState, auth: &Auth, key: &str) -> ApiResult<Project> {
+    let p = s.project_for(auth, key, &s.perms.issues_write).await?;
+    require(auth, &s.perms.results_triage, Some(key))?;
+    Ok(p)
 }
 
 /// `user`, or `ai` for an AI agent token (it holds `ai:propose` but not `cases:write`).
@@ -516,7 +561,7 @@ async fn link_defects(
         blocks), optionally with up to 3 screenshots of the first result's last attempt (Jira, GitLab, Azure DevOps), \
         links it to the results or the cluster, puts it on their defects and starts reading its state back. `dryRun` only \
         renders the preview. Idempotent by `requestId`. At most 60 issues per project per hour and 10 000 tracked issues. \
-        Needs `results:triage`; audited as `tracker.issue.create`.",
+        Needs `issues:write` and `results:triage` (agent tokens have no `issues:write`); audited as `tracker.issue.create`.",
     request_body = CreateTrackerIssue, params(("key" = String, Path)),
     responses((status = 200, body = TrackerIssueCreated), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),
         (status = 404, body = ErrorBody), (status = 409, body = ErrorBody, description = "`no_issue_tracker`, `tracker_settings`, or the request id is still creating"),
@@ -527,7 +572,7 @@ pub async fn create(
     P(key): P<String>,
     ApiJson(body): ApiJson<CreateTrackerIssue>,
 ) -> ApiResult<Json<TrackerIssueCreated>> {
-    let p = s.project_for(&auth, &key, &s.perms.results_triage).await?;
+    let p = issues_project(&s, &auth, &key).await?;
     check_target(&body.target)?;
     if body
         .title
@@ -550,10 +595,17 @@ pub async fn create(
     let rows = targets_of(&s, &p, &body.target).await?;
     let (ctx, detail) = context(&s, &p, &body.target, &rows, &auth.principal.name).await?;
     let title = match &body.title {
-        Some(t) => t.split_whitespace().collect::<Vec<_>>().join(" "),
+        Some(t) => tpl::title_value(
+            &t.split_whitespace().collect::<Vec<_>>().join(" "),
+            &tracker.tracker,
+        )
+        .chars()
+        .take(255)
+        .collect(),
         None => tpl::render_title(
             api.title_template.as_deref().unwrap_or(tpl::DEFAULT_TITLE),
             &ctx,
+            &tracker.tracker,
         ),
     };
     let mut blocks = Vec::new();
@@ -570,7 +622,7 @@ pub async fn create(
         api.body_template.as_deref().unwrap_or(tpl::DEFAULT_BODY),
         &ctx,
     ));
-    let attach = body.attach_screenshots.unwrap_or(api.attach_screenshots);
+    let attach = api.attach_screenshots && body.attach_screenshots != Some(false);
     let shots = if attach {
         detail.as_ref().map(screenshot_refs).unwrap_or_default()
     } else {
@@ -581,7 +633,7 @@ pub async fn create(
         "jiraWiki" => tpl::jira_wiki(&blocks),
         "adf" => tpl::adf(&blocks).to_string(),
         "html" => tpl::html(&blocks),
-        _ => tpl::markdown(&blocks),
+        _ => tpl::markdown(&blocks, tracker.tracker == "gitlab"),
     };
     let preview = IssuePreview {
         title: title.clone(),
@@ -600,10 +652,6 @@ pub async fn create(
             repeated: false,
         }));
     }
-    let (total, recent) = s
-        .store
-        .tracker_issue_counts(p.id, Utc::now() - chrono::Duration::hours(1))
-        .await?;
     let client = Client::new(&s, p.id, tracker)
         .await
         .map_err(tracker_error)?;
@@ -615,9 +663,22 @@ pub async fn create(
             &tracker.tracker,
             body.request_id,
             &auth.principal.name,
+            MAX_CREATES_PER_HOUR,
+            MAX_TRACKED_ISSUES,
         )
         .await?
     {
+        Begin::Limited(Limit::Total) => {
+            return Err(ApiError::conflict(format!(
+                "the project follows {MAX_TRACKED_ISSUES} issues; stop following old ones first"
+            )));
+        }
+        Begin::Limited(Limit::Hourly) => {
+            return Err(ApiError::too_many_requests(format!(
+                "at most {MAX_CREATES_PER_HOUR} issue creates (failed ones included) per project per hour"
+            ))
+            .with_header(header::RETRY_AFTER, HeaderValue::from_static("600")));
+        }
         Begin::Existing(issue) if issue.category == "creating" => {
             return Err(ApiError::conflict(
                 "this request is still creating its issue",
@@ -635,19 +696,6 @@ pub async fn create(
         }
         Begin::New(id) => id,
     };
-    if total >= MAX_TRACKED_ISSUES || recent >= MAX_CREATES_PER_HOUR {
-        s.store.abandon_tracker_issue(id).await?;
-        return Err(if total >= MAX_TRACKED_ISSUES {
-            ApiError::conflict(format!(
-                "the project tracks {MAX_TRACKED_ISSUES} issues; stop tracking old ones first"
-            ))
-        } else {
-            ApiError::too_many_requests(format!(
-                "at most {MAX_CREATES_PER_HOUR} issues per project per hour"
-            ))
-            .with_header(header::RETRY_AFTER, HeaderValue::from_static("600"))
-        });
-    }
     let mut images = Vec::new();
     for (aid, name, _) in &shots {
         if let Some(img) = read_image(&s, &p, *aid, name).await {
@@ -674,7 +722,7 @@ pub async fn create(
             shots.len() - images.len()
         ));
     }
-    let next = tracker_sync::next_read(api, state.closed, s.cfg.integrations.tracker_poll);
+    let next = tracker_sync::next_read(api, state.closed, None, s.cfg.integrations.tracker_poll);
     let issue_id = if s.store.complete_tracker_issue(id, &state, next).await? {
         id
     } else {
@@ -737,7 +785,8 @@ pub struct LinkTrackerIssue {
 
 #[utoipa::path(post, path = "/api/v1/projects/{key}/tracker-issues/link", tag = "integrations", operation_id = "tracker_issues_link",
     description = "Links an existing issue of a connected tracker to results or a failure cluster: reads it from the tracker \
-        (it must exist), tracks its state, and puts it on the results' defects. Needs `results:triage`; audited as \
+        (it must exist), tracks its state, and puts it on the results' defects; a Jira issue must belong to the configured project, an Azure DevOps work item to the \
+        configured project. At most 120 links per project per hour. Needs `issues:write` and `results:triage`; audited as \
         `tracker.issue.link`.",
     request_body = LinkTrackerIssue, params(("key" = String, Path)),
     responses((status = 200, body = TrackerIssueCreated), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),
@@ -749,7 +798,7 @@ pub async fn link(
     P(key): P<String>,
     ApiJson(body): ApiJson<LinkTrackerIssue>,
 ) -> ApiResult<Json<TrackerIssueCreated>> {
-    let p = s.project_for(&auth, &key, &s.perms.results_triage).await?;
+    let p = issues_project(&s, &auth, &key).await?;
     check_target(&body.target)?;
     let settings = settings_of(&s, &p).await?;
     let tracker = connected(&settings, &body.tracker)?;
@@ -760,6 +809,16 @@ pub async fn link(
             _ => "issueKey must be an issue number such as 12",
         })
     })?;
+    if tracker.tracker == "jira" && !issue_key.starts_with(&format!("{}-", api.project)) {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            "tracker_not_found",
+            format!(
+                "only issues of the Jira project {} can be linked",
+                api.project
+            ),
+        ));
+    }
     if let Some(d) = body.defect_type_id
         && s.store.defect_type(p.id, d).await?.is_none()
     {
@@ -770,12 +829,26 @@ pub async fn link(
         .store
         .tracker_issue_by_key(p.id, &body.tracker, &issue_key)
         .await?;
-    if known.is_none() {
-        let (total, _) = s.store.tracker_issue_counts(p.id, Utc::now()).await?;
-        if total >= MAX_TRACKED_ISSUES {
+    match s
+        .store
+        .take_link_quota(
+            p.id,
+            MAX_LINKS_PER_HOUR,
+            known.is_none().then_some(MAX_TRACKED_ISSUES),
+        )
+        .await?
+    {
+        None => {}
+        Some(Limit::Total) => {
             return Err(ApiError::conflict(format!(
-                "the project tracks {MAX_TRACKED_ISSUES} issues; stop tracking old ones first"
+                "the project follows {MAX_TRACKED_ISSUES} issues; stop following old ones first"
             )));
+        }
+        Some(Limit::Hourly) => {
+            return Err(ApiError::too_many_requests(format!(
+                "at most {MAX_LINKS_PER_HOUR} links per project per hour"
+            ))
+            .with_header(header::RETRY_AFTER, HeaderValue::from_static("600")));
         }
     }
     let client = Client::new(&s, p.id, tracker)
@@ -792,7 +865,7 @@ pub async fn link(
                 "no issue in the answer",
             )
         })?;
-    let next = tracker_sync::next_read(api, state.closed, s.cfg.integrations.tracker_poll);
+    let next = tracker_sync::next_read(api, state.closed, None, s.cfg.integrations.tracker_poll);
     let issue_id = s
         .store
         .upsert_tracker_issue(
@@ -844,7 +917,7 @@ pub async fn link(
 
 #[utoipa::path(delete, path = "/api/v1/projects/{key}/tracker-issues/{id}", tag = "integrations", operation_id = "tracker_issues_delete",
     description = "Stops tracking an issue (its links go; the issue stays in the tracker and on the defects). Needs \
-        `results:triage`; audited as `tracker.issue.untrack`.",
+        `issues:write` and `results:triage`; audited as `tracker.issue.untrack`.",
     params(("key" = String, Path), ("id" = Uuid, Path)),
     responses((status = 204), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
 pub async fn delete(
@@ -852,7 +925,7 @@ pub async fn delete(
     auth: Auth,
     P((key, id)): P<(String, Uuid)>,
 ) -> ApiResult<StatusCode> {
-    let p = s.project_for(&auth, &key, &s.perms.results_triage).await?;
+    let p = issues_project(&s, &auth, &key).await?;
     if !s.store.delete_tracker_issue(p.id, id).await? {
         return Err(ApiError::not_found("tracker issue"));
     }
@@ -867,7 +940,8 @@ pub async fn delete(
 }
 
 #[utoipa::path(post, path = "/api/v1/projects/{key}/tracker-issues/{id}/sync", tag = "integrations", operation_id = "tracker_issues_sync",
-    description = "Reads the issue from its tracker now (at most once per 5 seconds per issue). Needs `results:triage`.",
+    description = "Reads the issue from its tracker now: not within 5 seconds of the last read, not while another read holds it and not \
+        while it backs off after failed reads (`429` with `Retry-After`). Needs `results:triage`.",
     params(("key" = String, Path), ("id" = Uuid, Path)),
     responses((status = 200, body = TrackerIssueDetail), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody),
         (status = 429, body = ErrorBody)))]
@@ -882,24 +956,27 @@ pub async fn sync_now(
         .tracker_issue(p.id, id)
         .await?
         .ok_or_else(|| ApiError::not_found("tracker issue"))?;
-    if issue.key.is_none() {
-        return Err(ApiError::conflict("the issue is still being created"));
-    }
-    if issue
-        .synced_at
-        .is_some_and(|t| Utc::now() - t < chrono::Duration::from_std(MIN_GAP).unwrap_or_default())
-    {
-        return Err(
-            ApiError::too_many_requests("read at most once per 5 seconds")
-                .with_header(header::RETRY_AFTER, HeaderValue::from_static("5")),
-        );
+    if issue.key.is_none() || issue.category == "failed" {
+        return Err(ApiError::conflict("the issue was not created"));
     }
     let settings = settings_of(&s, &p).await?;
-    let job = s
+    let job = match s
         .store
-        .tracker_sync_job(p.id, id)
+        .lease_tracker_read(p.id, id, MIN_GAP, tracker_sync::LEASE_TIME)
         .await?
-        .ok_or_else(|| ApiError::conflict("the issue is still being created"))?;
+    {
+        ReadNow::Job(job) => job,
+        ReadNow::NotFound => return Err(ApiError::not_found("tracker issue")),
+        ReadNow::Later(secs) => {
+            return Err(ApiError::too_many_requests(
+                "read recently, being read, or backing off after failed reads; try again later",
+            )
+            .with_header(
+                header::RETRY_AFTER,
+                HeaderValue::from(secs.clamp(1, 21_600) as u64),
+            ));
+        }
+    };
     tracker_sync::sync_one(
         &s,
         IssueTracker::connected(&settings.issue_trackers, &issue.tracker_id),
@@ -1064,20 +1141,23 @@ pub async fn test_tracker(
 
 #[utoipa::path(post, path = "/api/v1/hooks/trackers/{key}/{trackerId}", tag = "integrations", operation_id = "tracker_webhook",
     description = "Receives the webhook of a tracker with `sync: webhook` (no bearer token). The request must prove the \
-        secret named by `webhookSecretRef`: GitHub `X-Hub-Signature-256` and Jira `X-Hub-Signature` (`sha256=` HMAC of the \
+        secret named by `webhookSecretRef` (purpose `tracker-webhook`): GitHub `X-Hub-Signature-256` and Jira `X-Hub-Signature` (`sha256=` HMAC of the \
         body), GitLab `X-Gitlab-Token`, Azure DevOps basic authentication with the secret as the password. A verified call \
         only schedules a read of the issue it names through the tracker's API (at most one per issue per 5 seconds); its \
-        payload is never taken as the state. Every refusal is the same `401`. Body at most 256 KiB.",
+        payload is never taken as the state; an issue that backs off after failed reads or is being read is left alone. Every \
+        refusal is the same `401` after the same minimum time. At most 120 calls per project and tracker per minute (`429`). \
+        Body at most 256 KiB.",
     request_body(content = Object, content_type = "application/json", description = "The tracker's webhook payload"),
     params(("key" = String, Path), ("trackerId" = String, Path)),
     security(()),
-    responses((status = 202, description = "accepted"), (status = 401, body = ErrorBody), (status = 413, body = ErrorBody)))]
+    responses((status = 202, description = "accepted"), (status = 401, body = ErrorBody), (status = 413, body = ErrorBody), (status = 429, body = ErrorBody)))]
 pub async fn webhook(
     State(s): State<AppState>,
     P((key, tracker_id)): P<(String, String)>,
     headers: HeaderMap,
     body: Bytes,
 ) -> ApiResult<StatusCode> {
+    let started = tokio::time::Instant::now();
     if body.len() > MAX_WEBHOOK_BYTES {
         return Err(ApiError::new(
             StatusCode::PAYLOAD_TOO_LARGE,
@@ -1085,46 +1165,51 @@ pub async fn webhook(
             "the body is larger than 256 KiB",
         ));
     }
-    let refused = || {
+    if !webhook_allowed(&key, &tracker_id) {
+        return Err(ApiError::too_many_requests("too many webhook calls")
+            .with_header(header::RETRY_AFTER, HeaderValue::from_static("60")));
+    }
+    let verified = verified_webhook(&s, &key, &tracker_id, &headers, &body).await;
+    let Some((project_id, tracker)) = verified else {
         metrics::counter!("fastproof_tracker_webhooks_total", "outcome" => "refused").increment(1);
-        ApiError::new(
+        tokio::time::sleep_until(started + WEBHOOK_REFUSAL_FLOOR).await;
+        return Err(ApiError::new(
             StatusCode::UNAUTHORIZED,
             "unauthorized",
             "webhook not verified",
-        )
+        ));
     };
-    if !fastproof_blob::valid_project_key(&key) || tracker_id.len() > 32 {
-        return Err(refused());
-    }
-    let Some(p) = s.store.project(&key).await? else {
-        return Err(refused());
-    };
-    let doc = s.store.project_settings_json(p.id).await?;
-    let settings = IntegrationSettings::parse(&doc).unwrap_or_default();
-    let Some(t) = IssueTracker::connected(&settings.issue_trackers, &tracker_id) else {
-        return Err(refused());
-    };
-    let Some(api) = t.api.as_ref().filter(|a| a.sync_mode() == "webhook") else {
-        return Err(refused());
-    };
-    let Some(secret_ref) = api.webhook_secret_ref.as_deref() else {
-        return Err(refused());
-    };
-    let Ok(secret) = s
-        .project_secret(p.id, secret_ref, SecretPurpose::Webhook, None)
-        .await
-    else {
-        return Err(refused());
-    };
-    if !tracker_sync::verify(&t.tracker, &headers, &body, secret.expose()) {
-        return Err(refused());
-    }
-    let refs = tracker_sync::refs(&t.tracker, &body);
+    let refs = tracker_sync::refs(&tracker, &body);
     let n = s
         .store
-        .request_tracker_sync_by_ref(p.id, &tracker_id, &refs, MIN_GAP)
+        .request_tracker_sync_by_ref(project_id, &tracker_id, &refs, MIN_GAP)
         .await?;
     metrics::counter!("fastproof_tracker_webhooks_total", "outcome" => if n > 0 { "scheduled" } else { "ignored" })
         .increment(1);
     Ok(StatusCode::ACCEPTED)
+}
+
+/// The project id and tracker type when the request proves the tracker's webhook secret.
+async fn verified_webhook(
+    s: &AppState,
+    key: &str,
+    tracker_id: &str,
+    headers: &HeaderMap,
+    body: &[u8],
+) -> Option<(Uuid, String)> {
+    if !fastproof_blob::valid_project_key(key) || tracker_id.len() > 32 {
+        return None;
+    }
+    let p = s.store.project(key).await.ok()??;
+    let doc = s.store.project_settings_json(p.id).await.ok()?;
+    let settings = IntegrationSettings::parse(&doc).unwrap_or_default();
+    let t = IssueTracker::connected(&settings.issue_trackers, tracker_id)?;
+    let api = t.api.as_ref().filter(|a| a.sync_mode() == "webhook")?;
+    let secret_ref = api.webhook_secret_ref.as_deref()?;
+    let secret = s
+        .project_secret(p.id, secret_ref, SecretPurpose::TrackerHook, None)
+        .await
+        .ok()?;
+    tracker_sync::verify(&t.tracker, headers, body, secret.expose())
+        .then(|| (p.id, t.tracker.clone()))
 }

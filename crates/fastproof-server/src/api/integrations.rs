@@ -108,6 +108,11 @@ pub async fn put_secret(
             "value must have 1 to {MAX_SECRET_BYTES} bytes"
         )));
     }
+    if body.purpose == SecretPurpose::TrackerHook && body.value.len() < 16 {
+        return Err(ApiError::bad_request(
+            "a tracker-webhook secret has at least 16 bytes",
+        ));
+    }
     let mut origin = body
         .origin
         .as_deref()

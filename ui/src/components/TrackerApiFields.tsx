@@ -155,7 +155,7 @@ export function TrackerApiFields({
             {a.sync === 'webhook' && (
               <Select
                 label="Webhook secret"
-                description="Purpose webhook"
+                description="Purpose tracker-webhook, at least 16 bytes"
                 placeholder="Choose a secret"
                 data={options(a.webhookSecretRef)}
                 value={a.webhookSecretRef ?? null}

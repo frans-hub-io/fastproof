@@ -128,7 +128,7 @@ fn jira_issue(base: &str, n: u64, i: &Issue) -> Value {
     };
     json!({"expand": "renderedFields", "id": (10000 + n).to_string(), "self": format!("{base}/issue/{}", 10000 + n),
         "key": format!("SHOP-{n}"),
-        "fields": {"summary": i.title, "resolution": if i.closed { json!({"name": "Fixed"}) } else { Value::Null },
+        "fields": {"project": {"id": "10000", "key": "SHOP", "name": "Shop"}, "summary": i.title, "resolution": if i.closed { json!({"name": "Fixed"}) } else { Value::Null },
             "status": {"self": format!("{base}/status/1"), "description": "", "name": if i.closed { "Done".to_string() } else { i.state.clone() },
                 "id": "1", "statusCategory": {"self": format!("{base}/statuscategory/2"), "id": 2, "key": key, "colorName": "blue-gray", "name": name}}}})
 }
@@ -250,6 +250,7 @@ async fn handle(
             let web = |iid: u64| format!("{host}/group/app/-/issues/{iid}");
             let issue = |iid: u64, i: &Issue| {
                 json!({"id": 1000 + iid, "iid": iid, "project_id": 4, "title": i.title, "description": "",
+                    "references": {"short": format!("#{iid}"), "full": format!("group/app#{iid}")},
                     "state": if i.closed { "closed" } else { "opened" }, "labels": ["fastproof"], "web_url": web(iid),
                     "closed_at": if i.closed { json!("2026-11-23T10:00:00.000Z") } else { Value::Null }})
             };
@@ -279,6 +280,13 @@ async fn handle(
                     let i = m.issues[&("gl".to_string(), n)].clone();
                     reply(201, issue(n, &i))
                 }
+                ("PUT", ["issues", iid]) => {
+                    let n: u64 = iid.parse().unwrap_or(0);
+                    match m.issues.get(&("gl".to_string(), n)).cloned() {
+                        Some(i) => reply(200, issue(n, &i)),
+                        None => reply(404, json!({"message": "404 Not found"})),
+                    }
+                }
                 ("GET", ["issues", iid]) => {
                     let n: u64 = iid.parse().unwrap_or(0);
                     match m.issues.get(&("gl".to_string(), n)) {
@@ -301,6 +309,7 @@ async fn handle(
             }
             let issue = |n: u64, i: &Issue| {
                 json!({"id": 5000 + n, "node_id": "I_x", "url": format!("{host}/gh/repos/octo/app/issues/{n}"),
+                    "repository_url": format!("{host}/gh/repos/octo/app"),
                     "html_url": format!("https://github.example.com/octo/app/issues/{n}"), "number": n,
                     "state": if i.closed { "closed" } else { "open" },
                     "state_reason": if i.closed { json!("completed") } else { Value::Null }, "title": i.title,
@@ -346,7 +355,8 @@ async fn handle(
                 );
             }
             let item = |id: u64, i: &Issue, links: bool| {
-                let mut v = json!({"id": id, "rev": 1, "fields": {"System.State": i.state, "System.Title": i.title},
+                let mut v = json!({"id": id, "rev": 1, "fields": {"System.State": i.state, "System.Title": i.title,
+                    "System.TeamProject": "Shop Web"},
                     "url": format!("{host}/az/example/_apis/wit/workItems/{id}")});
                 if links {
                     v["fields"]["System.WorkItemType"] = json!("Bug");
@@ -486,7 +496,7 @@ async fn setup(s: &Server, fake: &Fake) -> (String, Vec<Value>) {
     secret(s, "ti", "gl", GL_TOKEN, "tracker", Some(&o)).await;
     secret(s, "ti", "gh", "ghp-token", "tracker", Some(&o)).await;
     secret(s, "ti", "az", "azure-pat", "tracker", Some(&o)).await;
-    secret(s, "ti", "gh-hook", HOOK_SECRET, "webhook", None).await;
+    secret(s, "ti", "gh-hook", HOOK_SECRET, "tracker-webhook", None).await;
     let (st, b) = s
         .call(
             Method::PUT,
@@ -526,7 +536,7 @@ async fn setup(s: &Server, fake: &Fake) -> (String, Vec<Value>) {
         let mut v = json!({"id": id, "name": name, "fullName": format!("shop.Checkout#{name}"), "status": "failed",
             "start": 1_795_249_079_000i64, "stop": 1_795_249_080_000i64,
             "error": {"message": "expected 200 but was 500 @admin see http://evil.example.net ```",
-                      "trace": "java.lang.AssertionError\n\tat shop.Checkout.pays(Checkout.java:12)"}});
+                      "trace": "java.lang.AssertionError\n```\n/close\n  /assign @attacker\n\tat shop.Checkout.pays(Checkout.java:12)"}});
         if att {
             v["attachments"] = json!([{"id": aid, "name": "checkout failure.png"}]);
         }
@@ -657,8 +667,22 @@ async fn issues_are_created_in_every_tracker_and_synced_back() {
     let gl = fake.requests("POST", "/gl/api/v4/projects/group%2Fapp/issues");
     let glb: Value = serde_json::from_slice(&gl[0].body).unwrap();
     let md = glb["description"].as_str().unwrap();
-    assert!(md.contains("````text"), "{md}");
-    assert!(md.contains("![checkout_failure.png](/uploads/"), "{md}");
+    assert!(md.contains("```text") && !md.contains("````"), "{md}");
+    for line in md.lines() {
+        assert!(
+            !line.trim_start().starts_with('/'),
+            "a quick action would run: {line:?}"
+        );
+    }
+    let put = fake.requests("PUT", "/gl/api/v4/projects/group%2Fapp/issues/");
+    let full: Value = serde_json::from_slice(&put[0].body).unwrap();
+    assert!(
+        full["description"]
+            .as_str()
+            .unwrap()
+            .contains("![checkout_failure.png](/uploads/"),
+        "{full}"
+    );
     assert!(
         md.contains("<https://fastproof.example.com/p/ti/results/"),
         "{md}"
@@ -668,6 +692,11 @@ async fn issues_are_created_in_every_tracker_and_synced_back() {
     let gh = fake.requests("POST", "/gh/repos/octo/app/issues");
     let ghb: Value = serde_json::from_slice(&gh[0].body).unwrap();
     assert!(ghb["body"].as_str().unwrap().contains("\\@\u{200B}release"));
+    let gh_title = ghb["title"].as_str().unwrap();
+    assert!(
+        gh_title.contains("expected 200") && !gh_title.contains("@admin"),
+        "{gh_title}"
+    );
 
     let az = fake.requests("POST", "/az/example/Shop%20Web/_apis/wit/workitems/$Bug");
     assert_eq!(az.len(), 1);
@@ -864,6 +893,17 @@ async fn webhooks_link_limits_permissions_and_secrets() {
         .map(|r| (r.status(), ()))
         .unwrap();
     assert_eq!(st, StatusCode::UNAUTHORIZED);
+    let agent = s.token("agent", "agent", &["ti"]).await;
+    let (st, _) = create(&s, &agent, body.clone()).await;
+    assert_eq!(st, StatusCode::FORBIDDEN, "agents cannot act in trackers");
+    let (st, _) = s
+        .post(
+            "/api/v1/projects/ti/tracker-issues/link",
+            &agent,
+            json!({"tracker": "az", "issueKey": "1", "resultIds": [pays]}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::FORBIDDEN);
     let (st, gh) = create(&s, &editor, body).await;
     assert_eq!(st, StatusCode::OK, "{gh}");
     let gh_id = gh["issue"]["id"].as_str().unwrap().to_string();
@@ -1041,6 +1081,163 @@ async fn webhooks_link_limits_permissions_and_secrets() {
         )
         .await;
     assert_eq!(st, StatusCode::BAD_REQUEST);
+    fake.st.lock().unwrap().issues.insert(
+        ("az".into(), 88),
+        Issue {
+            title: "Other project".into(),
+            state: "Active".into(),
+            closed: false,
+        },
+    );
+    let (st, b) = s
+        .post(
+            "/api/v1/projects/ti/tracker-issues/link",
+            &editor,
+            json!({"tracker": "jc", "issueKey": "HR-1", "resultIds": [voids]}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::NOT_FOUND, "another Jira project: {b}");
+    let jira_reads = fake.requests("GET", "/jc/rest/api/3/issue/HR-1");
+    assert!(
+        jira_reads.is_empty(),
+        "nothing is read from another Jira project"
+    );
+
+    let az_id = linked["issue"]["id"].as_str().unwrap().to_string();
+    let (st, _) = s
+        .call(
+            Method::DELETE,
+            "/api/v1/projects/ti/secrets/az",
+            Some(ADMIN_TOKEN),
+            None,
+        )
+        .await;
+    assert!(st.is_success());
+    wait_for(
+        "a read with a missing secret fails with a generic error",
+        || async {
+            let _ = s
+                .post(
+                    &format!("/api/v1/projects/ti/tracker-issues/{az_id}/sync"),
+                    &editor,
+                    json!({}),
+                )
+                .await;
+            let (_, b) = s
+                .get(
+                    &format!("/api/v1/projects/ti/tracker-issues/{az_id}"),
+                    &viewer,
+                )
+                .await;
+            b["syncError"]
+                .as_str()
+                .is_some_and(|e| e.contains("ask a project admin"))
+        },
+    )
+    .await;
+    let (_, b) = s
+        .get(
+            &format!("/api/v1/projects/ti/tracker-issues/{az_id}"),
+            &viewer,
+        )
+        .await;
+    let e = b["syncError"].as_str().unwrap();
+    assert!(!e.contains("az") && !e.contains("127.0.0.1"), "{e}");
+    let (st, b) = s
+        .post(
+            &format!("/api/v1/projects/ti/tracker-issues/{az_id}/sync"),
+            &editor,
+            json!({}),
+        )
+        .await;
+    assert_eq!(
+        st,
+        StatusCode::TOO_MANY_REQUESTS,
+        "read now waits for the backoff: {b}"
+    );
+
+    let pid: uuid::Uuid = sqlx::query_scalar("select id from projects where key = 'ti'")
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "insert into tracker_requests (id, project_id, kind) select gen_random_uuid(), $1, 'create' from generate_series(1, 60)",
+    )
+    .bind(pid)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let posts = fake.requests("POST", "/gh").len();
+    let (st, b) = create(
+        &s,
+        &editor,
+        json!({"tracker": "gh", "requestId": uuid::Uuid::now_v7(), "resultIds": [voids]}),
+    )
+    .await;
+    assert_eq!(st, StatusCode::TOO_MANY_REQUESTS, "{b}");
+    assert_eq!(fake.requests("POST", "/gh").len(), posts);
+
+    let mut moved = trackers(&fake);
+    moved[2]["api"]["project"] = json!("group/other");
+    sqlx::query(
+        "update project_secrets set updated_at = now() - interval '2 hours' where name = 'gl'",
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let mut doc = moved.clone();
+    doc[4]["api"]["tokenSecretRef"] = json!("az");
+    let (st, b) = s
+        .call(
+            Method::PUT,
+            "/api/v1/projects/ti/settings",
+            Some(ADMIN_TOKEN),
+            Some(json!({"issueTrackers": moved.clone()})),
+        )
+        .await;
+    assert_eq!(
+        st,
+        StatusCode::BAD_REQUEST,
+        "the token cannot move to another project: {b}"
+    );
+    assert!(
+        b["message"]
+            .as_str()
+            .unwrap()
+            .contains("write the secret again"),
+        "{b}"
+    );
+    secret(&s, "ti", "gl", GL_TOKEN, "tracker", Some(&fake.origin())).await;
+    secret(&s, "ti", "az", "azure-pat", "tracker", Some(&fake.origin())).await;
+    let (st, b) = s
+        .call(
+            Method::PUT,
+            "/api/v1/projects/ti/settings",
+            Some(ADMIN_TOKEN),
+            Some(json!({"issueTrackers": moved})),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{b}");
+    let changes: Vec<Value> = sqlx::query_scalar(
+        "select detail from platform_audit where action = 'project.settings.trackers' order by id",
+    )
+    .fetch_all(&db.pool)
+    .await
+    .unwrap();
+    assert!(
+        changes.last().unwrap().to_string().contains("group/other"),
+        "{changes:?}"
+    );
+    let _ = doc;
+    let (st, _) = s
+        .call(
+            Method::PUT,
+            "/api/v1/projects/ti/settings",
+            Some(ADMIN_TOKEN),
+            Some(json!({"issueTrackers": trackers(&fake)})),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK);
 
     let (st, t) = s
         .post(

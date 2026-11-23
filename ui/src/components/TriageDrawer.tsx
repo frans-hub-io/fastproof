@@ -2,6 +2,7 @@ import { Alert, Anchor, Button, Drawer, Group, SegmentedControl, Select, Stack, 
 import { useMediaQuery } from '@mantine/hooks';
 import { notifications } from '@mantine/notifications';
 import { IconBellOff, IconBug, IconExternalLink } from '@tabler/icons-react';
+import { useCan } from '@franshub/ui-shell';
 import { useMemo, useState } from 'react';
 import { errorMessage } from '../api/client';
 import { useDefectTypes, useSettings, useTriage } from '../api/stageC';
@@ -39,6 +40,7 @@ function TriageForm({ project, target, onDone }: { project: string; target: Tria
   const [reason, setReason] = useState('');
   const [unmute, setUnmute] = useState(false);
   const [issueFor, setIssueFor] = useState<TriageTarget | null>(null);
+  const canIssues = useCan('issues:write', project);
   const connected = connectedTrackers(settings.data?.issueTrackers);
   const current = useIssueStates(project, [target.defect?.issueUrl]).get(target.defect?.issueUrl ?? '');
 
@@ -134,7 +136,7 @@ function TriageForm({ project, target, onDone }: { project: string; target: Tria
             {issueBody.url} <IconExternalLink size={11} />
           </Anchor>
         )}
-        {connected.length > 0 && (
+        {canIssues && connected.length > 0 && (
           <Group gap="xs">
             <Button size="xs" variant="light" leftSection={<IconBug size={14} />} onClick={() => setIssueFor(target)} data-testid="triage-create-issue">
               Create or link an issue in the tracker

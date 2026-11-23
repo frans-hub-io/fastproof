@@ -275,6 +275,7 @@ Each secret is bound, when it is written, to one purpose and optionally to the o
 |---|---|---|
 | `vcs` | `vcs.tokenSecretRef` | Required: the origin of `vcs.url` |
 | `tracker` | `issueTrackers[].api.tokenSecretRef` | Required: the origin of `issueTrackers[].api.url` |
+| `tracker-webhook` | `issueTrackers[].api.webhookSecretRef` (at least 16 bytes) | None |
 | `fastmock` | `fastmock.tokenSecretRef` | Required: the origin of `fastmock.url` |
 | `slack` | `targetSecretRef` of a Slack notification | Optional; when given, the URL in the value must be on it |
 | `teams` | `targetSecretRef` of a Teams notification | Taken from the workflow URL in the value (`https`); when given, it must be that origin |

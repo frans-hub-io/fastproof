@@ -116,7 +116,7 @@
         "tags": [
           "integrations"
         ],
-        "description": "Receives the webhook of a tracker with `sync: webhook` (no bearer token). The request must prove the secret named by `webhookSecretRef`: GitHub `X-Hub-Signature-256` and Jira `X-Hub-Signature` (`sha256=` HMAC of the body), GitLab `X-Gitlab-Token`, Azure DevOps basic authentication with the secret as the password. A verified call only schedules a read of the issue it names through the tracker's API (at most one per issue per 5 seconds); its payload is never taken as the state. Every refusal is the same `401`. Body at most 256 KiB.",
+        "description": "Receives the webhook of a tracker with `sync: webhook` (no bearer token). The request must prove the secret named by `webhookSecretRef` (purpose `tracker-webhook`): GitHub `X-Hub-Signature-256` and Jira `X-Hub-Signature` (`sha256=` HMAC of the body), GitLab `X-Gitlab-Token`, Azure DevOps basic authentication with the secret as the password. A verified call only schedules a read of the issue it names through the tracker's API (at most one per issue per 5 seconds); its payload is never taken as the state; an issue that backs off after failed reads or is being read is left alone. Every refusal is the same `401` after the same minimum time. At most 120 calls per project and tracker per minute (`429`). Body at most 256 KiB.",
         "operationId": "tracker_webhook",
         "parameters": [
           {
@@ -161,6 +161,15 @@
             }
           },
           "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
             "content": {
               "application/json": {
                 "schema": {
@@ -10832,7 +10841,7 @@
         "tags": [
           "integrations"
         ],
-        "description": "Creates an issue in a connected tracker for results or a failure cluster, from the tracker's title and description templates (values from results are escaped for the tracker's markup; messages and traces go into code blocks), optionally with up to 3 screenshots of the first result's last attempt (Jira, GitLab, Azure DevOps), links it to the results or the cluster, puts it on their defects and starts reading its state back. `dryRun` only renders the preview. Idempotent by `requestId`. At most 60 issues per project per hour and 10 000 tracked issues. Needs `results:triage`; audited as `tracker.issue.create`.",
+        "description": "Creates an issue in a connected tracker for results or a failure cluster, from the tracker's title and description templates (values from results are escaped for the tracker's markup; messages and traces go into code blocks), optionally with up to 3 screenshots of the first result's last attempt (Jira, GitLab, Azure DevOps), links it to the results or the cluster, puts it on their defects and starts reading its state back. `dryRun` only renders the preview. Idempotent by `requestId`. At most 60 issues per project per hour and 10 000 tracked issues. Needs `issues:write` and `results:triage` (agent tokens have no `issues:write`); audited as `tracker.issue.create`.",
         "operationId": "tracker_issues_create",
         "parameters": [
           {
@@ -10928,7 +10937,7 @@
         "tags": [
           "integrations"
         ],
-        "description": "Links an existing issue of a connected tracker to results or a failure cluster: reads it from the tracker (it must exist), tracks its state, and puts it on the results' defects. Needs `results:triage`; audited as `tracker.issue.link`.",
+        "description": "Links an existing issue of a connected tracker to results or a failure cluster: reads it from the tracker (it must exist), tracks its state, and puts it on the results' defects; a Jira issue must belong to the configured project, an Azure DevOps work item to the configured project. At most 120 links per project per hour. Needs `issues:write` and `results:triage`; audited as `tracker.issue.link`.",
         "operationId": "tracker_issues_link",
         "parameters": [
           {
@@ -11144,7 +11153,7 @@
         "tags": [
           "integrations"
         ],
-        "description": "Stops tracking an issue (its links go; the issue stays in the tracker and on the defects). Needs `results:triage`; audited as `tracker.issue.untrack`.",
+        "description": "Stops tracking an issue (its links go; the issue stays in the tracker and on the defects). Needs `issues:write` and `results:triage`; audited as `tracker.issue.untrack`.",
         "operationId": "tracker_issues_delete",
         "parameters": [
           {
@@ -11242,7 +11251,7 @@
         "tags": [
           "integrations"
         ],
-        "description": "Reads the issue from its tracker now (at most once per 5 seconds per issue). Needs `results:triage`.",
+        "description": "Reads the issue from its tracker now: not within 5 seconds of the last read, not while another read holds it and not while it backs off after failed reads (`429` with `Retry-After`). Needs `results:triage`.",
         "operationId": "tracker_issues_sync",
         "parameters": [
           {
@@ -20027,6 +20036,7 @@
         "enum": [
           "vcs",
           "tracker",
+          "tracker-webhook",
           "fastmock",
           "slack",
           "telegram",
@@ -21125,7 +21135,7 @@
               "string",
               "null"
             ],
-            "description": "With `sync: webhook`: a secret with purpose `webhook` that the tracker's webhook proves\nitself with (GitHub and Jira sign with it, GitLab sends it as its token, Azure DevOps as\nthe basic authentication password)."
+            "description": "With `sync: webhook`: a secret with purpose `tracker-webhook` (at least 16 bytes) that\nthe tracker's webhook proves itself with (GitHub and Jira sign with it, GitLab sends it as its token, Azure DevOps as\nthe basic authentication password)."
           }
         },
         "additionalProperties": false

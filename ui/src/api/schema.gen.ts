@@ -45,7 +45,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description Receives the webhook of a tracker with `sync: webhook` (no bearer token). The request must prove the secret named by `webhookSecretRef`: GitHub `X-Hub-Signature-256` and Jira `X-Hub-Signature` (`sha256=` HMAC of the body), GitLab `X-Gitlab-Token`, Azure DevOps basic authentication with the secret as the password. A verified call only schedules a read of the issue it names through the tracker's API (at most one per issue per 5 seconds); its payload is never taken as the state. Every refusal is the same `401`. Body at most 256 KiB. */
+        /** @description Receives the webhook of a tracker with `sync: webhook` (no bearer token). The request must prove the secret named by `webhookSecretRef` (purpose `tracker-webhook`): GitHub `X-Hub-Signature-256` and Jira `X-Hub-Signature` (`sha256=` HMAC of the body), GitLab `X-Gitlab-Token`, Azure DevOps basic authentication with the secret as the password. A verified call only schedules a read of the issue it names through the tracker's API (at most one per issue per 5 seconds); its payload is never taken as the state; an issue that backs off after failed reads or is being read is left alone. Every refusal is the same `401` after the same minimum time. At most 120 calls per project and tracker per minute (`429`). Body at most 256 KiB. */
         post: operations["tracker_webhook"];
         delete?: never;
         options?: never;
@@ -1654,7 +1654,7 @@ export interface paths {
         /** @description Issues created or linked from FastProof with the state last read from their tracker, newest first. */
         get: operations["tracker_issues_list"];
         put?: never;
-        /** @description Creates an issue in a connected tracker for results or a failure cluster, from the tracker's title and description templates (values from results are escaped for the tracker's markup; messages and traces go into code blocks), optionally with up to 3 screenshots of the first result's last attempt (Jira, GitLab, Azure DevOps), links it to the results or the cluster, puts it on their defects and starts reading its state back. `dryRun` only renders the preview. Idempotent by `requestId`. At most 60 issues per project per hour and 10 000 tracked issues. Needs `results:triage`; audited as `tracker.issue.create`. */
+        /** @description Creates an issue in a connected tracker for results or a failure cluster, from the tracker's title and description templates (values from results are escaped for the tracker's markup; messages and traces go into code blocks), optionally with up to 3 screenshots of the first result's last attempt (Jira, GitLab, Azure DevOps), links it to the results or the cluster, puts it on their defects and starts reading its state back. `dryRun` only renders the preview. Idempotent by `requestId`. At most 60 issues per project per hour and 10 000 tracked issues. Needs `issues:write` and `results:triage` (agent tokens have no `issues:write`); audited as `tracker.issue.create`. */
         post: operations["tracker_issues_create"];
         delete?: never;
         options?: never;
@@ -1671,7 +1671,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description Links an existing issue of a connected tracker to results or a failure cluster: reads it from the tracker (it must exist), tracks its state, and puts it on the results' defects. Needs `results:triage`; audited as `tracker.issue.link`. */
+        /** @description Links an existing issue of a connected tracker to results or a failure cluster: reads it from the tracker (it must exist), tracks its state, and puts it on the results' defects; a Jira issue must belong to the configured project, an Azure DevOps work item to the configured project. At most 120 links per project per hour. Needs `issues:write` and `results:triage`; audited as `tracker.issue.link`. */
         post: operations["tracker_issues_link"];
         delete?: never;
         options?: never;
@@ -1707,7 +1707,7 @@ export interface paths {
         get: operations["tracker_issues_get"];
         put?: never;
         post?: never;
-        /** @description Stops tracking an issue (its links go; the issue stays in the tracker and on the defects). Needs `results:triage`; audited as `tracker.issue.untrack`. */
+        /** @description Stops tracking an issue (its links go; the issue stays in the tracker and on the defects). Needs `issues:write` and `results:triage`; audited as `tracker.issue.untrack`. */
         delete: operations["tracker_issues_delete"];
         options?: never;
         head?: never;
@@ -1740,7 +1740,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description Reads the issue from its tracker now (at most once per 5 seconds per issue). Needs `results:triage`. */
+        /** @description Reads the issue from its tracker now: not within 5 seconds of the last read, not while another read holds it and not while it backs off after failed reads (`429` with `Retry-After`). Needs `results:triage`. */
         post: operations["tracker_issues_sync"];
         delete?: never;
         options?: never;
@@ -4639,7 +4639,7 @@ export interface components {
          * @description What a secret may be used for.
          * @enum {string}
          */
-        SecretPurpose: "vcs" | "tracker" | "fastmock" | "slack" | "telegram" | "webhook" | "smtp" | "teams" | "testops";
+        SecretPurpose: "vcs" | "tracker" | "tracker-webhook" | "fastmock" | "slack" | "telegram" | "webhook" | "smtp" | "teams" | "testops";
         /** @description Body of `PUT .../secrets/{name}`. */
         SecretValue: {
             /**
@@ -5013,8 +5013,8 @@ export interface components {
              */
             url: string;
             /**
-             * @description With `sync: webhook`: a secret with purpose `webhook` that the tracker's webhook proves
-             *     itself with (GitHub and Jira sign with it, GitLab sends it as its token, Azure DevOps as
+             * @description With `sync: webhook`: a secret with purpose `tracker-webhook` (at least 16 bytes) that
+             *     the tracker's webhook proves itself with (GitHub and Jira sign with it, GitLab sends it as its token, Azure DevOps as
              *     the basic authentication password).
              */
             webhookSecretRef?: string | null;
@@ -5423,6 +5423,14 @@ export interface operations {
                 };
             };
             413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };

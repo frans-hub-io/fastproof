@@ -31,6 +31,7 @@ Permissions are `resource:action` strings:
 | `rules:write` | Manage triage rules |
 | `settings:write` | Change project and server settings |
 | `audit:read` | Read the audit log |
+| `issues:write` | Create, link and stop following issues in the project's issue trackers ([issue trackers](../guide/issue-trackers.md)) |
 | `cases:read` | See test cases, folders, fields, plans and their history |
 | `cases:write` | Create, change and archive test cases and folders |
 | `cases:import` | Import test cases from files and other tools |
@@ -47,7 +48,7 @@ Built-in roles:
 | `viewer` | `projects:read`, `launches:read`, `cases:read` |
 | `tester` | `projects:read`, `launches:read`, `cases:read`, `runs:execute` |
 | `uploader` | `projects:read`, `launches:read`, `launches:write`, `cases:read`, `cases:sync` |
-| `editor` | everything of `uploader`, plus `results:triage`, `rules:write`, `cases:write`, `cases:import`, `plans:write`, `runs:execute` |
+| `editor` | everything of `uploader`, plus `results:triage`, `rules:write`, `cases:write`, `cases:import`, `plans:write`, `runs:execute`, `issues:write` |
 | `agent` | `projects:read`, `launches:read`, `cases:read`, `results:triage`, `ai:propose` (tokens of AI agents; no direct changes to cases) |
 | `admin` | `*` (every permission) |
 

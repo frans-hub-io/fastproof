@@ -113,6 +113,7 @@ nav:
       - guide/rules-and-triage.md
       - guide/quality-gates.md
       - guide/rerun.md
+      - guide/dashboards.md
       - guide/notifications.md
       - guide/mcp-copilot.md
   - Operations:

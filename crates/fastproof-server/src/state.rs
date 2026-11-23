@@ -61,6 +61,10 @@ pub fn catalog() -> anyhow::Result<Catalog> {
             "ai:propose",
             "Create work for people to review (AI agents): AI draft test cases, case suggestions, disabled triage rules",
         )
+        .permission(
+            "dashboards:write",
+            "Create, change, lock and delete dashboards",
+        )
         .role_described(
             "viewer",
             "Read projects, launches and test cases",
@@ -104,6 +108,7 @@ pub fn catalog() -> anyhow::Result<Catalog> {
                 "cases:import",
                 "plans:write",
                 "runs:execute",
+                "dashboards:write",
             ],
         )
         .role_described(
@@ -141,6 +146,7 @@ pub struct Perms {
     pub plans_write: Permission,
     pub runs_execute: Permission,
     pub ai_propose: Permission,
+    pub dashboards_write: Permission,
 }
 
 impl Perms {
@@ -163,6 +169,7 @@ impl Perms {
             plans_write: p.permission("plans:write"),
             runs_execute: p.permission("runs:execute"),
             ai_propose: p.permission("ai:propose"),
+            dashboards_write: p.permission("dashboards:write"),
         }
     }
 }

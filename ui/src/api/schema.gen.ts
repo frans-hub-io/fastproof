@@ -554,6 +554,107 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{key}/dashboard-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description The data of widgets that are not stored yet (the editor's draft). Needs `dashboards:write`; same limits as a dashboard, never cached. */
+        post: operations["dashboard_preview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/dashboards": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_dashboards"];
+        put?: never;
+        post: operations["create_dashboard"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/dashboards/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description A dashboard with `ETag: "r<revision>"`. */
+        get: operations["get_dashboard"];
+        put: operations["update_dashboard"];
+        post?: never;
+        delete: operations["delete_dashboard"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/dashboards/{id}/clone": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Copies a dashboard (read access to the source, `dashboards:write` in the target). The copy is unlocked and owned by the caller; launch ids of widgets are dropped when the target is another project. */
+        post: operations["clone_dashboard"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/dashboards/{id}/data": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description The data of every widget; a widget that fails answers an error entry. */
+        get: operations["dashboard_data"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/dashboards/{id}/lock": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** @description Locks or unlocks a dashboard; only its owner or a holder of `settings:write` may. */
+        put: operations["lock_dashboard"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{key}/defect-types": {
         parameters: {
             query?: never;
@@ -1893,6 +1994,72 @@ export interface components {
             items: components["schemas"]["AuditItem"][];
             next?: string | null;
         };
+        Board: {
+            /** Format: date-time */
+            createdAt: string;
+            description: string;
+            /** Format: uuid */
+            id: string;
+            locked: boolean;
+            name: string;
+            /** @description The caller owns this dashboard. */
+            owned?: boolean;
+            /** @description Display name of the owner; the API shows it only to the owner and to project managers. */
+            owner: string;
+            /** Format: int64 */
+            revision: number;
+            /** Format: date-time */
+            updatedAt: string;
+            widgets: components["schemas"]["BoardWidget"][];
+        };
+        BoardData: {
+            /** Format: date-time */
+            generatedAt: string;
+            widgets: {
+                [key: string]: components["schemas"]["WidgetResult"];
+            };
+        };
+        /** @description `{items}` of dashboards. */
+        BoardList: {
+            items: components["schemas"]["BoardSummary"][];
+        };
+        BoardSummary: {
+            /** Format: date-time */
+            createdAt: string;
+            description: string;
+            /** Format: uuid */
+            id: string;
+            locked: boolean;
+            name: string;
+            owned?: boolean;
+            owner: string;
+            /** Format: int64 */
+            revision: number;
+            /** Format: date-time */
+            updatedAt: string;
+            /** Format: int64 */
+            widgetCount: number;
+        };
+        BoardWidget: {
+            /** Format: int32 */
+            h: number;
+            /** @description 1 to 32 characters of `a-z`, `0-9` and `-`, unique in the dashboard. */
+            id: string;
+            settings?: components["schemas"]["WidgetSettings"];
+            title?: string;
+            type: components["schemas"]["WidgetType"];
+            /** Format: int32 */
+            w: number;
+            /** Format: int32 */
+            x: number;
+            /** Format: int32 */
+            y: number;
+        };
+        BoardWrite: {
+            description?: string;
+            name: string;
+            widgets: components["schemas"]["BoardWidget"][];
+        };
         /** @description A case. */
         Case: {
             aiUnreviewed: boolean;
@@ -2422,6 +2589,16 @@ export interface components {
             status?: components["schemas"]["CaseStatus"] | null;
             tags?: string[] | null;
         };
+        CloneBody: {
+            /** @description Name of the copy; default is the source name with " (copy)". */
+            name?: string | null;
+            /** @description Project key to copy into; default is the source project. */
+            targetProject?: string | null;
+        };
+        Cloned: components["schemas"]["Board"] & {
+            /** @description Key of the project that holds the copy. */
+            project: string;
+        };
         /** @description A unique error of a launch. */
         Cluster: {
             /** Format: int64 */
@@ -2465,6 +2642,19 @@ export interface components {
             stillFailing: components["schemas"]["ResultSummary"][];
             /** @description A list was cut at its limit. */
             truncated: boolean;
+        };
+        ComponentPoint: {
+            /** Format: int64 */
+            broken: number;
+            /** Format: int64 */
+            failed: number;
+            name: string;
+            /** Format: int64 */
+            passed: number;
+            /** Format: int64 */
+            skipped: number;
+            /** Format: int64 */
+            total: number;
         };
         /** @description Status counts of a launch (results, not attempts). */
         Counts: {
@@ -2543,6 +2733,18 @@ export interface components {
             source: string;
             /** Format: uuid */
             typeId: string;
+        };
+        DefectCounts: {
+            /** Format: int64 */
+            automationBug: number;
+            /** Format: int64 */
+            noDefect: number;
+            /** Format: int64 */
+            productBug: number;
+            /** Format: int64 */
+            systemIssue: number;
+            /** Format: int64 */
+            toInvestigate: number;
         };
         DefectGroupsPoint: {
             /** Format: int64 */
@@ -2823,6 +3025,12 @@ export interface components {
             scopes: {
                 [key: string]: string[];
             };
+        };
+        GrowthPoint: {
+            /** Format: int64 */
+            added: number;
+            /** Format: date */
+            t: string;
         };
         /** @description One result of a test case in a launch. */
         HistoryEntry: {
@@ -3188,6 +3396,38 @@ export interface components {
             important?: boolean | null;
             name?: string | null;
         };
+        LaunchPoint: {
+            branch?: string | null;
+            /** Format: int64 */
+            broken: number;
+            /** Format: int64 */
+            durationMs?: number | null;
+            environment?: string | null;
+            /** Format: int64 */
+            failed: number;
+            /** Format: date-time */
+            finishedAt?: string | null;
+            /** Format: int64 */
+            flaky: number;
+            /** Format: uuid */
+            id: string;
+            /** Format: int64 */
+            muted: number;
+            name: string;
+            /** Format: int64 */
+            number: number;
+            /** Format: int64 */
+            passed: number;
+            /** Format: int64 */
+            skipped: number;
+            /** Format: date-time */
+            startedAt: string;
+            status: string;
+            /** Format: int64 */
+            total: number;
+            /** Format: int64 */
+            unknown: number;
+        };
         /** @description Body of `POST /api/v1/projects/{key}/launches`. */
         LaunchStart: {
             attributes?: components["schemas"]["Attribute"][] | null;
@@ -3230,6 +3470,9 @@ export interface components {
             name?: string | null;
             type?: string | null;
             url: string;
+        };
+        LockBody: {
+            locked: boolean;
         };
         /** @description A log line with its launch, as reads and searches return it. */
         LogEntry: components["schemas"]["LogLine"] & {
@@ -3900,6 +4143,16 @@ export interface components {
             description?: string | null;
             name?: string | null;
         };
+        PatternPoint: {
+            fingerprint: string;
+            /** Format: date-time */
+            firstSeenAt: string;
+            /** Format: date-time */
+            lastSeenAt: string;
+            message: string;
+            /** Format: int64 */
+            occurrences: number;
+        };
         /** @description People of a project. */
         People: {
             items: components["schemas"]["Person"][];
@@ -3930,6 +4183,9 @@ export interface components {
         PlanSyncDiff: {
             added: number[];
             removed: number[];
+        };
+        PreviewBody: {
+            widgets: components["schemas"]["BoardWidget"][];
         };
         /** @description A project. */
         Project: {
@@ -5161,6 +5417,75 @@ export interface components {
          * @enum {string}
          */
         VersionSource: "ui" | "code" | "import" | "ai" | "restore" | "bulk";
+        /** @enum {string} */
+        WidgetBucket: "day" | "week";
+        /** @enum {string} */
+        WidgetChart: "bar" | "line" | "area";
+        WidgetData: {
+            /** @enum {string} */
+            kind: "launches";
+            launches: components["schemas"]["LaunchPoint"][];
+        } | {
+            /** @enum {string} */
+            kind: "trend";
+            trend: components["schemas"]["Dashboard"];
+        } | {
+            /** @enum {string} */
+            kind: "growth";
+            points: components["schemas"]["GrowthPoint"][];
+        } | {
+            items: components["schemas"]["PatternPoint"][];
+            /** @enum {string} */
+            kind: "patterns";
+        } | {
+            components: components["schemas"]["ComponentPoint"][];
+            defects: components["schemas"]["DefectCounts"];
+            groupBy: string;
+            /** @enum {string} */
+            kind: "launch";
+            launch?: components["schemas"]["LaunchPoint"] | null;
+        };
+        WidgetResult: {
+            data: components["schemas"]["WidgetData"];
+            /** @enum {string} */
+            status: "ok";
+        } | {
+            message: string;
+            /** @enum {string} */
+            status: "error";
+        };
+        /**
+         * @description What a widget shows; every field is optional. Windows are relative to now, so a dashboard
+         *     stays current and can be cloned into another project as it is.
+         */
+        WidgetSettings: {
+            branch?: string | null;
+            bucket?: components["schemas"]["WidgetBucket"] | null;
+            chart?: components["schemas"]["WidgetChart"] | null;
+            /**
+             * Format: int32
+             * @description Days back, 1 to 730 (default 30).
+             */
+            days?: number | null;
+            environment?: string | null;
+            /** @description Label name the component health widget groups by (default `suite`). */
+            groupBy?: string | null;
+            /**
+             * Format: uuid
+             * @description The launch of the per-launch widgets; the latest when empty.
+             */
+            launchId?: string | null;
+            /**
+             * Format: int32
+             * @description Launches or list items, 1 to 50 (default 10; lists of tests hold at most 10).
+             */
+            limit?: number | null;
+            view?: components["schemas"]["WidgetView"] | null;
+        };
+        /** @enum {string} */
+        WidgetType: "launch-statistics" | "overall-statistics" | "investigated-percentage" | "launches-comparison" | "launches-duration" | "launches-table" | "failed-trend" | "non-passed-trend" | "test-cases-growth" | "passing-rate-per-launch" | "passing-rate-summary" | "flaky-tests" | "most-failing-tests" | "popular-patterns" | "launch-execution" | "component-health" | "pass-rate-trend" | "durations" | "defect-trend" | "launches-per-day";
+        /** @enum {string} */
+        WidgetView: "chart" | "table";
     };
     responses: never;
     parameters: never;
@@ -7512,6 +7837,500 @@ export interface operations {
                 };
             };
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    dashboard_preview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PreviewBody"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BoardData"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    list_dashboards: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BoardList"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    create_dashboard: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BoardWrite"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Board"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    get_dashboard: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Board"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    update_dashboard: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description ETag of the dashboard */
+                "If-Match": string;
+            };
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BoardWrite"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Board"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    delete_dashboard: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description ETag of the dashboard */
+                "If-Match": string;
+            };
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    clone_dashboard: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CloneBody"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Cloned"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    dashboard_data: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BoardData"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    lock_dashboard: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description ETag of the dashboard */
+                "If-Match": string;
+            };
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LockBody"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Board"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            428: {
                 headers: {
                     [name: string]: unknown;
                 };

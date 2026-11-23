@@ -25,7 +25,7 @@ After that:
 - shared steps with versions, parameters, configurable workflows and reviews of cases;
 - requirements and the coverage of requirements by tests, a query language for filters and plans, and
   starting CI pipelines from a plan;
-- more dashboard widgets with cloning between projects, and creating issues in Jira, GitLab, GitHub and Azure
+- creating issues in Jira, GitLab, GitHub and Azure
   DevOps directly from triage, with their status kept in sync.
 
 ## ReportPortal compatibility

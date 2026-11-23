@@ -23,6 +23,8 @@ import {
   uploadsOf,
   type MockRole,
 } from './fixtures';
+import { dashboardHandlers } from './handlersDashboards';
+import { resetDashboards } from './dashboards';
 import { stageCHandlers } from './handlersC';
 import { mediaHandlers } from './media';
 import { analyze, analyzeDetail, isImportant, resetStageC } from './stageC';
@@ -64,6 +66,7 @@ export function resetMockState(): void {
   state.audit = initialAudit();
   roleOverride = null;
   resetStageC();
+  resetDashboards();
   resetTm();
 }
 
@@ -541,6 +544,7 @@ export const handlers = [
   }),
 
   ...stageCHandlers({ role: currentRole, error, audit }),
+  ...dashboardHandlers({ role: currentRole, error, audit }),
   ...mediaHandlers(error),
 
   http.all(`${API}/*`, () => error(404, 'not_found', 'no such endpoint')),

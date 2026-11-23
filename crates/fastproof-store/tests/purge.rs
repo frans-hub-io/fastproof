@@ -130,6 +130,7 @@ begin
         values (p, 'f1', t0, t0), (p, 'f2', t0, t0);
     insert into launch_daily (project_id, day) values (p, current_date);
     insert into defect_types (id, project_id, grp, name) values (gen_random_uuid(), p, 'productBug', 'pb');
+    insert into dashboards (id, project_id, name, owner) values (gen_random_uuid(), p, 'board', 'someone');
     insert into rules (id, project_id, name) values (gen_random_uuid(), p, 'r');
     insert into analysis_tasks (id, project_id, kind) values (gen_random_uuid(), p, 'k');
     insert into project_secrets (project_id, name, key_id, nonce, ciphertext) values (p, 's', 'k', '\x00', '\x00');

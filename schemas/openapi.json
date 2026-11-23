@@ -3472,6 +3472,695 @@
         }
       }
     },
+    "/api/v1/projects/{key}/dashboard-preview": {
+      "post": {
+        "tags": [
+          "dashboards"
+        ],
+        "description": "The data of widgets that are not stored yet (the editor's draft). Needs `dashboards:write`; same limits as a dashboard, never cached.",
+        "operationId": "dashboard_preview",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PreviewBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BoardData"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/dashboards": {
+      "get": {
+        "tags": [
+          "dashboards"
+        ],
+        "operationId": "list_dashboards",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BoardList"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "dashboards"
+        ],
+        "operationId": "create_dashboard",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BoardWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Board"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/dashboards/{id}": {
+      "get": {
+        "tags": [
+          "dashboards"
+        ],
+        "description": "A dashboard with `ETag: \"r<revision>\"`.",
+        "operationId": "get_dashboard",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Board"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "dashboards"
+        ],
+        "operationId": "update_dashboard",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "description": "ETag of the dashboard",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BoardWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Board"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "428": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "dashboards"
+        ],
+        "operationId": "delete_dashboard",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "description": "ETag of the dashboard",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "428": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/dashboards/{id}/clone": {
+      "post": {
+        "tags": [
+          "dashboards"
+        ],
+        "description": "Copies a dashboard (read access to the source, `dashboards:write` in the target). The copy is unlocked and owned by the caller; launch ids of widgets are dropped when the target is another project.",
+        "operationId": "clone_dashboard",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CloneBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Cloned"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/dashboards/{id}/data": {
+      "get": {
+        "tags": [
+          "dashboards"
+        ],
+        "description": "The data of every widget; a widget that fails answers an error entry.",
+        "operationId": "dashboard_data",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BoardData"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/dashboards/{id}/lock": {
+      "put": {
+        "tags": [
+          "dashboards"
+        ],
+        "description": "Locks or unlocks a dashboard; only its owner or a holder of `settings:write` may.",
+        "operationId": "lock_dashboard",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "description": "ETag of the dashboard",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LockBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Board"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "428": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{key}/defect-types": {
       "get": {
         "tags": [
@@ -11707,6 +12396,212 @@
           }
         }
       },
+      "Board": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "description",
+          "owner",
+          "locked",
+          "revision",
+          "widgets",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "description": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "locked": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "owned": {
+            "type": "boolean",
+            "description": "The caller owns this dashboard."
+          },
+          "owner": {
+            "type": "string",
+            "description": "Display name of the owner; the API shows it only to the owner and to project managers."
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "widgets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BoardWidget"
+            }
+          }
+        }
+      },
+      "BoardData": {
+        "type": "object",
+        "required": [
+          "generatedAt",
+          "widgets"
+        ],
+        "properties": {
+          "generatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "widgets": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/WidgetResult"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "BoardList": {
+        "type": "object",
+        "description": "`{items}` of dashboards.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BoardSummary"
+            }
+          }
+        }
+      },
+      "BoardSummary": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "description",
+          "owner",
+          "locked",
+          "revision",
+          "widgetCount",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "description": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "locked": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "owned": {
+            "type": "boolean"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "widgetCount": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "BoardWidget": {
+        "type": "object",
+        "required": [
+          "id",
+          "type",
+          "x",
+          "y",
+          "w",
+          "h"
+        ],
+        "properties": {
+          "h": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "id": {
+            "type": "string",
+            "description": "1 to 32 characters of `a-z`, `0-9` and `-`, unique in the dashboard."
+          },
+          "settings": {
+            "$ref": "#/components/schemas/WidgetSettings"
+          },
+          "title": {
+            "type": "string"
+          },
+          "type": {
+            "$ref": "#/components/schemas/WidgetType"
+          },
+          "w": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "x": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "y": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "BoardWrite": {
+        "type": "object",
+        "required": [
+          "name",
+          "widgets"
+        ],
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "widgets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BoardWidget"
+            }
+          }
+        }
+      },
       "Case": {
         "type": "object",
         "description": "A case.",
@@ -13374,6 +14269,45 @@
         },
         "additionalProperties": false
       },
+      "CloneBody": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Name of the copy; default is the source name with \" (copy)\"."
+          },
+          "targetProject": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Project key to copy into; default is the source project."
+          }
+        },
+        "additionalProperties": false
+      },
+      "Cloned": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Board"
+          },
+          {
+            "type": "object",
+            "required": [
+              "project"
+            ],
+            "properties": {
+              "project": {
+                "type": "string",
+                "description": "Key of the project that holds the copy."
+              }
+            }
+          }
+        ]
+      },
       "Cluster": {
         "type": "object",
         "description": "A unique error of a launch.",
@@ -13518,6 +14452,42 @@
           "truncated": {
             "type": "boolean",
             "description": "A list was cut at its limit."
+          }
+        }
+      },
+      "ComponentPoint": {
+        "type": "object",
+        "required": [
+          "name",
+          "total",
+          "passed",
+          "failed",
+          "broken",
+          "skipped"
+        ],
+        "properties": {
+          "broken": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "failed": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "name": {
+            "type": "string"
+          },
+          "passed": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "skipped": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64"
           }
         }
       },
@@ -13781,6 +14751,38 @@
           "typeId": {
             "type": "string",
             "format": "uuid"
+          }
+        }
+      },
+      "DefectCounts": {
+        "type": "object",
+        "required": [
+          "productBug",
+          "automationBug",
+          "systemIssue",
+          "noDefect",
+          "toInvestigate"
+        ],
+        "properties": {
+          "automationBug": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "noDefect": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "productBug": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "systemIssue": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "toInvestigate": {
+            "type": "integer",
+            "format": "int64"
           }
         }
       },
@@ -14568,6 +15570,23 @@
             "propertyNames": {
               "type": "string"
             }
+          }
+        }
+      },
+      "GrowthPoint": {
+        "type": "object",
+        "required": [
+          "t",
+          "added"
+        ],
+        "properties": {
+          "added": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "t": {
+            "type": "string",
+            "format": "date"
           }
         }
       },
@@ -15604,6 +16623,102 @@
         },
         "additionalProperties": false
       },
+      "LaunchPoint": {
+        "type": "object",
+        "required": [
+          "id",
+          "number",
+          "name",
+          "status",
+          "startedAt",
+          "total",
+          "passed",
+          "failed",
+          "broken",
+          "skipped",
+          "unknown",
+          "flaky",
+          "muted"
+        ],
+        "properties": {
+          "branch": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "broken": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "durationMs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "environment": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "failed": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "finishedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "flaky": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "muted": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "name": {
+            "type": "string"
+          },
+          "number": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "passed": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "skipped": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "startedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "status": {
+            "type": "string"
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "unknown": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
       "LaunchStart": {
         "type": "object",
         "description": "Body of `POST /api/v1/projects/{key}/launches`.",
@@ -15759,6 +16874,18 @@
             "type": "string"
           }
         }
+      },
+      "LockBody": {
+        "type": "object",
+        "required": [
+          "locked"
+        ],
+        "properties": {
+          "locked": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
       },
       "LogEntry": {
         "allOf": [
@@ -17781,6 +18908,36 @@
         },
         "additionalProperties": false
       },
+      "PatternPoint": {
+        "type": "object",
+        "required": [
+          "fingerprint",
+          "message",
+          "occurrences",
+          "firstSeenAt",
+          "lastSeenAt"
+        ],
+        "properties": {
+          "fingerprint": {
+            "type": "string"
+          },
+          "firstSeenAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lastSeenAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "message": {
+            "type": "string"
+          },
+          "occurrences": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
       "People": {
         "type": "object",
         "description": "People of a project.",
@@ -17884,6 +19041,21 @@
             }
           }
         }
+      },
+      "PreviewBody": {
+        "type": "object",
+        "required": [
+          "widgets"
+        ],
+        "properties": {
+          "widgets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BoardWidget"
+            }
+          }
+        },
+        "additionalProperties": false
       },
       "Project": {
         "type": "object",
@@ -21391,6 +22563,299 @@
           "ai",
           "restore",
           "bulk"
+        ]
+      },
+      "WidgetBucket": {
+        "type": "string",
+        "enum": [
+          "day",
+          "week"
+        ]
+      },
+      "WidgetChart": {
+        "type": "string",
+        "enum": [
+          "bar",
+          "line",
+          "area"
+        ]
+      },
+      "WidgetData": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "launches",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "launches"
+                ]
+              },
+              "launches": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/LaunchPoint"
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "trend",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "trend"
+                ]
+              },
+              "trend": {
+                "$ref": "#/components/schemas/Dashboard"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "points",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "growth"
+                ]
+              },
+              "points": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/GrowthPoint"
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "items",
+              "kind"
+            ],
+            "properties": {
+              "items": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/PatternPoint"
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "patterns"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "defects",
+              "components",
+              "groupBy",
+              "kind"
+            ],
+            "properties": {
+              "components": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ComponentPoint"
+                }
+              },
+              "defects": {
+                "$ref": "#/components/schemas/DefectCounts"
+              },
+              "groupBy": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "launch"
+                ]
+              },
+              "launch": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/LaunchPoint"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "WidgetResult": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "data",
+              "status"
+            ],
+            "properties": {
+              "data": {
+                "$ref": "#/components/schemas/WidgetData"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "ok"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "message",
+              "status"
+            ],
+            "properties": {
+              "message": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "error"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "WidgetSettings": {
+        "type": "object",
+        "description": "What a widget shows; every field is optional. Windows are relative to now, so a dashboard\nstays current and can be cloned into another project as it is.",
+        "properties": {
+          "branch": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "bucket": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/WidgetBucket"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "chart": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/WidgetChart"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "days": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Days back, 1 to 730 (default 30).",
+            "minimum": 0
+          },
+          "environment": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "groupBy": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Label name the component health widget groups by (default `suite`)."
+          },
+          "launchId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "The launch of the per-launch widgets; the latest when empty."
+          },
+          "limit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Launches or list items, 1 to 50 (default 10; lists of tests hold at most 10).",
+            "minimum": 0
+          },
+          "view": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/WidgetView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "WidgetType": {
+        "type": "string",
+        "enum": [
+          "launch-statistics",
+          "overall-statistics",
+          "investigated-percentage",
+          "launches-comparison",
+          "launches-duration",
+          "launches-table",
+          "failed-trend",
+          "non-passed-trend",
+          "test-cases-growth",
+          "passing-rate-per-launch",
+          "passing-rate-summary",
+          "flaky-tests",
+          "most-failing-tests",
+          "popular-patterns",
+          "launch-execution",
+          "component-health",
+          "pass-rate-trend",
+          "durations",
+          "defect-trend",
+          "launches-per-day"
+        ]
+      },
+      "WidgetView": {
+        "type": "string",
+        "enum": [
+          "chart",
+          "table"
         ]
       }
     },

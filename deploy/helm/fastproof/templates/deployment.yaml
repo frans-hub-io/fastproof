@@ -1,4 +1,5 @@
 {{- include "fastproof.validate" . -}}
+{{- include "fastproof.validateDatabaseSizing" . -}}
 {{- $fullname := include "fastproof.fullname" . -}}
 {{- $backend := include "fastproof.blobBackend" . -}}
 {{- $db := include "fastproof.databaseSecret" . | fromJson -}}
@@ -91,6 +92,8 @@ spec:
               value: {{ $w.roles | quote }}
             - name: FASTPROOF_MIGRATE
               value: {{ include "fastproof.migrateEnv" . | quote }}
+            - name: FASTPROOF_SHUTDOWN_TIMEOUT_SECONDS
+              value: {{ min 3600 (max 1 (sub (int .Values.terminationGracePeriodSeconds) 5)) | quote }}
             {{- with $valkey }}
             {{- $v := . | fromJson }}
             - name: FASTPROOF_VALKEY_URL

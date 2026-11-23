@@ -574,6 +574,9 @@
           "minimum": 1,
           "maximum": 1000
         },
+        "sizingCheck": {
+          "type": "boolean"
+        },
         "sslMode": {
           "enum": [
             "",

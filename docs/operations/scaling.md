@@ -120,14 +120,48 @@ Start from these and measure with `fastproof bench`:
 |---|---|---|---|---|---|
 | Small team, direct | 1 replica, 1 CPU, 1 GiB | 1 CPU, 1 GiB | none | none | none |
 | CI farm, direct | 2-4 replicas, 2 CPU, 1 GiB each | 2-4 CPU, 4-8 GiB | none | none | none |
-| Lab big data (`ci/bigdata-values.yaml`) | api, ingest, writer, sink at 0.5-1 CPU, 384-768 MiB | 1 CPU, 768 MiB | 1 broker, 768 MiB (384 MiB heap) | 1 node, 2 GiB | none |
+| Lab big data (`ci/bigdata-values.yaml`) | api, ingest, writer, sink at 0.5-1 CPU, 384-768 MiB, pools of 12 | 1 CPU, 1 GiB | 1 broker, 768 MiB (384 MiB heap) | 1 node, 2 GiB | none |
 | Large, Kafka | api 2+, ingest 2+, writer 2+, sink 1-2 | HA cluster | 3 brokers over TLS (managed, or `kafka.replicaCount: 3`) | 2+ replicas | 3+ nodes |
 
 - Kafka partitions bound writer parallelism: run at most as many writer replicas as partitions of
   `ingest.results`.
-- Size the PostgreSQL connections for all Deployments: replicas × `database.maxConnections` summed over roles.
+- Size the PostgreSQL connections for all Deployments: replicas × `database.maxConnections` summed over roles
+  (see below).
 - Run one heavy backend at a time on small nodes: ClickHouse, OpenSearch and Kafka together need about
   4.5 GiB.
+
+## PostgreSQL memory and connections
+
+Every PostgreSQL connection is a process with its own memory: an idle FastProof connection holds 4 to 6 MiB,
+a busy one more (`work_mem` per sort or hash, the parameters of bulk inserts). Pools fill under load and stay
+open while busy, so size PostgreSQL for the connections the pods can open, not for the ones open at rest:
+
+- **Connections.** Each pod opens up to `database.maxConnections` (`FASTPROOF_DATABASE_MAX_CONNECTIONS`, 20 by
+  default) plus one, the migration Job one more. With roles split and the bundled Kafka and a sink, the
+  defaults (api 2, ingest 1, writer 1, sink 1) come to 5 × 21 + 1 = 106; at the most replicas of the
+  autoscalers it is more. `max_connections` must cover that plus the 3 connections PostgreSQL keeps for
+  superusers. Rolling updates add one pod per Deployment for a short while.
+- **Memory.** Plan for `shared_buffers` + 8 MiB per connection + 3 autovacuum workers × `maintenance_work_mem`
+  + 128 MiB, and leave the rest of the limit to the page cache. The kernel counts the page cache in the
+  container's memory too, but takes it back under pressure; the processes' own memory it cannot take back,
+  and a PostgreSQL over its limit is killed with every connection.
+- **Settings.** `shared_buffers` about a sixth to a quarter of the limit, `work_mem` 4 MB,
+  `maintenance_work_mem` 64 MB (128 MB from 2 GiB), `effective_cache_size` about half the limit.
+
+| PostgreSQL memory limit | `shared_buffers` | Connections it carries | Example |
+|---|---|---|---|
+| 1 GiB | 192MB | 64 | 4 pods with `database.maxConnections: 12` (`ci/bigdata-values.yaml`) |
+| 1.5 GiB (bundled default) | 256MB | 120 | 5 pods with the default pools of 20 |
+| 2 GiB | 512MB | 128 | 6 pods with pools of 20 |
+| 4 GiB | 1GB | 320 | 15 pods with pools of 20 |
+
+The chart checks both for the bundled PostgreSQL and fails the install or upgrade with the numbers when the
+pools exceed `postgresql.config.postgresql.max_connections` or the estimate exceeds
+`postgresql.resources.limits.memory` (`database.sizingCheck: false` skips it); for CloudNativePG it checks the
+connections against `cnpg.cluster.postgresql.parameters.max_connections`. Writers need about one connection
+per partition they hold at once plus a few; a sink or ingest pod needs fewer than an API pod, so lowering
+`database.maxConnections` is usually the cheaper fix. Under the 100,000-result bench a PostgreSQL of 768 MiB
+serving six pods with pools of 20 was killed for memory; the bigdata profile now gives it 1 GiB with pools of 12.
 
 ## Memory of the Kafka consumers
 

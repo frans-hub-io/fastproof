@@ -41,7 +41,7 @@ ENV CARGO_INCREMENTAL=0 \
     CARGO_TERM_COLOR=never
 RUN triple="$(cat /target-triple)" \
  && FASTPROOF_BUILD_VERSION="${VERSION}" \
-    RUSTFLAGS="--remap-path-prefix=${CARGO_HOME}=/cargo --remap-path-prefix=/src=/build" \
+    RUSTFLAGS="--remap-path-prefix=${CARGO_HOME}=/cargo --remap-path-prefix=/src=/build --remap-path-prefix=/src/fastproof/target=/target" \
     cargo build --release --locked --target "${triple}" -p fastproof-server --bin fastproof \
  && install -D -m 0755 "target/${triple}/release/fastproof" /out/usr/local/bin/fastproof \
  && install -d -m 0750 /out/var/lib/fastproof/blobs

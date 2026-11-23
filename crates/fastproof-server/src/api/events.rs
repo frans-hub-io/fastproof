@@ -91,6 +91,7 @@ pub async fn stream(
     });
     let body = ready
         .chain(events)
-        .take_until(tokio::time::sleep(MAX_STREAM));
+        .take_until(tokio::time::sleep(MAX_STREAM))
+        .take_until(s.stopping.clone().cancelled_owned());
     Ok(Sse::new(body).keep_alive(KeepAlive::new().interval(Duration::from_secs(15))))
 }

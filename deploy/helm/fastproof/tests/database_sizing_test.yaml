@@ -1,0 +1,118 @@
+suite: database sizing
+templates:
+  - templates/deployment.yaml
+  - templates/configmap.yaml
+  - charts/postgresql/templates/configmap.yaml
+  - charts/postgresql/templates/statefulset.yaml
+release:
+  name: fp
+  namespace: qa
+values:
+  - ../ci/cloudpirates-garage-values.yaml
+tests:
+  - it: sizes the bundled PostgreSQL for its memory limit
+    template: charts/postgresql/templates/configmap.yaml
+    asserts:
+      - matchRegex:
+          path: data["postgresql.conf"]
+          pattern: "max_connections = 120\\n"
+      - matchRegex:
+          path: data["postgresql.conf"]
+          pattern: "shared_buffers = 256MB\\n"
+      - matchRegex:
+          path: data["postgresql.conf"]
+          pattern: "effective_cache_size = 768MB\\n"
+      - matchRegex:
+          path: data["postgresql.conf"]
+          pattern: "work_mem = 4MB\\n"
+      - matchRegex:
+          path: data["postgresql.conf"]
+          pattern: "maintenance_work_mem = 64MB\\n"
+
+  - it: gives the bundled PostgreSQL room for split roles by default
+    template: charts/postgresql/templates/statefulset.yaml
+    set:
+      roles.split: true
+      ingest.mode: kafka
+      kafka.enabled: true
+      search.backend: clickhouse
+      sinks.clickhouse.enabled: true
+      sinks.clickhouse.bundled.enabled: true
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].resources.limits.memory
+          value: 1536Mi
+
+  - it: refuses pools that exceed the connections of the bundled PostgreSQL
+    template: templates/deployment.yaml
+    set:
+      postgresql.config.postgresql.max_connections: 24
+    asserts:
+      - failedTemplate:
+          errorPattern: "can open 22 PostgreSQL connections .* the bundled PostgreSQL allows 24"
+
+  - it: counts every role at its most replicas
+    template: templates/deployment.yaml
+    set:
+      roles.split: true
+      roles.api.autoscaling.enabled: true
+      roles.api.autoscaling.maxReplicas: 6
+      postgresql.resources.limits.memory: 8Gi
+    asserts:
+      - failedTemplate:
+          errorPattern: "can open 148 PostgreSQL connections"
+
+  - it: refuses a bundled PostgreSQL too small for the connections
+    template: templates/deployment.yaml
+    set:
+      roles.split: true
+      postgresql.resources.limits.memory: 768Mi
+    asserts:
+      - failedTemplate:
+          errorPattern: "needs about 1088Mi .* 64 connections .* memory limit is 768Mi"
+
+  - it: reads PostgreSQL and Kubernetes memory units
+    template: templates/deployment.yaml
+    set:
+      roles.split: true
+      postgresql.config.postgresql.shared_buffers: 1GB
+      postgresql.config.postgresql.maintenance_work_mem: 262144kB
+      postgresql.resources.limits.memory: 2G
+    asserts:
+      - failedTemplate:
+          errorPattern: "needs about 2432Mi \\(shared_buffers 1024Mi .* maintenance_work_mem 256Mi .* limit is 2G"
+
+  - it: accepts a bundled PostgreSQL sized for the pools
+    template: templates/deployment.yaml
+    set:
+      roles.split: true
+      postgresql.resources.limits.memory: 1Gi
+      database.maxConnections: 12
+    asserts:
+      - hasDocuments:
+          count: 2
+
+  - it: can skip the check
+    template: templates/deployment.yaml
+    set:
+      database.sizingCheck: false
+      postgresql.config.postgresql.max_connections: 10
+      postgresql.resources.limits.memory: 256Mi
+    asserts:
+      - hasDocuments:
+          count: 1
+
+  - it: checks the connections of a CloudNativePG cluster
+    template: templates/deployment.yaml
+    capabilities:
+      apiVersions:
+        - postgresql.cnpg.io/v1
+    set:
+      postgresql.enabled: false
+      cnpg.enabled: true
+      replicaCount: 4
+      blob.backend: s3
+      cnpg.cluster.postgresql.parameters.max_connections: "60"
+    asserts:
+      - failedTemplate:
+          errorPattern: "can open 85 PostgreSQL connections .* the CloudNativePG cluster allows 60"

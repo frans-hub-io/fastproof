@@ -5,11 +5,12 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
 use hmac::{Hmac, KeyInit, Mac};
 use rskafka::BackoffConfig;
+use rskafka::client::error::{Error as ClientError, ProtocolError};
 use rskafka::client::partition::{Compression, OffsetAt, PartitionClient, UnknownTopicHandling};
 use rskafka::client::{Client, ClientBuilder, Credentials, SaslConfig};
 pub use rskafka::record::{Record, RecordAndOffset};
@@ -36,6 +37,37 @@ const PRODUCE_BATCH_BYTES: usize = 512 * 1024;
 /// decoder, which cost the writer about an eighth of its CPU; Snappy batches are 6 to 18 %
 /// larger than LZ4. Consumers read every codec, whatever produced the records.
 const PRODUCE_COMPRESSION: Compression = Compression::Snappy;
+/// How long a produce call keeps re-creating a missing topic and sending the rest of its records.
+const MISSING_TOPIC_DEADLINE: Duration = Duration::from_secs(30);
+/// One process checks and re-creates missing topics at most this often.
+const RECOVERY_INTERVAL: Duration = Duration::from_secs(2);
+
+/// A FastProof topic is not in the cluster metadata.
+#[derive(Debug)]
+pub struct MissingTopic(pub String);
+
+impl std::fmt::Display for MissingTopic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Kafka topic {} does not exist", self.0)
+    }
+}
+
+impl std::error::Error for MissingTopic {}
+
+/// True when `e` says that a topic or partition does not exist (deleted, or lost with the
+/// broker's data).
+pub fn is_missing_topic(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| {
+        c.is::<MissingTopic>()
+            || matches!(
+                c.downcast_ref::<ClientError>(),
+                Some(ClientError::ServerError {
+                    protocol_error: ProtocolError::UnknownTopicOrPartition,
+                    ..
+                })
+            )
+    })
+}
 
 /// Kafka's murmur2 (as `org.apache.kafka.common.utils.Utils.murmur2`).
 pub fn murmur2(data: &[u8]) -> i32 {
@@ -279,6 +311,8 @@ pub struct Kafka {
     partitions: Mutex<HashMap<String, i32>>,
     clients: Mutex<HashMap<(String, i32), Arc<PartitionClient>>>,
     budget: Arc<ByteBudget>,
+    /// When this process last checked for missing topics after an unknown-topic error.
+    recovered: Mutex<Option<Instant>>,
 }
 
 /// Smallest fetch request: the broker still returns at least one whole record batch.
@@ -365,6 +399,7 @@ impl Kafka {
             partitions: Mutex::new(HashMap::new()),
             clients: Mutex::new(HashMap::new()),
             budget: ByteBudget::new(cfg.max_inflight_bytes),
+            recovered: Mutex::new(None),
         })
     }
 
@@ -482,25 +517,79 @@ impl Kafka {
         bail!("Kafka topics were created but their metadata did not appear")
     }
 
+    /// After an unknown-topic error on `topic`: forgets its cached partition count and clients
+    /// and, when `FASTPROOF_KAFKA_CREATE_TOPICS` is on, creates the FastProof topics that are
+    /// missing (deleted, or lost with the broker's data). Runs at most once per
+    /// [`RECOVERY_INTERVAL`] in this process; concurrent callers wait for the running one.
+    pub async fn recover_topic(&self, topic: &str) -> anyhow::Result<()> {
+        self.forget(topic).await;
+        if !self.cfg.create_topics {
+            return Ok(());
+        }
+        let mut last = self.recovered.lock().await;
+        if last.is_some_and(|t| t.elapsed() < RECOVERY_INTERVAL) {
+            return Ok(());
+        }
+        *last = Some(Instant::now());
+        tracing::warn!(topic, "Kafka topic is missing; creating the missing topics");
+        metrics::counter!("fastproof_kafka_topic_recoveries_total", "topic" => topic.to_string())
+            .increment(1);
+        self.ensure_topics().await?;
+        self.forget(topic).await;
+        Ok(())
+    }
+
+    /// Deletes a topic (tests and tools; FastProof never deletes its topics).
+    pub async fn delete_topic(&self, topic: &str) -> anyhow::Result<()> {
+        self.client
+            .controller_client()?
+            .delete_topic(topic.to_string(), 30_000)
+            .await
+            .with_context(|| format!("deleting Kafka topic {topic}"))?;
+        self.forget(topic).await;
+        Ok(())
+    }
+
+    async fn forget(&self, topic: &str) {
+        self.partitions.lock().await.remove(topic);
+        self.clients.lock().await.retain(|(t, _), _| t != topic);
+    }
+
+    /// Starts [`Kafka::recover_topic`] when `e` says that `topic` is missing; returns `e`.
+    async fn on_error(&self, topic: &str, e: anyhow::Error) -> anyhow::Error {
+        if is_missing_topic(&e)
+            && let Err(r) = self.recover_topic(topic).await
+        {
+            tracing::warn!(topic, error = %format!("{r:#}"), "creating the missing Kafka topics failed");
+        }
+        e
+    }
+
     /// Partitions of a topic (cached).
     pub async fn partition_count(&self, topic: &str) -> anyhow::Result<i32> {
         if let Some(n) = self.partitions.lock().await.get(topic) {
             return Ok(*n);
         }
-        let n = self
+        let found = self
             .client
             .list_topics()
-            .await?
+            .await
+            .context("listing Kafka topics")?
             .into_iter()
             .find(|t| t.name == topic)
             .map(|t| t.partitions.len() as i32)
-            .filter(|n| *n > 0)
-            .with_context(|| format!("Kafka topic {topic} does not exist"))?;
+            .filter(|n| *n > 0);
+        let Some(n) = found else {
+            return Err(self
+                .on_error(topic, MissingTopic(topic.to_string()).into())
+                .await);
+        };
         self.partitions.lock().await.insert(topic.to_string(), n);
         Ok(n)
     }
 
-    /// A client of one partition (cached).
+    /// A client of one partition (cached). With topic creation on, an unknown topic is an
+    /// error at once (and re-creates the topic); otherwise the client retries it.
     pub async fn partition(
         &self,
         topic: &str,
@@ -510,25 +599,36 @@ impl Kafka {
         if let Some(c) = self.clients.lock().await.get(&key) {
             return Ok(c.clone());
         }
-        let c = Arc::new(
-            self.client
-                .partition_client(topic.to_string(), partition, UnknownTopicHandling::Retry)
-                .await
-                .with_context(|| format!("connecting to {topic}/{partition}"))?,
-        );
+        let handling = if self.cfg.create_topics {
+            UnknownTopicHandling::Error
+        } else {
+            UnknownTopicHandling::Retry
+        };
+        let c = match self
+            .client
+            .partition_client(topic.to_string(), partition, handling)
+            .await
+        {
+            Ok(c) => Arc::new(c),
+            Err(e) => {
+                let e = anyhow::Error::new(e).context(format!("connecting to {topic}/{partition}"));
+                return Err(self.on_error(topic, e).await);
+            }
+        };
         self.clients.lock().await.insert(key, c.clone());
         Ok(c)
     }
 
     /// Produces records keyed by their key (murmur2), signed when a signer is set. Records of
-    /// one key keep their order. Fails when a value exceeds `max_record_bytes`.
+    /// one key keep their order. Fails when a value exceeds `max_record_bytes`. With topic
+    /// creation on, a topic that disappeared is created again and the records not yet sent go
+    /// to it (for up to [`MISSING_TOPIC_DEADLINE`]).
     pub async fn produce(&self, topic: &str, records: Vec<Outgoing>) -> anyhow::Result<()> {
         if records.is_empty() {
             return Ok(());
         }
-        let n = self.partition_count(topic).await?;
         let now = chrono::Utc::now();
-        let mut by_partition: BTreeMap<i32, Vec<Record>> = BTreeMap::new();
+        let mut pending = Vec::with_capacity(records.len());
         for o in records {
             if o.value.len() > self.cfg.max_record_bytes {
                 bail!(
@@ -537,7 +637,6 @@ impl Kafka {
                     self.cfg.max_record_bytes
                 );
             }
-            let p = partition_for(&o.key, n);
             let mut headers = BTreeMap::new();
             if let Some(s) = &self.signer {
                 headers.insert(
@@ -545,40 +644,34 @@ impl Kafka {
                     s.sign(topic, &o.key, &o.value),
                 );
             }
-            by_partition.entry(p).or_default().push(Record {
+            pending.push(Record {
                 key: Some(o.key),
                 value: Some(o.value),
                 headers,
                 timestamp: now,
             });
         }
-        let started = std::time::Instant::now();
+        let started = Instant::now();
         let mut total = 0usize;
-        let sends = by_partition.into_iter().map(|(p, recs)| async move {
-            let pc = self.partition(topic, p).await?;
-            let mut batch = Vec::new();
-            let mut bytes = 0;
-            let mut count = 0usize;
-            for r in recs {
-                let sz = r.approximate_size();
-                if !batch.is_empty() && bytes + sz > PRODUCE_BATCH_BYTES {
-                    count += batch.len();
-                    pc.produce(std::mem::take(&mut batch), PRODUCE_COMPRESSION)
-                        .await
-                        .with_context(|| format!("producing to {topic}/{p}"))?;
-                    bytes = 0;
-                }
-                bytes += sz;
-                batch.push(r);
+        let mut pause = Duration::from_millis(100);
+        loop {
+            let (sent, failed) = self.produce_records(topic, pending).await;
+            total += sent;
+            let Some((e, unsent)) = failed else {
+                break;
+            };
+            if !self.cfg.create_topics
+                || !is_missing_topic(&e)
+                || started.elapsed() + pause > MISSING_TOPIC_DEADLINE
+            {
+                return Err(e);
             }
-            count += batch.len();
-            pc.produce(batch, PRODUCE_COMPRESSION)
+            self.recover_topic(topic)
                 .await
-                .with_context(|| format!("producing to {topic}/{p}"))?;
-            Ok::<_, anyhow::Error>(count)
-        });
-        for r in futures::future::join_all(sends).await {
-            total += r?;
+                .context("creating the missing Kafka topics")?;
+            tokio::time::sleep(pause).await;
+            pause = (pause * 2).min(Duration::from_secs(2));
+            pending = unsent;
         }
         metrics::counter!("fastproof_kafka_produced_total", "topic" => topic.to_string())
             .increment(total as u64);
@@ -587,19 +680,113 @@ impl Kafka {
         Ok(())
     }
 
+    /// One round of [`Kafka::produce`]: the number of records sent and, on failure, the first
+    /// error (one that is not about a missing topic, if any) with the records not sent.
+    async fn produce_records(
+        &self,
+        topic: &str,
+        records: Vec<Record>,
+    ) -> (usize, Option<(anyhow::Error, Vec<Record>)>) {
+        let n = match self.partition_count(topic).await {
+            Ok(n) => n,
+            Err(e) => return (0, Some((e, records))),
+        };
+        let mut by_partition: BTreeMap<i32, Vec<Record>> = BTreeMap::new();
+        for r in records {
+            let p = partition_for(r.key.as_deref().unwrap_or_default(), n);
+            by_partition.entry(p).or_default().push(r);
+        }
+        let keep = self.cfg.create_topics;
+        let sends = by_partition
+            .into_iter()
+            .map(|(p, recs)| self.produce_partition(topic, p, recs, keep));
+        let mut sent = 0;
+        let mut failed: Option<(anyhow::Error, Vec<Record>)> = None;
+        for r in futures::future::join_all(sends).await {
+            match r {
+                Ok(n) => sent += n,
+                Err((e, n, unsent)) => {
+                    sent += n;
+                    match &mut failed {
+                        None => failed = Some((e, unsent)),
+                        Some((first, all)) => {
+                            all.extend(unsent);
+                            if is_missing_topic(first) && !is_missing_topic(&e) {
+                                *first = e;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        (sent, failed)
+    }
+
+    /// Sends the records of one partition in batches of [`PRODUCE_BATCH_BYTES`]; on failure
+    /// returns the error, the records sent and the records left (the failed batch only when
+    /// `keep`, since rskafka takes it).
+    async fn produce_partition(
+        &self,
+        topic: &str,
+        p: i32,
+        recs: Vec<Record>,
+        keep: bool,
+    ) -> Result<usize, (anyhow::Error, usize, Vec<Record>)> {
+        let pc = match self.partition(topic, p).await {
+            Ok(c) => c,
+            Err(e) => return Err((e, 0, recs)),
+        };
+        let mut sent = 0;
+        let mut rest = recs.into_iter().peekable();
+        loop {
+            let mut batch = Vec::new();
+            let mut bytes = 0;
+            while let Some(r) = rest.peek() {
+                let sz = r.approximate_size();
+                if !batch.is_empty() && bytes + sz > PRODUCE_BATCH_BYTES {
+                    break;
+                }
+                bytes += sz;
+                batch.extend(rest.next());
+            }
+            if batch.is_empty() {
+                return Ok(sent);
+            }
+            let n = batch.len();
+            let copy = keep.then(|| batch.clone());
+            if let Err(e) = pc.produce(batch, PRODUCE_COMPRESSION).await {
+                let e = anyhow::Error::new(e).context(format!("producing to {topic}/{p}"));
+                let e = self.on_error(topic, e).await;
+                let mut unsent = copy.unwrap_or_default();
+                unsent.extend(rest);
+                return Err((e, sent, unsent));
+            }
+            sent += n;
+        }
+    }
+
     /// The offset of a partition at `at`.
     pub async fn offset(&self, topic: &str, partition: i32, at: Start) -> anyhow::Result<i64> {
         let pc = self.partition(topic, partition).await?;
-        Ok(pc
+        match pc
             .get_offset(match at {
                 Start::Earliest => OffsetAt::Earliest,
                 Start::Latest => OffsetAt::Latest,
             })
-            .await?)
+            .await
+        {
+            Ok(o) => Ok(o),
+            Err(e) => {
+                let e = anyhow::Error::new(e).context(format!("offset of {topic}/{partition}"));
+                Err(self.on_error(topic, e).await)
+            }
+        }
     }
 
-    /// Fetches records from `offset`; returns them and the high watermark. An offset that is no
-    /// longer (or not yet) in the log resets to the earliest offset.
+    /// Fetches records from `offset`; returns them, the high watermark and the offset read
+    /// from. An offset that is no longer in the log, or beyond its end (the topic was created
+    /// again or the broker lost its data), resets to the earliest offset: the consumers are
+    /// idempotent, while starting at the end would skip records written since.
     pub async fn fetch(
         &self,
         topic: &str,
@@ -610,26 +797,44 @@ impl Kafka {
     ) -> anyhow::Result<(Vec<RecordAndOffset>, i64, i64)> {
         let pc = self.partition(topic, partition).await?;
         let bytes = 1..max_bytes.max(1024);
-        match pc.fetch_records(offset, bytes.clone(), max_wait_ms).await {
+        let r = match pc.fetch_records(offset, bytes.clone(), max_wait_ms).await {
             Ok((records, hwm)) => Ok((records, hwm, offset)),
-            Err(rskafka::client::error::Error::ServerError {
-                protocol_error: rskafka::client::error::ProtocolError::OffsetOutOfRange,
+            Err(ClientError::ServerError {
+                protocol_error: ProtocolError::OffsetOutOfRange,
                 ..
             }) => {
-                let earliest = pc.get_offset(OffsetAt::Earliest).await?;
-                let latest = pc.get_offset(OffsetAt::Latest).await?;
-                let reset = if offset > latest { latest } else { earliest };
-                tracing::warn!(
-                    topic,
-                    partition,
-                    offset,
-                    reset,
-                    "Kafka offset out of range; resetting"
-                );
-                let (records, hwm) = pc.fetch_records(reset, bytes, max_wait_ms).await?;
-                Ok((records, hwm, reset))
+                let reset = async {
+                    let earliest = pc.get_offset(OffsetAt::Earliest).await?;
+                    if offset > earliest {
+                        tracing::warn!(
+                            topic,
+                            partition,
+                            offset,
+                            reset = earliest,
+                            "Kafka offset is beyond the end of the log (topic created again or broker data lost); reading from the earliest offset"
+                        );
+                    } else {
+                        tracing::warn!(
+                            topic,
+                            partition,
+                            offset,
+                            reset = earliest,
+                            "Kafka offset out of range; resetting"
+                        );
+                    }
+                    let (records, hwm) = pc.fetch_records(earliest, bytes, max_wait_ms).await?;
+                    Ok::<_, ClientError>((records, hwm, earliest))
+                };
+                reset.await
             }
-            Err(e) => Err(e).with_context(|| format!("fetching from {topic}/{partition}")),
+            Err(e) => Err(e),
+        };
+        match r {
+            Ok(v) => Ok(v),
+            Err(e) => {
+                let e = anyhow::Error::new(e).context(format!("fetching from {topic}/{partition}"));
+                Err(self.on_error(topic, e).await)
+            }
         }
     }
 }

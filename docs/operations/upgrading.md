@@ -79,6 +79,37 @@ FastProof reads every codec, so records produced before the upgrade are read as 
 FastProof consumes the `events` topic (or the ingest topics), make sure its Kafka client has the Snappy
 codec; most do, but some need a plugin (for example KafkaJS).
 
+Brokers with a read-only root filesystem need a writable `/tmp` for the Snappy codec, or they reject the
+records with `UnknownServerError` and uploads get 503. The bundled broker gets an `emptyDir` at `/tmp` from the
+chart; give your own brokers one before upgrading (see [Kafka](helm.md#kafka-clickhouse-and-opensearch)).
+
+### Bundled Kafka keeps its data
+
+The bundled broker used to write its log into the data volume of the `apache/kafka` image instead of its
+volume claim, so every restart of the broker started from empty topics. The chart now mounts the claim over
+that path (`kafka.persistence.mountPath: /var/lib/kafka/data`, log in `kafka.persistence.dataDir:
+/var/lib/kafka/data/kraft`). The broker restarts once during the upgrade and starts from empty topics one last
+time: wait until the consumer lag (`fastproof_kafka_lag`) is 0 and hold uploads while it restarts. FastProof
+creates the topics again by itself, and the consumers read the new topics from the start, so nothing written
+after the restart is skipped and no pod has to be restarted.
+
+### PostgreSQL sizing
+
+The bundled PostgreSQL now gets `max_connections` 120, `shared_buffers` 256MB, `effective_cache_size` 768MB and a
+memory limit of 1536Mi (from 1Gi), and the chart refuses pool sizes the database cannot carry; see
+[PostgreSQL memory and connections](scaling.md#postgresql-memory-and-connections). An upgrade with many pods
+or large `database.maxConnections` may now fail with the numbers: lower `database.maxConnections`, or raise
+`max_connections` together with the memory limit. The new limit restarts PostgreSQL once and it starts with
+the new settings; when you later change only `postgresql.config.*`, restart it yourself (`kubectl rollout
+restart statefulset <release>-postgresql`), since the PostgreSQL chart does not restart on a configuration
+change.
+
+### Shutdown
+
+A stop takes at most `FASTPROOF_SHUTDOWN_TIMEOUT_SECONDS` (25 s by default; the chart sets
+`terminationGracePeriodSeconds` minus 5). Open event streams end at once on `SIGTERM` (browsers reconnect),
+so a pod with followers of live logs no longer waits 20 s before it stops.
+
 ## Test management release
 
 The release after 0.1.x adds [test cases](../guide/test-management.md),

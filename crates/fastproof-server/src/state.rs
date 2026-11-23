@@ -182,6 +182,9 @@ pub struct Inner {
     pub guards: crate::limits::Guards,
     /// Signing of media URLs (`crate::api::media`).
     pub media: crate::api::media::Media,
+    /// Cancelled when the process starts to stop: event streams end so that the HTTP drain
+    /// waits only for real requests.
+    pub stopping: tokio_util::sync::CancellationToken,
 }
 
 /// The axum state.

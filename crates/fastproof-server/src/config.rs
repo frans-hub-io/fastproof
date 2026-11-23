@@ -190,7 +190,13 @@ pub struct Config {
     /// (`FASTPROOF_TM_BACKFILL_DELAY`, default 10 minutes): projects with `caseSync` off by
     /// then are skipped.
     pub tm_backfill_delay: std::time::Duration,
+    /// How long a stop may take (`FASTPROOF_SHUTDOWN_TIMEOUT_SECONDS`, default 25 s): requests
+    /// in flight finish and background work stops within it, then the process exits.
+    pub shutdown_timeout: std::time::Duration,
 }
+
+/// Default of `FASTPROOF_SHUTDOWN_TIMEOUT_SECONDS`: below the 30 s Kubernetes gives by default.
+pub const DEFAULT_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(25);
 
 /// Default of `FASTPROOF_TM_BACKFILL_DELAY`.
 pub const DEFAULT_TM_BACKFILL_DELAY: std::time::Duration = std::time::Duration::from_secs(600);
@@ -666,6 +672,13 @@ impl Config {
         if log_limits.max_bytes_per_launch < 1024 {
             bail!("FASTPROOF_LOG_MAX_BYTES_PER_LAUNCH: at least 1024");
         }
+        let shutdown_timeout = match env.var("FASTPROOF_SHUTDOWN_TIMEOUT_SECONDS") {
+            None => DEFAULT_SHUTDOWN_TIMEOUT,
+            Some(v) => match v.trim().parse::<u64>() {
+                Ok(n) if (1..=3600).contains(&n) => std::time::Duration::from_secs(n),
+                _ => bail!("FASTPROOF_SHUTDOWN_TIMEOUT_SECONDS: 1..=3600"),
+            },
+        };
         Ok(Self {
             listen,
             ops_listen,
@@ -712,6 +725,7 @@ impl Config {
                 "FASTPROOF_TM_BACKFILL_DELAY",
                 DEFAULT_TM_BACKFILL_DELAY,
             )?,
+            shutdown_timeout,
         })
     }
 }

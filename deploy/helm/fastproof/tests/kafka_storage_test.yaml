@@ -1,0 +1,73 @@
+suite: bundled Kafka storage
+templates:
+  - charts/kafka/templates/statefulset.yaml
+  - charts/kafka/templates/configmap.yaml
+release:
+  name: fp
+  namespace: qa
+values:
+  - ../ci/kafka-clickhouse-values.yaml
+tests:
+  - it: mounts the volume claim over the image's data volume and keeps the log in a subdirectory
+    template: charts/kafka/templates/statefulset.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: data
+            mountPath: /var/lib/kafka/data
+      - notContains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: data
+            mountPath: /var/lib/kafka
+      - equal:
+          path: spec.volumeClaimTemplates[0].metadata.name
+          value: data
+      - matchRegex:
+          path: spec.template.spec.containers[0].args[0]
+          pattern: "kafka-storage.sh format -t \"\\$\\{KAFKA_CLUSTER_ID\\}\" -c \"\\$RUNTIME_CONFIG\" --ignore-formatted"
+
+  - it: stores the log and the KRaft metadata on the volume claim
+    template: charts/kafka/templates/configmap.yaml
+    asserts:
+      - matchRegex:
+          path: data["server.properties"]
+          pattern: "\\nlog\\.dirs=/var/lib/kafka/data/kraft\\n"
+      - notMatchRegex:
+          path: data["server.properties"]
+          pattern: "metadata\\.log\\.dir"
+
+  - it: gives the read-only broker a writable /tmp for compression libraries
+    template: charts/kafka/templates/statefulset.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem
+          value: true
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: tmp
+            mountPath: /tmp
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: tmp
+            emptyDir:
+              sizeLimit: 128Mi
+
+  - it: keeps the writable /tmp without persistence
+    template: charts/kafka/templates/statefulset.yaml
+    set:
+      kafka.persistence.enabled: false
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: data
+            emptyDir: {}
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: tmp
+            mountPath: /tmp

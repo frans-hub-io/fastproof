@@ -13,10 +13,16 @@ Try it locally:
 Bootstrap admin token (store it, then create managed tokens and turn generate off):
   kubectl -n {{ .Release.Namespace }} get secret {{ include "fastproof.fullname" . }}-admin-tokens -o jsonpath='{.data.bootstrap-token}' | base64 -d
 {{- end }}
-{{- if .Values.garage.enabled }}
+{{- if include "fastproof.garageEnabled" . }}
 
 Attachments are stored in the bundled single-node Garage ({{ include "fastproof.garageName" . }}). It is meant for
 evaluation and small installations; use an external S3-compatible service for production.
+{{- end }}
+{{- if include "fastproof.blobBackendKept" . }}
+
+WARNING: this release stores attachments on the filesystem volume, and the chart kept that because blob.backend is not set. The default is now s3
+with the bundled Garage, so set blob.backend: fs in your values to keep this choice (and to silence this warning), or move the attachments to
+object storage first (see Upgrading in the operations docs).
 {{- end }}
 {{- if eq (include "fastproof.blobBackend" .) "fs" }}
 

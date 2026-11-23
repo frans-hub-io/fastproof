@@ -52,6 +52,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/media/{token}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["media_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head: operations["media_head"];
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects": {
         parameters: {
             query?: never;
@@ -94,6 +110,22 @@ export interface paths {
         get: operations["attachments_content"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head: operations["attachments_content_head"];
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/attachments/{sha256}/media-url": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["attachments_media_url"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3208,6 +3240,13 @@ export interface components {
              */
             tokenId?: string | null;
         };
+        /** @description A media URL and when it stops working. */
+        MediaUrl: {
+            /** @description RFC 3339 expiry time. */
+            expiresAt: string;
+            /** @description Path of the URL, relative to the server: `/api/v1/media/<token>`. */
+            url: string;
+        };
         /**
          * @description A metric a gate rule checks.
          * @enum {string}
@@ -4964,6 +5003,98 @@ export interface operations {
             };
         };
     };
+    media_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description the token of a media URL */
+                token: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description the bytes, like the content route; no credentials needed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            206: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            304: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            416: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    media_head: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                token: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            206: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            304: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            416: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     projects_list: {
         parameters: {
             query?: never;
@@ -5166,12 +5297,138 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description the bytes, with X-Content-Type-Options nosniff and a sandbox CSP */
+            /** @description Supports single byte ranges (206, 416), HEAD, a strong ETag (the SHA-256) with If-None-Match (304) and If-Range */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description the requested byte range, with Content-Range */
+            206: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description If-None-Match matched the ETag */
+            304: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description the range lies outside the content; Content-Range: bytes *\/size */
+            416: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    attachments_content_head: {
+        parameters: {
+            query?: {
+                /** @description `1` forces a download. */
+                download?: string;
+            };
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description the headers of the content */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            206: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            304: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            416: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    attachments_media_url: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                /** @description lowercase hex SHA-256 of the attachment */
+                sha256: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MediaUrl"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
             };
             403: {
                 headers: {

@@ -3,7 +3,7 @@
 {{- $bundled := list -}}
 {{- if .Values.postgresql.enabled }}{{ $bundled = append $bundled "postgresql" }}{{ end -}}
 {{- if .Values.valkey.enabled }}{{ $bundled = append $bundled "valkey" }}{{ end -}}
-{{- if .Values.garage.enabled }}{{ $bundled = append $bundled "garage" }}{{ end -}}
+{{- if include "fastproof.garageEnabled" . }}{{ $bundled = append $bundled "garage" }}{{ end -}}
 {{- $kafkaBundled := and (include "fastproof.kafkaMode" .) .Values.kafka.enabled -}}
 {{- $chBundled := and .Values.sinks.clickhouse.enabled .Values.sinks.clickhouse.bundled.enabled -}}
 {{- $chPort := ternary 8443 8123 (not (empty .Values.sinks.clickhouse.bundled.tls.existingSecret)) -}}
@@ -93,7 +93,7 @@ spec:
         - port: 6379
           protocol: TCP
     {{- end }}
-    {{- if .Values.garage.enabled }}
+    {{- if include "fastproof.garageEnabled" . }}
     - to:
         - podSelector:
             matchLabels:
@@ -115,7 +115,7 @@ spec:
     {{- end }}
     {{- $external := list -}}
     {{- if not (include "fastproof.bundledDatabase" .) }}{{ $external = append $external $np.egress.database }}{{ end -}}
-    {{- if and (eq .Values.blob.backend "s3") (not .Values.garage.enabled) }}{{ $external = append $external $np.egress.s3 }}{{ end -}}
+    {{- if and (eq (include "fastproof.blobBackend" .) "s3") (not (include "fastproof.garageEnabled" .)) }}{{ $external = append $external $np.egress.s3 }}{{ end -}}
     {{- if .Values.oidc.issuer }}{{ $external = append $external $np.egress.oidc }}{{ end -}}
     {{- if .Values.externalValkey.existingSecret }}{{ $external = append $external $np.egress.valkey }}{{ end -}}
     {{- if .Values.otel.endpoint }}{{ $external = append $external $np.egress.otlp }}{{ end -}}

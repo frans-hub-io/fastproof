@@ -139,6 +139,79 @@
         }
       }
     },
+    "/api/v1/media/{token}": {
+      "get": {
+        "tags": [
+          "attachments"
+        ],
+        "operationId": "media_get",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "description": "the token of a media URL",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "the bytes, like the content route; no credentials needed"
+          },
+          "206": {},
+          "304": {},
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "416": {}
+        },
+        "security": [
+          {}
+        ]
+      },
+      "head": {
+        "tags": [
+          "attachments"
+        ],
+        "operationId": "media_head",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {},
+          "206": {},
+          "304": {},
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "416": {}
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
     "/api/v1/projects": {
       "get": {
         "tags": [
@@ -396,7 +469,141 @@
         ],
         "responses": {
           "200": {
-            "description": "the bytes, with X-Content-Type-Options nosniff and a sandbox CSP"
+            "description": "Supports single byte ranges (206, 416), HEAD, a strong ETag (the SHA-256) with If-None-Match (304) and If-Range"
+          },
+          "206": {
+            "description": "the requested byte range, with Content-Range"
+          },
+          "304": {
+            "description": "If-None-Match matched the ETag"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "416": {
+            "description": "the range lies outside the content; Content-Range: bytes */size"
+          }
+        }
+      },
+      "head": {
+        "tags": [
+          "attachments"
+        ],
+        "operationId": "attachments_content_head",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "download",
+            "in": "query",
+            "description": "`1` forces a download.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "the headers of the content"
+          },
+          "206": {},
+          "304": {},
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "416": {}
+        }
+      }
+    },
+    "/api/v1/projects/{key}/attachments/{sha256}/media-url": {
+      "post": {
+        "tags": [
+          "attachments"
+        ],
+        "operationId": "attachments_media_url",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sha256",
+            "in": "path",
+            "description": "lowercase hex SHA-256 of the attachment",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MediaUrl"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           },
           "403": {
             "content": {
@@ -15377,6 +15584,24 @@
             ],
             "format": "uuid",
             "description": "Managed tokens only."
+          }
+        }
+      },
+      "MediaUrl": {
+        "type": "object",
+        "description": "A media URL and when it stops working.",
+        "required": [
+          "url",
+          "expiresAt"
+        ],
+        "properties": {
+          "expiresAt": {
+            "type": "string",
+            "description": "RFC 3339 expiry time."
+          },
+          "url": {
+            "type": "string",
+            "description": "Path of the URL, relative to the server: `/api/v1/media/<token>`."
           }
         }
       },

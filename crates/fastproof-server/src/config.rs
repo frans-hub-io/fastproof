@@ -4,6 +4,7 @@
 use std::fmt;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use anyhow::{Context, anyhow, bail};
 use fastproof_blob::{BlobConfig, S3Config, Secret};
@@ -139,6 +140,8 @@ pub struct Config {
     pub blob: BlobConfig,
     pub spool_dir: PathBuf,
     pub max_upload_bytes: u64,
+    /// Lifetime of media URLs (`FASTPROOF_MEDIA_URL_TTL_SECONDS`, 1 s to 1 h).
+    pub media_url_ttl: Duration,
     pub ingest_workers: usize,
     pub access_file: Option<PathBuf>,
     pub admin_tokens_file: Option<PathBuf>,
@@ -294,6 +297,7 @@ impl fmt::Debug for Config {
             .field("blob", &self.blob)
             .field("spool_dir", &self.spool_dir)
             .field("max_upload_bytes", &self.max_upload_bytes)
+            .field("media_url_ttl", &self.media_url_ttl)
             .field("ingest_workers", &self.ingest_workers)
             .field("access_file", &self.access_file)
             .field("admin_tokens_file", &self.admin_tokens_file)
@@ -467,6 +471,16 @@ impl Config {
         if max_upload_bytes < 1024 {
             bail!("FASTPROOF_MAX_UPLOAD_BYTES: at least 1024");
         }
+        let media_url_ttl: u64 = env.parse(
+            "FASTPROOF_MEDIA_URL_TTL_SECONDS",
+            crate::api::media::DEFAULT_TTL_SECONDS,
+        )?;
+        if !(1..=crate::api::media::MAX_TTL_SECONDS).contains(&media_url_ttl) {
+            bail!(
+                "FASTPROOF_MEDIA_URL_TTL_SECONDS: 1..={}",
+                crate::api::media::MAX_TTL_SECONDS
+            );
+        }
         let ingest_workers: usize = env.parse("FASTPROOF_INGEST_WORKERS", 2)?;
         if ingest_workers > 64 {
             bail!("FASTPROOF_INGEST_WORKERS: at most 64");
@@ -626,6 +640,7 @@ impl Config {
                 .path("FASTPROOF_SPOOL_DIR")
                 .unwrap_or_else(|| PathBuf::from("/tmp/fastproof")),
             max_upload_bytes,
+            media_url_ttl: Duration::from_secs(media_url_ttl),
             ingest_workers,
             access_file: env.path("FASTPROOF_ACCESS_FILE"),
             admin_tokens_file: env.path("FASTPROOF_ADMIN_TOKENS_FILE"),
@@ -674,6 +689,26 @@ mod tests {
     }
 
     #[test]
+    fn media_url_ttl_is_bounded() {
+        for (v, ok) in [
+            ("1", true),
+            ("3600", true),
+            ("0", false),
+            ("3601", false),
+            ("x", false),
+        ] {
+            let r = cfg(&[
+                (
+                    "FASTPROOF_DATABASE_URL",
+                    "postgres://u:p@localhost:5432/fastproof",
+                ),
+                ("FASTPROOF_MEDIA_URL_TTL_SECONDS", v),
+            ]);
+            assert_eq!(r.is_ok(), ok, "{v}");
+        }
+    }
+
+    #[test]
     fn defaults_and_required() {
         let e = cfg(&[]).unwrap_err().to_string();
         assert!(e.contains("FASTPROOF_DATABASE_URL"), "{e}");
@@ -686,6 +721,7 @@ mod tests {
         assert_eq!(c.ops_listen.port(), 9090);
         assert_eq!(c.ingest_workers, 2);
         assert_eq!(c.max_upload_bytes, 1_073_741_824);
+        assert_eq!(c.media_url_ttl, Duration::from_secs(900));
         assert_eq!(c.migrate, MigrateMode::Auto);
         assert!(c.ui);
         assert!(matches!(c.blob, BlobConfig::Fs { .. }));

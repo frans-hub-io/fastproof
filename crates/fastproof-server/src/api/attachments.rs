@@ -3,7 +3,7 @@
 use axum::Json;
 use axum::body::Body;
 use axum::extract::{Request, State};
-use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use fastproof_blob::{BlobKey, spool_stream};
 use fastproof_store::attachments::NewAttachment;
@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
+use super::range::{self, RangeOutcome};
 use super::uploads::{clean_file_name, identity_encoding, spool_error};
 use super::{ErrorBody, P, Q};
 use crate::state::AppState;
@@ -200,13 +201,20 @@ fn disposition(kind: &str, name: &str) -> HeaderValue {
     .unwrap_or_else(|_| HeaderValue::from_static("attachment"))
 }
 
+const RANGE_NOTE: &str = "Supports single byte ranges (206, 416), HEAD, a strong ETag (the SHA-256) with If-None-Match (304) and If-Range";
+
 #[utoipa::path(get, path = "/api/v1/projects/{key}/attachments/{id}/content", tag = "attachments", operation_id = "attachments_content",
     params(("key" = String, Path), ("id" = Uuid, Path), ContentQuery),
-    responses((status = 200, description = "the bytes, with X-Content-Type-Options nosniff and a sandbox CSP"),
-        (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
+    responses((status = 200, description = RANGE_NOTE),
+        (status = 206, description = "the requested byte range, with Content-Range"),
+        (status = 304, description = "If-None-Match matched the ETag"),
+        (status = 403, body = ErrorBody), (status = 404, body = ErrorBody),
+        (status = 416, description = "the range lies outside the content; Content-Range: bytes */size")))]
 pub async fn content(
     State(s): State<AppState>,
     auth: Auth,
+    method: Method,
+    headers: HeaderMap,
     P((key, id)): P<(String, Uuid)>,
     Q(q): Q<ContentQuery>,
 ) -> ApiResult<Response> {
@@ -216,27 +224,33 @@ pub async fn content(
         .attachment(project.id, id)
         .await?
         .ok_or_else(|| ApiError::not_found("attachment"))?;
-    let key = BlobKey::parse(&a.blob_key)?;
-    let Some(body) = s.blobs.get(&key).await? else {
-        tracing::warn!(attachment = %a.id, key = %key, "attachment blob is missing");
-        return Err(ApiError::not_found("attachment"));
-    };
-    let ct = clean_content_type(Some(&a.content_type));
-    let download = q
+    let force = q
         .download
         .as_deref()
-        .is_some_and(|v| v == "1" || v == "true")
-        || !inline_safe(&ct);
-    let name = a
-        .original_name
-        .clone()
-        .unwrap_or_else(|| format!("attachment-{}", &a.sha256[..12]));
-    let mut h = HeaderMap::new();
+        .is_some_and(|v| v == "1" || v == "true");
+    serve(&s, &method, &headers, &a, force).await
+}
+
+#[utoipa::path(head, path = "/api/v1/projects/{key}/attachments/{id}/content", tag = "attachments", operation_id = "attachments_content_head",
+    params(("key" = String, Path), ("id" = Uuid, Path), ContentQuery),
+    responses((status = 200, description = "the headers of the content"), (status = 206), (status = 304),
+        (status = 403, body = ErrorBody), (status = 404, body = ErrorBody), (status = 416)))]
+pub async fn content_head(
+    state: State<AppState>,
+    auth: Auth,
+    method: Method,
+    headers: HeaderMap,
+    path: P<(String, Uuid)>,
+    q: Q<ContentQuery>,
+) -> ApiResult<Response> {
+    content(state, auth, method, headers, path, q).await
+}
+
+fn sandbox(h: &mut HeaderMap, ct: &str, etag: &str, disposition: HeaderValue) {
     h.insert(
         header::CONTENT_TYPE,
-        HeaderValue::from_str(&ct).unwrap_or(HeaderValue::from_static("application/octet-stream")),
+        HeaderValue::from_str(ct).unwrap_or(HeaderValue::from_static("application/octet-stream")),
     );
-    h.insert(header::CONTENT_LENGTH, HeaderValue::from(body.size));
     h.insert(
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),
@@ -249,21 +263,111 @@ pub async fn content(
         header::CACHE_CONTROL,
         HeaderValue::from_static("private, max-age=31536000, immutable"),
     );
-    h.insert(
-        header::CONTENT_DISPOSITION,
-        disposition(if download { "attachment" } else { "inline" }, &name),
-    );
+    h.insert(header::CONTENT_DISPOSITION, disposition);
     h.insert(
         header::ETAG,
-        HeaderValue::from_str(&format!("\"{}\"", a.sha256))
-            .unwrap_or(HeaderValue::from_static("\"\"")),
+        HeaderValue::from_str(etag).unwrap_or(HeaderValue::from_static("\"\"")),
     );
+    h.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
     h.insert(
         "cross-origin-resource-policy",
         HeaderValue::from_static("same-origin"),
     );
-    let stream = body.stream.map(|r| r.map_err(std::io::Error::other));
-    Ok((StatusCode::OK, h, Body::from_stream(stream)).into_response())
+}
+
+fn header_str(h: &HeaderMap, name: header::HeaderName) -> Option<&str> {
+    h.get(name).and_then(|v| v.to_str().ok())
+}
+
+/// Serves a stored attachment: 200, 206 for one byte range (a ranged read of the store), 304,
+/// 416, `HEAD`, always with the sandboxing headers. Used by the content route and by media URLs.
+pub async fn serve(
+    s: &AppState,
+    method: &Method,
+    req: &HeaderMap,
+    a: &fastproof_store::StoredAttachment,
+    force_download: bool,
+) -> ApiResult<Response> {
+    let key = BlobKey::parse(&a.blob_key)?;
+    let ct = clean_content_type(Some(&a.content_type));
+    let download = force_download || !inline_safe(&ct);
+    let name = a
+        .original_name
+        .clone()
+        .unwrap_or_else(|| format!("attachment-{}", &a.sha256[..12]));
+    let etag = format!("\"{}\"", a.sha256);
+    let mut h = HeaderMap::new();
+    sandbox(
+        &mut h,
+        &ct,
+        &etag,
+        disposition(if download { "attachment" } else { "inline" }, &name),
+    );
+    let head = method == Method::HEAD;
+    let size = a.size.max(0) as u64;
+
+    if header_str(req, header::IF_NONE_MATCH).is_some_and(|v| range::none_match(v, &etag)) {
+        return Ok((StatusCode::NOT_MODIFIED, h).into_response());
+    }
+    let outcome = match header_str(req, header::RANGE) {
+        Some(v)
+            if header_str(req, header::IF_RANGE).is_none_or(|ir| range::if_range_ok(ir, &etag)) =>
+        {
+            range::parse(v, size)
+        }
+        _ => RangeOutcome::Full,
+    };
+    let missing = || {
+        tracing::warn!(attachment = %a.id, key = %key, "attachment blob is missing");
+        ApiError::not_found("attachment")
+    };
+    match outcome {
+        RangeOutcome::Unsatisfiable => {
+            h.insert(
+                header::CONTENT_RANGE,
+                HeaderValue::from_str(&format!("bytes */{size}"))
+                    .unwrap_or(HeaderValue::from_static("bytes */*")),
+            );
+            h.insert(header::CONTENT_LENGTH, HeaderValue::from(0u64));
+            Ok((StatusCode::RANGE_NOT_SATISFIABLE, h).into_response())
+        }
+        RangeOutcome::Partial { start, end } => {
+            h.insert(header::CONTENT_LENGTH, HeaderValue::from(end - start));
+            h.insert(
+                header::CONTENT_RANGE,
+                HeaderValue::from_str(&format!("bytes {start}-{}/{size}", end - 1))
+                    .unwrap_or(HeaderValue::from_static("bytes */*")),
+            );
+            if head {
+                if s.blobs.head(&key).await?.is_none() {
+                    return Err(missing());
+                }
+                return Ok((StatusCode::PARTIAL_CONTENT, h).into_response());
+            }
+            let Some(body) = s.blobs.get_range(&key, start..end).await? else {
+                return Err(missing());
+            };
+            metrics::counter!("attachment_bytes_served_total").increment(end - start);
+            let stream = body.stream.map(|r| r.map_err(std::io::Error::other));
+            Ok((StatusCode::PARTIAL_CONTENT, h, Body::from_stream(stream)).into_response())
+        }
+        RangeOutcome::Full => {
+            if head {
+                let Some(n) = s.blobs.head(&key).await? else {
+                    return Err(missing());
+                };
+                h.insert(header::CONTENT_LENGTH, HeaderValue::from(n));
+                return Ok((StatusCode::OK, h).into_response());
+            }
+            let Some(body) = s.blobs.get(&key).await? else {
+                return Err(missing());
+            };
+            h.insert(header::CONTENT_LENGTH, HeaderValue::from(body.size));
+            metrics::counter!("attachment_bytes_served_total").increment(body.size);
+            let stream = body.stream.map(|r| r.map_err(std::io::Error::other));
+            Ok((StatusCode::OK, h, Body::from_stream(stream)).into_response())
+        }
+    }
 }
 
 #[cfg(test)]

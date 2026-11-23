@@ -96,6 +96,17 @@ FastProof origin:
 - Test case texts are stored as Markdown and rendered on the server: raw HTML becomes text, links work only for
   `http`, `https` and `mailto`, and images only for attachments of the same project.
 - Manual run attachments and case attachments are served by the same rules as launch attachments.
+- Content is immutable and addressed by its SHA-256, so it is served with a strong `ETag` and
+  `Cache-Control: private, max-age=31536000, immutable`; every status (200, 206, 304, 416) keeps the
+  sandboxing headers.
+- A [media URL](../reference/api.md#attachment-content-and-media-urls) lets a `<video>` or `<img>` element
+  load one attachment without an `Authorization` header or cookie. It is signed (HMAC-SHA256 under a key
+  derived from a server-side secret), names one attachment of one project, expires after 15 minutes by default
+  (at most one hour) and is checked on every request: the principal that asked must still exist and still read
+  the project (a revoked or expired API token, or a removed binding, ends the URL within a few seconds), and
+  the attachment must still exist. Every refusal is the same `404`. The token is removed from the request path
+  before logging and tracing, and metrics label the route as `/api/v1/media/{token}`. Treat the URL as a
+  credential for the time it lives: do not post it.
 
 ## Limits
 

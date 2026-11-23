@@ -252,7 +252,7 @@ spec:
               {{- with $dbCa }}
               {{- include "fastproof.caSource" (dict "ca" (. | fromJson) "path" "database.crt") | nindent 14 }}
               {{- end }}
-              {{- if and (eq $backend "s3") (not .Values.garage.enabled) (or .Values.blob.s3.ca.existingSecret .Values.blob.s3.ca.existingConfigMap) }}
+              {{- if and (eq $backend "s3") (not (include "fastproof.garageEnabled" .)) (or .Values.blob.s3.ca.existingSecret .Values.blob.s3.ca.existingConfigMap) }}
               {{- include "fastproof.caSource" (dict "ca" (dict "secret" .Values.blob.s3.ca.existingSecret "configMap" .Values.blob.s3.ca.existingConfigMap "key" .Values.blob.s3.ca.key) "path" "s3.crt") | nindent 14 }}
               {{- end }}
               {{- if and .Values.oidc.issuer (or .Values.oidc.ca.existingSecret .Values.oidc.ca.existingConfigMap) }}

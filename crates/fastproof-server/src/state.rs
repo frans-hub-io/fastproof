@@ -180,6 +180,8 @@ pub struct Inner {
     pub search: Option<Arc<dyn fastproof_stream::sink::SearchBackend>>,
     /// Per-caller and per-replica guards (`crate::limits`).
     pub guards: crate::limits::Guards,
+    /// Signing of media URLs (`crate::api::media`).
+    pub media: crate::api::media::Media,
 }
 
 /// The axum state.

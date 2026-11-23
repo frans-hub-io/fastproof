@@ -40,6 +40,7 @@ tests:
     set:
       auth.adminTokens.generate: true
       database.existingSecret: db
+      blob.backend: fs
       replicaCount: 2
     asserts:
       - failedTemplate:
@@ -69,6 +70,7 @@ tests:
       auth.adminTokens.generate: true
       database.existingSecret: db
       blob.backend: s3
+      garage.enabled: false
     asserts:
       - failedTemplate:
           errorPattern: "blob.s3.endpoint is required"

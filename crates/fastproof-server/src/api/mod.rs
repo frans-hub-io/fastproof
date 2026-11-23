@@ -19,6 +19,7 @@ pub mod range;
 pub mod results;
 pub mod runs;
 pub mod search;
+pub mod trackers;
 pub mod uploads;
 pub mod version;
 

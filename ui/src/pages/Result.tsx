@@ -9,6 +9,7 @@ import { useDefectTypeMap, useMockInteractions, useSimilar } from '../api/stageC
 import type { Attempt, Label, Launch, ResultDetail, SeriesHistoryItem } from '../api/types';
 import type { DefectType } from '../api/types-next';
 import { DefectChip } from '../components/Defect';
+import { DefectIssue } from '../components/DefectIssue';
 import { LogConsole } from '../components/LogConsole';
 import { TriageDrawer } from '../components/TriageDrawer';
 import { resultTarget, type TriageTarget } from '../lib/triage';
@@ -122,15 +123,7 @@ export function DefectCard({ project, r, types }: { project: string; r: ResultDe
               {d.comment}
             </Text>
           )}
-          {isHttpUrl(d?.issueUrl) && (
-            <Anchor href={d.issueUrl} target="_blank" rel="noopener noreferrer nofollow" size="sm" data-testid="defect-issue">
-              <Group gap={4} component="span" wrap="nowrap">
-                <IconBug size={14} />
-                {d.issueKey ?? d.issueUrl}
-                <IconExternalLink size={12} />
-              </Group>
-            </Anchor>
-          )}
+          {isHttpUrl(d?.issueUrl) && <DefectIssue project={project} url={d.issueUrl} issueKey={d.issueKey} />}
         </Stack>
         {canTriage && (
           <Button size="xs" variant="light" leftSection={<IconTag size={14} />} onClick={() => setTarget(resultTarget(r))} data-testid="triage-open">

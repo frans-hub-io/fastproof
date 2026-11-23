@@ -175,11 +175,12 @@ pub struct VcsSettings {
     pub status: bool,
 }
 
-/// An issue tracker for links from issue keys.
+/// An issue tracker for links from issue keys and, with `api`, for creating issues from
+/// FastProof and reading their state back.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct IssueTracker {
-    /// `jira`, `gitlab` or `github`.
+    /// `jira`, `gitlab`, `github` or `azure` (Azure DevOps Boards).
     #[serde(rename = "type")]
     pub tracker: String,
     /// URL with `{key}`, e.g. `https://jira.example.com/browse/{key}`.
@@ -192,6 +193,216 @@ pub struct IssueTracker {
     /// Jira only: the numeric id of the issue type of new issues (`issuetype`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub issue_type_id: Option<String>,
+    /// Stable id that tracked issues and the tracker's webhook refer to
+    /// (`^[a-z0-9][a-z0-9_-]{0,31}$`); required with `api`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// The tracker's API: create issues from results and clusters and sync their state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api: Option<TrackerApi>,
+}
+
+/// The API connection of an issue tracker.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TrackerApi {
+    /// Jira site or server base URL (`https://example.atlassian.net`,
+    /// `https://jira.example.com`), GitLab base URL, GitHub API URL (`https://api.github.com`,
+    /// `https://github.example.com/api/v3`) or Azure DevOps organization URL
+    /// (`https://dev.azure.com/example`).
+    pub url: String,
+    /// Jira only: `cloud` (REST API v3, the default) or `server` (Server and Data Center, REST
+    /// API v2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deployment: Option<String>,
+    /// `basic` (the secret holds `user:token`) or `bearer`. Defaults: `basic` for Jira Cloud
+    /// (`email:api-token`) and Azure DevOps (the secret is the personal access token), `bearer`
+    /// for Jira Server/Data Center (a personal access token), GitLab and GitHub.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<String>,
+    /// A secret with purpose `tracker` bound to the origin of `url`.
+    pub token_secret_ref: String,
+    /// Where issues are created: Jira project key (`SHOP`), GitLab project path
+    /// (`group/app`), GitHub `owner/repo`, Azure DevOps project name.
+    pub project: String,
+    /// Jira issue type name or Azure DevOps work item type of new issues (default `Bug`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue_type: Option<String>,
+    /// Labels (Jira, GitLab, GitHub) or tags (Azure DevOps) of new issues, at most 10.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub labels: Option<Vec<String>>,
+    /// `poll` (the default: open issues are read every `FASTPROOF_TRACKER_POLL_SECONDS`),
+    /// `webhook` (the tracker's webhook triggers reads; a daily read as well) or `off`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync: Option<String>,
+    /// With `sync: webhook`: a secret with purpose `webhook` that the tracker's webhook proves
+    /// itself with (GitHub and Jira sign with it, GitLab sends it as its token, Azure DevOps as
+    /// the basic authentication password).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webhook_secret_ref: Option<String>,
+    /// Attach image attachments of the result's last attempt (up to 3) to new issues (Jira,
+    /// GitLab, Azure DevOps; GitHub has no API for it).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub attach_screenshots: bool,
+    /// Title of new issues with `{{placeholders}}` (see the issue trackers guide).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title_template: Option<String>,
+    /// Description of new issues with `{{placeholders}}`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body_template: Option<String>,
+    /// Azure DevOps: states that count as closed (default `Closed`, `Done`, `Removed`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closed_states: Option<Vec<String>>,
+}
+
+impl TrackerApi {
+    /// `cloud` or `server` for Jira.
+    pub fn jira_server(&self) -> bool {
+        self.deployment.as_deref() == Some("server")
+    }
+
+    /// `poll`, `webhook` or `off`.
+    pub fn sync_mode(&self) -> &str {
+        self.sync.as_deref().unwrap_or("poll")
+    }
+}
+
+impl IssueTracker {
+    /// The tracker with this id that has an API connection.
+    pub fn connected<'a>(trackers: &'a [IssueTracker], id: &str) -> Option<&'a IssueTracker> {
+        trackers
+            .iter()
+            .find(|t| t.api.is_some() && t.id.as_deref() == Some(id))
+    }
+}
+
+/// `^[a-z0-9][a-z0-9_-]{0,31}$`
+pub fn valid_tracker_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 32
+        && (id.as_bytes()[0].is_ascii_lowercase() || id.as_bytes()[0].is_ascii_digit())
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'-'))
+}
+
+fn printable(what: &str, v: &str, max: usize) -> Result<(), String> {
+    if v.trim().is_empty() || v.len() > max || v.chars().any(char::is_control) {
+        return Err(format!("{what} must have 1 to {max} printable bytes"));
+    }
+    Ok(())
+}
+
+impl TrackerApi {
+    fn check(&self, tracker: &str) -> Result<(), String> {
+        let u = http_url("issueTrackers.api.url", &self.url)?;
+        if u.query().is_some() || u.fragment().is_some() || !u.username().is_empty() {
+            return Err("issueTrackers.api.url must have no user, query or fragment".into());
+        }
+        secret_ref(
+            "issueTrackers.api.tokenSecretRef",
+            &Some(self.token_secret_ref.clone()),
+        )?;
+        secret_ref(
+            "issueTrackers.api.webhookSecretRef",
+            &self.webhook_secret_ref,
+        )?;
+        if let Some(d) = &self.deployment
+            && (tracker != "jira" || !matches!(d.as_str(), "cloud" | "server"))
+        {
+            return Err("issueTrackers.api.deployment is cloud or server, for jira".into());
+        }
+        if let Some(a) = &self.auth
+            && !matches!(a.as_str(), "basic" | "bearer")
+        {
+            return Err("issueTrackers.api.auth must be basic or bearer".into());
+        }
+        let p = self.project.as_str();
+        let project_ok = match tracker {
+            "jira" => {
+                !p.is_empty()
+                    && p.len() <= 32
+                    && p.as_bytes()[0].is_ascii_uppercase()
+                    && p.bytes()
+                        .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+            }
+            "gitlab" => {
+                (!p.is_empty() && p.len() <= 20 && p.bytes().all(|b| b.is_ascii_digit()))
+                    || valid_repository("gitlab", p)
+            }
+            "github" => valid_repository("github", p),
+            _ => {
+                !p.trim().is_empty()
+                    && p.len() <= 64
+                    && !p
+                        .chars()
+                        .any(|c| c.is_control() || matches!(c, '/' | '\\' | '?' | '#' | '%'))
+            }
+        };
+        if !project_ok {
+            return Err(match tracker {
+                "jira" => "issueTrackers.api.project must be a Jira project key such as SHOP",
+                "gitlab" => {
+                    "issueTrackers.api.project must be a GitLab project path (group/app) or id"
+                }
+                "github" => "issueTrackers.api.project must be owner/repo",
+                _ => "issueTrackers.api.project must be an Azure DevOps project name",
+            }
+            .into());
+        }
+        if let Some(t) = &self.issue_type {
+            if !matches!(tracker, "jira" | "azure") {
+                return Err("issueTrackers.api.issueType is for jira and azure".into());
+            }
+            printable("issueTrackers.api.issueType", t, 64)?;
+        }
+        if let Some(l) = &self.labels {
+            if l.len() > 10 {
+                return Err("issueTrackers.api.labels: at most 10".into());
+            }
+            for x in l {
+                printable("issueTrackers.api.labels", x, 50)?;
+                if tracker == "jira" && x.contains(' ') {
+                    return Err("issueTrackers.api.labels: Jira labels have no spaces".into());
+                }
+                if x.contains(',') || x.contains(';') {
+                    return Err("issueTrackers.api.labels: no , or ;".into());
+                }
+            }
+        }
+        match self.sync_mode() {
+            "poll" | "off" => {}
+            "webhook" => {
+                if self.webhook_secret_ref.is_none() {
+                    return Err(
+                        "issueTrackers.api: sync webhook needs webhookSecretRef (a secret with purpose webhook)"
+                            .into(),
+                    );
+                }
+            }
+            _ => return Err("issueTrackers.api.sync must be poll, webhook or off".into()),
+        }
+        if let Some(t) = &self.title_template {
+            super::issue_template::check(t, 255, true)
+                .map_err(|e| format!("issueTrackers.api.titleTemplate: {e}"))?;
+        }
+        if let Some(t) = &self.body_template {
+            super::issue_template::check(t, 4096, false)
+                .map_err(|e| format!("issueTrackers.api.bodyTemplate: {e}"))?;
+        }
+        if let Some(c) = &self.closed_states {
+            if tracker != "azure" {
+                return Err("issueTrackers.api.closedStates is for azure".into());
+            }
+            if c.is_empty() || c.len() > 10 {
+                return Err("issueTrackers.api.closedStates: 1 to 10 states".into());
+            }
+            for x in c {
+                printable("issueTrackers.api.closedStates", x, 64)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 /// The FastMock instance whose journal is correlated with results.
@@ -461,9 +672,24 @@ impl IntegrationSettings {
         if self.issue_trackers.len() > MAX_TRACKERS {
             return Err(format!("issueTrackers: at most {MAX_TRACKERS}"));
         }
+        let mut tracker_ids = BTreeSet::new();
         for t in &self.issue_trackers {
-            if !matches!(t.tracker.as_str(), "jira" | "gitlab" | "github") {
-                return Err("issueTrackers.type must be jira, gitlab or github".into());
+            if !matches!(t.tracker.as_str(), "jira" | "gitlab" | "github" | "azure") {
+                return Err("issueTrackers.type must be jira, gitlab, github or azure".into());
+            }
+            if let Some(id) = &t.id {
+                if !valid_tracker_id(id) {
+                    return Err("issueTrackers.id must match ^[a-z0-9][a-z0-9_-]{0,31}$".into());
+                }
+                if !tracker_ids.insert(id.clone()) {
+                    return Err(format!("issueTrackers: id {id:?} is used twice"));
+                }
+            }
+            if let Some(api) = &t.api {
+                if t.id.is_none() {
+                    return Err("issueTrackers: a tracker with api needs an id".into());
+                }
+                api.check(&t.tracker)?;
             }
             if !t.url_template.contains("{key}") {
                 return Err("issueTrackers.urlTemplate must contain {key}".into());
@@ -548,6 +774,18 @@ impl IntegrationSettings {
         if let Some(v) = &self.vcs {
             add(&v.token_secret_ref, SecretPurpose::Vcs, Some(v.url.clone()));
         }
+        for t in &self.issue_trackers {
+            if let Some(a) = &t.api {
+                add(
+                    &a.token_secret_ref,
+                    SecretPurpose::Tracker,
+                    Some(a.url.clone()),
+                );
+                if let Some(w) = &a.webhook_secret_ref {
+                    add(w, SecretPurpose::Webhook, None);
+                }
+            }
+        }
         if let Some(f) = &self.fastmock
             && let Some(t) = &f.token_secret_ref
         {
@@ -610,6 +848,9 @@ fn url_fields(doc: &serde_json::Value) -> std::collections::BTreeMap<String, Str
                 u.chars().take(512).collect(),
             );
         }
+        if let Some(u) = t.get("api").and_then(|a| text(a, "url")) {
+            out.insert(format!("issueTrackers[{i}].api.url"), u);
+        }
     }
     out
 }
@@ -632,6 +873,12 @@ pub fn redact(doc: &mut fastproof_store::analysis::settings::ProjectSettings) {
     for n in &mut doc.notifications {
         if let Some(o) = n.as_object_mut() {
             o.insert("target".into(), serde_json::json!(""));
+            o.insert("redacted".into(), serde_json::json!(true));
+        }
+    }
+    for t in &mut doc.issue_trackers {
+        if let Some(o) = t.get_mut("api").and_then(|a| a.as_object_mut()) {
+            o.insert("url".into(), serde_json::json!(""));
             o.insert("redacted".into(), serde_json::json!(true));
         }
     }

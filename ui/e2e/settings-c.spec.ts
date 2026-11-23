@@ -92,8 +92,8 @@ test('add a Teams notification with routing filters and send a test', async ({ p
 
 test('secrets are write-only', async ({ page }) => {
   await page.goto('/p/web-shop/settings?tab=secrets');
-  await expect(page.getByTestId('secret-row')).toHaveCount(5);
-  await page.getByTestId('secret-name').fill('jira-token');
+  await expect(page.getByTestId('secret-row')).toHaveCount(6);
+  await page.getByTestId('secret-name').fill('ops-token');
   await page.getByTestId('secret-value').fill('s3cr3t-value-e2e');
   await expect(page.getByTestId('secret-save')).toBeDisabled();
   await page.getByTestId('secret-purpose').click();
@@ -102,7 +102,7 @@ test('secrets are write-only', async ({ page }) => {
   await page.getByTestId('secret-purpose').click();
   await page.getByRole('option', { name: 'Webhook signing key or URL' }).click();
   await page.getByTestId('secret-save').click();
-  await expect(page.getByTestId('secret-row').filter({ hasText: 'jira-token' })).toContainText('webhook');
+  await expect(page.getByTestId('secret-row').filter({ hasText: 'ops-token' })).toContainText('webhook');
   await expect(page.getByTestId('secret-value')).toHaveValue('');
   await expect(page.getByText('s3cr3t-value-e2e')).toHaveCount(0);
   expect(await page.content()).not.toContain('s3cr3t-value-e2e');

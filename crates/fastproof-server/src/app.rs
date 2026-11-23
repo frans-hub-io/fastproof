@@ -122,6 +122,7 @@ pub fn api_router() -> (Router<AppState>, utoipa::openapi::OpenApi) {
         .merge(api::runs::router())
         .merge(api::imports::router())
         .merge(api::exports::router())
+        .merge(api::trackers::router())
         .split_for_parts();
     api::type_project_settings(&mut doc);
     api::admin::document_platform(&mut doc);
@@ -570,6 +571,10 @@ async fn start_inner(cfg: Config, pool: PgPool, boot: Boot) -> anyhow::Result<Ru
             stop.clone(),
         )));
         tasks.push(tokio::spawn(sched.run(state.clone(), stop.clone())));
+        tasks.push(tokio::spawn(crate::integrations::tracker_sync::run(
+            state.clone(),
+            stop.clone(),
+        )));
     }
     tasks.push(tokio::spawn(crate::api::media::reload_keys(
         state.clone(),

@@ -124,7 +124,7 @@ function initialSettings(): ProjectSettings {
       { id: 'n-mail', kind: 'email', on: ['gateFailed'], target: 'qa-leads@example.com', secretRef: null, filter: { branches: ['release/*'], environments: ['production-smoke'] } },
     ],
     issueTrackers: [
-      { type: 'jira', urlTemplate: 'https://issues.example.com/browse/{key}', keyRegex: '^[A-Z][A-Z0-9]+-\\d+$' },
+      { type: 'jira', id: 'jira', urlTemplate: 'https://issues.example.com/browse/{key}', keyRegex: '^[A-Z][A-Z0-9]+-\\d+$', api: { url: 'https://issues.example.com', tokenSecretRef: 'jira-token', project: 'SHOP', labels: ['fastproof'], attachScreenshots: true } },
       { type: 'github', urlTemplate: 'https://github.com/example/web-shop/issues/{key}', keyRegex: '^#?\\d+$' },
     ],
     vcs: { provider: 'gitlab', url: 'https://gitlab.example.com', repository: 'example/web-shop', tokenSecretRef: 'gitlab-token', comment: true, status: true },
@@ -236,6 +236,7 @@ export function secretsOf(project: string): MockSecret[] {
         ? [
             { name: 'fastmock-token', purpose: 'fastmock', origin: 'https://fastmock.example.com', updatedAt: iso(NOW - 30 * DAY) },
             { name: 'gitlab-token', purpose: 'vcs', origin: 'https://gitlab.example.com', updatedAt: iso(NOW - 12 * DAY) },
+            { name: 'jira-token', purpose: 'tracker', origin: 'https://issues.example.com', updatedAt: iso(NOW - 12 * DAY) },
             { name: 'slack-webhook', purpose: 'slack', origin: null, updatedAt: iso(NOW - 40 * DAY) },
             { name: 'teams-qa-channel', purpose: 'teams', origin: 'https://default0a1b2c3d.4e.environment.api.powerplatform.com', updatedAt: iso(NOW - 5 * DAY) },
             { name: 'webhook-hmac', purpose: 'webhook', origin: null, updatedAt: iso(NOW - 3 * DAY) },

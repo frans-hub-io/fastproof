@@ -112,6 +112,7 @@ nav:
       - guide/rules-and-triage.md
       - guide/quality-gates.md
       - guide/notifications.md
+      - guide/issue-trackers.md
       - guide/mcp-copilot.md
   - Operations:
       - operations/configuration.md

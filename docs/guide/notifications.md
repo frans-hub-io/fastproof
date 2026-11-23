@@ -252,8 +252,9 @@ Triage can link an issue by key alone when the project knows the tracker:
 }
 ```
 
-The first tracker whose `keyRegex` matches the whole key builds the URL. `type` is `jira`, `gitlab` or
-`github`; a project has at most 10 trackers.
+The first tracker whose `keyRegex` matches the whole key builds the URL. `type` is `jira`, `gitlab`,
+`github` or `azure`; a project has at most 10 trackers. A tracker with an `id` and `api` settings can also
+create issues from results and follow their state: see [Issue trackers](issue-trackers.md).
 
 ## Project secrets
 
@@ -273,6 +274,7 @@ Each secret is bound, when it is written, to one purpose and optionally to the o
 | `purpose` | Used by | `origin` |
 |---|---|---|
 | `vcs` | `vcs.tokenSecretRef` | Required: the origin of `vcs.url` |
+| `tracker` | `issueTrackers[].api.tokenSecretRef` | Required: the origin of `issueTrackers[].api.url` |
 | `fastmock` | `fastmock.tokenSecretRef` | Required: the origin of `fastmock.url` |
 | `slack` | `targetSecretRef` of a Slack notification | Optional; when given, the URL in the value must be on it |
 | `teams` | `targetSecretRef` of a Teams notification | Taken from the workflow URL in the value (`https`); when given, it must be that origin |

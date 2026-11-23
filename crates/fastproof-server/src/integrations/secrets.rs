@@ -31,6 +31,9 @@ pub const MAX_SECRET_BYTES: usize = 8192;
 pub enum SecretPurpose {
     /// GitLab or GitHub API token (`vcs.tokenSecretRef`); needs an origin.
     Vcs,
+    /// Issue tracker API credentials (`issueTrackers[].api.tokenSecretRef`): a token, or
+    /// `user:token` for basic authentication; needs an origin.
+    Tracker,
     /// FastMock admin token (`fastmock.tokenSecretRef`); needs an origin.
     Fastmock,
     /// Slack incoming webhook URL (`targetSecretRef` of a Slack notification).
@@ -52,6 +55,7 @@ impl SecretPurpose {
     pub fn as_str(self) -> &'static str {
         match self {
             SecretPurpose::Vcs => "vcs",
+            SecretPurpose::Tracker => "tracker",
             SecretPurpose::Fastmock => "fastmock",
             SecretPurpose::Slack => "slack",
             SecretPurpose::Telegram => "telegram",
@@ -67,6 +71,7 @@ impl SecretPurpose {
         matches!(
             self,
             SecretPurpose::Vcs
+                | SecretPurpose::Tracker
                 | SecretPurpose::Fastmock
                 | SecretPurpose::Teams
                 | SecretPurpose::Testops

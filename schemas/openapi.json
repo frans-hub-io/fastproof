@@ -111,6 +111,70 @@
         }
       }
     },
+    "/api/v1/hooks/trackers/{key}/{trackerId}": {
+      "post": {
+        "tags": [
+          "integrations"
+        ],
+        "description": "Receives the webhook of a tracker with `sync: webhook` (no bearer token). The request must prove the secret named by `webhookSecretRef`: GitHub `X-Hub-Signature-256` and Jira `X-Hub-Signature` (`sha256=` HMAC of the body), GitLab `X-Gitlab-Token`, Azure DevOps basic authentication with the secret as the password. A verified call only schedules a read of the issue it names through the tracker's API (at most one per issue per 5 seconds); its payload is never taken as the state. Every refusal is the same `401`. Body at most 256 KiB.",
+        "operationId": "tracker_webhook",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "trackerId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "The tracker's webhook payload",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "accepted"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
     "/api/v1/me": {
       "get": {
         "tags": [
@@ -4223,6 +4287,71 @@
           },
           "409": {
             "description": "`job_not_ready` or `import_busy`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/issue-trackers/{trackerId}/test": {
+      "post": {
+        "tags": [
+          "integrations"
+        ],
+        "description": "Reads the configured project from the tracker with the stored token (saved settings). Needs `settings:write`.",
+        "operationId": "tracker_test",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "trackerId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrackerTest"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
             "content": {
               "application/json": {
                 "schema": {
@@ -10577,6 +10706,660 @@
         }
       }
     },
+    "/api/v1/projects/{key}/tracker-issues": {
+      "get": {
+        "tags": [
+          "integrations"
+        ],
+        "description": "Issues created or linked from FastProof with the state last read from their tracker, newest first.",
+        "operationId": "tracker_issues_list",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tracker",
+            "in": "query",
+            "description": "Tracker id.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "description": "`open`, `closed` or `creating`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "unmuteSuggested",
+            "in": "query",
+            "description": "Only issues that suggest un-muting (or only those that do not).",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "resultId",
+            "in": "query",
+            "description": "Issues linked to this result.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "launchId",
+            "in": "query",
+            "description": "Issues linked to results or clusters of this launch.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "1 to 200, default 50.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrackerIssueList"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "integrations"
+        ],
+        "description": "Creates an issue in a connected tracker for results or a failure cluster, from the tracker's title and description templates (values from results are escaped for the tracker's markup; messages and traces go into code blocks), optionally with up to 3 screenshots of the first result's last attempt (Jira, GitLab, Azure DevOps), links it to the results or the cluster, puts it on their defects and starts reading its state back. `dryRun` only renders the preview. Idempotent by `requestId`. At most 60 issues per project per hour and 10 000 tracked issues. Needs `results:triage`; audited as `tracker.issue.create`.",
+        "operationId": "tracker_issues_create",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateTrackerIssue"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrackerIssueCreated"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`no_issue_tracker`, `tracker_settings`, or the request id is still creating",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "`tracker_refused` or `tracker_unavailable`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/tracker-issues/link": {
+      "post": {
+        "tags": [
+          "integrations"
+        ],
+        "description": "Links an existing issue of a connected tracker to results or a failure cluster: reads it from the tracker (it must exist), tracks its state, and puts it on the results' defects. Needs `results:triage`; audited as `tracker.issue.link`.",
+        "operationId": "tracker_issues_link",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinkTrackerIssue"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrackerIssueCreated"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/tracker-issues/lookup": {
+      "post": {
+        "tags": [
+          "integrations"
+        ],
+        "description": "The tracked issues with these URLs or keys (the issue links of defects on a page of results), to show their state.",
+        "operationId": "tracker_issues_lookup",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IssueLookup"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrackerIssueList"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/tracker-issues/{id}": {
+      "get": {
+        "tags": [
+          "integrations"
+        ],
+        "description": "One tracked issue with its links and the number of linked tests that are muted now.",
+        "operationId": "tracker_issues_get",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrackerIssueDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "integrations"
+        ],
+        "description": "Stops tracking an issue (its links go; the issue stays in the tracker and on the defects). Needs `results:triage`; audited as `tracker.issue.untrack`.",
+        "operationId": "tracker_issues_delete",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/tracker-issues/{id}/dismiss": {
+      "post": {
+        "tags": [
+          "integrations"
+        ],
+        "description": "Clears the un-mute suggestion of a closed issue and keeps the mutes. Needs `results:triage`.",
+        "operationId": "tracker_issues_dismiss",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/tracker-issues/{id}/sync": {
+      "post": {
+        "tags": [
+          "integrations"
+        ],
+        "description": "Reads the issue from its tracker now (at most once per 5 seconds per issue). Needs `results:triage`.",
+        "operationId": "tracker_issues_sync",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrackerIssueDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/tracker-issues/{id}/unmute": {
+      "post": {
+        "tags": [
+          "integrations"
+        ],
+        "description": "Lifts the mutes of the tests linked to the issue (usually once it is closed) and clears the suggestion. Needs `results:triage` and `results:mute`; audited as `tracker.issue.unmute`.",
+        "operationId": "tracker_issues_unmute",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnmuteOutcome"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{key}/triage": {
       "post": {
         "tags": [
@@ -13090,6 +13873,65 @@
           }
         }
       },
+      "CreateTrackerIssue": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/IssueFor"
+          },
+          {
+            "type": "object",
+            "required": [
+              "tracker",
+              "requestId"
+            ],
+            "properties": {
+              "attachScreenshots": {
+                "type": [
+                  "boolean",
+                  "null"
+                ],
+                "description": "Attach screenshots; default from the tracker settings."
+              },
+              "defectTypeId": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "uuid",
+                "description": "Also set this defect type on the results."
+              },
+              "dryRun": {
+                "type": "boolean",
+                "description": "Only render the title and description; nothing is sent."
+              },
+              "note": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "A note put above the description, at most 4000 bytes (shown as plain text)."
+              },
+              "requestId": {
+                "type": "string",
+                "format": "uuid",
+                "description": "Makes the request idempotent: a retried request with the same id answers the issue it\ncreated instead of creating another."
+              },
+              "title": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Title instead of the template's, at most 255 characters."
+              },
+              "tracker": {
+                "type": "string",
+                "description": "Tracker id (`issueTrackers[].id` with `api`)."
+              }
+            }
+          }
+        ],
+        "description": "Body of `POST /tracker-issues`."
+      },
       "CreatedTestPlan": {
         "oneOf": [
           {
@@ -14430,6 +15272,92 @@
           }
         }
       },
+      "IssueFor": {
+        "type": "object",
+        "description": "What an issue is created or linked for: results, or a failure cluster (`launchId` and\n`fingerprint`).",
+        "properties": {
+          "fingerprint": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "With `launchId`: every result of the launch with this failure fingerprint."
+          },
+          "launchId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "resultIds": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "1 to 100 results."
+          }
+        },
+        "additionalProperties": false
+      },
+      "IssueLookup": {
+        "type": "object",
+        "description": "Body of `POST /tracker-issues/lookup`.",
+        "properties": {
+          "keys": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Issue keys, at most 100."
+          },
+          "urls": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Issue URLs (as on defects), at most 100."
+          }
+        },
+        "additionalProperties": false
+      },
+      "IssuePreview": {
+        "type": "object",
+        "description": "Title and description of a new issue as they are sent (the description in the tracker's\nmarkup: Markdown, Jira wiki markup, ADF JSON or HTML) and as plain text.",
+        "required": [
+          "title",
+          "body",
+          "markup",
+          "text",
+          "screenshots"
+        ],
+        "properties": {
+          "body": {
+            "type": "string"
+          },
+          "markup": {
+            "type": "string",
+            "description": "`markdown`, `jiraWiki`, `adf` or `html`."
+          },
+          "screenshots": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Screenshots that would be attached."
+          },
+          "text": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        }
+      },
       "IssueRef": {
         "type": "object",
         "description": "An issue link.",
@@ -14451,13 +15379,31 @@
       },
       "IssueTracker": {
         "type": "object",
-        "description": "An issue tracker for links from issue keys.",
+        "description": "An issue tracker for links from issue keys and, with `api`, for creating issues from\nFastProof and reading their state back.",
         "required": [
           "type",
           "urlTemplate",
           "keyRegex"
         ],
         "properties": {
+          "api": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TrackerApi",
+                "description": "The tracker's API: create issues from results and clusters and sync their state."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Stable id that tracked issues and the tracker's webhook refer to\n(`^[a-z0-9][a-z0-9_-]{0,31}$`); required with `api`."
+          },
           "issueTypeId": {
             "type": [
               "string",
@@ -14478,7 +15424,7 @@
           },
           "type": {
             "type": "string",
-            "description": "`jira`, `gitlab` or `github`."
+            "description": "`jira`, `gitlab`, `github` or `azure` (Azure DevOps Boards)."
           },
           "urlTemplate": {
             "type": "string",
@@ -15180,6 +16126,38 @@
             "type": "string"
           }
         }
+      },
+      "LinkTrackerIssue": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/IssueFor"
+          },
+          {
+            "type": "object",
+            "required": [
+              "tracker",
+              "issueKey"
+            ],
+            "properties": {
+              "defectTypeId": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "uuid"
+              },
+              "issueKey": {
+                "type": "string",
+                "description": "`SHOP-12` (Jira), `12` or `#12` (GitLab, GitHub, Azure DevOps)."
+              },
+              "tracker": {
+                "type": "string",
+                "description": "Tracker id."
+              }
+            }
+          }
+        ],
+        "description": "Body of `POST /tracker-issues/link`."
       },
       "LinkView": {
         "type": "object",
@@ -19048,6 +20026,7 @@
         "description": "What a secret may be used for.",
         "enum": [
           "vcs",
+          "tracker",
           "fastmock",
           "slack",
           "telegram",
@@ -20054,6 +21033,384 @@
           }
         }
       },
+      "TrackerApi": {
+        "type": "object",
+        "description": "The API connection of an issue tracker.",
+        "required": [
+          "url",
+          "tokenSecretRef",
+          "project"
+        ],
+        "properties": {
+          "attachScreenshots": {
+            "type": "boolean",
+            "description": "Attach image attachments of the result's last attempt (up to 3) to new issues (Jira,\nGitLab, Azure DevOps; GitHub has no API for it)."
+          },
+          "auth": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`basic` (the secret holds `user:token`) or `bearer`. Defaults: `basic` for Jira Cloud\n(`email:api-token`) and Azure DevOps (the secret is the personal access token), `bearer`\nfor Jira Server/Data Center (a personal access token), GitLab and GitHub."
+          },
+          "bodyTemplate": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Description of new issues with `{{placeholders}}`."
+          },
+          "closedStates": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Azure DevOps: states that count as closed (default `Closed`, `Done`, `Removed`)."
+          },
+          "deployment": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Jira only: `cloud` (REST API v3, the default) or `server` (Server and Data Center, REST\nAPI v2)."
+          },
+          "issueType": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Jira issue type name or Azure DevOps work item type of new issues (default `Bug`)."
+          },
+          "labels": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Labels (Jira, GitLab, GitHub) or tags (Azure DevOps) of new issues, at most 10."
+          },
+          "project": {
+            "type": "string",
+            "description": "Where issues are created: Jira project key (`SHOP`), GitLab project path\n(`group/app`), GitHub `owner/repo`, Azure DevOps project name."
+          },
+          "sync": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`poll` (the default: open issues are read every `FASTPROOF_TRACKER_POLL_SECONDS`),\n`webhook` (the tracker's webhook triggers reads; a daily read as well) or `off`."
+          },
+          "titleTemplate": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Title of new issues with `{{placeholders}}` (see the issue trackers guide)."
+          },
+          "tokenSecretRef": {
+            "type": "string",
+            "description": "A secret with purpose `tracker` bound to the origin of `url`."
+          },
+          "url": {
+            "type": "string",
+            "description": "Jira site or server base URL (`https://example.atlassian.net`,\n`https://jira.example.com`), GitLab base URL, GitHub API URL (`https://api.github.com`,\n`https://github.example.com/api/v3`) or Azure DevOps organization URL\n(`https://dev.azure.com/example`)."
+          },
+          "webhookSecretRef": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "With `sync: webhook`: a secret with purpose `webhook` that the tracker's webhook proves\nitself with (GitHub and Jira sign with it, GitLab sends it as its token, Azure DevOps as\nthe basic authentication password)."
+          }
+        },
+        "additionalProperties": false
+      },
+      "TrackerIssue": {
+        "type": "object",
+        "description": "An issue in a tracker.",
+        "required": [
+          "id",
+          "trackerId",
+          "trackerType",
+          "title",
+          "state",
+          "category",
+          "createdBy",
+          "createdAt",
+          "updatedAt",
+          "unmuteSuggested"
+        ],
+        "properties": {
+          "category": {
+            "type": "string",
+            "description": "`creating`, `open` or `closed`."
+          },
+          "closedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "createdBy": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "key": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`SHOP-12` (Jira), `#12` (GitLab, GitHub) or `12` (Azure DevOps); absent while creating."
+          },
+          "links": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/TrackerIssueLink"
+            },
+            "description": "Links to results and failure clusters (in the single-issue answer only)."
+          },
+          "mutedTests": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Linked tests that are muted now (in the single-issue answer only)."
+          },
+          "nextSyncAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "state": {
+            "type": "string",
+            "description": "The state as the tracker names it (`In Progress`, `opened`, `closed`, `Done`)."
+          },
+          "syncError": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the last read failed (no URL or token in it)."
+          },
+          "syncedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Last successful read of the issue from the tracker."
+          },
+          "title": {
+            "type": "string"
+          },
+          "trackerId": {
+            "type": "string",
+            "description": "`id` of the tracker in the `issueTrackers` settings."
+          },
+          "trackerType": {
+            "type": "string",
+            "description": "`jira`, `gitlab`, `github` or `azure`."
+          },
+          "unmuteSuggested": {
+            "type": "boolean",
+            "description": "The issue was closed while tests linked to it are still muted."
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "TrackerIssueCreated": {
+        "type": "object",
+        "description": "Answer of `POST /tracker-issues`.",
+        "required": [
+          "preview",
+          "attached",
+          "notes",
+          "updatedResults",
+          "repeated"
+        ],
+        "properties": {
+          "attached": {
+            "type": "integer",
+            "description": "Screenshots attached.",
+            "minimum": 0
+          },
+          "issue": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TrackerIssue",
+                "description": "The issue (absent for a dry run)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "notes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Screenshots that could not be attached, and why."
+          },
+          "preview": {
+            "$ref": "#/components/schemas/IssuePreview"
+          },
+          "repeated": {
+            "type": "boolean",
+            "description": "The request id was used before: this is the issue it created."
+          },
+          "updatedResults": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Results whose defect now links the issue.",
+            "minimum": 0
+          }
+        }
+      },
+      "TrackerIssueDetail": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/TrackerIssue"
+          },
+          {
+            "type": "object",
+            "required": [
+              "canUnmute"
+            ],
+            "properties": {
+              "canUnmute": {
+                "type": "boolean",
+                "description": "The caller may un-mute the linked tests (`results:mute`)."
+              }
+            }
+          }
+        ],
+        "description": "A tracked issue and what the caller may do with it."
+      },
+      "TrackerIssueLink": {
+        "type": "object",
+        "description": "A link of an issue to a result or to a failure cluster (a fingerprint in a launch).",
+        "required": [
+          "id",
+          "tests",
+          "createdBy",
+          "createdAt"
+        ],
+        "properties": {
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "createdBy": {
+            "type": "string"
+          },
+          "fingerprint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "launchId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "resultId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "tests": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Tests (series) behind the link."
+          }
+        }
+      },
+      "TrackerIssueList": {
+        "type": "object",
+        "description": "`{items, next}` of tracked issues.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TrackerIssue"
+            }
+          },
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Cursor of the next page (`before=`), `null` on the last page."
+          }
+        }
+      },
+      "TrackerTest": {
+        "type": "object",
+        "description": "Answer of a connection test.",
+        "required": [
+          "ok"
+        ],
+        "properties": {
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "project": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The project as the tracker names it."
+          }
+        }
+      },
       "TreeDefect": {
         "type": "object",
         "description": "The parts of a defect that name and color it in the tree.",
@@ -20336,6 +21693,28 @@
           "skip",
           "fail"
         ]
+      },
+      "UnmuteOutcome": {
+        "type": "object",
+        "description": "Answer of `POST /tracker-issues/{id}/unmute`.",
+        "required": [
+          "tests",
+          "results"
+        ],
+        "properties": {
+          "results": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Results whose `muted` flag was cleared.",
+            "minimum": 0
+          },
+          "tests": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Tests whose mute was lifted.",
+            "minimum": 0
+          }
+        }
       },
       "UntestedStepsTo": {
         "type": "string",

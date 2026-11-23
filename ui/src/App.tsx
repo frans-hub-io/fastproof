@@ -21,6 +21,7 @@ const AuditPage = lazy(() => import('./pages/Audit'));
 const NotFoundPage = lazy(() => import('./pages/NotFound'));
 const DashboardPage = lazy(() => import('./pages/Dashboard'));
 const FlakyPage = lazy(() => import('./pages/Flaky'));
+const IssuesPage = lazy(() => import('./pages/Issues'));
 const ComparePage = lazy(() => import('./pages/Compare'));
 const RulesPage = lazy(() => import('./pages/Rules'));
 const GatesPage = lazy(() => import('./pages/Gates'));
@@ -60,6 +61,7 @@ export function AppRoutes() {
         <Route path="p/:key/test-cases/:id" element={<TestCasePage />} />
         <Route path="p/:key/dashboard" element={<DashboardPage />} />
         <Route path="p/:key/flaky" element={<FlakyPage />} />
+        <Route path="p/:key/issues" element={<IssuesPage />} />
         <Route path="p/:key/compare" element={<ComparePage />} />
         <Route path="p/:key/rules" element={<RulesPage />} />
         <Route path="p/:key/gates" element={<GatesPage />} />

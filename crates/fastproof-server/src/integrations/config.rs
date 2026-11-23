@@ -65,6 +65,10 @@ pub struct IntegrationsConfig {
     pub metrics_top_branches: usize,
     /// Environments per project with their own `environment` label.
     pub metrics_top_environments: usize,
+    /// How often open tracker issues are read (`sync: poll`).
+    pub tracker_poll: Duration,
+    /// How often the tracker sync looks for due issues.
+    pub tracker_tick: Duration,
 }
 
 impl Default for IntegrationsConfig {
@@ -80,6 +84,8 @@ impl Default for IntegrationsConfig {
             settle: Duration::from_secs(3),
             metrics_top_branches: 10,
             metrics_top_environments: 5,
+            tracker_poll: Duration::from_secs(600),
+            tracker_tick: Duration::from_secs(5),
         }
     }
 }
@@ -178,7 +184,12 @@ impl IntegrationsConfig {
         if !(1..=100).contains(&top) {
             bail!("FASTPROOF_METRICS_TOP_BRANCHES: 1 to 100");
         }
+        let tracker_poll: u64 = number(env, "FASTPROOF_TRACKER_POLL_SECONDS", 600)?;
+        if !(60..=86_400).contains(&tracker_poll) {
+            bail!("FASTPROOF_TRACKER_POLL_SECONDS: 60 to 86400");
+        }
         Ok(Self {
+            tracker_poll: Duration::from_secs(tracker_poll),
             egress: Arc::new(egress),
             secrets,
             smtp: smtp(env)?,

@@ -8,12 +8,15 @@ pub mod dispatch;
 pub mod egress;
 pub mod fastmock;
 pub mod gates;
+pub mod issue_template;
 pub mod issues;
 pub mod notify;
 pub mod quality;
 pub mod secrets;
 pub mod settings;
 pub mod teams;
+pub mod tracker_sync;
+pub mod trackers;
 pub mod vcs;
 
 use fastproof_blob::Secret;

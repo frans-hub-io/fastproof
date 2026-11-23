@@ -4,6 +4,8 @@ templates:
   - templates/garage.yaml
   - templates/deployment.yaml
   - templates/NOTES.txt
+  - templates/secrets.yaml
+  - templates/networkpolicy.yaml
 release:
   name: fp
   namespace: qa
@@ -23,7 +25,7 @@ tests:
           value: http://fp-garage:3900
       - equal:
           path: data.FASTPROOF_MEDIA_URL_TTL_SECONDS
-          value: "900"
+          value: "300"
       - notExists:
           path: data.FASTPROOF_BLOB_DIR
 
@@ -126,3 +128,77 @@ tests:
     asserts:
       - matchRegexRaw:
           pattern: 'bundled single-node Garage'
+
+  - it: creates the media signing secret once and keeps it
+    template: templates/secrets.yaml
+    documentSelector:
+      path: metadata.name
+      value: fp-fastproof-media-key
+    asserts:
+      - equal:
+          path: metadata.annotations["helm.sh/resource-policy"]
+          value: keep
+      - exists:
+          path: data.media-url-key
+
+  - it: uses an existing secret for the media key
+    template: templates/secrets.yaml
+    set:
+      server.mediaUrlKey.existingSecret: my-media-key
+    asserts:
+      - hasDocuments:
+          count: 2
+
+  - it: sets the media limits and the key file
+    template: templates/configmap.yaml
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: data.FASTPROOF_MEDIA_MAX_STREAMS
+          value: "256"
+      - equal:
+          path: data.FASTPROOF_MEDIA_STREAM_TIMEOUT_SECONDS
+          value: "60"
+      - equal:
+          path: data.FASTPROOF_MEDIA_URL_KEY_FILE
+          value: /etc/fastproof/secrets/media-url-key
+      - notExists:
+          path: data.FASTPROOF_BLOB_BACKEND_MIGRATED
+
+  - it: passes the migrated flag
+    template: templates/configmap.yaml
+    documentIndex: 0
+    set:
+      server.blobBackendMigrated: true
+    asserts:
+      - equal:
+          path: data.FASTPROOF_BLOB_BACKEND_MIGRATED
+          value: "true"
+
+  - it: keeps the filesystem volume out of pruning
+    template: templates/deployment.yaml
+    set:
+      blob.backend: fs
+    documentSelector:
+      path: kind
+      value: PersistentVolumeClaim
+    asserts:
+      - equal:
+          path: metadata.annotations["argocd.argoproj.io/sync-options"]
+          value: Prune=false
+      - equal:
+          path: metadata.annotations["helm.sh/resource-policy"]
+          value: keep
+
+  - it: lets only the S3 port of Garage through
+    template: templates/networkpolicy.yaml
+    documentSelector:
+      path: metadata.name
+      value: fp-fastproof-garage
+    asserts:
+      - equal:
+          path: spec.ingress[0].ports[0].port
+          value: 3900
+      - lengthEqual:
+          path: spec.ingress[0].ports
+          count: 1

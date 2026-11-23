@@ -14,6 +14,7 @@ use reqwest::{Method, Response, StatusCode};
 use serde_json::{Value, json};
 
 const SIZE: usize = 1000;
+const OUTSIDE_KEY: &str = "test-outside-secret-0123456789abcdef";
 
 fn content() -> Vec<u8> {
     (0..SIZE).map(|i| (i * 7 % 251) as u8).collect()
@@ -37,6 +38,7 @@ async fn start(db: &TestDb, s3: bool, extra: &[(&str, &str)]) -> Option<Fx> {
         };
         vars.extend(env);
     }
+    vars.push(("FASTPROOF_MEDIA_URL_KEY".into(), OUTSIDE_KEY.into()));
     for (k, v) in extra {
         vars.push((k.to_string(), v.to_string()));
     }
@@ -124,11 +126,21 @@ impl Fx {
     }
 }
 
-fn sandboxed(r: &Response) {
+fn sandboxed(r: &Response, media: bool) {
     let h = r.headers();
     assert_eq!(h["x-content-type-options"], "nosniff");
     assert_eq!(h["content-security-policy"], "sandbox; default-src 'none'");
-    assert_eq!(h["cache-control"], "private, max-age=31536000, immutable");
+    let cc = h["cache-control"].to_str().unwrap();
+    if media {
+        let age: u64 = cc
+            .strip_prefix("private, max-age=")
+            .unwrap_or_else(|| panic!("{cc}"))
+            .parse()
+            .unwrap();
+        assert!(age <= 3600 && !cc.contains("immutable"), "{cc}");
+    } else {
+        assert_eq!(cc, "private, max-age=31536000, immutable");
+    }
     assert_eq!(h["cross-origin-resource-policy"], "same-origin");
     assert_eq!(h["accept-ranges"], "bytes");
     assert!(h.contains_key("etag"), "{h:?}");
@@ -137,7 +149,7 @@ fn sandboxed(r: &Response) {
 }
 
 /// The three range forms, 416, HEAD, validators and headers on every status, for one route.
-async fn serving_checks<F, Fut>(f: &Fx, send: F)
+async fn serving_checks<F, Fut>(f: &Fx, media: bool, send: F)
 where
     F: Fn(Method, Vec<(&'static str, String)>) -> Fut,
     Fut: std::future::Future<Output = Response>,
@@ -149,14 +161,14 @@ where
 
     let r = go(Method::GET, &[]).await;
     assert_eq!(r.status(), StatusCode::OK);
-    sandboxed(&r);
+    sandboxed(&r, media);
     assert_eq!(r.headers()["etag"].to_str().unwrap(), etag);
     assert_eq!(r.headers()["content-length"], SIZE.to_string().as_str());
     assert_eq!(r.bytes().await.unwrap().as_ref(), f.body.as_slice());
 
     let r = go(Method::HEAD, &[]).await;
     assert_eq!(r.status(), StatusCode::OK);
-    sandboxed(&r);
+    sandboxed(&r, media);
     assert_eq!(r.headers()["content-length"], SIZE.to_string().as_str());
     assert!(r.bytes().await.unwrap().is_empty());
 
@@ -169,7 +181,7 @@ where
     ] {
         let r = go(Method::GET, &[("range", range)]).await;
         assert_eq!(r.status(), StatusCode::PARTIAL_CONTENT, "{range}");
-        sandboxed(&r);
+        sandboxed(&r, media);
         assert_eq!(
             r.headers()["content-range"].to_str().unwrap(),
             format!("bytes {from}-{to}/{SIZE}")
@@ -194,7 +206,7 @@ where
     for range in ["bytes=1000-", "bytes=1000-2000", "bytes=-0", "bytes=5000-"] {
         let r = go(Method::GET, &[("range", range)]).await;
         assert_eq!(r.status(), StatusCode::RANGE_NOT_SATISFIABLE, "{range}");
-        sandboxed(&r);
+        sandboxed(&r, media);
         assert_eq!(r.headers()["content-range"], "bytes */1000");
         assert!(r.bytes().await.unwrap().is_empty());
     }
@@ -214,7 +226,7 @@ where
     ] {
         let r = go(Method::GET, &[("if-none-match", &inm)]).await;
         assert_eq!(r.status(), StatusCode::NOT_MODIFIED, "{inm}");
-        sandboxed(&r);
+        sandboxed(&r, media);
         assert_eq!(r.headers()["etag"].to_str().unwrap(), etag);
         assert!(r.bytes().await.unwrap().is_empty());
     }
@@ -241,7 +253,7 @@ where
     ] {
         let r = go(Method::GET, &[("range", "bytes=20-29"), ("if-range", ir)]).await;
         assert_eq!(r.status(), StatusCode::OK, "if-range {ir}");
-        sandboxed(&r);
+        sandboxed(&r, media);
         assert!(!r.headers().contains_key("content-range"));
         assert_eq!(r.bytes().await.unwrap().len(), SIZE);
     }
@@ -254,7 +266,7 @@ async fn serving(s3: bool) {
     let Some(f) = start(&db, s3, &[]).await else {
         return;
     };
-    serving_checks(&f, |m, h| {
+    serving_checks(&f, false, |m, h| {
         let f = &f;
         async move {
             let hs: Vec<(&str, &str)> = h.iter().map(|(k, v)| (*k, v.as_str())).collect();
@@ -284,7 +296,7 @@ async fn serving(s3: bool) {
     );
 
     let url = f.media_url().await;
-    serving_checks(&f, |m, h| {
+    serving_checks(&f, true, |m, h| {
         let (f, url) = (&f, url.clone());
         async move {
             let hs: Vec<(&str, &str)> = h.iter().map(|(k, v)| (*k, v.as_str())).collect();
@@ -334,7 +346,7 @@ async fn media_urls(s3: bool) {
 
     let r = f.media(Method::GET, &url, &[]).await;
     assert_eq!(r.status(), StatusCode::OK);
-    sandboxed(&r);
+    sandboxed(&r, true);
     assert_eq!(r.bytes().await.unwrap().as_ref(), f.body.as_slice());
     let r =
         f.s.http
@@ -494,9 +506,16 @@ async fn media_urls(s3: bool) {
         .execute(&db.pool)
         .await
         .unwrap();
-    let r = f.media(Method::GET, &fresh, &[]).await;
-    assert_eq!(r.status(), StatusCode::NOT_FOUND, "attachment deleted");
-    assert_eq!(r.text().await.unwrap(), generic_body);
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let r = f.media(Method::GET, &fresh, &[]).await;
+        if r.status() == StatusCode::NOT_FOUND {
+            assert_eq!(r.text().await.unwrap(), generic_body);
+            break;
+        }
+        assert!(Instant::now() < deadline, "attachment deleted but served");
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
     let r = f.media(Method::HEAD, &fresh, &[]).await;
     assert_eq!(r.status(), StatusCode::NOT_FOUND);
 
@@ -830,4 +849,274 @@ async fn the_token_is_not_logged() {
     assert!(!text.contains(&payload), "the token payload is in the log");
     assert!(!text.contains("secret-query"));
     assert!(!text.contains("/api/v1/media/garbage"));
+}
+
+async fn project_id(db: &TestDb, key: &str) -> uuid::Uuid {
+    sqlx::query_scalar("select id from projects where key = $1")
+        .bind(key)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap()
+}
+
+async fn db_secret(db: &TestDb) -> Vec<u8> {
+    sqlx::query_scalar("select secret from stream_keys where name = 'media-url'")
+        .fetch_one(&db.pool)
+        .await
+        .unwrap()
+}
+
+fn now_ms() -> i64 {
+    chrono::Utc::now().timestamp_millis()
+}
+
+#[tokio::test]
+async fn media_url_by_attachment_id() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let Some(f) = start(&db, false, &[]).await else {
+        return;
+    };
+    let url = f.media_url_for(&f.key, &f.id, ADMIN_TOKEN).await;
+    let r = f.media(Method::GET, &url, &[]).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    assert_eq!(r.bytes().await.unwrap().as_ref(), f.body.as_slice());
+
+    let other = format!("o-{:012x}", rand::random::<u64>() >> 16);
+    f.s.project(&other).await;
+    let lo = f.s.launch(&other, None).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (id_o, _) = attach(
+        &f.s,
+        &other,
+        &lo,
+        b"in the other project".to_vec(),
+        "text/plain",
+    )
+    .await;
+    for ident in [
+        id_o.as_str(),
+        "00000000-0000-4000-8000-000000000000",
+        "not-an-id",
+    ] {
+        let (st, _) =
+            f.s.call(
+                Method::POST,
+                &format!("/api/v1/projects/{}/attachments/{ident}/media-url", f.key),
+                Some(ADMIN_TOKEN),
+                None,
+            )
+            .await;
+        assert_eq!(st, StatusCode::NOT_FOUND, "{ident}");
+    }
+    let only_other = f.s.token("only-o", "viewer", &[&other]).await;
+    let (st, _) =
+        f.s.call(
+            Method::POST,
+            &format!("/api/v1/projects/{}/attachments/{}/media-url", f.key, f.id),
+            Some(&only_other),
+            None,
+        )
+        .await;
+    assert_eq!(st, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn tokens_need_the_outside_secret_and_a_sane_expiry() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let Some(f) = start(&db, false, &[]).await else {
+        return;
+    };
+    let pid = project_id(&db, &f.key).await;
+    let secret = db_secret(&db).await;
+    let mint = |outside: &[u8], exp: i64| {
+        let t =
+            fastproof_server::api::media::mint(&secret, outside, pid, &f.sha, exp, "t", "admin")
+                .unwrap();
+        format!("/api/v1/media/{t}")
+    };
+    for guess in [&b""[..], &secret[..], b"another-secret-0123456789"] {
+        let r = f
+            .media(Method::GET, &mint(guess, now_ms() + 60_000), &[])
+            .await;
+        assert_eq!(
+            r.status(),
+            StatusCode::NOT_FOUND,
+            "forged with the database secret alone"
+        );
+    }
+    let ok = f
+        .media(
+            Method::GET,
+            &mint(OUTSIDE_KEY.as_bytes(), now_ms() + 60_000),
+            &[],
+        )
+        .await;
+    assert_eq!(ok.status(), StatusCode::OK, "the harness forges correctly");
+    let ok = f
+        .media(
+            Method::GET,
+            &mint(OUTSIDE_KEY.as_bytes(), now_ms() + 3_500_000),
+            &[],
+        )
+        .await;
+    assert_eq!(ok.status(), StatusCode::OK, "within the longest lifetime");
+    for far in [3_700_000, 86_400_000, i64::MAX / 2] {
+        let r = f
+            .media(
+                Method::GET,
+                &mint(OUTSIDE_KEY.as_bytes(), now_ms().saturating_add(far)),
+                &[],
+            )
+            .await;
+        assert_eq!(r.status(), StatusCode::NOT_FOUND, "expiry {far} ms ahead");
+    }
+}
+
+#[tokio::test]
+async fn keys_rotate_without_a_restart() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let Some(f) = start(&db, false, &[("FASTPROOF_MEDIA_KEY_RELOAD_SECONDS", "1")]).await else {
+        return;
+    };
+    let kid = |u: &str| {
+        u["/api/v1/media/".len()..]
+            .split('.')
+            .next()
+            .unwrap()
+            .to_string()
+    };
+    let rotate = || async {
+        let mut tx = db.pool.begin().await.unwrap();
+        sqlx::query("delete from stream_keys where name = 'media-url-previous'")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        sqlx::query("update stream_keys set name = 'media-url-previous' where name = 'media-url'")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+    };
+    let first = f.media_url().await;
+    assert_eq!(
+        f.media(Method::GET, &first, &[]).await.status(),
+        StatusCode::OK
+    );
+    rotate().await;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let second = loop {
+        let u = f.media_url().await;
+        if kid(&u) != kid(&first) {
+            break u;
+        }
+        assert!(Instant::now() < deadline, "the new key was not picked up");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    };
+    assert_eq!(
+        f.media(Method::GET, &first, &[]).await.status(),
+        StatusCode::OK,
+        "the previous key still verifies"
+    );
+    assert_eq!(
+        f.media(Method::GET, &second, &[]).await.status(),
+        StatusCode::OK
+    );
+    rotate().await;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let st = f.media(Method::GET, &first, &[]).await.status();
+        if st == StatusCode::NOT_FOUND {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the dropped key still verifies");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    assert_eq!(
+        f.media(Method::GET, &second, &[]).await.status(),
+        StatusCode::OK,
+        "the key it was signed with is now the previous one"
+    );
+}
+
+#[tokio::test]
+async fn a_changed_blob_store_is_refused_unless_declared() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let mut f = start(&db, false, &[]).await.unwrap();
+    let cfg = (*f.s.running.as_ref().unwrap().state.cfg).clone();
+    let recorded: String = sqlx::query_scalar("select identity from blob_identity")
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert!(recorded.starts_with("fs:"), "{recorded}");
+    f.s.stop().await;
+
+    let again = fastproof_server::start(cfg.clone(), Some(common::prometheus()))
+        .await
+        .unwrap();
+    again.shutdown().await;
+
+    let elsewhere = tempfile::tempdir().unwrap();
+    let mut changed = cfg.clone();
+    changed.blob = fastproof_blob::BlobConfig::Fs {
+        dir: elsewhere.path().join("empty"),
+    };
+    let err = match fastproof_server::start(changed.clone(), Some(common::prometheus())).await {
+        Ok(_) => panic!("started on another blob store with attachments stored"),
+        Err(e) => format!("{e:#}"),
+    };
+    assert!(err.contains("FASTPROOF_BLOB_BACKEND_MIGRATED"), "{err}");
+    let still: String = sqlx::query_scalar("select identity from blob_identity")
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(still, recorded);
+
+    sqlx::query("delete from blob_identity")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let err = match fastproof_server::start(changed.clone(), Some(common::prometheus())).await {
+        Ok(_) => panic!("started on an empty store without a record"),
+        Err(e) => format!("{e:#}"),
+    };
+    assert!(err.contains("empty store"), "{err}");
+    let same = fastproof_server::start(cfg.clone(), Some(common::prometheus()))
+        .await
+        .unwrap();
+    same.shutdown().await;
+    let rec: String = sqlx::query_scalar("select identity from blob_identity")
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        rec, recorded,
+        "an existing store is recorded after the check"
+    );
+
+    changed.blob_migrated = true;
+    let moved = fastproof_server::start(changed.clone(), Some(common::prometheus()))
+        .await
+        .unwrap();
+    moved.shutdown().await;
+    let rec: String = sqlx::query_scalar("select identity from blob_identity")
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_ne!(rec, recorded);
+    assert!(rec.contains("empty"));
+    changed.blob_migrated = false;
+    let next = fastproof_server::start(changed, Some(common::prometheus()))
+        .await
+        .unwrap();
+    next.shutdown().await;
 }

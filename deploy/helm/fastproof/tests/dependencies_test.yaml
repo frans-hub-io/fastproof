@@ -40,7 +40,7 @@ tests:
     template: templates/secrets.yaml
     asserts:
       - hasDocuments:
-          count: 3
+          count: 4
       - documentIndex: 0
         equal:
           path: metadata.name
@@ -51,8 +51,12 @@ tests:
       - documentIndex: 1
         equal:
           path: metadata.name
-          value: fp-garage-credentials
+          value: fp-fastproof-media-key
       - documentIndex: 2
+        equal:
+          path: metadata.name
+          value: fp-garage-credentials
+      - documentIndex: 3
         exists:
           path: data["bootstrap-token"]
 

@@ -37,7 +37,6 @@ tests:
           path: spec.podSelector.matchExpressions[0].values
           value:
             - postgresql
-            - garage
 
   - it: allows egress to the CloudNativePG cluster by its own label
     capabilities:

@@ -6151,6 +6151,169 @@
         }
       }
     },
+    "/api/v1/projects/{key}/launches/{id}/rerun": {
+      "post": {
+        "tags": [
+          "integrations"
+        ],
+        "description": "Makes a test plan of the failed (or selected) tests and triggers the CI configured in the project settings (`rerun`) with the plan and the external id the new launch must use (`launches:rerun`, held by editor and admin, not by uploader). The CI is called once, without retries. The new launch is linked to this one when it starts with that external id. Every outcome, also a refusal, is written to the audit log (`launch.rerun`).",
+        "operationId": "integrations_rerun",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RerunRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rerun"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "no `rerun` settings, or no tests to run",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "too many reruns",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "the CI refused or is unreachable (the rerun is kept with the reason)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/launches/{id}/reruns": {
+      "get": {
+        "tags": [
+          "integrations"
+        ],
+        "description": "The reruns requested from the launch with the launches they started, and the rerun that started this launch. Callers without `settings:write` get generic error texts and only the pipeline id in `ciRef`, as the CI host and the secret names are settings details.",
+        "operationId": "integrations_reruns",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RerunList"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{key}/launches/{id}/results": {
       "get": {
         "tags": [
@@ -9626,7 +9789,7 @@
           }
         ],
         "requestBody": {
-          "description": "The areas to change. Each top-level area present in the body (`flaky`, `retention`, `rollup`, `gates`, `notifications`, `issueTrackers`, `fastmock`, `vcs`) replaces the stored one as a whole; areas left out are kept; `null` resets an area to its default (removes it). `caseSync` is merged by key instead (and its `fields` by field): keys left out keep their values, a `null` key returns to its default. The answer is the whole stored document.",
+          "description": "The areas to change. Each top-level area present in the body (`flaky`, `retention`, `rollup`, `gates`, `notifications`, `issueTrackers`, `fastmock`, `vcs`, `rerun`) replaces the stored one as a whole; areas left out are kept; `null` resets an area to its default (removes it). `caseSync` is merged by key instead (and its `fields` by field): keys left out keep their values, a `null` key returns to its default. The answer is the whole stored document.",
           "content": {
             "application/json": {
               "schema": {
@@ -17863,6 +18026,16 @@
             "description": "Notification targets.",
             "default": []
           },
+          "rerun": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RerunSettings"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "retention": {
             "$ref": "#/components/schemas/RetentionSettings",
             "default": {
@@ -18218,6 +18391,241 @@
             ],
             "format": "int64",
             "description": "Stop, milliseconds since the Unix epoch."
+          }
+        },
+        "additionalProperties": false
+      },
+      "Rerun": {
+        "type": "object",
+        "description": "A rerun as listed.",
+        "required": [
+          "id",
+          "sourceLaunchId",
+          "sourceLaunchNumber",
+          "externalId",
+          "provider",
+          "mode",
+          "testCount",
+          "status",
+          "requestedBy",
+          "createdAt"
+        ],
+        "properties": {
+          "ciRef": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A reference the CI returned (a pipeline id or URL on the configured origin)."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "dispatchedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the CI was not triggered; never contains URLs or secrets."
+          },
+          "externalId": {
+            "type": "string",
+            "description": "The external id the CI is told to start its launch with."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "launchId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "The launch the CI started, once it exists."
+          },
+          "launchNumber": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "mode": {
+            "type": "string",
+            "description": "`failed` or `selected`."
+          },
+          "planId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "provider": {
+            "type": "string",
+            "description": "`github`, `gitlab` or `webhook`."
+          },
+          "requestedBy": {
+            "type": "string"
+          },
+          "sourceLaunchId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "sourceLaunchNumber": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "status": {
+            "type": "string",
+            "description": "`dispatching`, `dispatched` or `failed`."
+          },
+          "testCount": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "RerunList": {
+        "type": "object",
+        "description": "Answer of `GET .../launches/{id}/reruns`.",
+        "required": [
+          "configured",
+          "items"
+        ],
+        "properties": {
+          "configured": {
+            "type": "boolean",
+            "description": "Whether the project settings have a `rerun` section."
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Rerun"
+            },
+            "description": "Reruns requested from this launch, newest first."
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`github`, `gitlab` or `webhook` when configured."
+          },
+          "rerunOf": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Rerun",
+                "description": "The rerun that started this launch, when it is the result of one."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "RerunMode": {
+        "type": "string",
+        "description": "What a rerun runs.",
+        "enum": [
+          "failed",
+          "selected"
+        ]
+      },
+      "RerunRequest": {
+        "type": "object",
+        "description": "Body of `POST .../launches/{id}/rerun`.",
+        "required": [
+          "mode"
+        ],
+        "properties": {
+          "mode": {
+            "$ref": "#/components/schemas/RerunMode"
+          },
+          "resultIds": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "`selected`: results of this launch (1 to 1000)."
+          },
+          "statuses": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "`failed`: statuses taken from the launch (default `failed`, `broken`)."
+          }
+        },
+        "additionalProperties": false
+      },
+      "RerunSettings": {
+        "type": "object",
+        "description": "The CI that \"Rerun failed\" and \"Rerun selected\" trigger.",
+        "required": [
+          "provider",
+          "url"
+        ],
+        "properties": {
+          "provider": {
+            "type": "string",
+            "description": "`github` (Actions `workflow_dispatch`), `gitlab` (pipeline trigger) or `webhook`."
+          },
+          "ref": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The branch or tag the workflow or pipeline runs on (GitHub, GitLab); `main` when absent.\nIt is never taken from the launch, whose branch comes from the uploader."
+          },
+          "repository": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`owner/repo` (GitHub) or `group/sub/app` (GitLab); not used by a webhook."
+          },
+          "signingSecretRef": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Webhook only: a secret (purpose `ci`, same scope) used as the key of the HMAC-SHA256\nsignature in `X-FastProof-Signature` (see the Rerun guide)."
+          },
+          "tokenSecretRef": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A secret with purpose `ci` bound to the origin of `url`: a GitHub token that may\ndispatch workflows, a GitLab pipeline trigger token, or an optional bearer token of\nthe webhook. The secret is also bound to the provider, repository and workflow (the\nwebhook: its URL) it was written for."
+          },
+          "url": {
+            "type": "string",
+            "description": "GitHub API URL (`https://api.github.com`, or `https://host/api/v3` for GitHub\nEnterprise), GitLab base URL (origin only), or the webhook URL. No user info, query or\nfragment; GitHub and GitLab take no other path."
+          },
+          "workflow": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "GitHub: the workflow file name (`tests.yml`) or id."
           }
         },
         "additionalProperties": false
@@ -19423,6 +19831,13 @@
             ],
             "description": "What the secret may be used for: `vcs`, `fastmock`, `slack`, `telegram`, `webhook` or\n`smtp` (absent for a secret stored before purposes existed; it must be stored again)."
           },
+          "scope": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For `ci` secrets: the provider, repository and workflow the token may be used for."
+          },
           "updatedAt": {
             "type": "string",
             "format": "date-time"
@@ -19446,7 +19861,8 @@
           "webhook",
           "smtp",
           "teams",
-          "testops"
+          "testops",
+          "ci"
         ]
       },
       "SecretValue": {
@@ -19467,6 +19883,13 @@
           "purpose": {
             "$ref": "#/components/schemas/SecretPurpose",
             "description": "What the secret is for; it is refused for anything else."
+          },
+          "scope": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Required for `ci`, refused for the other purposes: what the token may be used for,\n`github:<owner/repo>:<workflow>`, `gitlab:<group/project>` or `webhook:<URL>`. The\n`rerun` settings must name exactly this target; changing the provider, repository or\nworkflow needs the secret written again."
           },
           "value": {
             "type": "string",

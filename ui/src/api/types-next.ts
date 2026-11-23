@@ -76,6 +76,16 @@ export type VcsSettings = Omit<S['VcsSettings'], 'provider'> & { provider: 'gitl
 
 export type FastMockSettings = S['FastMockSettings'];
 
+export type RerunProvider = 'github' | 'gitlab' | 'webhook';
+
+export type RerunSettings = Omit<S['RerunSettings'], 'provider'> & { provider: RerunProvider };
+
+export type Rerun = S['Rerun'];
+
+export type RerunList = S['RerunList'];
+
+export type RerunRequest = S['RerunRequest'];
+
 /** The settings document with every part filled in (see `withSettingsDefaults`). */
 export interface ProjectSettings {
   flaky: FlakySettings;
@@ -86,6 +96,7 @@ export interface ProjectSettings {
   issueTrackers: IssueTracker[];
   vcs: VcsSettings | null;
   fastmock: FastMockSettings | null;
+  rerun: RerunSettings | null;
 }
 
 export type SecretInfo = S['SecretMeta'];

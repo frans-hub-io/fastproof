@@ -1,13 +1,13 @@
-import { Accordion, ActionIcon, Anchor, Badge, Button, Card, Chip, Group, SegmentedControl, SimpleGrid, Stack, Switch, Tabs, Text, TextInput, Tooltip, UnstyledButton } from '@mantine/core';
+import { Accordion, ActionIcon, Anchor, Badge, Button, Card, Checkbox, Chip, Group, SegmentedControl, SimpleGrid, Stack, Switch, Tabs, Text, TextInput, Tooltip, UnstyledButton } from '@mantine/core';
 import { DonutChart } from '@mantine/charts';
 import { EmptyState, useCan } from '@franshub/ui-shell';
 import { useDebouncedValue } from '@mantine/hooks';
-import { IconAlertTriangle, IconBrandGithub, IconBrandGitlab, IconExternalLink, IconGitBranch, IconGitCommit, IconGitCompare, IconHandFinger, IconListCheck, IconSearch, IconStar, IconStarFilled, IconUpload, IconList, IconListTree } from '@tabler/icons-react';
+import { IconAlertTriangle, IconBrandGithub, IconBrandGitlab, IconExternalLink, IconGitBranch, IconGitCommit, IconGitCompare, IconHandFinger, IconListCheck, IconRefresh, IconSearch, IconStar, IconStarFilled, IconUpload, IconList, IconListTree } from '@tabler/icons-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
 import { useProjectEvents } from '../api/events';
 import { flatItems, useLaunch, useProject, useResults, useUploads } from '../api/hooks';
-import { useDefectTypeMap, usePatchLaunch } from '../api/stageC';
+import { useDefectTypeMap, usePatchLaunch, useReruns } from '../api/stageC';
 import type { Counts, Launch, ResultFilters, ResultStatus, ResultSummary, Upload } from '../api/types';
 import type { DefectType } from '../api/types-next';
 import { RESULT_STATUSES } from '../api/types';
@@ -32,6 +32,7 @@ import { EnvironmentSwitch } from './launch/Environments';
 import { Explorer } from './launch/Explorer';
 import { ExportMenu } from './launch/ExportMenu';
 import { ActiveFilters, FilterMenu } from './launch/Filters';
+import { RerunModal, RerunsPanel, type RerunTarget } from './launch/RerunModal';
 import { TestPlanModal } from './launch/TestPlanModal';
 import { TransitionBadge } from './launch/TransitionBadge';
 import { LaunchProgress, LiveBadge } from './Launches';
@@ -253,7 +254,7 @@ function Uploads({ project, launch }: { project: string; launch: Launch }) {
   );
 }
 
-function ResultRow({ project, r, index, selected, onHover, types }: { project: string; r: ResultSummary; index: number; selected: boolean; onHover: (i: number) => void; types: Map<string, DefectType> }) {
+function ResultRow({ project, r, index, selected, onHover, types, pick }: { project: string; r: ResultSummary; index: number; selected: boolean; onHover: (i: number) => void; types: Map<string, DefectType>; pick?: { checked: boolean; toggle: () => void } }) {
   const manualTo = r.source === 'manual' && r.runItemId ? `/p/${project}/launches/${r.launchId}/run/${r.runItemId}` : null;
   return (
     <UnstyledButton
@@ -264,9 +265,18 @@ function ResultRow({ project, r, index, selected, onHover, types }: { project: s
       data-list-index={index}
       data-testid="result-row"
       onMouseEnter={() => onHover(index)}
+      onClick={
+        pick
+          ? (e: React.MouseEvent) => {
+              e.preventDefault();
+              pick.toggle();
+            }
+          : undefined
+      }
       style={{ display: 'block', padding: '8px 10px', borderBottom: '1px solid var(--fh-ui-hairline)' }}
     >
       <Group gap="sm" wrap="nowrap" align="flex-start">
+        {pick && <Checkbox checked={pick.checked} onChange={() => undefined} tabIndex={-1} aria-label={`Select ${r.name}`} data-testid="result-pick" style={{ flex: 'none', pointerEvents: 'none' }} />}
         <div style={{ flex: 'none', width: 78 }}>
           <StatusBadge status={r.status} />
         </div>
@@ -333,6 +343,18 @@ function Results({ project, launch, counts }: { project: string; launch: Launch;
   const types = useDefectTypeMap(project);
   const items = flatItems(q.data);
   const [selected, setSelected] = useState(-1);
+  const canRerun = useCan('launches:rerun', project);
+  const reruns = useReruns(project, launch.id);
+  const [picking, setPicking] = useState(false);
+  const [picked, setPicked] = useState<Set<string>>(() => new Set());
+  const [rerunOpen, setRerunOpen] = useState(false);
+  const togglePick = (id: string) =>
+    setPicked((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else if (next.size < 1000) next.add(id);
+      return next;
+    });
 
   const set = useCallback(
     (k: string, v: string | null) =>
@@ -379,6 +401,9 @@ function Results({ project, launch, counts }: { project: string; launch: Launch;
         </Chip.Group>
         <Switch size="xs" label={`Flaky only (${String(c.flaky)})`} checked={flaky} onChange={(e) => set('flaky', e.currentTarget.checked ? 'true' : null)} />
         <FilterMenu project={project} launch={launch} />
+        {canRerun && reruns.data?.configured && (
+          <Switch size="xs" label="Select to rerun" checked={picking} onChange={(e) => { setPicking(e.currentTarget.checked); setPicked(new Set()); }} data-testid="rerun-pick-mode" />
+        )}
         {launch.manual && (
           <SegmentedControl
             size="xs"
@@ -395,6 +420,23 @@ function Results({ project, launch, counts }: { project: string; launch: Launch;
         )}
       </Group>
       <ActiveFilters project={project} />
+      {picking && (
+        <Group gap="xs" data-testid="rerun-pick-bar">
+          <Text size="sm">{picked.size} selected</Text>
+          <Button size="xs" leftSection={<IconRefresh size={14} />} disabled={picked.size === 0} onClick={() => setRerunOpen(true)} data-testid="rerun-selected">
+            Rerun selected
+          </Button>
+          <Button size="xs" variant="default" disabled={picked.size === 0} onClick={() => setPicked(new Set())}>
+            Clear
+          </Button>
+          {items.length > 0 && (
+            <Button size="xs" variant="default" onClick={() => setPicked(new Set(items.slice(0, 1000).map((r) => r.id)))}>
+              Select shown
+            </Button>
+          )}
+        </Group>
+      )}
+      {rerunOpen && <RerunModal project={project} launch={launch} target={{ kind: 'selected', resultIds: [...picked] } satisfies RerunTarget} opened={rerunOpen} onClose={() => setRerunOpen(false)} />}
       <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="xs">
         <TextInput aria-label="Search results" placeholder="Search by name or error" leftSection={<IconSearch size={16} />} value={text} onChange={(e) => setText(e.currentTarget.value)} />
         <TextInput aria-label="Label filter" placeholder="Label name:value, e.g. severity:blocker" value={label} onChange={(e) => set('label', e.currentTarget.value || null)} />
@@ -406,7 +448,7 @@ function Results({ project, launch, counts }: { project: string; launch: Launch;
           ) : (
             <Card withBorder radius="md" padding={0} data-testid="results-list">
               {items.map((r, i) => (
-                <ResultRow key={r.id} project={project} r={r} index={i} selected={i === selected} onHover={setSelected} types={types} />
+                <ResultRow key={r.id} project={project} r={r} index={i} selected={i === selected} onHover={setSelected} types={types} pick={picking ? { checked: picked.has(r.id), toggle: () => togglePick(r.id) } : undefined} />
               ))}
               <LoadMore hasMore={q.hasNextPage} loading={q.isFetchingNextPage} onLoad={() => void q.fetchNextPage()} />
             </Card>
@@ -457,7 +499,10 @@ export default function LaunchPage() {
   const asked = sp.get('tab');
   const tab = asked === 'tree' || (!asked && !sp.get('label')) ? 'explorer' : (asked ?? 'results');
   const [planOpen, setPlanOpen] = useState(false);
+  const [rerunOpen, setRerunOpen] = useState(false);
   const canPlan = useCan('launches:write', key);
+  const canRerunLaunch = useCan('launches:rerun', key);
+  const rerunInfo = useReruns(key, id);
   const scope = useEnvironment(key, q.data);
 
   useEffect(() => {
@@ -510,6 +555,11 @@ export default function LaunchPage() {
                   <Button component={Link} to={`/p/${key}/compare?b=${l.id}`} variant="default" size="xs" leftSection={<IconGitCompare size={14} />}>
                     Compare
                   </Button>
+                  {canRerunLaunch && rerunInfo.data?.configured && l.counts.failed + l.counts.broken > 0 && (
+                    <Button variant="default" size="xs" leftSection={<IconRefresh size={14} />} onClick={() => setRerunOpen(true)} data-testid="open-rerun">
+                      Rerun failed
+                    </Button>
+                  )}
                   {canPlan && (
                     <Button variant="default" size="xs" leftSection={<IconListCheck size={14} />} onClick={() => setPlanOpen(true)} data-testid="open-test-plan">
                       Test plan
@@ -519,8 +569,10 @@ export default function LaunchPage() {
               }
             />
             {planOpen && <TestPlanModal project={key} launch={l} opened={planOpen} onClose={() => setPlanOpen(false)} initialStatuses={(sp.get('status') ?? '').split(',').filter((x): x is ResultStatus => (RESULT_STATUSES as readonly string[]).includes(x))} />}
+            {rerunOpen && <RerunModal project={key} launch={l} target={{ kind: 'failed' }} opened={rerunOpen} onClose={() => setRerunOpen(false)} />}
             <Stack gap="md">
               <Chips launch={l} />
+              <RerunsPanel project={key} launch={l} />
               <EnvironmentSwitch launch={l} scope={scope} />
               <Summary launch={l} counts={scope.counts} env={scope.env} />
               <Uploads project={key} launch={l} />

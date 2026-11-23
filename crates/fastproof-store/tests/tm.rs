@@ -238,7 +238,8 @@ async fn upgrade_from_stage_one_keeps_data_and_queries() {
     assert_eq!(
         applied,
         vec![
-            500, 501, 502, 503, 504, 505, 506, 507, 600, 700, 710, 711, 712, 750, 751, 790, 791
+            500, 501, 502, 503, 504, 505, 506, 507, 600, 700, 710, 711, 712, 730, 731, 750, 751,
+            790, 791
         ]
     );
     fastproof_store::check_schema(&db.pool).await.unwrap();

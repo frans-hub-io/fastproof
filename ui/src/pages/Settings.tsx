@@ -7,7 +7,7 @@ import { Link, useParams, useSearchParams } from 'react-router';
 import { errorMessage } from '../api/client';
 import { useProject } from '../api/hooks';
 import { useDefectTypes, useDeleteDefectType, useSaveDefectType, useSaveSettings, useSecrets, useSettings, useWriteSecret } from '../api/stageC';
-import type { DefectGroup, DefectType, IssueTracker, IssueTrackerType, ProjectSettings, SecretPurpose, VcsSettings } from '../api/types-next';
+import type { DefectGroup, DefectType, IssueTracker, IssueTrackerType, ProjectSettings, RerunProvider, RerunSettings, SecretPurpose, VcsSettings } from '../api/types-next';
 import { DEFECT_GROUPS } from '../api/types-next';
 import { CopyValue } from '../components/CopyButton';
 import { DefectChip } from '../components/Defect';
@@ -357,6 +357,7 @@ const ORIGIN = /^https?:\/\/[^\s/?#@]+\/?$/i;
 const PURPOSES: { value: SecretPurpose; label: string }[] = [
   { value: 'vcs', label: 'GitLab or GitHub token' },
   { value: 'fastmock', label: 'FastMock token' },
+  { value: 'ci', label: 'CI token for reruns' },
   { value: 'slack', label: 'Slack webhook URL' },
   { value: 'teams', label: 'Microsoft Teams workflow URL' },
   { value: 'webhook', label: 'Webhook signing key or URL' },
@@ -371,6 +372,7 @@ function IntegrationsForm({ project, settings, canWrite }: { project: string; se
   const [trackers, setTrackers] = useState<IssueTracker[]>(settings.issueTrackers);
   const [vcs, setVcs] = useState<VcsSettings | null>(settings.vcs ?? null);
   const [fm, setFm] = useState(settings.fastmock ?? null);
+  const [rr, setRr] = useState<RerunSettings | null>(settings.rerun ?? null);
   const secrets = useSecrets(project, canWrite);
   const names = (secrets.data ?? []).map((s) => s.name);
   const { run, pending } = useSave(project);
@@ -379,8 +381,12 @@ function IntegrationsForm({ project, settings, canWrite }: { project: string; se
   const vcsUrlError = vcs && !HTTP_URL.test(vcs.url) ? 'Must be an http(s) URL' : null;
   const vcsTokenError = vcs && !vcs.tokenSecretRef ? 'Choose the secret with the API token' : null;
   const vcsRepoError = vcs && !REPO_PATH.test(vcs.repository) ? (vcs.provider === 'github' ? 'owner/repo' : 'group/project, subgroups allowed') : null;
+  const rrUrlError = rr && !HTTP_URL.test(rr.url) ? 'Must be an http(s) URL' : null;
+  const rrRepoError = rr && rr.provider !== 'webhook' && !REPO_PATH.test(rr.repository ?? '') ? (rr.provider === 'github' ? 'owner/repo' : 'group/project, subgroups allowed') : null;
+  const rrWorkflowError = rr?.provider === 'github' && !rr.workflow ? 'The workflow file, for example tests.yml' : null;
+  const rrTokenError = rr && rr.provider !== 'webhook' && !rr.tokenSecretRef ? 'Choose the secret with the token' : null;
   const fmUrlError = fm && !HTTP_URL.test(fm.url) ? 'Must be an http(s) URL' : null;
-  const valid = tErrors.every((e) => !e.url && !e.regex) && trackers.every((t) => t.type !== 'jira' || ((!t.projectId || JIRA_ID.test(t.projectId)) && (!t.issueTypeId || JIRA_ID.test(t.issueTypeId)))) && !vcsUrlError && !vcsTokenError && !vcsRepoError && !fmUrlError && trackers.length <= 10;
+  const valid = tErrors.every((e) => !e.url && !e.regex) && trackers.every((t) => t.type !== 'jira' || ((!t.projectId || JIRA_ID.test(t.projectId)) && (!t.issueTypeId || JIRA_ID.test(t.issueTypeId)))) && !vcsUrlError && !vcsTokenError && !vcsRepoError && !fmUrlError && !rrUrlError && !rrRepoError && !rrWorkflowError && !rrTokenError && trackers.length <= 10;
 
   const setTracker = (i: number, t: Partial<IssueTracker>) => setTrackers(trackers.map((x, j) => (j === i ? { ...x, ...t } : x)));
 
@@ -504,9 +510,52 @@ function IntegrationsForm({ project, settings, canWrite }: { project: string; se
             </SimpleGrid>
           )}
         </Section>
+        <Section title="Rerun in CI" description="Adds Rerun failed and Rerun selected to a launch: FastProof makes a testplan.json and triggers the CI once. The token secret needs purpose ci, the origin of the URL and a scope naming the provider, repository and workflow: changing any of them means writing the secret again. The signing secret (webhook) signs the body with HMAC-SHA256.">
+          <Switch
+            label="Enabled"
+            checked={!!rr}
+            onChange={(e) => setRr(e.currentTarget.checked ? { provider: 'github', url: 'https://api.github.com', repository: '', workflow: 'tests.yml', ref: 'main', tokenSecretRef: '' } : null)}
+            data-testid="rerun-enabled"
+          />
+          {rr && (
+            <>
+              <SimpleGrid cols={{ base: 1, sm: 3 }} spacing="xs">
+                <Select
+                  label="CI"
+                  data={[
+                    { value: 'github', label: 'GitHub Actions (workflow_dispatch)' },
+                    { value: 'gitlab', label: 'GitLab pipeline trigger' },
+                    { value: 'webhook', label: 'Webhook' },
+                  ]}
+                  value={rr.provider}
+                  onChange={(v) => {
+                    const provider: RerunProvider | null = v === 'github' || v === 'gitlab' || v === 'webhook' ? v : null;
+                    if (!provider) return;
+                    setRr(provider === 'webhook' ? { provider, url: '', tokenSecretRef: rr.tokenSecretRef } : { provider, url: provider === 'github' ? 'https://api.github.com' : 'https://gitlab.example.com', repository: rr.repository ?? '', workflow: provider === 'github' ? 'tests.yml' : undefined, ref: rr.ref ?? 'main', tokenSecretRef: rr.tokenSecretRef });
+                  }}
+                  allowDeselect={false}
+                  comboboxProps={{ withinPortal: true }}
+                  data-testid="rerun-provider"
+                />
+                <TextInput label={rr.provider === 'webhook' ? 'Webhook URL' : 'API base URL'} value={rr.url} onChange={(e) => setRr({ ...rr, url: e.currentTarget.value })} error={rrUrlError} data-testid="rerun-url" />
+                <Select label="Token secret" placeholder="Choose a secret" data={secretOptions(names, rr.tokenSecretRef)} value={rr.tokenSecretRef || null} onChange={(v) => setRr({ ...rr, tokenSecretRef: v ?? '' })} clearable={rr.provider === 'webhook'} error={rrTokenError} comboboxProps={{ withinPortal: true }} data-testid="rerun-token" />
+              </SimpleGrid>
+              {rr.provider === 'webhook' && (
+                <Select label="Signing secret" description="Signs every call with HMAC-SHA256 (X-FastProof-Signature); the receiver should verify it" placeholder="Choose a secret" data={secretOptions(names, rr.signingSecretRef)} value={rr.signingSecretRef || null} onChange={(v) => setRr({ ...rr, signingSecretRef: v })} clearable comboboxProps={{ withinPortal: true }} data-testid="rerun-signing" />
+              )}
+              {rr.provider !== 'webhook' && (
+                <SimpleGrid cols={{ base: 1, sm: rr.provider === 'github' ? 3 : 2 }} spacing="xs">
+                  <TextInput label="Repository" placeholder={rr.provider === 'github' ? 'owner/repo' : 'group/app'} value={rr.repository ?? ''} onChange={(e) => setRr({ ...rr, repository: e.currentTarget.value.trim() })} error={rrRepoError} data-testid="rerun-repository" />
+                  {rr.provider === 'github' && <TextInput label="Workflow file" placeholder="tests.yml" value={rr.workflow ?? ''} onChange={(e) => setRr({ ...rr, workflow: e.currentTarget.value.trim() })} error={rrWorkflowError} data-testid="rerun-workflow" />}
+                  <TextInput label="Branch or tag" description="Empty: main" placeholder="main" value={rr.ref ?? ''} onChange={(e) => setRr({ ...rr, ref: e.currentTarget.value.trim() || undefined })} />
+                </SimpleGrid>
+              )}
+            </>
+          )}
+        </Section>
         {canWrite && (
           <Group>
-            <Button onClick={() => run({ ...settings, issueTrackers: trackers.map(cleanTracker), vcs, fastmock: fm }, 'Integrations')} loading={pending} disabled={!valid} data-testid="integrations-save">
+            <Button onClick={() => run({ ...settings, issueTrackers: trackers.map(cleanTracker), vcs, fastmock: fm, rerun: rr && { ...rr, tokenSecretRef: rr.tokenSecretRef || null, signingSecretRef: rr.signingSecretRef || null } }, 'Integrations')} loading={pending} disabled={!valid} data-testid="integrations-save">
               Save
             </Button>
           </Group>
@@ -523,25 +572,28 @@ function Secrets({ project, canWrite }: { project: string; canWrite: boolean }) 
   const [value, setValue] = useState('');
   const [purpose, setPurpose] = useState<SecretPurpose | null>(null);
   const [origin, setOrigin] = useState('');
+  const [scope, setScope] = useState('');
   if (!canWrite) {
     return <EmptyState title="Secrets are managed by project admins" description="Writing and listing secrets needs the settings:write permission." />;
   }
   const nameError = name && !SECRET_NAME.test(name) ? 'Lowercase letters, digits, . _ -; up to 63 characters' : null;
   const valueError = value.length > 8192 ? 'At most 8192 characters' : purpose === 'teams' && value && !/^https:\/\/\S+$/i.test(value.trim()) ? 'The workflow URL: https://… (its origin is bound automatically)' : null;
-  const needsOrigin = purpose === 'vcs' || purpose === 'fastmock';
+  const needsOrigin = purpose === 'vcs' || purpose === 'fastmock' || purpose === 'ci';
   const originError = origin && !ORIGIN.test(origin) ? 'An origin such as https://gitlab.example.com' : needsOrigin && !origin ? 'Required for this purpose' : null;
-  const valid = SECRET_NAME.test(name) && value.length > 0 && !valueError && !!purpose && !originError;
+  const scopeError = purpose === 'ci' && !/^(github:[^:\s]+:[^:\s]+|gitlab:[^:\s]+|webhook:https?:\/\/\S+)$/.test(scope) ? 'github:owner/repo:workflow.yml, gitlab:group/project or webhook:<URL>' : null;
+  const valid = SECRET_NAME.test(name) && value.length > 0 && !valueError && !!purpose && !originError && !scopeError;
   const exists = (q.data ?? []).some((s) => s.name === name);
   const submit = () => {
     if (!valid) return;
     write.mutate(
-      { name, value, purpose, origin: origin.trim() || null },
+      { name, value, purpose, origin: origin.trim() || null, scope: purpose === 'ci' ? scope : null },
       {
         onSuccess: () => {
           notifications.show({ color: 'green', message: `Secret ${name} saved` });
           setValue('');
           setName('');
           setOrigin('');
+          setScope('');
         },
         onError: (e) => {
           setValue('');
@@ -563,6 +615,7 @@ function Secrets({ project, canWrite }: { project: string; canWrite: boolean }) 
             <PasswordInput label="Value" value={value} onChange={(e) => setValue(e.currentTarget.value)} error={valueError} autoComplete="new-password" data-testid="secret-value" />
             <Select label="Purpose" placeholder="Choose" data={PURPOSES} value={purpose} onChange={(v) => setPurpose(PURPOSES.find((p) => p.value === v)?.value ?? null)} allowDeselect={false} comboboxProps={{ withinPortal: true }} data-testid="secret-purpose" />
             <TextInput label="Origin" description={needsOrigin ? 'Where the secret is sent, e.g. https://gitlab.example.com' : 'Optional: the only origin it may be sent to'} placeholder="https://gitlab.example.com" value={origin} onChange={(e) => setOrigin(e.currentTarget.value.trim())} error={originError} data-testid="secret-origin" />
+            {purpose === 'ci' && <TextInput label="Scope" description="What the token may be used for. The rerun settings must name exactly this target" placeholder="github:owner/repo:tests.yml" value={scope} onChange={(e) => setScope(e.currentTarget.value.trim())} error={scopeError} data-testid="secret-scope" />}
           </SimpleGrid>
           {exists && (
             <Text size="xs" c="var(--fh-semantic-warning-fg)">

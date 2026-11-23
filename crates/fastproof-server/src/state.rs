@@ -28,6 +28,10 @@ pub fn catalog() -> anyhow::Result<Catalog> {
             "Create launches, upload results, finish launches",
         )
         .permission(
+            "launches:rerun",
+            "Rerun tests of a launch in the project's CI (starts pipelines with the stored CI token)",
+        )
+        .permission(
             "results:triage",
             "Set defect types, comments, issue links and mutes",
         )
@@ -90,6 +94,7 @@ pub fn catalog() -> anyhow::Result<Catalog> {
                 "projects:read",
                 "launches:read",
                 "launches:write",
+                "launches:rerun",
                 "cases:read",
                 "cases:sync",
                 "results:triage",
@@ -123,6 +128,7 @@ pub struct Perms {
     pub projects_write: Permission,
     pub launches_read: Permission,
     pub launches_write: Permission,
+    pub launches_rerun: Permission,
     pub results_triage: Permission,
     pub results_mute: Permission,
     pub rules_write: Permission,
@@ -144,6 +150,7 @@ impl Perms {
             projects_write: p.permission("projects:write"),
             launches_read: p.permission("launches:read"),
             launches_write: p.permission("launches:write"),
+            launches_rerun: p.permission("launches:rerun"),
             results_triage: p.permission("results:triage"),
             results_mute: p.permission("results:mute"),
             rules_write: p.permission("rules:write"),

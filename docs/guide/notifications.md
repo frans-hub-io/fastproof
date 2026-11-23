@@ -57,7 +57,7 @@ failures.
 | `filter` | Optional routing: `branches`, `environments` and `launchNames` globs and `attributes` (see below) |
 
 A project has at most 20 notifications. Callers that can read the project but lack `settings:write` (viewers,
-CI tokens) get the settings with every notification `target` and the `vcs` and `fastmock` URLs emptied and
+CI tokens) get the settings with every notification `target` and the `vcs`, `fastmock` and `rerun` URLs emptied and
 `"redacted": true` on each.
 
 ### Routing with filters
@@ -274,6 +274,7 @@ Each secret is bound, when it is written, to one purpose and optionally to the o
 |---|---|---|
 | `vcs` | `vcs.tokenSecretRef` | Required: the origin of `vcs.url` |
 | `fastmock` | `fastmock.tokenSecretRef` | Required: the origin of `fastmock.url` |
+| `ci` | `rerun.tokenSecretRef`, `rerun.signingSecretRef` | Required: the origin of `rerun.url`, and a `scope` (provider, repository, workflow; see [Rerun](rerun.md)) |
 | `slack` | `targetSecretRef` of a Slack notification | Optional; when given, the URL in the value must be on it |
 | `teams` | `targetSecretRef` of a Teams notification | Taken from the workflow URL in the value (`https`); when given, it must be that origin |
 | `webhook` | `secretRef` (signing key) or `targetSecretRef` (URL) of a webhook | Optional; when given, the webhook URL must be on it |
@@ -285,7 +286,7 @@ of another purpose, or to a URL outside the secret's origin, is refused with `40
 query that meets such a reference (or a secret that does not exist) fails with the same message and sends
 nothing. To move an integration to a new URL, write its secret
 again with the new origin, then save the settings (a Teams workflow that gets a new URL needs its secret written
-again with that URL). Every change of a URL in the settings (`vcs.url`,
+again with that URL). Every change of a URL in the settings (`vcs.url`, `rerun.url`,
 `vcs.repository`, `fastmock.url`, webhook and Slack targets, issue tracker templates) is written to the audit
 log as `project.settings.urls` with the old and the new value (user info and query strings left out).
 

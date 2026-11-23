@@ -1,5 +1,5 @@
 import { http, HttpResponse } from 'msw';
-import type { DefectGroup, LogLevel, ProjectSettings, Rule, TestPlanCreate, TriageRequest } from '../api/types-next';
+import type { DefectGroup, LogLevel, ProjectSettings, RerunRequest, Rule, TestPlanCreate, TriageRequest } from '../api/types-next';
 import { DEFECT_GROUPS } from '../api/types-next';
 import { launchDef, launchView, projects, RUNNING_LAUNCH_ID, type MockRole } from './fixtures';
 import {
@@ -30,6 +30,8 @@ import {
   secretsOf,
   setImportant,
   settingsOf,
+  rerunsOf,
+  createRerun,
   similarTo,
   storedLogs,
   triage,
@@ -311,6 +313,24 @@ export function stageCHandlers({ role, error, audit }: Helpers) {
       const plan = planJson(String(params.id));
       if (!plan) return error(404, 'not_found', 'test plan not found');
       return HttpResponse.json(plan, { headers: { 'Content-Disposition': 'attachment; filename="testplan.json"' } });
+    }),
+
+    http.get(`${API}/projects/:key/launches/:id/reruns`, ({ params }) => {
+      const def = launchDef(String(params.id));
+      if (!def || def.project !== params.key) return error(404, 'not_found', 'launch not found');
+      return HttpResponse.json(rerunsOf(def.launch.id));
+    }),
+
+    http.post(`${API}/projects/:key/launches/:id/rerun`, async ({ params, request }) => {
+      if (!writer()) return forbid('launches:write');
+      const def = launchDef(String(params.id));
+      if (!def || def.project !== params.key) return error(404, 'not_found', 'launch not found');
+      const body = (await request.json()) as RerunRequest;
+      if (!settingsOf(def.project).rerun) return error(409, 'conflict', 'the project has no rerun settings (integrations: rerun)');
+      const r = createRerun(def.launch.id, body);
+      if (r.testCount === 0) return error(409, 'conflict', 'no tests to run: the launch has no such results');
+      audit('launch.rerun', def.project, { rerunId: r.id, tests: r.testCount });
+      return HttpResponse.json(r, { status: 201 });
     }),
 
     http.get(`${API}/admin/jobs`, () => {

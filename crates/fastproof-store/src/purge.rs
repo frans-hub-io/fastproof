@@ -309,6 +309,8 @@ impl<'c> Purge<'c> {
         // Not one of the launch leaves: the log budget stays while only the contents go.
         self.leaves(leaf("launch_log_bytes"), "launch_id", launches)
             .await?;
+        self.leaves(leaf("launch_reruns"), "source_launch_id", launches)
+            .await?;
         self.exec("delete from launches where id = any($1)".into(), launches)
             .await?;
         Ok(())

@@ -11,6 +11,7 @@ pub mod gates;
 pub mod issues;
 pub mod notify;
 pub mod quality;
+pub mod rerun;
 pub mod secrets;
 pub mod settings;
 pub mod teams;
@@ -69,6 +70,29 @@ pub fn check_binding(
     }
 }
 
+/// Checks the scope a secret is bound to against the scope the settings use it for. Only the
+/// `ci` purpose has one: the token is tied to a provider, a repository and a workflow, so
+/// the settings cannot point it at another target on the same origin.
+pub fn check_scope(
+    name: &str,
+    purpose: SecretPurpose,
+    bound: Option<&str>,
+    wanted: Option<&str>,
+) -> Result<(), SecretError> {
+    if purpose != SecretPurpose::Ci {
+        return Ok(());
+    }
+    match (bound, wanted) {
+        (Some(b), Some(w)) if b == w => Ok(()),
+        (None, _) => Err(SecretError(format!(
+            "the secret {name:?} is not bound to a target; write it again with its scope"
+        ))),
+        _ => Err(SecretError(format!(
+            "the secret {name:?} is bound to another provider, repository or workflow; write it again to use it for this one"
+        ))),
+    }
+}
+
 impl AppState {
     /// The value of a project secret, for `purpose` and a request to `destination` (see
     /// [`check_binding`]).
@@ -78,6 +102,19 @@ impl AppState {
         name: &str,
         purpose: SecretPurpose,
         destination: Option<&str>,
+    ) -> Result<Secret, SecretError> {
+        self.project_secret_scoped(project_id, name, purpose, destination, None)
+            .await
+    }
+
+    /// As [`AppState::project_secret`], also checking the scope of a `ci` secret.
+    pub async fn project_secret_scoped(
+        &self,
+        project_id: Uuid,
+        name: &str,
+        purpose: SecretPurpose,
+        destination: Option<&str>,
+        scope: Option<&str>,
     ) -> Result<Secret, SecretError> {
         let Some(keys) = &self.cfg.integrations.secrets else {
             return Err(SecretError(
@@ -97,6 +134,7 @@ impl AppState {
             purpose,
             destination,
         )?;
+        check_scope(name, purpose, sealed.scope.as_deref(), scope)?;
         let v = keys
             .open(project_id, name, &sealed)
             .map_err(|e| SecretError(e.to_string()))?;

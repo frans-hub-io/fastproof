@@ -573,7 +573,7 @@ pub async fn get_settings(
 
 #[utoipa::path(put, path = "/api/v1/projects/{key}/settings", tag = "analysis", operation_id = "analysis_put_settings",
     request_body(content = ProjectSettings, description = "The areas to change. Each top-level area present in the body \
-        (`flaky`, `retention`, `rollup`, `gates`, `notifications`, `issueTrackers`, `fastmock`, `vcs`) replaces the stored \
+        (`flaky`, `retention`, `rollup`, `gates`, `notifications`, `issueTrackers`, `fastmock`, `vcs`, `rerun`) replaces the stored \
         one as a whole; areas left out are kept; `null` resets an area to its default (removes it). `caseSync` is merged \
         by key instead (and its `fields` by field): keys left out keep their values, a `null` key returns to its default. \
         The answer is the whole stored document."),
@@ -607,6 +607,15 @@ pub async fn put_settings(
             "project.settings.urls",
             Some(&p.key),
             serde_json::json!({"changes": url_changes}),
+        )
+        .await;
+    }
+    if old_doc.get("rerun") != new_doc.get("rerun") {
+        s.audit(
+            &auth,
+            "project.settings.rerun",
+            Some(&p.key),
+            serde_json::json!({"old": old_doc.get("rerun"), "new": new_doc.get("rerun")}),
         )
         .await;
     }

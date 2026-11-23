@@ -265,6 +265,10 @@ pub struct LogQuery {
     pub before: Option<String>,
     /// 1..=5000, default 500.
     pub limit: Option<i64>,
+    /// Only lines of results in this environment key (`%2C` for a comma, `%25` for a percent
+    /// sign; `%00` for results without one). Lines of an attempt whose result is not stored
+    /// yet are in none.
+    pub env: Option<String>,
 }
 
 /// The result keys a `resultId` filter stands for: the value itself and, when it is the id of a
@@ -334,6 +338,7 @@ pub async fn list(
         q: text_filter(q.q)?,
         before: q.before,
         limit,
+        env: super::results::env_filter(q.env.as_deref())?,
     };
     let _permit = s.guards.heavy(&auth).await?;
     Ok(Json(

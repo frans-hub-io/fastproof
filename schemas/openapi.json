@@ -4792,6 +4792,15 @@
               "type": "string",
               "format": "uuid"
             }
+          },
+          {
+            "name": "env",
+            "in": "query",
+            "description": "An environment key (`%2C` for a comma, `%25` for a percent sign); `%00` for results without one.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -4800,6 +4809,15 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ClusterList"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -5308,6 +5326,15 @@
             "schema": {
               "type": "integer",
               "format": "int64"
+            }
+          },
+          {
+            "name": "env",
+            "in": "query",
+            "description": "Only lines of results in this environment key (`%2C` for a comma, `%25` for a percent\nsign; `%00` for results without one). Lines of an attempt whose result is not stored\nyet are in none.",
+            "required": false,
+            "schema": {
+              "type": "string"
             }
           }
         ],
@@ -6055,6 +6082,24 @@
             }
           },
           "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
             "content": {
               "application/json": {
                 "schema": {
@@ -14555,7 +14600,8 @@
         "type": "object",
         "description": "Label names of a launch.",
         "required": [
-          "items"
+          "items",
+          "partial"
         ],
         "properties": {
           "items": {
@@ -14564,6 +14610,10 @@
               "$ref": "#/components/schemas/LabelName"
             },
             "description": "Most used first, at most 200."
+          },
+          "partial": {
+            "type": "boolean",
+            "description": "Only the first results of a very large launch were read."
           }
         }
       },
@@ -14929,6 +14979,10 @@
             "type": "integer",
             "format": "int64",
             "description": "Failed or broken, not muted results whose series did not fail in the baseline launch."
+          },
+          "partial": {
+            "type": "boolean",
+            "description": "Only the first results of a very large launch were counted."
           },
           "retried": {
             "type": "integer",

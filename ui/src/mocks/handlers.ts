@@ -323,7 +323,7 @@ export const handlers = [
       }
     }
     const items = [...by.entries()].map(([name, e]) => ({ name, count: e.count, values: e.values.size })).sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
-    return HttpResponse.json({ items });
+    return HttpResponse.json({ items, partial: false });
   }),
 
   http.get(`${API}/projects/:key/launches/:id/facets`, ({ params, request }) => {
@@ -355,6 +355,7 @@ export const handlers = [
       defects,
       attachments: ['trace', 'video', 'screenshot'].map((value) => ({ value, count: results.filter((r) => resultKinds(r).includes(value)).length })),
       maxDurationMs: durations.length ? Math.max(...durations) : null,
+      partial: false,
     });
   }),
 

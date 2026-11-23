@@ -331,6 +331,7 @@ impl Store {
         let mut hits = HashMap::new();
         hits.insert(rule.rule.id, ids.len() as i64);
         rules::add_hits(&mut tx, &hits).await?;
+        crate::explorer::touch(&mut tx, &[launch_id]).await?;
         crate::events::notify_launch(&mut tx, project_key, launch_id).await?;
         tx.commit().await?;
         Ok(ids.len() as u64)
@@ -512,6 +513,7 @@ impl Store {
             .into_iter()
             .collect();
         recount_muted(&mut tx, &launches).await?;
+        crate::explorer::touch(&mut tx, &launches).await?;
         tx.commit().await?;
         Ok(expired.len() as u64)
     }

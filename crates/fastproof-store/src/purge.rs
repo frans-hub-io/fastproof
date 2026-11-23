@@ -59,8 +59,9 @@ const ATTEMPTS: Leaf = Leaf {
 };
 
 /// Leaves under a launch, by `launch_id`, except results and attempts.
-const LAUNCH_LEAVES: [Leaf; 6] = [
+const LAUNCH_LEAVES: [Leaf; 7] = [
     leaf("attempt_log_chunks"),
+    leaf("explorer_cache"),
     leaf("launch_containers"),
     leaf("attachment_links"),
     leaf("attachment_refs"),
@@ -298,6 +299,12 @@ impl<'c> Purge<'c> {
         for l in LAUNCH_LEAVES {
             self.leaves(l, "launch_id", launches).await?;
         }
+        // Explorer aggregates computed before this purge must not be stored after it.
+        self.exec(
+            "update explorer_gen set gen = gen + 1 where launch_id = any($1)".into(),
+            launches,
+        )
+        .await?;
         self.run_items("launch_id", launches).await
     }
 
@@ -306,6 +313,8 @@ impl<'c> Purge<'c> {
         self.launch_contents(launches, true).await?;
         // Not one of the launch leaves: the log budget stays while only the contents go.
         self.leaves(leaf("launch_log_bytes"), "launch_id", launches)
+            .await?;
+        self.leaves(leaf("explorer_gen"), "launch_id", launches)
             .await?;
         self.exec("delete from launches where id = any($1)".into(), launches)
             .await?;

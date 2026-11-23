@@ -13,6 +13,7 @@ pub mod attachments;
 pub mod blob_identity;
 pub mod codec;
 pub mod events;
+pub mod explorer;
 pub mod history;
 pub mod ingest;
 pub mod integrations;

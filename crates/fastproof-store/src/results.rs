@@ -74,6 +74,22 @@ pub enum EnvFilter {
     None,
 }
 
+impl EnvFilter {
+    /// The bind values of an optional environment filter in static SQL: a mode (0 any, 1 the
+    /// key, 2 no key) and the key; see [`ENV_MATCH`].
+    pub fn args(env: Option<&EnvFilter>) -> (i32, Option<String>) {
+        match env {
+            None => (0, None),
+            Some(EnvFilter::Key(k)) => (1, Some(no_nul(k))),
+            Some(EnvFilter::None) => (2, None),
+        }
+    }
+}
+
+/// `se.env_key` matches the arguments of [`EnvFilter::args`] bound as `$m` and `$k` (replace
+/// them with the parameter numbers).
+pub const ENV_MATCH: &str = "(($m = 1 and se.env_key = $k) or ($m = 2 and se.env_key is null))";
+
 /// Attachment kinds as bits of `results.attachment_kinds`.
 pub const KIND_IMAGE: i32 = 1;
 pub const KIND_VIDEO: i32 = 2;
@@ -203,35 +219,226 @@ impl TreeOptions {
     }
 }
 
-/// The select of the tree rows: of the labels, only those the grouping reads (they are most of
-/// a row's bytes).
-fn tree_select(by: &GroupBy) -> QueryBuilder<Postgres> {
+/// The labels the grouping reads, projected from `r.labels` (they are most of a row's bytes).
+fn push_label_projection(qb: &mut QueryBuilder<Postgres>, by: &GroupBy) {
     let names = by.label_names();
+    if names.is_empty() {
+        qb.push("'[]'::jsonb");
+        return;
+    }
+    let cond = (0..names.len())
+        .map(|i| format!("@.name == $n{i}"))
+        .collect::<Vec<_>>()
+        .join(" || ");
+    let vars: serde_json::Map<String, serde_json::Value> = names
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (format!("n{i}"), serde_json::Value::String(no_nul(n))))
+        .collect();
+    qb.push("jsonb_path_query_array(r.labels, ")
+        .push_bind(format!("$[*] ? ({cond})"))
+        .push("::jsonpath, ")
+        .push_bind(serde_json::Value::Object(vars))
+        .push(")");
+}
+
+/// The select of the tree rows, with the labels the grouping reads.
+fn tree_select(by: &GroupBy) -> QueryBuilder<Postgres> {
     let mut qb: QueryBuilder<Postgres> =
         QueryBuilder::new("select r.id, r.name, r.full_name, r.suite_path, ");
-    if names.is_empty() {
-        qb.push("'[]'::jsonb as labels");
-    } else {
-        let cond = (0..names.len())
-            .map(|i| format!("@.name == $n{i}"))
-            .collect::<Vec<_>>()
-            .join(" || ");
-        let vars: serde_json::Map<String, serde_json::Value> = names
-            .iter()
-            .enumerate()
-            .map(|(i, n)| (format!("n{i}"), serde_json::Value::String(no_nul(n))))
-            .collect();
-        qb.push("jsonb_path_query_array(r.labels, ")
-            .push_bind(format!("$[*] ? ({cond})"))
-            .push("::jsonpath, ")
-            .push_bind(serde_json::Value::Object(vars))
-            .push(") as labels");
-    }
+    push_label_projection(&mut qb, by);
     qb.push(
-        ", r.status, r.flaky_in_run, r.muted, r.duration_ms, r.attempt_count, r.flaky, \
+        " as labels, r.status, r.flaky_in_run, r.muted, r.duration_ms, r.attempt_count, r.flaky, \
          r.transition, r.defect from results r ",
     );
     qb
+}
+
+/// Label levels of a grouping, at most (the columns `l0` to `l4` of [`push_place_key`]).
+const KEY_LABELS: usize = MAX_GROUP_LEVELS;
+/// The columns of [`push_place_key`].
+const PLACE_KEY: &str = "st, stt, sp, l0, l1, l2, l3, l4, tp, sw, hp, dp, ft";
+
+/// The values of the labels the grouping reads, one JSON array per name (`l0` to `l4`), from
+/// `results.label_values` (computed from `labels` for results the backfill has not reached).
+fn push_label_columns(qb: &mut QueryBuilder<Postgres>, by: &GroupBy, only_if: &str) {
+    let names = by.label_names();
+    for i in 0..KEY_LABELS {
+        match names.get(i) {
+            Some(n) => {
+                qb.push(format!(
+                    "case when {only_if} then coalesce(r.label_values, fastproof_label_values(r.labels)) ->> "
+                ))
+                .push_bind(no_nul(n))
+                .push(format!("::text end as l{i}, "));
+            }
+            None => {
+                qb.push(format!("null::text as l{i}, "));
+            }
+        }
+    }
+}
+
+/// The SQL form of [`PlaceKey::of`]: the columns [`PLACE_KEY`] of a result `r`, for the
+/// grouping `by`. Keep the two in step (`tests/explorer_perf.rs` compares the trees).
+fn push_place_key(qb: &mut QueryBuilder<Postgres>, by: &GroupBy) {
+    // `f` before the last `c`.
+    let before_last = |c: char| {
+        format!("left(r.full_name, length(r.full_name) - strpos(reverse(r.full_name), '{c}'))")
+    };
+    let sep = TITLE_SEP;
+    let short = "cardinality(r.suite_path) <= 1";
+    match by {
+        GroupBy::Suite => {
+            // The path stored at ingest (`suite_tree`), else what `place` needs to compute it.
+            let short = format!("r.suite_tree is null and {short}");
+            qb.push(
+                "r.suite_tree as st, r.suite_titled as stt, \
+                 case when r.suite_tree is null then r.suite_path else '{}'::text[] end as sp, ",
+            );
+            push_label_columns(qb, by, "r.suite_tree is null");
+            qb.push(format!(
+                "case when {short} and strpos(r.full_name, '{sep}') > 0 \
+                   then trim_array(string_to_array(r.full_name, '{sep}'), 1) end as tp, \
+                 coalesce({short} and strpos(r.full_name, '{sep}') > 0 \
+                   and starts_with(r.full_name, coalesce(r.suite_path[1], '')), false) as sw, \
+                 case when {short} and strpos(r.full_name, '#') > 0 then {} end as hp, \
+                 null::text as dp, null::text as ft",
+                before_last('#'),
+            ));
+        }
+        GroupBy::Package => {
+            qb.push("null::text[] as st, null::bool as stt, '{}'::text[] as sp, ");
+            push_label_columns(qb, by, "true");
+            qb.push(format!(
+                "null::text[] as tp, false as sw, \
+                 case when strpos(r.full_name, '{sep}') = 0 and strpos(r.full_name, '#') > 0 \
+                   then {} end as hp, \
+                 case when strpos(r.full_name, '{sep}') = 0 and strpos(r.full_name, '#') = 0 \
+                   and strpos(r.full_name, '.') > 0 then {} end as dp, \
+                 case when strpos(r.full_name, '{sep}') > 0 then split_part(r.full_name, '{sep}', 1) end as ft",
+                before_last('#'),
+                before_last('.'),
+            ));
+        }
+        GroupBy::Feature | GroupBy::Labels(_) => {
+            qb.push("null::text[] as st, null::bool as stt, '{}'::text[] as sp, ");
+            push_label_columns(qb, by, "true");
+            qb.push(
+                "null::text[] as tp, false as sw, null::text as hp, null::text as dp, \
+                 null::text as ft",
+            );
+        }
+    }
+}
+
+/// What places a result in the tree: the parts of its suite path, labels and full name that
+/// [`place`] reads. Results of one group mostly share it, so the tree counts them per key in
+/// SQL ([`push_place_key`]) and reads only the results of the groups it inlines.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+struct PlaceKey {
+    /// Suite: the path and leaf-name flag stored at ingest (`results.suite_tree`), when set.
+    #[serde(default)]
+    stored: Option<(Vec<String>, bool)>,
+    suite_path: Vec<String>,
+    /// The labels the grouping reads, in their order.
+    labels: Vec<LabelView>,
+    /// Suite: the titles of the full name (split at the title separator) but the last, when
+    /// the full name has one and the suite path has at most one name.
+    titles: Option<Vec<String>>,
+    /// Suite: with `titles`, whether the full name starts with the first suite name.
+    starts_with_suite: bool,
+    /// Suite (short suite path) and Package (no title separator): the full name before its
+    /// last `#`.
+    hash_prefix: Option<String>,
+    /// Package: the full name before its last `.`, without a title separator or `#`.
+    dot_prefix: Option<String>,
+    /// Package: the full name before its first title separator.
+    first_title: Option<String>,
+}
+
+impl PlaceKey {
+    /// The key of a result read in full (`labels` projected for `by` or not).
+    fn of(by: &GroupBy, suite_path: &[String], labels: &[LabelView], full_name: &str) -> Self {
+        let labels: Vec<LabelView> = by
+            .label_names()
+            .iter()
+            .flat_map(|n| labels.iter().filter(move |l| &l.name == n))
+            .cloned()
+            .collect();
+        let before_last = |c: char| full_name.rsplit_once(c).map(|(a, _)| a.to_string());
+        match by {
+            GroupBy::Suite => {
+                let short = suite_path.len() <= 1;
+                let titles = (short && full_name.contains(TITLE_SEP)).then(|| {
+                    let mut t: Vec<String> =
+                        full_name.split(TITLE_SEP).map(str::to_string).collect();
+                    t.pop();
+                    t
+                });
+                PlaceKey {
+                    stored: None,
+                    suite_path: suite_path.to_vec(),
+                    labels,
+                    starts_with_suite: titles.is_some()
+                        && full_name.starts_with(suite_path.first().map_or("", String::as_str)),
+                    titles,
+                    hash_prefix: short.then(|| before_last('#')).flatten(),
+                    dot_prefix: None,
+                    first_title: None,
+                }
+            }
+            GroupBy::Package => {
+                let first_title = full_name.split_once(TITLE_SEP).map(|(a, _)| a.to_string());
+                let hash_prefix = first_title.is_none().then(|| before_last('#')).flatten();
+                let dot_prefix = (first_title.is_none() && !full_name.contains('#'))
+                    .then(|| before_last('.'))
+                    .flatten();
+                PlaceKey {
+                    labels,
+                    hash_prefix,
+                    dot_prefix,
+                    first_title,
+                    ..PlaceKey::default()
+                }
+            }
+            GroupBy::Feature | GroupBy::Labels(_) => PlaceKey {
+                labels,
+                ..PlaceKey::default()
+            },
+        }
+    }
+
+    /// The key of a row of [`push_place_key`] for the grouping `by`.
+    fn from_row(by: &GroupBy, r: &PgRow) -> Result<Self, sqlx::Error> {
+        let mut labels = Vec::new();
+        for (i, name) in by.label_names().iter().take(KEY_LABELS).enumerate() {
+            let values: Option<String> = r.try_get(format!("l{i}").as_str())?;
+            let values: Vec<serde_json::Value> = values
+                .and_then(|v| serde_json::from_str(&v).ok())
+                .unwrap_or_default();
+            labels.extend(values.into_iter().map(|v| LabelView {
+                name: name.clone(),
+                value: match v {
+                    serde_json::Value::String(s) => s,
+                    serde_json::Value::Null => String::new(),
+                    other => other.to_string(),
+                },
+            }));
+        }
+        let stored: Option<Vec<String>> = r.try_get("st")?;
+        let titled: Option<bool> = r.try_get("stt")?;
+        Ok(PlaceKey {
+            stored: stored.map(|p| (p, titled.unwrap_or(false))),
+            suite_path: r.try_get("sp")?,
+            labels,
+            titles: r.try_get("tp")?,
+            starts_with_suite: r.try_get("sw")?,
+            hash_prefix: r.try_get("hp")?,
+            dot_prefix: r.try_get("dp")?,
+            first_title: r.try_get("ft")?,
+        })
+    }
 }
 
 impl GroupBy {
@@ -284,19 +491,46 @@ fn tree_row(r: &PgRow) -> Result<TreeRow, sqlx::Error> {
 }
 
 impl TreeRow {
-    fn leaf(self, name: String) -> TreeTest {
+    fn leaf(&self, name: String) -> TreeTest {
         TreeTest {
             id: self.id,
             name,
-            status: self.status,
+            status: self.status.clone(),
             duration_ms: self.duration_ms,
             attempt_count: (self.attempt_count > 1).then_some(self.attempt_count),
             flaky_in_run: self.flaky_in_run,
             flaky: self.flaky,
             muted: self.muted,
-            transition: self.transition,
-            defect: self.defect,
+            transition: self.transition.clone(),
+            defect: self.defect.clone(),
         }
+    }
+}
+
+/// A label grouping without the levels that no result has a value of.
+fn present_levels<'a>(by: &GroupBy, mut labels: impl Iterator<Item = &'a [LabelView]>) -> GroupBy {
+    match by {
+        GroupBy::Labels(names) => {
+            let mut present = vec![false; names.len()];
+            for l in labels.by_ref() {
+                for (i, n) in names.iter().enumerate() {
+                    present[i] |=
+                        !present[i] && l.iter().any(|x| &x.name == n && !x.value.is_empty());
+                }
+                if present.iter().all(|p| *p) {
+                    break;
+                }
+            }
+            GroupBy::Labels(
+                names
+                    .iter()
+                    .zip(present)
+                    .filter(|(_, p)| *p)
+                    .map(|(n, _)| n.clone())
+                    .collect(),
+            )
+        }
+        other => other.clone(),
     }
 }
 
@@ -331,15 +565,10 @@ fn push_tree_filter(qb: &mut QueryBuilder<Postgres>, f: &TreeFilter) {
     push_extra_filter(qb, f);
 }
 
-/// Results without a value of the label `name` (a superset where a result has the label
-/// twice, the first value empty).
+/// Results without a non-empty value of the label `name`.
 fn push_label_missing(qb: &mut QueryBuilder<Postgres>, name: &str) {
-    qb.push("(not r.labels @> ")
-        .push_bind(json_no_nul(serde_json::json!([{ "name": name }])))
-        .push(" or r.labels @> ")
-        .push_bind(json_no_nul(
-            serde_json::json!([{ "name": name, "value": "" }]),
-        ))
+    qb.push("not jsonb_path_exists(r.labels, '$[*] ? (@.name == $n && @.value != \"\")', ")
+        .push_bind(json_no_nul(serde_json::json!({ "n": name })))
         .push(")");
 }
 
@@ -612,41 +841,104 @@ fn add_count(c: &mut Counts, status: &str, flaky: bool, muted: bool) {
     }
 }
 
+fn add_counts(c: &mut Counts, d: &Counts) {
+    c.total += d.total;
+    c.passed += d.passed;
+    c.failed += d.failed;
+    c.broken += d.broken;
+    c.skipped += d.skipped;
+    c.unknown += d.unknown;
+    c.flaky += d.flaky;
+    c.muted += d.muted;
+}
+
+fn counts_of(status: &str, flaky: bool, muted: bool, n: i64) -> Counts {
+    let mut one = Counts::default();
+    add_count(&mut one, status, flaky, muted);
+    Counts {
+        total: n,
+        passed: one.passed * n,
+        failed: one.failed * n,
+        broken: one.broken * n,
+        skipped: one.skipped * n,
+        unknown: one.unknown * n,
+        flaky: one.flaky * n,
+        muted: one.muted * n,
+    }
+}
+
 #[derive(Default)]
 struct Builder {
     counts: Counts,
     duration: Option<i64>,
     children: BTreeMap<String, Builder>,
+    /// Results directly in this node.
+    direct: i64,
+    /// A failed or broken result is directly in this node.
+    failing: bool,
+    /// The revealed result is directly in this node.
+    revealed: bool,
     ids: Vec<Uuid>,
     tests: Vec<TreeTest>,
+    /// The counted keys directly in this node, with the leaf-name flag of their path.
+    keys: Vec<(usize, bool)>,
 }
 
 impl Builder {
-    fn add(&mut self, status: &str, flaky: bool, muted: bool, duration: Option<i64>) {
-        add_count(&mut self.counts, status, flaky, muted);
+    fn add(&mut self, c: &Counts, duration: Option<i64>) {
+        add_counts(&mut self.counts, c);
         if let Some(d) = duration {
             self.duration = Some(self.duration.unwrap_or(0).saturating_add(d.max(0)));
         }
     }
 
-    /// Groups with direct tests: `(path, tests, failing, holds the revealed result)`.
-    fn groups(
-        &self,
-        path: &mut Vec<String>,
-        reveal: Option<Uuid>,
-        out: &mut Vec<(Vec<String>, usize, bool, bool)>,
+    /// Counts results (that share their paths) once in the root and in every node on their
+    /// paths, and returns the nodes at the ends of the paths.
+    fn place(
+        &mut self,
+        paths: &[(Vec<String>, bool)],
+        c: &Counts,
+        duration: Option<i64>,
+        mut leaf: impl FnMut(&mut Builder, bool),
     ) {
-        if !self.tests.is_empty() {
-            let failing = self
-                .tests
-                .iter()
-                .any(|t| matches!(t.status.as_str(), "failed" | "broken"));
-            let revealed = reveal.is_some_and(|r| self.tests.iter().any(|t| t.id == r));
-            out.push((path.clone(), self.tests.len(), failing, revealed));
+        self.add(c, duration);
+        let mut seen: HashSet<&[String]> = HashSet::new();
+        for (path, titled) in paths {
+            let mut node: &mut Builder = self;
+            for i in 0..path.len() {
+                node = node.children.entry(path[i].clone()).or_default();
+                if seen.insert(&path[..=i]) {
+                    node.add(c, duration);
+                }
+            }
+            leaf(node, *titled);
+        }
+    }
+
+    fn node(&self, path: &[String]) -> Option<&Builder> {
+        let mut node = self;
+        for seg in path {
+            node = node.children.get(seg)?;
+        }
+        Some(node)
+    }
+
+    fn node_mut(&mut self, path: &[String]) -> Option<&mut Builder> {
+        let mut node = self;
+        for seg in path {
+            node = node.children.get_mut(seg)?;
+        }
+        Some(node)
+    }
+
+    /// Groups with direct results: `(path, results, failing, holds the revealed result)`.
+    fn groups(&self, path: &mut Vec<String>, out: &mut Vec<(Vec<String>, i64, bool, bool)>) {
+        if self.direct > 0 {
+            out.push((path.clone(), self.direct, self.failing, self.revealed));
         }
         for (n, b) in &self.children {
             path.push(n.clone());
-            b.groups(path, reveal, out);
+            b.groups(path, out);
             path.pop();
         }
     }
@@ -667,9 +959,9 @@ impl Builder {
                 b.into_node(n, p, include_tests, inline)
             })
             .collect();
-        let test_count = include_tests.then_some(self.tests.len() as i64);
-        let tests = (include_tests && !self.tests.is_empty() && inline.contains(&path))
-            .then_some(self.tests);
+        let test_count = include_tests.then_some(self.direct);
+        let tests =
+            (include_tests && self.direct > 0 && inline.contains(&path)).then_some(self.tests);
         TreeNode {
             name,
             path,
@@ -686,14 +978,14 @@ impl Builder {
 
 /// Groups whose tests fit [`MAX_TREE_INLINE`]: the revealed one, then those with failures,
 /// then the smallest.
-fn inline_groups(mut groups: Vec<(Vec<String>, usize, bool, bool)>) -> HashSet<Vec<String>> {
+fn inline_groups(mut groups: Vec<(Vec<String>, i64, bool, bool)>) -> HashSet<Vec<String>> {
     groups.sort_by(|a, b| {
         b.3.cmp(&a.3)
             .then(b.2.cmp(&a.2))
             .then(a.1.cmp(&b.1))
             .then(a.0.cmp(&b.0))
     });
-    let mut left = MAX_TREE_INLINE;
+    let mut left = MAX_TREE_INLINE as i64;
     let mut out = HashSet::new();
     for (path, n, _, _) in groups {
         if n <= left {
@@ -704,12 +996,57 @@ fn inline_groups(mut groups: Vec<(Vec<String>, usize, bool, bool)>) -> HashSet<V
     out
 }
 
+/// The first value of the label `name`, unless empty (the suite and package groupings).
 fn label<'a>(labels: &'a [LabelView], name: &str) -> Option<&'a str> {
     labels
         .iter()
         .find(|l| l.name == name)
         .map(|l| l.value.as_str())
         .filter(|v| !v.is_empty())
+}
+
+/// Distinct values of one label a label grouping places a result by, at most.
+pub const MAX_LEVEL_VALUES: usize = 20;
+/// Groups one result is placed in, at most (a result with several values of the grouping
+/// labels is in each of their groups).
+pub const MAX_RESULT_PATHS: usize = 64;
+
+/// The distinct non-empty values of the label `name`, in their order, at most
+/// [`MAX_LEVEL_VALUES`].
+fn label_values<'a>(labels: &'a [LabelView], name: &str) -> Vec<&'a str> {
+    let mut out: Vec<&str> = Vec::new();
+    for l in labels
+        .iter()
+        .filter(|l| l.name == name && !l.value.is_empty())
+    {
+        if !out.contains(&l.value.as_str()) {
+            out.push(&l.value);
+            if out.len() == MAX_LEVEL_VALUES {
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// Every combination of one value per level, in order, at most [`MAX_RESULT_PATHS`].
+fn combinations(levels: &[Vec<&str>]) -> Vec<Vec<String>> {
+    let mut out: Vec<Vec<String>> = vec![Vec::new()];
+    for values in levels {
+        let mut next = Vec::new();
+        'outer: for p in &out {
+            for v in values {
+                if next.len() == MAX_RESULT_PATHS {
+                    break 'outer;
+                }
+                let mut q = p.clone();
+                q.push((*v).to_string());
+                next.push(q);
+            }
+        }
+        out = next;
+    }
+    out
 }
 
 /// Splits a class name into its package and the class: `com.example.Test` is
@@ -727,29 +1064,50 @@ fn split_class(class: &str) -> Vec<String> {
 /// (`file › describe › title`) become `file › describe`; a JUnit suite named like its class
 /// (`package.Class#name`) becomes `package › Class`. The flag tells that the leaf name is the
 /// last title of the full name.
-fn suite_tree_path(
+fn suite_tree_path(k: &PlaceKey) -> (Vec<String>, bool) {
+    let allure =
+        label(&k.labels, "parentSuite").is_some() || label(&k.labels, "subSuite").is_some();
+    if !allure && k.suite_path.len() <= 1 {
+        let first = k.suite_path.first().map(String::as_str).unwrap_or("");
+        if let Some(titles) = &k.titles
+            && k.starts_with_suite
+            && titles.iter().all(|s| !s.is_empty())
+        {
+            return (titles.clone(), true);
+        }
+        if let Some(class) = k.hash_prefix.as_deref()
+            && !class.is_empty()
+            && (k.suite_path.is_empty() || first == class)
+        {
+            return (split_class(class), false);
+        }
+    }
+    (k.suite_path.clone(), false)
+}
+
+/// The suite path of a result in the tree and whether its leaf name is the last title of its
+/// full name (stored at ingest as `results.suite_tree` and `suite_titled`).
+pub fn suite_place(
     suite_path: &[String],
     labels: &[LabelView],
     full_name: &str,
 ) -> (Vec<String>, bool) {
-    let allure = label(labels, "parentSuite").is_some() || label(labels, "subSuite").is_some();
-    if !allure && suite_path.len() <= 1 {
-        let first = suite_path.first().map(String::as_str).unwrap_or("");
-        if full_name.contains(TITLE_SEP) && full_name.starts_with(first) {
-            let mut segs: Vec<String> = full_name.split(TITLE_SEP).map(str::to_string).collect();
-            segs.pop();
-            if segs.iter().all(|s| !s.is_empty()) {
-                return (segs, true);
-            }
-        }
-        if let Some(i) = full_name.rfind('#')
-            && i > 0
-            && (suite_path.is_empty() || first == &full_name[..i])
-        {
-            return (split_class(&full_name[..i]), false);
-        }
-    }
-    (suite_path.to_vec(), false)
+    suite_tree_path(&PlaceKey::of(
+        &GroupBy::Suite,
+        suite_path,
+        labels,
+        full_name,
+    ))
+}
+
+/// [`suite_place`] of labels stored as a JSON array of `{name, value}`.
+pub fn suite_place_json(
+    suite_path: &[String],
+    labels: &serde_json::Value,
+    full_name: &str,
+) -> (Vec<String>, bool) {
+    let labels: Vec<LabelView> = serde_json::from_value(labels.clone()).unwrap_or_default();
+    suite_place(suite_path, &labels, full_name)
 }
 
 #[cfg(test)]
@@ -759,65 +1117,72 @@ fn group_path(
     labels: &[LabelView],
     full_name: &str,
 ) -> Vec<String> {
-    place(by, suite_path, labels, full_name).0
+    let k = PlaceKey::of(by, suite_path, labels, full_name);
+    place(by, &k).swap_remove(0).0
 }
 
-/// The group path of a result and whether its leaf name is the last title of the full name.
-fn place(
-    by: &GroupBy,
-    suite_path: &[String],
-    labels: &[LabelView],
-    full_name: &str,
-) -> (Vec<String>, bool) {
+/// The group paths of a result (several when a label of a label grouping has several
+/// values) and whether its leaf name is the last title of the full name.
+fn place(by: &GroupBy, k: &PlaceKey) -> Vec<(Vec<String>, bool)> {
     match by {
-        GroupBy::Labels(names) => (label_path(names, labels), false),
-        GroupBy::Suite => suite_tree_path(suite_path, labels, full_name),
-        GroupBy::Feature => (
-            ["epic", "feature", "story"]
+        GroupBy::Labels(names) => label_paths(names, &k.labels)
+            .into_iter()
+            .map(|p| (p, false))
+            .collect(),
+        GroupBy::Suite => vec![k.stored.clone().unwrap_or_else(|| suite_tree_path(k))],
+        GroupBy::Feature => {
+            let levels: Vec<Vec<&str>> = ["epic", "feature", "story"]
                 .iter()
-                .filter_map(|n| label(labels, n))
-                .map(str::to_string)
-                .collect(),
-            false,
-        ),
+                .map(|n| label_values(&k.labels, n))
+                .filter(|v| !v.is_empty())
+                .collect();
+            combinations(&levels)
+                .into_iter()
+                .map(|p| (p, false))
+                .collect()
+        }
         GroupBy::Package => {
-            let base = label(labels, "package")
-                .map(str::to_string)
-                .unwrap_or_else(|| {
-                    if let Some((file, _)) = full_name.split_once(TITLE_SEP) {
-                        return file.to_string();
-                    }
-                    let cut = full_name.rfind('#').or_else(|| full_name.rfind('.'));
-                    cut.map(|i| full_name[..i].to_string()).unwrap_or_default()
-                });
-            let sep: &[char] =
-                if full_name.contains(TITLE_SEP) && label(labels, "package").is_none() {
-                    &['/']
-                } else {
-                    &['.', '/']
-                };
-            (
+            let package = label(&k.labels, "package");
+            let base = match package {
+                Some(p) => p.to_string(),
+                None => k
+                    .first_title
+                    .clone()
+                    .or_else(|| k.hash_prefix.clone())
+                    .or_else(|| k.dot_prefix.clone())
+                    .unwrap_or_default(),
+            };
+            let sep: &[char] = if k.first_title.is_some() && package.is_none() {
+                &['/']
+            } else {
+                &['.', '/']
+            };
+            vec![(
                 base.split(sep)
                     .filter(|s| !s.is_empty())
                     .map(str::to_string)
                     .collect(),
                 false,
-            )
+            )]
         }
     }
 }
 
-/// The group path of a label grouping: the value of each level, [`NONE_GROUP`] where a
-/// label is missing; levels after the last label that is set are left out.
-fn label_path(names: &[String], labels: &[LabelView]) -> Vec<String> {
-    let values: Vec<Option<&str>> = names.iter().map(|n| label(labels, n)).collect();
-    let Some(last) = values.iter().rposition(Option::is_some) else {
-        return vec![NONE_GROUP.to_string()];
+/// The group paths of a label grouping: a value of each level, [`NONE_GROUP`] where a label
+/// is missing; levels after the last label that is set are left out. A label with several
+/// values places the result in the group of each.
+fn label_paths(names: &[String], labels: &[LabelView]) -> Vec<Vec<String>> {
+    let mut levels: Vec<Vec<&str>> = names.iter().map(|n| label_values(labels, n)).collect();
+    let Some(last) = levels.iter().rposition(|v| !v.is_empty()) else {
+        return vec![vec![NONE_GROUP.to_string()]];
     };
-    values[..=last]
-        .iter()
-        .map(|v| v.unwrap_or(NONE_GROUP).to_string())
-        .collect()
+    levels.truncate(last + 1);
+    for v in &mut levels {
+        if v.is_empty() {
+            v.push(NONE_GROUP);
+        }
+    }
+    combinations(&levels)
 }
 
 fn leaf_name(row: &TreeRow, titled: bool) -> String {
@@ -828,6 +1193,55 @@ fn leaf_name(row: &TreeRow, titled: bool) -> String {
         return title.to_string();
     }
     row.name.clone()
+}
+
+/// Results of a launch with one [`PlaceKey`], status, flaky and muted flag, as counted.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct Counted {
+    key: PlaceKey,
+    counts: Counts,
+    failing: bool,
+    duration: Option<i64>,
+    #[serde(skip)]
+    revealed: bool,
+    /// Their ids, when the key has at most [`MAX_TREE_INLINE`] results (in the cache, only
+    /// for the keys of the groups inlined).
+    ids: Option<Vec<Uuid>>,
+}
+
+/// Counted keys of one tree cached, at most.
+const MAX_CACHED_KEYS: usize = 20_000;
+
+/// The cache key of an unfiltered tree (all results or those of one environment).
+fn tree_cache_key(by: &GroupBy, f: &TreeFilter) -> Option<String> {
+    let env = f.env.clone();
+    let rest = TreeFilter {
+        env: None,
+        ..f.clone()
+    };
+    if !rest.is_empty() {
+        return None;
+    }
+    let by = match by {
+        GroupBy::Suite => "suite".to_string(),
+        GroupBy::Feature => "feature".to_string(),
+        GroupBy::Package => "package".to_string(),
+        GroupBy::Labels(names) => format!("labels:{}", names.join(",")),
+    };
+    Some(format!(
+        "tree1:{}:{}",
+        crate::explorer::key_part(&by),
+        env_key_part(env.as_ref())
+    ))
+}
+
+/// The cache key part of an environment filter.
+fn env_key_part(env: Option<&EnvFilter>) -> String {
+    match env {
+        None => "all".into(),
+        Some(EnvFilter::None) => "none".into(),
+        Some(EnvFilter::Key(k)) => format!("k:{}", crate::explorer::key_part(k)),
+    }
 }
 
 /// SQL conditions that every result of the group `path` meets (a superset, checked in Rust).
@@ -971,6 +1385,9 @@ impl Store {
     /// The tree of a launch: groups with counts and durations; with `include_tests`, the
     /// results of the groups that fit [`MAX_TREE_INLINE`] as leaves, else result ids.
     pub async fn tree_with(&self, launch: &Launch, o: &TreeOptions) -> anyhow::Result<TreeNode> {
+        if o.include_tests {
+            return self.tree_counted(launch, o).await;
+        }
         let mut qb = tree_select(&o.by);
         qb.push("where r.launch_id = ")
             .push_bind(launch.id)
@@ -981,44 +1398,371 @@ impl Store {
             .push_bind(MAX_TREE_RESULTS);
         let rows = qb.build().fetch_all(&self.pool).await?;
         let rows: Vec<TreeRow> = rows.iter().map(tree_row).collect::<Result<_, _>>()?;
-        let by = match &o.by {
-            GroupBy::Labels(names) => GroupBy::Labels(
-                names
-                    .iter()
-                    .filter(|n| rows.iter().any(|r| label(&r.labels, n).is_some()))
-                    .cloned()
-                    .collect(),
-            ),
-            other => other.clone(),
-        };
+        let by = present_levels(&o.by, rows.iter().map(|r| r.labels.as_slice()));
         let mut root = Builder::default();
         for row in rows {
-            let (path, titled) = place(&by, &row.suite_path, &row.labels, &row.full_name);
-            root.add(&row.status, row.flaky_in_run, row.muted, row.duration_ms);
-            let mut node = &mut root;
-            for seg in path {
-                node = node.children.entry(seg).or_default();
-                node.add(&row.status, row.flaky_in_run, row.muted, row.duration_ms);
-            }
-            if o.include_tests {
-                let name = leaf_name(&row, titled);
-                node.tests.push(row.leaf(name));
-            } else {
+            let key = PlaceKey::of(&by, &row.suite_path, &row.labels, &row.full_name);
+            let c = counts_of(&row.status, row.flaky_in_run, row.muted, 1);
+            root.place(&place(&by, &key), &c, row.duration_ms, |node, _| {
+                node.direct += 1;
                 node.ids.push(row.id);
-            }
+            });
         }
-        let inline = if o.include_tests {
-            let mut groups = Vec::new();
-            root.groups(&mut Vec::new(), o.reveal, &mut groups);
-            inline_groups(groups)
-        } else {
-            HashSet::new()
-        };
-        let mut node = root.into_node(String::new(), Vec::new(), o.include_tests, &inline);
+        let mut node = root.into_node(String::new(), Vec::new(), false, &HashSet::new());
         if let GroupBy::Labels(levels) = by {
             node.levels = Some(levels);
         }
         Ok(node)
+    }
+
+    /// The tree with tests: SQL counts the results per [`PlaceKey`] (with their status and
+    /// flags), the groups are built from the keys, and only the results of the groups inlined
+    /// are read, by id. Both reads see one snapshot. For a launch that does not run, the
+    /// counted keys of an unfiltered tree (in one environment or all) are cached with the ids
+    /// of the groups inlined.
+    async fn tree_counted(&self, launch: &Launch, o: &TreeOptions) -> anyhow::Result<TreeNode> {
+        let cache_key = (launch.status != "running")
+            .then(|| tree_cache_key(&o.by, &o.filter))
+            .flatten();
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("set transaction isolation level repeatable read, read only")
+            .execute(&mut *tx)
+            .await?;
+        let mut generation = 0;
+        let mut cached: Option<Vec<Counted>> = None;
+        // Suites stored at ingest: the tests of the inlined groups are read by their path, so
+        // no ids are aggregated (the largest cost of the count otherwise).
+        let suites = matches!(o.by, GroupBy::Suite);
+        let by_path = |c: &[Counted]| suites && c.iter().all(|k| k.key.stored.is_some());
+        if let Some(key) = &cache_key {
+            generation = crate::explorer::gen_of(&mut tx, launch.id).await?;
+            if let Some(v) = crate::explorer::cache_get(&mut tx, launch.id, key, generation).await?
+            {
+                cached = serde_json::from_value::<Vec<Counted>>(v).ok().filter(|c| {
+                    by_path(c)
+                        || o.reveal.is_none_or(|r| {
+                            c.iter()
+                                .any(|k| k.ids.as_ref().is_some_and(|ids| ids.contains(&r)))
+                        })
+                });
+            }
+        }
+        let from_cache = cached.is_some();
+        let mut counted = match cached {
+            Some(c) => c,
+            None => self.count_keys(&mut tx, launch, o, !suites).await?,
+        };
+        if suites && !by_path(&counted) && counted.iter().all(|c| c.ids.is_none()) {
+            // Results not backfilled yet: count again with their ids.
+            counted = self.count_keys(&mut tx, launch, o, true).await?;
+        }
+        let by_path = by_path(&counted);
+        let by = present_levels(&o.by, counted.iter().map(|c| c.key.labels.as_slice()));
+        let mut root = Builder::default();
+        for (i, c) in counted.iter().enumerate() {
+            root.place(
+                &place(&by, &c.key),
+                &c.counts,
+                c.duration,
+                |node, titled| {
+                    node.direct += c.counts.total;
+                    node.failing |= c.failing;
+                    node.revealed |= c.revealed;
+                    node.keys.push((i, titled));
+                },
+            );
+        }
+        if by_path
+            && from_cache
+            && let Some(r) = o.reveal
+        {
+            let revealed: Option<(Vec<String>, bool)> = sqlx::query_as(
+                "select suite_tree, suite_titled from results where launch_id = $1 \
+                 and launch_created_at = $2 and id = $3 and suite_tree is not null",
+            )
+            .bind(launch.id)
+            .bind(launch.created_at)
+            .bind(r)
+            .fetch_optional(&mut *tx)
+            .await?;
+            if let Some(node) = revealed.and_then(|(p, _)| root.node_mut(&p)) {
+                node.revealed = true;
+            }
+        }
+        let mut groups = Vec::new();
+        root.groups(&mut Vec::new(), &mut groups);
+        let plain = (o.reveal.is_some() && !from_cache).then(|| {
+            inline_groups(
+                groups
+                    .iter()
+                    .map(|(p, n, f, _)| (p.clone(), *n, *f, false))
+                    .collect(),
+            )
+        });
+        let inline = inline_groups(groups);
+        // Stored suites whose ids are not known (the first build, or a revealed group the
+        // cached build did not inline) are read by their path.
+        let by_path_groups: Vec<Vec<String>> = if by_path {
+            inline
+                .iter()
+                .filter(|p| {
+                    root.node(p)
+                        .is_some_and(|n| n.keys.iter().any(|(i, _)| counted[*i].ids.is_none()))
+                })
+                .cloned()
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let mut wanted: HashMap<Uuid, Vec<(&[String], bool)>> = HashMap::new();
+        for path in inline.iter().filter(|p| !by_path_groups.contains(p)) {
+            for &(i, titled) in root
+                .node(path)
+                .map(|n| n.keys.as_slice())
+                .unwrap_or_default()
+            {
+                for id in counted[i].ids.iter().flatten() {
+                    wanted
+                        .entry(*id)
+                        .or_default()
+                        .push((path.as_slice(), titled));
+                }
+            }
+        }
+        let keep: HashSet<usize> = plain
+            .as_ref()
+            .unwrap_or(&inline)
+            .iter()
+            .filter_map(|p| root.node(p))
+            .flat_map(|n| n.keys.iter().map(|(i, _)| *i))
+            .collect();
+        // Read by path on the first build; the ids found are cached with the keys, so later
+        // builds read the rows by id.
+        if !by_path_groups.is_empty() {
+            let paths: Vec<serde_json::Value> = by_path_groups
+                .iter()
+                .map(|p| json_no_nul(serde_json::json!(p)))
+                .collect();
+            let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(
+                "select r.id, r.name, r.full_name, '{}'::text[] as suite_path, '[]'::jsonb as labels, \
+                 r.status, r.flaky_in_run, r.muted, r.duration_ms, r.attempt_count, r.flaky, r.transition, \
+                 r.defect, r.suite_tree, coalesce(r.suite_titled, false) as suite_titled from results r",
+            );
+            launch_scope(&mut qb, launch);
+            push_tree_filter(&mut qb, &o.filter);
+            if by_path_groups.len() <= 64 {
+                qb.push(" and (");
+                for (i, p) in by_path_groups.iter().enumerate() {
+                    if i > 0 {
+                        qb.push(" or ");
+                    }
+                    qb.push("r.suite_tree = ")
+                        .push_bind(p.iter().map(|x| no_nul(x)).collect::<Vec<_>>())
+                        .push("::text[]");
+                }
+                qb.push(")");
+            } else {
+                qb.push(" and to_jsonb(r.suite_tree) = any(")
+                    .push_bind(paths)
+                    .push("::jsonb[])");
+            }
+            qb.push(" order by r.full_name, r.id");
+            let rows = qb.build().fetch_all(&mut *tx).await?;
+            let mut found: HashMap<(Vec<String>, bool), Vec<Uuid>> = HashMap::new();
+            for r in &rows {
+                let row = tree_row(r)?;
+                let path: Vec<String> = r.try_get("suite_tree")?;
+                let titled: bool = r.try_get("suite_titled")?;
+                if by_path_groups.contains(&path)
+                    && let Some(node) = root.node_mut(&path)
+                {
+                    node.tests.push(row.leaf(leaf_name(&row, titled)));
+                    found.entry((path, titled)).or_default().push(row.id);
+                }
+            }
+            for path in &by_path_groups {
+                for &(i, titled) in root
+                    .node(path)
+                    .map(|n| n.keys.as_slice())
+                    .unwrap_or_default()
+                {
+                    counted[i].ids =
+                        Some(found.remove(&(path.clone(), titled)).unwrap_or_default());
+                }
+            }
+        }
+        if !wanted.is_empty() {
+            let ids: Vec<Uuid> = wanted.keys().copied().collect();
+            let rows = sqlx::query(
+                "select r.id, r.name, r.full_name, '{}'::text[] as suite_path, '[]'::jsonb as labels, \
+                 r.status, r.flaky_in_run, r.muted, r.duration_ms, r.attempt_count, r.flaky, r.transition, \
+                 r.defect from results r where r.launch_id = $1 and r.launch_created_at = $2 \
+                 and r.id = any($3) order by r.full_name, r.id",
+            )
+            .bind(launch.id)
+            .bind(launch.created_at)
+            .bind(&ids)
+            .fetch_all(&mut *tx)
+            .await?;
+            for r in &rows {
+                let row = tree_row(r)?;
+                for (path, titled) in wanted.get(&row.id).into_iter().flatten() {
+                    if let Some(node) = root.node_mut(path) {
+                        node.tests.push(row.leaf(leaf_name(&row, *titled)));
+                    }
+                }
+            }
+        }
+        tx.commit().await?;
+        if let Some(key) = cache_key.filter(|_| !from_cache && counted.len() <= MAX_CACHED_KEYS) {
+            let stored: Vec<Counted> = counted
+                .iter()
+                .enumerate()
+                .map(|(i, c)| Counted {
+                    ids: if keep.contains(&i) {
+                        c.ids.clone()
+                    } else {
+                        None
+                    },
+                    revealed: false,
+                    ..c.clone()
+                })
+                .collect();
+            self.cache_put(launch.id, &key, generation, &serde_json::to_value(&stored)?)
+                .await?;
+        }
+        let mut node = root.into_node(String::new(), Vec::new(), true, &inline);
+        if let GroupBy::Labels(levels) = by {
+            node.levels = Some(levels);
+        }
+        Ok(node)
+    }
+
+    /// The results of a launch counted per stored suite path (`suite_tree`, null for results
+    /// the backfill has not reached), status and flags, without ids. The planner expects as
+    /// many groups as rows and would sort them on disk, so the statement asks for hashing.
+    async fn count_stored_suites(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        launch: &Launch,
+        o: &TreeOptions,
+    ) -> anyhow::Result<Vec<Counted>> {
+        let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(
+            "select r.suite_tree as st, coalesce(r.suite_titled, false) as stt, r.status, r.flaky_in_run, \
+             r.muted, count(*) as n, least(sum(greatest(r.duration_ms, 0)), 9223372036854775807)::bigint as d, ",
+        );
+        match o.reveal {
+            Some(id) => {
+                qb.push("coalesce(bool_or(r.id = ")
+                    .push_bind(id)
+                    .push("), false)");
+            }
+            None => {
+                qb.push("false");
+            }
+        }
+        qb.push(" as rv from results r");
+        launch_scope(&mut qb, launch);
+        push_tree_filter(&mut qb, &o.filter);
+        qb.push(" group by 1, 2, 3, 4, 5");
+        sqlx::query("set local enable_sort = off")
+            .execute(&mut *conn)
+            .await?;
+        let rows = qb.build().fetch_all(&mut *conn).await;
+        sqlx::query("set local enable_sort = on")
+            .execute(&mut *conn)
+            .await?;
+        Ok(rows?
+            .iter()
+            .map(|r| {
+                let status: String = r.try_get("status")?;
+                let path: Option<Vec<String>> = r.try_get("st")?;
+                Ok(Counted {
+                    key: PlaceKey {
+                        stored: path
+                            .map(|p| Ok::<_, sqlx::Error>((p, r.try_get("stt")?)))
+                            .transpose()?,
+                        ..PlaceKey::default()
+                    },
+                    counts: counts_of(
+                        &status,
+                        r.try_get("flaky_in_run")?,
+                        r.try_get("muted")?,
+                        r.try_get("n")?,
+                    ),
+                    failing: matches!(status.as_str(), "failed" | "broken"),
+                    duration: r.try_get("d")?,
+                    revealed: r.try_get("rv")?,
+                    ids: None,
+                })
+            })
+            .collect::<Result<_, sqlx::Error>>()?)
+    }
+
+    /// The results of a launch counted per [`PlaceKey`], status and flags, with their ids
+    /// where a key has at most [`MAX_TREE_INLINE`] results.
+    async fn count_keys(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        launch: &Launch,
+        o: &TreeOptions,
+        with_ids: bool,
+    ) -> anyhow::Result<Vec<Counted>> {
+        if matches!(o.by, GroupBy::Suite) && !with_ids {
+            return self.count_stored_suites(conn, launch, o).await;
+        }
+        let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(format!(
+            "select {PLACE_KEY}, status, flaky_in_run, muted, count(*) as n, \
+             least(sum(greatest(duration_ms, 0)), 9223372036854775807)::bigint as d, "
+        ));
+        match o.reveal {
+            Some(id) => {
+                qb.push("coalesce(bool_or(id = ")
+                    .push_bind(id)
+                    .push("), false)");
+            }
+            None => {
+                qb.push("false");
+            }
+        }
+        if with_ids {
+            qb.push(format!(
+                " as rv, case when sum(count(*)) over (partition by {PLACE_KEY}) <= "
+            ))
+            .push_bind(MAX_TREE_INLINE as i64)
+            .push(" then array_agg(id) end as ids from (select ");
+        } else {
+            qb.push(" as rv, null::uuid[] as ids from (select ");
+        }
+        push_place_key(&mut qb, &o.by);
+        qb.push(", r.id, r.status, r.flaky_in_run, r.muted, r.duration_ms from results r where r.launch_id = ")
+            .push_bind(launch.id)
+            .push(" and r.launch_created_at = ")
+            .push_bind(launch.created_at);
+        push_tree_filter(&mut qb, &o.filter);
+        qb.push(format!(
+            ") k group by {PLACE_KEY}, status, flaky_in_run, muted"
+        ));
+        let rows = qb.build().fetch_all(&mut *conn).await?;
+        Ok(rows
+            .iter()
+            .map(|r| {
+                let status: String = r.try_get("status")?;
+                Ok(Counted {
+                    key: PlaceKey::from_row(&o.by, r)?,
+                    counts: counts_of(
+                        &status,
+                        r.try_get("flaky_in_run")?,
+                        r.try_get("muted")?,
+                        r.try_get("n")?,
+                    ),
+                    failing: matches!(status.as_str(), "failed" | "broken"),
+                    duration: r.try_get("d")?,
+                    revealed: r.try_get("rv")?,
+                    ids: r.try_get("ids")?,
+                })
+            })
+            .collect::<Result<_, sqlx::Error>>()?)
     }
 
     /// A page of the results directly in the group `path` of the tree, in full name order.
@@ -1060,10 +1804,14 @@ impl Store {
             for r in &rows {
                 let row = tree_row(r)?;
                 after = Some((row.full_name.clone(), row.id));
-                let (p, titled) = place(by, &row.suite_path, &row.labels, &row.full_name);
-                if p.as_slice() != path {
+                let key = PlaceKey::of(by, &row.suite_path, &row.labels, &row.full_name);
+                let Some(titled) = place(by, &key)
+                    .into_iter()
+                    .find(|(p, _)| p.as_slice() == path)
+                    .map(|(_, t)| t)
+                else {
                     continue;
-                }
+                };
                 if items.len() == limit {
                     more = true;
                     break;
@@ -1339,6 +2087,9 @@ pub struct LaunchFacets {
     /// `trace`, `video` and `screenshot`.
     pub attachments: Vec<ValueCount>,
     pub max_duration_ms: Option<i64>,
+    /// Only the first results of a very large launch were counted.
+    #[serde(default)]
+    pub partial: bool,
 }
 
 /// The results of one environment of a launch.
@@ -1366,30 +2117,151 @@ fn launch_scope(qb: &mut QueryBuilder<Postgres>, launch: &Launch) {
         .push_bind(launch.created_at);
 }
 
+/// Results an aggregate of the label names or the filter counts reads, at most (the counts
+/// are then `partial`).
+pub const MAX_FACET_RESULTS: i64 = MAX_TREE_RESULTS;
+/// Values per label name the filter counts read of one result, at most.
+pub const MAX_FACET_LABELS: i64 = 64;
+
+/// The label names of a launch, with whether only part of its results was read.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LaunchLabels {
+    pub items: Vec<LabelName>,
+    pub partial: bool,
+}
+
+/// Whether the label names and facets of a launch read only part of its results.
+fn partial(launch: &Launch) -> bool {
+    launch.counts.total > MAX_FACET_RESULTS
+}
+
+/// The results of a launch within `f` as `r`: all of them, or for a launch with more than
+/// [`MAX_FACET_RESULTS`], that many (a bounded subquery, which PostgreSQL does not run in
+/// parallel, so smaller launches read the table directly).
+fn push_bounded(qb: &mut QueryBuilder<Postgres>, launch: &Launch, f: &TreeFilter, cols: &str) {
+    if !partial(launch) {
+        qb.push(format!("(select {cols} from results r"));
+        launch_scope(qb, launch);
+        push_tree_filter(qb, f);
+        qb.push(") r");
+        return;
+    }
+    qb.push(format!("(select {cols} from results r"));
+    launch_scope(qb, launch);
+    push_tree_filter(qb, f);
+    qb.push(" limit ").push_bind(MAX_FACET_RESULTS).push(") r");
+}
+
+/// The cache key part of the filters of the label names and facets (`None` when more than
+/// the environment is set: such counts are not cached).
+fn env_only(f: &TreeFilter) -> Option<String> {
+    let rest = TreeFilter {
+        env: None,
+        ..f.clone()
+    };
+    rest.is_empty().then(|| env_key_part(f.env.as_ref()))
+}
+
+/// A read of explorer data in one snapshot, served from the cache when the launch does not
+/// run and `key` is cacheable.
+struct CachedRead {
+    tx: sqlx::Transaction<'static, Postgres>,
+    key: Option<String>,
+    generation: i64,
+}
+
 impl Store {
+    async fn cached_read(
+        &self,
+        launch: &Launch,
+        key: Option<String>,
+    ) -> anyhow::Result<(CachedRead, Option<serde_json::Value>)> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("set transaction isolation level repeatable read, read only")
+            .execute(&mut *tx)
+            .await?;
+        let key = key.filter(|_| launch.status != "running");
+        let mut generation = 0;
+        let mut hit = None;
+        if let Some(k) = &key {
+            generation = crate::explorer::gen_of(&mut tx, launch.id).await?;
+            hit = crate::explorer::cache_get(&mut tx, launch.id, k, generation).await?;
+        }
+        Ok((
+            CachedRead {
+                tx,
+                key,
+                generation,
+            },
+            hit,
+        ))
+    }
+
+    async fn cache_done<T: Serialize>(
+        &self,
+        launch: &Launch,
+        read: CachedRead,
+        value: &T,
+    ) -> anyhow::Result<()> {
+        read.tx.commit().await?;
+        if let Some(k) = read.key {
+            self.cache_put(
+                launch.id,
+                &k,
+                read.generation,
+                &serde_json::to_value(value)?,
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
     /// The label names of the results of a launch, most used first.
     pub async fn launch_labels(
         &self,
         launch: &Launch,
         f: &TreeFilter,
-    ) -> anyhow::Result<Vec<LabelName>> {
-        let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(
-            "select l->>'name' as name, count(distinct r.id) as n, count(distinct l->>'value') as v \
-             from results r cross join lateral jsonb_array_elements(r.labels) l",
+    ) -> anyhow::Result<LaunchLabels> {
+        let key = env_only(f).map(|e| format!("labels1:{e}"));
+        let (mut read, hit) = self.cached_read(launch, key).await?;
+        if let Some(v) = hit.and_then(|v| serde_json::from_value::<LaunchLabels>(v).ok()) {
+            read.tx.commit().await?;
+            return Ok(v);
+        }
+        let lv = "coalesce(r.label_values, fastproof_label_values(r.labels)) as lv";
+        let mut qb: QueryBuilder<Postgres> = QueryBuilder::new("select k, count(*) from ");
+        push_bounded(&mut qb, launch, f, lv);
+        qb.push(" cross join jsonb_object_keys(r.lv) k where k <> '' group by 1");
+        let names: Vec<(String, i64)> = qb.build_query_as().fetch_all(&mut *read.tx).await?;
+        let mut qb: QueryBuilder<Postgres> =
+            QueryBuilder::new("select n, count(*) from (select k.key as n, v from ");
+        push_bounded(&mut qb, launch, f, lv);
+        qb.push(
+            " cross join jsonb_each(r.lv) k cross join jsonb_array_elements_text(k.value) v \
+             where k.key <> '' and v <> '' group by 1, 2) d group by 1",
         );
-        launch_scope(&mut qb, launch);
-        push_tree_filter(&mut qb, f);
-        qb.push(" and coalesce(l->>'name', '') <> '' group by 1 order by 2 desc, 1 limit ")
-            .push_bind(MAX_LABEL_NAMES);
-        let rows: Vec<(String, i64, i64)> = qb.build_query_as().fetch_all(&self.pool).await?;
-        Ok(rows
+        let values: HashMap<String, i64> = qb
+            .build_query_as::<(String, i64)>()
+            .fetch_all(&mut *read.tx)
+            .await?
             .into_iter()
-            .map(|(name, count, values)| LabelName {
-                name,
+            .collect();
+        let mut items: Vec<LabelName> = names
+            .into_iter()
+            .map(|(name, count)| LabelName {
+                values: values.get(&name).copied().unwrap_or(0),
+                name: truncate_chars(&name, MAX_FACET_NAME_CHARS),
                 count,
-                values,
             })
-            .collect())
+            .collect();
+        items.sort_by(|a, b| b.count.cmp(&a.count).then(a.name.cmp(&b.name)));
+        items.truncate(MAX_LABEL_NAMES as usize);
+        let out = LaunchLabels {
+            items,
+            partial: partial(launch),
+        };
+        self.cache_done(launch, read, &out).await?;
+        Ok(out)
     }
 
     /// Counts of the explorer filter values over a launch, within `f` (its environment).
@@ -1399,127 +2271,27 @@ impl Store {
         f: &TreeFilter,
         baseline: &Baseline,
     ) -> anyhow::Result<LaunchFacets> {
-        let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(
-            "select count(*), count(*) filter (where r.status = 'passed'), \
-             count(*) filter (where r.status = 'failed'), count(*) filter (where r.status = 'broken'), \
-             count(*) filter (where r.status = 'skipped'), \
-             count(*) filter (where r.status not in ('passed', 'failed', 'broken', 'skipped')), \
-             count(*) filter (where r.flaky_in_run), count(*) filter (where r.muted), \
-             count(*) filter (where r.attempt_count > 1), count(*) filter (where r.run_item_id is not null), \
-             count(*) filter (where r.attachment_kinds & ",
-        );
-        qb.push_bind(KIND_TRACE)
-            .push(" <> 0), count(*) filter (where r.attachment_kinds & ")
-            .push_bind(KIND_VIDEO)
-            .push(" <> 0), count(*) filter (where r.attachment_kinds & ")
-            .push_bind(KIND_SCREENSHOT)
-            .push(" <> 0), count(*) filter (where r.defect is null), max(r.duration_ms), ");
-        for n in FACET_LABELS {
-            qb.push("count(*) filter (where ");
-            push_label_missing(&mut qb, n);
-            qb.push("), ");
-        }
-        qb.push("count(*) filter (where r.status in ('failed', 'broken') and not r.muted");
-        if let Some((id, created)) = baseline.launch {
-            qb.push(" and not exists (select 1 from results b where b.launch_id = ")
-                .push_bind(id)
-                .push(" and b.launch_created_at = ")
-                .push_bind(created)
-                .push(" and b.series_id = r.series_id and b.status in ('failed', 'broken'))");
-        }
-        qb.push(") from results r");
-        launch_scope(&mut qb, launch);
-        push_tree_filter(&mut qb, f);
-        let row = qb.build().fetch_one(&self.pool).await?;
-        let n = |i: usize| -> Result<i64, sqlx::Error> { row.try_get::<i64, _>(i) };
-        let counts = Counts {
-            total: n(0)?,
-            passed: n(1)?,
-            failed: n(2)?,
-            broken: n(3)?,
-            skipped: n(4)?,
-            unknown: n(5)?,
-            flaky: n(6)?,
-            muted: n(7)?,
-        };
-        let manual = n(9)?;
-        let attachments = ATTACHMENT_FILTERS
-            .iter()
-            .enumerate()
-            .map(|(i, (name, _))| {
-                Ok(ValueCount {
-                    value: (*name).to_string(),
-                    count: n(10 + i)?,
-                })
-            })
-            .collect::<Result<Vec<_>, sqlx::Error>>()?;
-        let no_defect = n(13)?;
-        let max_duration_ms: Option<i64> = row.try_get(14)?;
-        let label_none: Vec<i64> = (0..FACET_LABELS.len())
-            .map(|i| n(15 + i))
-            .collect::<Result<_, _>>()?;
-        let new_failures = n(15 + FACET_LABELS.len())?;
-        let retried = n(8)?;
-
-        let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(
-            "select l->>'name', l->>'value', count(distinct r.id) from results r \
-             cross join lateral jsonb_array_elements(r.labels) l",
-        );
-        launch_scope(&mut qb, launch);
-        push_tree_filter(&mut qb, f);
-        qb.push(" and l->>'name' = any(")
-            .push_bind(FACET_LABELS.map(str::to_string).to_vec())
-            .push(") and coalesce(l->>'value', '') <> '' group by 1, 2 order by 3 desc, 2 limit ")
-            .push_bind((MAX_FACET_VALUES * FACET_LABELS.len() * 4) as i64);
-        let rows: Vec<(String, String, i64)> = qb.build_query_as().fetch_all(&self.pool).await?;
-        let mut labels: Vec<LabelFacet> = FACET_LABELS
-            .iter()
-            .zip(label_none)
-            .map(|(name, none)| LabelFacet {
-                name: (*name).to_string(),
-                values: Vec::new(),
-                none,
-                more: false,
-            })
-            .collect();
-        for (name, value, count) in rows {
-            if let Some(l) = labels.iter_mut().find(|l| l.name == name) {
-                if l.values.len() < MAX_FACET_VALUES {
-                    l.values.push(ValueCount { value, count });
-                } else {
-                    l.more = true;
+        let (mut read, mut hit) = self.cached_read(launch, None).await?;
+        if let Some(e) = env_only(f).filter(|_| launch.status != "running") {
+            let base = match baseline.launch {
+                Some((id, _)) => {
+                    format!("{id}.{}", crate::explorer::gen_of(&mut read.tx, id).await?)
                 }
-            }
+                None => "none".into(),
+            };
+            let key = format!("facets1:{e}:{base}");
+            read.generation = crate::explorer::gen_of(&mut read.tx, launch.id).await?;
+            hit =
+                crate::explorer::cache_get(&mut read.tx, launch.id, &key, read.generation).await?;
+            read.key = Some(key);
         }
-
-        let mut qb: QueryBuilder<Postgres> =
-            QueryBuilder::new("select r.defect->>'typeId', count(*) from results r");
-        launch_scope(&mut qb, launch);
-        push_tree_filter(&mut qb, f);
-        qb.push(" and r.defect is not null group by 1 order by 2 desc limit 200");
-        let rows: Vec<(Option<String>, i64)> = qb.build_query_as().fetch_all(&self.pool).await?;
-        let mut defects: Vec<ValueCount> = rows
-            .into_iter()
-            .filter_map(|(v, count)| v.map(|value| ValueCount { value, count }))
-            .collect();
-        if no_defect > 0 {
-            defects.push(ValueCount {
-                value: "none".into(),
-                count: no_defect,
-            });
+        if let Some(v) = hit.and_then(|v| serde_json::from_value::<LaunchFacets>(v).ok()) {
+            read.tx.commit().await?;
+            return Ok(v);
         }
-        Ok(LaunchFacets {
-            automated: counts.total - manual,
-            counts,
-            retried,
-            new_failures,
-            baseline_launch_id: baseline.launch.map(|b| b.0),
-            manual,
-            labels,
-            defects,
-            attachments,
-            max_duration_ms,
-        })
+        let out = facets_in(&mut read.tx, launch, f, baseline).await?;
+        self.cache_done(launch, read, &out).await?;
+        Ok(out)
     }
 
     /// The environments of the results of a launch (by the environment key of their series),
@@ -1528,6 +2300,12 @@ impl Store {
         &self,
         launch: &Launch,
     ) -> anyhow::Result<Vec<EnvironmentCounts>> {
+        let (mut read, hit) = self.cached_read(launch, Some("envs1".into())).await?;
+        if let Some(v) = hit.and_then(|v| serde_json::from_value::<Vec<EnvironmentCounts>>(v).ok())
+        {
+            read.tx.commit().await?;
+            return Ok(v);
+        }
         let rows: Vec<(Option<String>, String, bool, bool, i64)> = sqlx::query_as(
             "select se.env_key, r.status, r.flaky_in_run, r.muted, count(*) from results r \
              join series se on se.id = r.series_id \
@@ -1535,21 +2313,14 @@ impl Store {
         )
         .bind(launch.id)
         .bind(launch.created_at)
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *read.tx)
         .await?;
         let mut by: BTreeMap<Option<String>, Counts> = BTreeMap::new();
         for (key, status, flaky, muted, n) in rows {
-            let c = by.entry(key).or_default();
-            let mut one = Counts::default();
-            add_count(&mut one, &status, flaky, muted);
-            c.total += n;
-            c.passed += one.passed * n;
-            c.failed += one.failed * n;
-            c.broken += one.broken * n;
-            c.skipped += one.skipped * n;
-            c.unknown += one.unknown * n;
-            c.flaky += one.flaky * n;
-            c.muted += one.muted * n;
+            add_counts(
+                by.entry(key).or_default(),
+                &counts_of(&status, flaky, muted, n),
+            );
         }
         let mut out: Vec<EnvironmentCounts> = by
             .into_iter()
@@ -1557,8 +2328,149 @@ impl Store {
             .collect();
         out.sort_by(|a, b| b.counts.total.cmp(&a.counts.total).then(a.key.cmp(&b.key)));
         out.truncate(MAX_ENVIRONMENTS);
+        self.cache_done(launch, read, &out).await?;
         Ok(out)
     }
+}
+
+/// Characters of a label name or value in the label names and facets, at most.
+pub const MAX_FACET_NAME_CHARS: usize = 1024;
+
+async fn facets_in(
+    conn: &mut sqlx::PgConnection,
+    launch: &Launch,
+    f: &TreeFilter,
+    baseline: &Baseline,
+) -> anyhow::Result<LaunchFacets> {
+    let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(
+        "select count(*), count(*) filter (where r.status = 'passed'), \
+         count(*) filter (where r.status = 'failed'), count(*) filter (where r.status = 'broken'), \
+         count(*) filter (where r.status = 'skipped'), \
+         count(*) filter (where r.status not in ('passed', 'failed', 'broken', 'skipped')), \
+         count(*) filter (where r.flaky_in_run), count(*) filter (where r.muted), \
+         count(*) filter (where r.attempt_count > 1), count(*) filter (where r.run_item_id is not null), \
+         count(*) filter (where r.attachment_kinds & ",
+    );
+    qb.push_bind(KIND_TRACE)
+        .push(" <> 0), count(*) filter (where r.attachment_kinds & ")
+        .push_bind(KIND_VIDEO)
+        .push(" <> 0), count(*) filter (where r.attachment_kinds & ")
+        .push_bind(KIND_SCREENSHOT)
+        .push(" <> 0), count(*) filter (where r.defect is null), max(r.duration_ms), ");
+    for n in FACET_LABELS {
+        qb.push("count(*) filter (where ");
+        push_label_missing(&mut qb, n);
+        qb.push("), ");
+    }
+    qb.push("count(*) filter (where r.status in ('failed', 'broken') and not r.muted");
+    if let Some((id, created)) = baseline.launch {
+        qb.push(" and not exists (select 1 from results b where b.launch_id = ")
+            .push_bind(id)
+            .push(" and b.launch_created_at = ")
+            .push_bind(created)
+            .push(" and b.series_id = r.series_id and b.status in ('failed', 'broken'))");
+    }
+    qb.push(") from ");
+    push_bounded(&mut qb, launch, f, "r.*");
+    let row = qb.build().fetch_one(&mut *conn).await?;
+    let n = |i: usize| -> Result<i64, sqlx::Error> { row.try_get::<i64, _>(i) };
+    let counts = Counts {
+        total: n(0)?,
+        passed: n(1)?,
+        failed: n(2)?,
+        broken: n(3)?,
+        skipped: n(4)?,
+        unknown: n(5)?,
+        flaky: n(6)?,
+        muted: n(7)?,
+    };
+    let manual = n(9)?;
+    let attachments = ATTACHMENT_FILTERS
+        .iter()
+        .enumerate()
+        .map(|(i, (name, _))| {
+            Ok(ValueCount {
+                value: (*name).to_string(),
+                count: n(10 + i)?,
+            })
+        })
+        .collect::<Result<Vec<_>, sqlx::Error>>()?;
+    let no_defect = n(13)?;
+    let max_duration_ms: Option<i64> = row.try_get(14)?;
+    let label_none: Vec<i64> = (0..FACET_LABELS.len())
+        .map(|i| n(15 + i))
+        .collect::<Result<_, _>>()?;
+    let new_failures = n(15 + FACET_LABELS.len())?;
+    let retried = n(8)?;
+
+    let mut qb: QueryBuilder<Postgres> = QueryBuilder::new("select n.name, v.x, count(*) from ");
+    push_bounded(
+        &mut qb,
+        launch,
+        f,
+        "coalesce(r.label_values, fastproof_label_values(r.labels)) as lv",
+    );
+    qb.push(" cross join unnest(")
+        .push_bind(FACET_LABELS.map(str::to_string).to_vec())
+        .push(
+            "::text[]) as n(name) cross join lateral (select distinct x from \
+             (select x from jsonb_array_elements_text(r.lv -> n.name) x limit ",
+        )
+        .push_bind(MAX_FACET_LABELS)
+        .push(") y where x <> '') v group by 1, 2 order by 3 desc, 2 limit ")
+        .push_bind((MAX_FACET_VALUES * FACET_LABELS.len() * 4) as i64);
+    let rows: Vec<(String, String, i64)> = qb.build_query_as().fetch_all(&mut *conn).await?;
+    let mut labels: Vec<LabelFacet> = FACET_LABELS
+        .iter()
+        .zip(label_none)
+        .map(|(name, none)| LabelFacet {
+            name: (*name).to_string(),
+            values: Vec::new(),
+            none,
+            more: false,
+        })
+        .collect();
+    for (name, value, count) in rows {
+        if let Some(l) = labels.iter_mut().find(|l| l.name == name) {
+            if l.values.len() < MAX_FACET_VALUES {
+                l.values.push(ValueCount {
+                    value: truncate_chars(&value, MAX_FACET_NAME_CHARS),
+                    count,
+                });
+            } else {
+                l.more = true;
+            }
+        }
+    }
+
+    let mut qb: QueryBuilder<Postgres> =
+        QueryBuilder::new("select r.defect->>'typeId', count(*) from ");
+    push_bounded(&mut qb, launch, f, "r.defect");
+    qb.push(" where r.defect is not null group by 1 order by 2 desc limit 200");
+    let rows: Vec<(Option<String>, i64)> = qb.build_query_as().fetch_all(&mut *conn).await?;
+    let mut defects: Vec<ValueCount> = rows
+        .into_iter()
+        .filter_map(|(v, count)| v.map(|value| ValueCount { value, count }))
+        .collect();
+    if no_defect > 0 {
+        defects.push(ValueCount {
+            value: "none".into(),
+            count: no_defect,
+        });
+    }
+    Ok(LaunchFacets {
+        automated: counts.total - manual,
+        partial: partial(launch),
+        counts,
+        retried,
+        new_failures,
+        baseline_launch_id: baseline.launch.map(|b| b.0),
+        manual,
+        labels,
+        defects,
+        attachments,
+        max_duration_ms,
+    })
 }
 
 #[cfg(test)]
@@ -1583,11 +2495,20 @@ mod tests {
             .collect()
     }
 
+    fn place1(
+        by: &GroupBy,
+        suite_path: &[String],
+        labels: &[LabelView],
+        full_name: &str,
+    ) -> (Vec<String>, bool) {
+        place(by, &PlaceKey::of(by, suite_path, labels, full_name)).swap_remove(0)
+    }
+
     #[test]
     fn suite_paths_by_format() {
         let pw = "e2e/checkout.spec.ts \u{203a} Checkout \u{203a} Card \u{203a} pays";
         assert_eq!(
-            place(&GroupBy::Suite, &["e2e/checkout.spec".into()], &[], pw),
+            place1(&GroupBy::Suite, &["e2e/checkout.spec".into()], &[], pw),
             (
                 vec![
                     "e2e/checkout.spec.ts".to_string(),
@@ -1598,7 +2519,7 @@ mod tests {
             )
         );
         assert_eq!(
-            place(
+            place1(
                 &GroupBy::Suite,
                 &["com.example.CheckoutTest".into()],
                 &labels(&[("suite", "com.example.CheckoutTest")]),
@@ -1608,7 +2529,7 @@ mod tests {
             vec!["com.example", "CheckoutTest"]
         );
         assert_eq!(
-            place(
+            place1(
                 &GroupBy::Suite,
                 &["api".into()],
                 &labels(&[("suite", "api")]),
@@ -1624,7 +2545,7 @@ mod tests {
             ("subSuite", "Cart"),
         ]);
         assert_eq!(
-            place(
+            place1(
                 &GroupBy::Suite,
                 &["staging".into(), "cart.spec.ts".into(), "Cart".into()],
                 &allure,
@@ -1638,7 +2559,7 @@ mod tests {
         assert_eq!(split_class("Plain"), vec!["Plain"]);
         assert_eq!(split_class(".Odd"), vec![".Odd"]);
         assert_eq!(
-            place(
+            place1(
                 &GroupBy::Package,
                 &[],
                 &[],
@@ -1653,7 +2574,7 @@ mod tests {
     fn inline_prefers_reveal_then_failures_then_small() {
         let big = MAX_TREE_INLINE - 10;
         let groups = vec![
-            (vec!["big".to_string()], big, false, false),
+            (vec!["big".to_string()], big as i64, false, false),
             (vec!["failing".to_string()], 20, true, false),
             (vec!["revealed".to_string()], 30, false, true),
             (vec!["small".to_string()], 5, false, false),
@@ -1681,9 +2602,11 @@ mod tests {
         let empty = labels(&[("epic", ""), ("epic", "Later"), ("feature", "Cart")]);
         assert_eq!(
             group_path(&by, &[], &empty, "x"),
-            vec![NONE_GROUP, "Cart"],
-            "the first value counts, an empty one is missing"
+            vec!["Later", "Cart"],
+            "an empty value is missing"
         );
+        let blank = labels(&[("epic", ""), ("feature", "Cart")]);
+        assert_eq!(group_path(&by, &[], &blank, "x"), vec![NONE_GROUP, "Cart"]);
         assert!(valid_label_name("x.custom-1:a/b@c"));
         assert!(!valid_label_name("a b"));
         assert!(!valid_label_name(&"n".repeat(MAX_LABEL_NAME_BYTES + 1)));

@@ -18,8 +18,8 @@ import { formatDate } from '../../lib/format';
 import { stripAnsi } from '../../lib/ansi';
 import { TransitionBadge } from './TransitionBadge';
 
-function ClusterResults({ project, launch, cluster, types, canTriage, onTriage }: { project: string; launch: Launch; cluster: Cluster; types: Map<string, DefectType>; canTriage: boolean; onTriage: (t: TriageTarget) => void }) {
-  const q = useResults(project, launch.id, { fingerprint: cluster.fingerprint, status: 'failed,broken' });
+function ClusterResults({ project, launch, env, cluster, types, canTriage, onTriage }: { project: string; launch: Launch; env?: string; cluster: Cluster; types: Map<string, DefectType>; canTriage: boolean; onTriage: (t: TriageTarget) => void }) {
+  const q = useResults(project, launch.id, { fingerprint: cluster.fingerprint, status: 'failed,broken', env });
   const items = flatItems(q.data);
   return (
     <QueryState query={q}>
@@ -55,8 +55,8 @@ function ClusterResults({ project, launch, cluster, types, canTriage, onTriage }
   );
 }
 
-function MessageGroups({ project, launch }: { project: string; launch: Launch }) {
-  const q = useResults(project, launch.id, { status: 'failed,broken' });
+function MessageGroups({ project, launch, env }: { project: string; launch: Launch; env?: string }) {
+  const q = useResults(project, launch.id, { status: 'failed,broken', env });
   const groups = useMemo(() => groupFailures(flatItems(q.data)), [q.data]);
   if (q.isPending) return <Loading />;
   if (!groups.length) return <EmptyState title="No failures" description="Every executed test passed in this launch." />;
@@ -97,15 +97,17 @@ function MessageGroups({ project, launch }: { project: string; launch: Launch })
   );
 }
 
-export function Clusters({ project, launch }: { project: string; launch: Launch }) {
-  const q = useClusters(project, launch.id);
+/** The failures of a launch by fingerprint; `env` (the environment picked on the launch page)
+ * scopes them like the rest of the page. */
+export function Clusters({ project, launch, env }: { project: string; launch: Launch; env?: string }) {
+  const q = useClusters(project, launch.id, true, env);
   const types = useDefectTypeMap(project);
   const canTriage = useCan('results:triage', project);
   const [show, setShow] = useState<string>('all');
   const [open, setOpen] = useState<string[]>([]);
   const [target, setTarget] = useState<TriageTarget | null>(null);
 
-  if (q.isError && q.error instanceof ApiError && (q.error.status === 404 || q.error.status === 405)) return <MessageGroups project={project} launch={launch} />;
+  if (q.isError && q.error instanceof ApiError && (q.error.status === 404 || q.error.status === 405)) return <MessageGroups project={project} launch={launch} env={env} />;
 
   return (
     <QueryState query={q}>
@@ -179,7 +181,7 @@ export function Clusters({ project, launch }: { project: string; launch: Launch 
                           </Button>
                         </Group>
                       )}
-                      {open.includes(c.fingerprint) && <ClusterResults project={project} launch={launch} cluster={c} types={types} canTriage={canTriage} onTriage={setTarget} />}
+                      {open.includes(c.fingerprint) && <ClusterResults project={project} launch={launch} env={env} cluster={c} types={types} canTriage={canTriage} onTriage={setTarget} />}
                     </Stack>
                   </Accordion.Panel>
                 </Accordion.Item>

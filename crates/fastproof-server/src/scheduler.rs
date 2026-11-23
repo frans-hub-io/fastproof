@@ -408,6 +408,16 @@ pub fn analysis_jobs(sch: &mut Scheduler) -> anyhow::Result<()> {
         }
         Ok(())
     })?;
+    sch.register("explorer.backfill", "1m", |s: AppState| async move {
+        explorer_backfill(&s, Duration::from_secs(30)).await?;
+        Ok(())
+    })?;
+    sch.register("explorer.cache.prune", "1h", |s: AppState| async move {
+        s.store
+            .prune_explorer_cache(Duration::from_secs(7 * 86_400))
+            .await?;
+        Ok(())
+    })?;
     sch.register("mutes.expire", "1m", |s: AppState| async move {
         while s.store.expire_mutes().await? >= 1000 {}
         Ok(())
@@ -436,6 +446,26 @@ pub fn analysis_jobs(sch: &mut Scheduler) -> anyhow::Result<()> {
         Ok(())
     })?;
     Ok(())
+}
+
+/// One round of the `explorer.backfill` job: fills `label_values` and old `attachment_kinds`
+/// of stored results for up to `budget`, and reports where the whole job is.
+pub async fn explorer_backfill(
+    s: &AppState,
+    budget: Duration,
+) -> anyhow::Result<fastproof_store::explorer::BackfillProgress> {
+    let p = s.store.backfill_explorer(500, budget).await?;
+    metrics::gauge!("fastproof_explorer_backfill_done").set(if p.done { 1.0 } else { 0.0 });
+    metrics::gauge!("fastproof_explorer_backfill_results_scanned").set(p.total_scanned as f64);
+    if p.updated > 0 {
+        tracing::info!(
+            scanned = p.scanned,
+            updated = p.updated,
+            done = p.done,
+            "explorer backfill ran"
+        );
+    }
+    Ok(p)
 }
 
 /// Jobs of test-management cases: code sync of finished launches and the backfill of cases

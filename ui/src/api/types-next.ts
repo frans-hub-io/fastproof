@@ -161,4 +161,6 @@ export interface LogFilters {
   attempt?: number;
   level?: LogLevel;
   q?: string;
+  /** Environment key as in the launch page URL (`%00`: results without one). */
+  env?: string;
 }

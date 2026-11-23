@@ -419,10 +419,10 @@ function Results({ project, launch, counts }: { project: string; launch: Launch;
   );
 }
 
-function LaunchLogs({ project, launch }: { project: string; launch: Launch }) {
-  const q = useResults(project, launch.id, {});
+function LaunchLogs({ project, launch, env }: { project: string; launch: Launch; env?: string }) {
+  const q = useResults(project, launch.id, { env });
   const results = useMemo(() => flatItems(q.data).map((r) => ({ id: r.id, name: r.name, clientIds: r.clientIds })), [q.data]);
-  return <LogConsole project={project} launchId={launch.id} live={launch.status === 'running'} results={results} fileName={`${launch.name}-${String(launch.number)}-logs.txt`} />;
+  return <LogConsole project={project} launchId={launch.id} live={launch.status === 'running'} env={env} results={results} fileName={`${launch.name}-${String(launch.number)}-logs.txt`} />;
 }
 
 function ImportantToggle({ project, launch }: { project: string; launch: Launch }) {
@@ -484,6 +484,8 @@ export default function LaunchPage() {
       {() => {
         const l = q.data;
         if (!l) return null;
+        const scoped = scope.counts ?? l.counts;
+        const failingCount = scoped.failed + scoped.broken;
         return (
           <>
             <PageHeader
@@ -530,7 +532,7 @@ export default function LaunchPage() {
                   <Tabs.Tab value="results" leftSection={<IconList size={14} />}>
                     Results
                   </Tabs.Tab>
-                  <Tabs.Tab value="failures" rightSection={l.counts.failed + l.counts.broken > 0 ? <Badge size="xs" color="red" variant="light">{l.counts.failed + l.counts.broken}</Badge> : undefined}>
+                  <Tabs.Tab value="failures" rightSection={failingCount > 0 ? <Badge size="xs" color="red" variant="light">{failingCount}</Badge> : undefined}>
                     Failures
                   </Tabs.Tab>
                   <Tabs.Tab value="logs" leftSection={l.status === 'running' ? <span className="fp-live-dot" aria-hidden /> : undefined} data-testid="tab-logs">
@@ -549,10 +551,10 @@ export default function LaunchPage() {
                   <Results project={key} launch={l} counts={scope.counts} />
                 </Tabs.Panel>
                 <Tabs.Panel value="failures" pt="md">
-                  <Clusters project={key} launch={l} />
+                  <Clusters project={key} launch={l} env={scope.env} />
                 </Tabs.Panel>
                 <Tabs.Panel value="logs" pt="md">
-                  <LaunchLogs project={key} launch={l} />
+                  <LaunchLogs project={key} launch={l} env={scope.env} />
                 </Tabs.Panel>
                 <Tabs.Panel value="manual" pt="md">
                   <Manual project={key} launch={l} />

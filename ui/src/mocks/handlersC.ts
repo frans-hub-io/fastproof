@@ -1,7 +1,7 @@
 import { http, HttpResponse } from 'msw';
 import type { DefectGroup, LogLevel, ProjectSettings, Rule, TestPlanCreate, TriageRequest } from '../api/types-next';
 import { DEFECT_GROUPS } from '../api/types-next';
-import { launchDef, launchView, projects, RUNNING_LAUNCH_ID, type MockRole } from './fixtures';
+import { launchDef, launchResults, launchView, projects, RUNNING_LAUNCH_ID, type MockRole } from './fixtures';
 import {
   addDefectType,
   applyRule,
@@ -14,9 +14,11 @@ import {
   deleteDefectType,
   deleteRule,
   deliveries,
+  envParam,
   filterLogs,
   flakyOf,
   gateOf,
+  inEnv,
   jobs,
   liveBatch,
   mockInteractions,
@@ -113,10 +115,11 @@ export function stageCHandlers({ role, error, audit }: Helpers) {
       return HttpResponse.json({ updated });
     }),
 
-    http.get(`${API}/projects/:key/launches/:id/clusters`, ({ params }) => {
+    http.get(`${API}/projects/:key/launches/:id/clusters`, ({ params, request }) => {
       const def = launchDef(String(params.id));
       if (!def || def.project !== params.key) return error(404, 'not_found', 'launch not found');
-      return HttpResponse.json({ items: clustersOf(def.project, def.launch.id) });
+      const env = envParam(new URL(request.url).searchParams.get('env'));
+      return HttpResponse.json({ items: clustersOf(def.project, def.launch.id, env) });
     }),
 
     http.get(`${API}/projects/:key/results/:id/similar`, ({ params, request }) => {
@@ -372,7 +375,9 @@ export function stageCHandlers({ role, error, audit }: Helpers) {
       const level = u.get('level');
       if (level && !(['trace', 'debug', 'info', 'warn', 'error'] as LogLevel[]).includes(level as LogLevel)) return error(400, 'invalid_query', 'unknown level', { field: 'level' });
       const attempt = u.get('attempt') ? Number(u.get('attempt')) : null;
-      const all = filterLogs(storedLogs(def.launch.id, u.get('resultId'), attempt), level, u.get('q'));
+      const env = envParam(u.get('env'));
+      const keys = env === undefined ? null : new Set(launchResults(def.launch.id).filter((r) => inEnv(r, env)).flatMap((r) => [r.id, ...(r.clientIds ?? [])]));
+      const all = filterLogs(storedLogs(def.launch.id, u.get('resultId'), attempt), level, u.get('q')).filter((l) => !keys || keys.has(l.resultId));
       const limit = Math.min(10_000, Math.max(1, Number(u.get('limit') ?? 1000) || 1000));
       const before = u.get('before');
       const end = before ? Math.max(0, Math.min(all.length, Number(before))) : all.length;

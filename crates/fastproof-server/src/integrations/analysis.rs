@@ -329,6 +329,7 @@ async fn fallback_triage(
     if muted.is_some() {
         fastproof_store::analysis::triage::recount_muted(&mut tx, &launches).await?;
     }
+    fastproof_store::explorer::touch(&mut tx, &launches).await?;
     tx.commit().await?;
     Ok(updated)
 }
@@ -344,7 +345,7 @@ impl AnalysisOps for Full {
         _project: &Project,
         launch: &Launch,
     ) -> anyhow::Result<Value> {
-        Ok(json!({ "items": s.store.clusters(launch).await? }))
+        Ok(json!({ "items": s.store.clusters(launch, None).await? }))
     }
 
     async fn similar(

@@ -7,6 +7,32 @@ version has migrated the schema.
 
 This page lists what needs attention per release.
 
+## Next release: faster launch explorer
+
+The tree of a launch is counted in the database and the explorer keeps the aggregates of finished launches
+(see [Launch explorer](../guide/launch-explorer.md#large-launches)). What to know:
+
+- Migration `0770_explorer_perf` adds the nullable columns `results.label_values` (each label name with its
+  values) and `results.suite_tree`, `suite_titled` (the group path of the result in the Suites tree); adding them
+  changes no rows and only takes a brief lock. It also adds the function `fastproof_label_values` and the tables
+  `explorer_gen` and `explorer_cache`.
+- The scheduled job `explorer.backfill` (every minute, 30 seconds of work per run, 500 results per transaction)
+  walks the results once in id order: it fills `label_values`, `suite_tree`, and `attachment_kinds` of results of launches
+  created before migration `0600` (which had none, so the attachment filter missed them). Progress is kept in
+  `analysis_state` (`explorer.results.backfill`), so the job resumes after a restart. Metrics:
+  `fastproof_explorer_backfill_scanned_total`, `fastproof_explorer_backfill_updated_total`, and the gauges
+  `fastproof_explorer_backfill_results_scanned` and `fastproof_explorer_backfill_done` (1 when finished).
+- Results that replicas of the previous version store during the rolling update have no `label_values` or
+  `suite_tree`; the explorer computes them when it reads them, which is slower but gives the same tree. The
+  backfill rewrites every older result once, so expect the results table to grow until autovacuum reuses the
+  space.
+- The job `explorer.cache.prune` (hourly) removes cached aggregates older than 7 days.
+- `GET .../labels` and `GET .../facets` gain `partial`; `GET .../clusters` and `GET .../logs` take `env`.
+- `GET .../launches/{id}/results` now takes a heavy-query slot, like the tree (429 or 503 with `Retry-After`
+  when the caller or the server is busy).
+- A result with several values of a grouping label is now in the group of each value (it was placed by its first
+  value), and an empty label value counts as no value in the filters and the **(none)** groups.
+
 ## Next release: video serving and S3 by default
 
 The content route of attachments now answers byte ranges and conditional requests, and `<video>` elements load

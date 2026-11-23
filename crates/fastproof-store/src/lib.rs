@@ -16,6 +16,7 @@ pub mod events;
 pub mod history;
 pub mod ingest;
 pub mod integrations;
+pub mod launch_exports;
 pub mod launches;
 pub mod logs;
 pub mod maintenance;

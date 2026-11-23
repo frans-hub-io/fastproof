@@ -29,6 +29,8 @@ import { analyze, analyzeDetail, isImportant, resetStageC } from './stageC';
 import { resetTm, subscribeTmEvents, tmHandlers, tmLaunchList } from './tm';
 
 const API = '/api/v1';
+const EXPORT_JOB_ID = '0198aaaa-0000-7000-8000-00000000e001';
+let exportPolls = 0;
 export const MOCK_ROLE_KEY = 'fastproof-mock-role';
 
 let roleOverride: MockRole | null = null;
@@ -281,6 +283,33 @@ export const handlers = [
     if (!def || def.project !== params.key) return error(404, 'not_found', 'launch not found');
     return HttpResponse.json(withImportant(def));
   }),
+
+  http.get(`${API}/projects/:key/launches/:id/export`, ({ params, request }) => {
+    const def = launchDef(String(params.id));
+    if (!def || def.project !== params.key) return error(404, 'not_found', 'launch not found');
+    if (def.launch.counts.total > 10_000) return error(409, 'export_too_large', 'the launch has more than 10000 results');
+    const format = new URL(request.url).searchParams.get('format');
+    if (format === 'xlsx') return new HttpResponse(new Uint8Array([0x50, 0x4b, 3, 4]), { headers: { 'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' } });
+    if (format !== 'html') return error(400, 'bad_request', 'format must be html or xlsx');
+    return new HttpResponse(`<!doctype html><title>#${String(def.launch.number)}</title><p>${request.url}</p>`, { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+  }),
+
+  http.post(`${API}/projects/:key/launches/:id/exports`, ({ params }) => {
+    const def = launchDef(String(params.id));
+    if (!def || def.project !== params.key) return error(404, 'not_found', 'launch not found');
+    exportPolls = 0;
+    return HttpResponse.json({ id: EXPORT_JOB_ID, launchId: def.launch.id, format: 'html', status: 'queued', total: def.launch.counts.total, done: 0, createdBy: 'me', createdAt: new Date().toISOString() }, { status: 202 });
+  }),
+
+  http.get(`${API}/projects/:key/launches/:id/exports/:job`, ({ params }) => {
+    const def = launchDef(String(params.id));
+    if (!def || def.project !== params.key) return error(404, 'not_found', 'launch not found');
+    exportPolls += 1;
+    const done = exportPolls >= 2;
+    return HttpResponse.json({ id: EXPORT_JOB_ID, launchId: def.launch.id, format: 'html', status: done ? 'done' : 'running', total: def.launch.counts.total, done: done ? def.launch.counts.total : 100, createdBy: 'me', createdAt: new Date().toISOString() });
+  }),
+
+  http.get(`${API}/projects/:key/launches/:id/exports/:job/download`, () => new HttpResponse('<!doctype html><title>job</title>', { headers: { 'Content-Type': 'text/html; charset=utf-8' } })),
 
   http.get(`${API}/projects/:key/launches/:id/uploads`, ({ params }) => {
     const def = launchDef(String(params.id));

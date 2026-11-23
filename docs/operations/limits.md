@@ -107,6 +107,8 @@ Fixed caps that are not settings:
 
 | Cap | Value | Answer |
 |---|---|---|
+| Launch export jobs (HTML, XLSX) queued or running | 2 per caller, 4 per project | `409 export_busy` |
+| Results of an inline launch export / of a launch export job | 10 000 / 500 000 | `409 export_too_large` (inline), job `failed` |
 | Zip export jobs queued or running | 2 per caller and project, 4 per project | `409 export_busy` (`details.limit`: `exportsPerCaller` or `exportsPerProject`) |
 | Pending AI suggestions per case | 20 | `409 limit_reached` (`maxPendingSuggestions`) |
 | One line of a Playwright trace read by `trace_actions` | 1 MiB | longer lines are skipped |

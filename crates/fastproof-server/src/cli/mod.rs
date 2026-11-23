@@ -1,5 +1,5 @@
 //! Command line: `serve`, `migrate`, `upload`, `watch`, `launch start|finish`, `testplan`,
-//! `cases export|import`, `bench [tm]`, `version`.
+//! `cases export|import`, `export`, `bench [tm]`, `version`.
 
 pub mod archive;
 pub mod bench;
@@ -7,6 +7,7 @@ pub mod bench_tm;
 pub mod cases;
 pub mod ci;
 pub mod client;
+pub mod export;
 pub mod gate;
 pub mod watch;
 
@@ -60,6 +61,9 @@ pub enum Command {
         #[command(subcommand)]
         command: cases::CasesCommand,
     },
+    /// Export a launch as a self-contained HTML report, an XLSX workbook or a PDF (printed by a
+    /// local Chromium).
+    Export(export::ExportArgs),
     /// Generate launches, results and log lines and measure throughput and end-to-end lag;
     /// `bench tm` loads test management.
     Bench(bench::BenchCli),
@@ -375,6 +379,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<i32> {
         Command::Gate(g) => Ok(gate::run(g).await),
         Command::Testplan(t) => testplan(t).await,
         Command::Cases { command } => cases::run(command).await,
+        Command::Export(e) => export::run(e).await,
         Command::Watch(w) => watch::run(w).await,
         Command::Bench(bench::BenchCli {
             command: Some(bench::BenchCommand::Tm(t)),

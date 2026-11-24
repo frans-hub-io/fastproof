@@ -20,6 +20,8 @@ env:
   CARGO_PROFILE_TEST_DEBUG: "0"
   RUST_TOOLCHAIN: 1.99.1
   NODE_VERSION: 24.22.3
+  DOTNET_SDK_VERSION: 10.0.403
+  DOTNET_8_SDK_VERSION: 8.0.427
   PLATFORM_REPOSITORY: frans-hub-io/franshub-platform
   PLATFORM_REF: main
   GARAGE_IMAGE: docker.io/dxflrs/garage:v2.5.0@sha256:677e5b758e4425a325b811c425c026bf35a4bf42f7ddbaa773de3f4fd779a5a5
@@ -278,6 +280,81 @@ jobs:
             fastproof/reporters/cypress/sample/cypress/videos
           retention-days: 7
           if-no-files-found: ignore
+
+  reporters-dotnet:
+    name: .NET reporters (NUnit, xUnit v3) against the real server
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    needs: ui
+    services:
+      postgres:
+        image: docker.io/library/postgres:18.7-trixie
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      FASTPROOF_TEST_SERVER_BIN: ${{ github.workspace }}/fastproof/target/debug/fastproof
+      FASTPROOF_TEST_DATABASE_URL: postgres://postgres@localhost:5432/postgres
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      DOTNET_NOLOGO: "1"
+    defaults:
+      run:
+        working-directory: fastproof
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: fastproof
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ env.PLATFORM_REPOSITORY }}
+          ref: ${{ env.PLATFORM_REF }}
+          ssh-key: ${{ secrets.PLATFORM_DEPLOY_KEY }}
+          path: franshub-platform
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: ui-dist
+          path: fastproof/ui/dist
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+        with:
+          workspaces: fastproof
+          key: e2e-real
+      - name: build the server
+        run: cargo build -p fastproof-server --bin fastproof --locked
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+        with:
+          dotnet-version: |
+            ${{ env.DOTNET_8_SDK_VERSION }}
+            ${{ env.DOTNET_SDK_VERSION }}
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: "3.13"
+      - name: build the packages
+        working-directory: fastproof/reporters/dotnet
+        run: |
+          dotnet build src/FransHub.FastProof.Core -c Release
+          dotnet build src/FransHub.FastProof.NUnit -c Release
+          dotnet build src/FransHub.FastProof.Xunit -c Release
+      - name: core unit tests
+        working-directory: fastproof/reporters/dotnet
+        run: dotnet test tests/FransHub.FastProof.Core.Tests
+      - name: integration tests against the real server
+        env:
+          FASTPROOF_TEST_DOTNET: dotnet
+        run: |
+          pip install pytest==9.2.0
+          python -m pytest -p no:fastproof reporters/integration/test_dotnet.py -v
 
   rust:
     name: rust (postgres ${{ matrix.postgres }}, valkey ${{ matrix.valkey }})

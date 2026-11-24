@@ -9,6 +9,7 @@ Thin, dependency-free reporters that send test runs to FastProof while they happ
 | `@franshub/fastproof-vitest` | Vitest ≥ 4.1 (tested with 5.1.0 and 4.1.12), Node ≥ 20 | [`vitest/`](vitest) |
 | `@franshub/fastproof-jest` | Jest ≥ 29 (tested with 30.5.2), Node ≥ 20 | [`jest/`](jest) |
 | `@franshub/fastproof-cypress` | Cypress ≥ 13 (typed against 16.2.1; `cypress run`), Node ≥ 20 | [`cypress/`](cypress) |
+| `FransHub.FastProof.NUnit`, `FransHub.FastProof.Xunit` (on `FransHub.FastProof.Core`) | NUnit 4 (tested with 4.6.1 and 5.0.0), xUnit.net v3 (tested with 4.0.2), .NET 8 and 10 | [`dotnet/`](dotnet) |
 
 The Vitest, Jest and Cypress packages are thin: they map the framework's events to the same core
 (`@franshub/fastproof-playwright` exports it: client, spool, masking, trace, test plans, `ReporterSession`).
@@ -172,6 +173,7 @@ optional peers that npm 10 resolves badly) after `reporters/playwright` is built
 ```bash
 cd playwright && npm ci && npm run build && npm run typecheck && npm test
 cd pytest && pip install -e . pytest-rerunfailures pytest-xdist && pytest
+cd dotnet && dotnet test tests/FransHub.FastProof.Core.Tests
 ```
 
 Integration tests run both reporters against a real `fastproof` binary and PostgreSQL:
@@ -182,6 +184,8 @@ FASTPROOF_TEST_SERVER_BIN=target/debug/fastproof \
 FASTPROOF_TEST_DATABASE_URL=postgres://user@127.0.0.1:5432/postgres \
 FASTPROOF_TEST_BROWSER=1 pytest -p no:fastproof reporters/integration
 ```
+
+The .NET samples run when `FASTPROOF_TEST_DOTNET` points to the `dotnet` launcher (`reporters/integration/test_dotnet.py`).
 
 `FASTPROOF_TEST_BROWSER=1` also runs a Chromium test with a screenshot, a video and a trace (needs
 `npx playwright install chromium-headless-shell`). The database user needs trust authentication and the right

@@ -179,6 +179,7 @@ begin
         where r.project_id = p and r.full_name = 'T1';
     insert into tm_jobs (id, project_id, kind, params) values (gen_random_uuid(), p, 'import', '{}'), (gen_random_uuid(), p, 'export', '{}');
     insert into launch_exports (id, project_id, launch_id, format, created_by, status) select gen_random_uuid(), p, l.id, 'html', 'u', 'failed' from launches l where l.project_id = p limit 2;
+    insert into history_imports (id, project_id, source, created_by, status) select gen_random_uuid(), p, 'allure2', 'u', 'failed' from generate_series(1, 2);
     insert into tracker_issues (id, project_id, tracker_id, tracker_type, issue_key, category, created_by)
         values (f1, p, 'jira', 'jira', 'SHOP-1', 'open', 't'), (f2, p, 'jira', 'jira', 'SHOP-2', 'closed', 't');
     insert into tracker_issue_links (id, issue_id, project_id, launch_id, fingerprint, created_by)
@@ -396,7 +397,7 @@ async fn interrupted_purge_continues_on_the_next_run() {
     let mut interrupted = 0;
     loop {
         match store
-            .purge_project_rows(gone, Some(25 + interrupted % 7))
+            .purge_project_rows(gone, Some(30 + interrupted % 7))
             .await
         {
             Ok(()) => break,

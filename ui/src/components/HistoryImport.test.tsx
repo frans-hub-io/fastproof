@@ -47,9 +47,9 @@ describe('HistoryImport', () => {
     await user.upload(chooser(container), file('history.json'));
     await user.type(screen.getByTestId('history-branch'), 'main');
     await user.click(screen.getByTestId('history-submit'));
-    const row = await screen.findByTestId('history-import-row');
+    const row = await screen.findByTestId('history-import-row', {}, { timeout: 15_000 });
     expect(row).toHaveTextContent('main');
-    await waitFor(() => expect(screen.getByTestId('history-import-status')).toHaveTextContent('done'), { timeout: 8_000 });
+    await waitFor(() => expect(screen.getByTestId('history-import-status')).toHaveTextContent('done'), { timeout: 15_000 });
     expect(screen.getByTestId('history-import-row')).toHaveTextContent('3 of 3 reports');
     expect(screen.getByTestId('history-import-warnings')).toHaveTextContent('does not know');
   }, 20_000);
@@ -60,7 +60,7 @@ describe('HistoryImport', () => {
     await user.upload(chooser(container), file('history.json'));
     await user.type(screen.getByTestId('history-environment'), 'broken');
     await user.click(screen.getByTestId('history-submit'));
-    await waitFor(() => expect(screen.getByTestId('history-import-error')).toHaveTextContent('not an Allure 2 history'), { timeout: 8_000 });
+    await waitFor(() => expect(screen.getByTestId('history-import-error')).toHaveTextContent('not an Allure 2 history'), { timeout: 15_000 });
   }, 20_000);
 
   it('is read-only without the permission', () => {

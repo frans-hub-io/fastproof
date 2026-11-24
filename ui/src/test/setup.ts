@@ -49,13 +49,28 @@ if (!('fonts' in document)) {
 const proto = Element.prototype as Partial<Element>;
 proto.scrollIntoView ??= () => undefined;
 
+const inflight = new Set<Promise<unknown>>();
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
 beforeAll(() => {
   server.listen({ onUnhandledFrame: 'error' });
   const patched = globalThis.fetch;
-  globalThis.fetch = (input: RequestInfo | URL, init?: RequestInit) =>
-    patched(typeof input === 'string' && input.startsWith('/') ? new URL(input, window.location.origin) : input, init);
+  globalThis.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
+    const request = patched(typeof input === 'string' && input.startsWith('/') ? new URL(input, window.location.origin) : input, init);
+    const settled = request.then(
+      () => undefined,
+      () => undefined,
+    );
+    inflight.add(settled);
+    void settled.then(() => inflight.delete(settled));
+    return request;
+  };
 });
-afterEach(() => {
+afterEach(async () => {
+  // A request a test did not wait for (such as the session load of a synchronous test) would otherwise update
+  // state after the environment is torn down; let it land while the tree is still mounted.
+  await Promise.race([Promise.allSettled([...inflight]), sleep(2000)]);
+  await sleep(0);
   cleanup();
   server.resetHandlers();
   resetMockState();

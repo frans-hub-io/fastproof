@@ -251,7 +251,11 @@ pub async fn resolve_pending(
     let mut done = 0usize;
     while let Some(par) = queue.pop_front() {
         let view = parent_of(&par);
-        for child in s.store.rp_pending_children(project.id, &par.uuid).await? {
+        for child in s
+            .store
+            .rp_pending_children(project.id, par.launch_id, &par.uuid)
+            .await?
+        {
             done += 1;
             if done > 100_000 {
                 return Ok(());

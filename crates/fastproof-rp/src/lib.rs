@@ -35,6 +35,11 @@ pub const MAX_ATTRIBUTE_VALUE_BYTES: usize = 1024;
 pub const MAX_DEPTH: i32 = 64;
 /// Bytes of a step path in a log line (the native logs API takes at most 1024).
 pub const MAX_STEP_PATH_BYTES: usize = 1024;
+/// Bytes of one container name in a suite path (the native label value limit).
+pub const MAX_SUITE_NAME_BYTES: usize = 1024;
+/// Bytes of a whole suite path, at most: deeper containers are left out of it, so a stored
+/// item (and its cached route) stays small however deep and long-named its containers are.
+pub const MAX_SUITE_PATH_BYTES: usize = 4096;
 /// Separator of names in paths (`a › b`).
 pub const PATH_SEPARATOR: &str = " \u{203a} ";
 

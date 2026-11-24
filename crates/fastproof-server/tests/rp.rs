@@ -1023,6 +1023,268 @@ async fn joins_reruns_late_logs_and_idle_launches() {
     assert_eq!(done["counts"]["broken"], 1);
 }
 
+/// Regressions of the security review of the endpoint: reads do not record launches, the item
+/// limit holds, unauthenticated bodies take no slot, attachments per item are bounded and
+/// pending items never join another launch's tree.
+#[tokio::test]
+async fn security_review_regressions() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = Server::start_with(
+        &db,
+        &[
+            ("FASTPROOF_RP_MAX_ITEMS_PER_LAUNCH", "3"),
+            ("FASTPROOF_RP_MAX_INFLIGHT", "1"),
+        ],
+    )
+    .await;
+    s.project("sec").await;
+    let writer = s.token("w", "uploader", &["sec"]).await;
+    let viewer = s.token("v", "viewer", &["sec"]).await;
+    let pool = &db.pool;
+    let rows_of = |launch: String| async move {
+        sqlx::query_scalar::<_, i64>("select count(*) from rp_launches where launch_id = $1::uuid")
+            .bind(launch)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    };
+
+    // A reader looking a native launch up does not put it under the idle timeout.
+    let native = s.launch("sec", None).await;
+    let fp = native["id"].as_str().unwrap().to_string();
+    let (st, b) = rp(
+        &s,
+        Method::GET,
+        &format!("v2/sec/launch/uuid/{fp}"),
+        &viewer,
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{b}");
+    let (st, b) = rp(
+        &s,
+        Method::GET,
+        &format!("v2/sec/launch?filter.eq.uuid={fp}"),
+        &viewer,
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{b}");
+    assert_eq!(b["content"].as_array().unwrap().len(), 1);
+    assert_eq!(rows_of(fp.clone()).await, 0, "a read records no launch");
+    let idle = s
+        .running
+        .as_ref()
+        .unwrap()
+        .state
+        .store
+        .rp_expire_idle(0)
+        .await
+        .unwrap();
+    assert_eq!(idle, 0);
+    assert_eq!(s.launch_get("sec", &fp).await["status"], "running");
+
+    // The item limit holds exactly on one replica and stays shut; calls that start no item pass.
+    let (_, l) = rp(
+        &s,
+        Method::POST,
+        "v2/sec/launch",
+        &writer,
+        Some(json!({"name": "limited"})),
+    )
+    .await;
+    let lu = l["id"].as_str().unwrap().to_string();
+    let suite = item(
+        &s,
+        "v2/sec/item",
+        &writer,
+        json!({"name": "s", "type": "SUITE", "launchUuid": lu}),
+    )
+    .await;
+    let mut tests = Vec::new();
+    for i in 0..2 {
+        tests.push(
+            item(
+                &s,
+                &format!("v2/sec/item/{suite}"),
+                &writer,
+                json!({"name": format!("t{i}"), "type": "STEP", "launchUuid": lu}),
+            )
+            .await,
+        );
+    }
+    for i in 0..150 {
+        let (st, b) = rp(
+            &s,
+            Method::POST,
+            &format!("v2/sec/item/{suite}"),
+            &writer,
+            Some(json!({"name": format!("over{i}"), "type": "STEP", "launchUuid": lu})),
+        )
+        .await;
+        assert_eq!(
+            st,
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "start {i} past the limit: {b}"
+        );
+    }
+    let stored: i64 = sqlx::query_scalar("select count(*) from rp_items where rp_launch = $1")
+        .bind(&lu)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(stored, 3);
+
+    // Attachments of one item stop at the native per-result limit, the rest answer an error.
+    let t = tests[0].clone();
+    let max = fastproof_ingest::MAX_ATTACHMENTS_PER_RESULT;
+    let entries: Vec<Value> = (0..max - 1)
+        .map(|i| json!({"itemUuid": t, "launchUuid": lu, "level": "INFO", "message": format!("shot {i}"), "file": {"name": "a.png"}}))
+        .collect();
+    let (ct, body) = multipart(
+        &json!(entries),
+        &[("file", "a.png", "image/png", vec![1u8; 16])],
+    );
+    let (st, b) = post_multipart(&s, "v2/sec/log", &writer, &ct, body).await;
+    assert_eq!(st, StatusCode::CREATED, "{b}");
+    assert!(
+        b["responses"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r["id"].is_string())
+    );
+    let entries: Vec<Value> = (0..3)
+        .map(|i| json!({"itemUuid": t, "launchUuid": lu, "level": "INFO", "message": format!("more {i}"), "file": {"name": "b.png"}}))
+        .collect();
+    let (ct, body) = multipart(
+        &json!(entries),
+        &[("file", "b.png", "image/png", vec![2u8; 16])],
+    );
+    let (st, b) = post_multipart(&s, "v2/sec/log", &writer, &ct, body).await;
+    assert_eq!(st, StatusCode::CREATED, "{b}");
+    let r = b["responses"].as_array().unwrap();
+    assert!(r[0]["id"].is_string(), "{b}");
+    assert!(
+        r[1]["message"].as_str().unwrap().contains("attachments"),
+        "{b}"
+    );
+    assert!(r[2]["message"].is_string(), "{b}");
+    let held: i32 = sqlx::query_scalar(
+        "select jsonb_array_length(attachments) from rp_items where rp_launch = $1 and uuid = $2",
+    )
+    .bind(&lu)
+    .bind(&t)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(held as usize, max);
+    for t in &tests {
+        finish(
+            &s,
+            "sec",
+            t,
+            &writer,
+            json!({"status": "PASSED", "launchUuid": lu}),
+        )
+        .await;
+    }
+    finish(&s, "sec", &suite, &writer, json!({"launchUuid": lu})).await;
+
+    // A pending item never becomes the child of a later item of another launch.
+    let (_, l1) = rp(
+        &s,
+        Method::POST,
+        "v2/sec/launch",
+        ADMIN_TOKEN,
+        Some(json!({"name": "one"})),
+    )
+    .await;
+    let (_, l2) = rp(
+        &s,
+        Method::POST,
+        "v2/sec/launch",
+        ADMIN_TOKEN,
+        Some(json!({"name": "two"})),
+    )
+    .await;
+    let (l1, l2) = (l1["id"].as_str().unwrap(), l2["id"].as_str().unwrap());
+    let planted = item(
+        &s,
+        "v2/sec/item/future-parent",
+        ADMIN_TOKEN,
+        json!({"name": "planted", "type": "STEP", "hasStats": false, "launchUuid": l1, "uuid": "planted-step"}),
+    )
+    .await;
+    item(
+        &s,
+        "v2/sec/item",
+        ADMIN_TOKEN,
+        json!({"name": "victim", "type": "STEP", "launchUuid": l2, "uuid": "future-parent"}),
+    )
+    .await;
+    let (state, owner): (String, Option<String>) =
+        sqlx::query_as("select state, owner_uuid from rp_items where uuid = $1")
+            .bind(&planted)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert_eq!((state.as_str(), owner), ("pending", None));
+    sqlx::query("update rp_items set created_at = now() - interval '1 hour' where uuid = $1")
+        .bind(&planted)
+        .execute(pool)
+        .await
+        .unwrap();
+    let orphans = s
+        .running
+        .as_ref()
+        .unwrap()
+        .state
+        .store
+        .rp_expired_pending(120_000, 100)
+        .await
+        .unwrap();
+    assert!(
+        orphans.iter().any(|r| r.uuid == planted),
+        "a parent in another launch does not keep an item pending"
+    );
+
+    // An unauthenticated request that never sends its body takes no slot: with one slot, an
+    // authenticated call still goes through at once.
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let addr = s
+        .base
+        .trim_start_matches("http://")
+        .trim_end_matches('/')
+        .to_string();
+    let mut slow = tokio::net::TcpStream::connect(&addr).await.unwrap();
+    slow.write_all(
+        b"POST /rp/api/v2/sec/launch HTTP/1.1\r\nHost: example.com\r\nContent-Type: application/json\r\nContent-Length: 100000\r\n\r\n{\"name\":",
+    )
+    .await
+    .unwrap();
+    let mut head = [0u8; 12];
+    tokio::time::timeout(Duration::from_secs(5), slow.read_exact(&mut head))
+        .await
+        .expect("an unauthenticated request is answered without its body")
+        .unwrap();
+    assert_eq!(&head[9..12], b"401");
+    let started = std::time::Instant::now();
+    let (st, b) = rp(
+        &s,
+        Method::POST,
+        "v2/sec/launch",
+        &writer,
+        Some(json!({"name": "after a slow stranger"})),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED, "{b}");
+    assert!(started.elapsed() < Duration::from_millis(1500));
+    drop(slow);
+}
+
 fn recordings_dir() -> Option<std::path::PathBuf> {
     let d = match std::env::var("FASTPROOF_TEST_RP_RECORDINGS") {
         Ok(d) => std::path::PathBuf::from(d),

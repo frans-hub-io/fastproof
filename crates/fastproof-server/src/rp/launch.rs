@@ -456,7 +456,7 @@ pub async fn by_uuid(
 ) -> RpResult<Response> {
     version(&v)?;
     let (_, p) = s.rp_project(auth, &project, &s.perms.launches_read).await?;
-    let info = s.rp_launch_info(&p, &lid).await?;
+    let info = s.rp_launch_lookup(&p, &lid).await?;
     let l = s.launch_of(&p, info.launch.id).await?;
     Ok(json(StatusCode::OK, resource(&info.uuid, &l)))
 }
@@ -492,7 +492,7 @@ pub async fn list(
             return Err(RpError::bad_request("at most 50 uuids"));
         }
         for u in uuids {
-            if let Ok(info) = s.rp_launch_info(&p, &u).await {
+            if let Ok(info) = s.rp_launch_lookup(&p, &u).await {
                 let l = s.launch_of(&p, info.launch.id).await?;
                 content.push(resource(&info.uuid, &l));
             }

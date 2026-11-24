@@ -20,6 +20,8 @@ pub struct RpLaunch {
     pub creator: String,
     pub finish_requested: bool,
     pub done: bool,
+    /// Items counted against `FASTPROOF_RP_MAX_ITEMS_PER_LAUNCH` so far.
+    pub item_count: i64,
 }
 
 fn launch_row(r: &PgRow) -> Result<RpLaunch, sqlx::Error> {
@@ -32,10 +34,12 @@ fn launch_row(r: &PgRow) -> Result<RpLaunch, sqlx::Error> {
         creator: r.try_get("creator")?,
         finish_requested: req.is_some(),
         done: done.is_some(),
+        item_count: r.try_get("item_count")?,
     })
 }
 
-const LAUNCH_COLUMNS: &str = "project_id, uuid, launch_id, creator, finish_requested_at, done_at";
+const LAUNCH_COLUMNS: &str =
+    "project_id, uuid, launch_id, creator, finish_requested_at, done_at, item_count";
 
 /// A row of `rp_items`.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -156,6 +160,17 @@ pub struct ItemFinish {
     pub settle_ms: i64,
 }
 
+/// What became of attachments added to an item.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Attach {
+    /// The first `n` were added (the rest did not fit).
+    Added(usize),
+    /// The item or its owner was emitted already (or is gone).
+    Late,
+    /// The item holds as many attachments as it may.
+    Full,
+}
+
 /// A ReportPortal launch whose finish was requested and that is not done.
 #[derive(Clone, Debug)]
 pub struct Finishing {
@@ -218,8 +233,9 @@ impl Store {
             .ok_or_else(|| anyhow::anyhow!("rp launch vanished after insert"))
     }
 
-    /// Notes calls into a launch: `items` more items (refused, `None`, past `max`), and the
-    /// time of the last call (for the idle timeout).
+    /// Notes calls into a launch: `items` more items and the time of the last call (for the
+    /// idle timeout). Returns the item count after the call, or `None` when `items` more would
+    /// pass `max` (nothing is counted then). A call without new items is never refused.
     pub async fn rp_launch_touch(
         &self,
         project_id: Uuid,
@@ -229,7 +245,7 @@ impl Store {
     ) -> anyhow::Result<Option<i64>> {
         Ok(sqlx::query_scalar(
             "update rp_launches set item_count = item_count + $3, last_call_at = now() \
-             where project_id = $1 and uuid = $2 and item_count + $3 <= $4 returning item_count",
+             where project_id = $1 and uuid = $2 and ($3 = 0 or item_count + $3 <= $4) returning item_count",
         )
         .bind(project_id)
         .bind(no_nul(uuid))
@@ -515,28 +531,51 @@ impl Store {
         Ok(r.rows_affected() > 0)
     }
 
-    /// Adds attachments (a JSON array) to an item. Returns false when the item is gone or its
-    /// owner was emitted already (the attachment came too late).
+    /// Adds attachments (a JSON array) to an item, as many as fit under `max`:
+    /// [`Attach::Added`] with how many (the first ones), [`Attach::Late`] when the item is gone
+    /// or its owner was emitted already, [`Attach::Full`] when none fits.
     pub async fn rp_item_attach(
         &self,
         project_id: Uuid,
         uuid: &str,
         owner: Option<&str>,
         attached: &serde_json::Value,
-    ) -> anyhow::Result<bool> {
-        let r = sqlx::query(
-            "update rp_items set attachments = attachments || $3 \
-             where project_id = $1 and uuid = $2 and state not in ('emitting', 'emitted') \
-               and ($4::text is null or not exists (select 1 from rp_items o where o.project_id = $1 \
-                 and o.uuid = $4 and o.state in ('emitting', 'emitted')))",
-        )
+        max: i64,
+    ) -> anyhow::Result<Attach> {
+        const OPEN: &str = "state not in ('emitting', 'emitted') and ($3::text is null or not exists \
+             (select 1 from rp_items o where o.project_id = $1 and o.uuid = $3 \
+             and o.state in ('emitting', 'emitted')))";
+        let added: Option<i64> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            "with cur as (select jsonb_array_length(attachments)::bigint as n from rp_items \
+               where project_id = $1 and uuid = $2 and {OPEN} for update) \
+             update rp_items r set attachments = r.attachments || (select coalesce(jsonb_agg(x.e order by x.i), '[]'::jsonb) \
+               from jsonb_array_elements($4) with ordinality x(e, i) where x.i <= $5 - cur.n) \
+             from cur where r.project_id = $1 and r.uuid = $2 and cur.n < $5 \
+             returning least(jsonb_array_length($4)::bigint, $5 - cur.n)"
+        )))
         .bind(project_id)
         .bind(no_nul(uuid))
-        .bind(attached)
         .bind(owner.map(no_nul))
-        .execute(&self.pool)
+        .bind(attached)
+        .bind(max)
+        .fetch_optional(&self.pool)
         .await?;
-        Ok(r.rows_affected() > 0)
+        if let Some(n) = added {
+            return Ok(Attach::Added(n.max(0) as usize));
+        }
+        let open_now: Option<i32> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            "select 1 from rp_items where project_id = $1 and uuid = $2 and {OPEN}"
+        )))
+        .bind(project_id)
+        .bind(no_nul(uuid))
+        .bind(owner.map(no_nul))
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(if open_now.is_some() {
+            Attach::Full
+        } else {
+            Attach::Late
+        })
     }
 
     /// Reserves `n` log sequence numbers on each row; returns the first number of each range.
@@ -678,18 +717,21 @@ impl Store {
         Ok(launches.len() as u64)
     }
 
-    /// Items waiting for this parent.
+    /// Items of the launch waiting for this parent (an item of another launch never becomes
+    /// its child).
     pub async fn rp_pending_children(
         &self,
         project_id: Uuid,
+        launch_id: Uuid,
         parent: &str,
     ) -> anyhow::Result<Vec<RpItem>> {
         let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
             "select {ITEM_COLUMNS} from rp_items where project_id = $1 and parent_uuid = $2 \
-             and state = 'pending' order by num_id limit 10000"
+             and launch_id = $3 and state = 'pending' order by num_id limit 10000"
         )))
         .bind(project_id)
         .bind(no_nul(parent))
+        .bind(launch_id)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.iter().map(item_row).collect::<Result<_, _>>()?)
@@ -701,7 +743,7 @@ impl Store {
             "select {ITEM_COLUMNS} from rp_items where state = 'pending' \
              and created_at < now() - make_interval(secs => $1::double precision / 1000) \
              and (parent_uuid is null or not exists (select 1 from rp_items p where p.project_id = rp_items.project_id \
-               and p.uuid = rp_items.parent_uuid)) order by created_at limit $2"
+               and p.uuid = rp_items.parent_uuid and p.launch_id = rp_items.launch_id)) order by created_at limit $2"
         )))
         .bind(ttl_ms)
         .bind(limit)

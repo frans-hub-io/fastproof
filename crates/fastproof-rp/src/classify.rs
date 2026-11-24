@@ -10,7 +10,7 @@
 //! - An item whose parent did not arrive yet is **pending** until it does.
 
 use crate::status::{is_fixture_type, is_test_type};
-use crate::{MAX_STEP_PATH_BYTES, PATH_SEPARATOR, cut};
+use crate::{MAX_STEP_PATH_BYTES, MAX_SUITE_NAME_BYTES, MAX_SUITE_PATH_BYTES, PATH_SEPARATOR, cut};
 
 /// The role of an item.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -96,6 +96,16 @@ pub struct Placement {
     pub parent_becomes_container: bool,
 }
 
+/// Adds a container name to a suite path within [`MAX_SUITE_PATH_BYTES`] (the name cut to
+/// [`MAX_SUITE_NAME_BYTES`]); a name that does not fit is left out.
+fn push_suite(path: &mut Vec<String>, name: &str) {
+    let name = cut(name, MAX_SUITE_NAME_BYTES);
+    let used: usize = path.iter().map(String::len).sum();
+    if used + name.len() <= MAX_SUITE_PATH_BYTES {
+        path.push(name);
+    }
+}
+
 fn join_step(parent: Option<&str>, name: &str) -> String {
     let s = match parent {
         Some(p) if !p.is_empty() => format!("{p}{PATH_SEPARATOR}{name}"),
@@ -117,7 +127,7 @@ pub fn place(
     let suite_path = match parent {
         Some(p) if matches!(p.role, Role::Container | Role::Result) => {
             let mut s = p.suite_path.clone();
-            s.push(p.name.clone());
+            push_suite(&mut s, &p.name);
             s
         }
         Some(p) => p.suite_path.clone(),
@@ -227,8 +237,8 @@ pub fn place(
             return step(p);
         }
         let mut suite_path = suite_path;
-        if tentative && suite_path.last() != Some(&p.name) {
-            suite_path.push(p.name.clone());
+        if tentative && suite_path.last() != Some(&cut(&p.name, MAX_SUITE_NAME_BYTES)) {
+            push_suite(&mut suite_path, &p.name);
         }
         return Placement {
             role: Role::Fixture,
@@ -394,5 +404,19 @@ mod tests {
         }
         assert!(p.log_step.unwrap().len() <= MAX_STEP_PATH_BYTES);
         assert!(Role::parse("result") == Some(Role::Result) && Role::parse("x").is_none());
+    }
+
+    #[test]
+    fn deep_long_named_containers_keep_suite_paths_small() {
+        let mut p = placed("c0", &"n".repeat(4096), "SUITE", true, None);
+        for i in 1..64 {
+            p = placed(&format!("c{i}"), &"m".repeat(4096), "SUITE", true, Some(&p));
+        }
+        let t = place("t", "t", "STEP", true, Some(&p));
+        let bytes: usize = t.suite_path.iter().map(String::len).sum();
+        assert!(bytes <= MAX_SUITE_PATH_BYTES, "{bytes}");
+        assert!(t.suite_path.iter().all(|n| n.len() <= MAX_SUITE_NAME_BYTES));
+        assert_eq!(t.suite_path.len(), 4);
+        assert_eq!(t.depth, 64);
     }
 }

@@ -9,7 +9,7 @@ pub mod launch;
 pub mod log;
 pub mod settle;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use axum::Router;
 use axum::body::Bytes;
 use axum::extract::rejection::BytesRejection;
-use axum::extract::{DefaultBodyLimit, MatchedPath, Request, State};
+use axum::extract::{DefaultBodyLimit, FromRequestParts, MatchedPath, Request, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -208,49 +208,95 @@ impl RpConfig {
     }
 }
 
-/// A map whose entries expire, bounded in size (when full, expired entries go, then all).
+/// A map whose entries expire, bounded in entries and in bytes (as its weigher counts them):
+/// when full, expired entries go, then all. An entry heavier than the whole budget is not kept.
 pub struct Cache<K, V> {
-    map: Mutex<HashMap<K, (Instant, V)>>,
+    inner: Mutex<CacheInner<K, V>>,
     ttl: Duration,
     cap: usize,
+    max_bytes: usize,
+    weigh: fn(&K, &V) -> usize,
+}
+
+struct CacheInner<K, V> {
+    map: HashMap<K, (Instant, V, usize)>,
+    bytes: usize,
 }
 
 impl<K: Eq + Hash + Clone, V: Clone> Cache<K, V> {
-    pub fn new(ttl: Duration, cap: usize) -> Self {
+    pub fn new(ttl: Duration, cap: usize, max_bytes: usize, weigh: fn(&K, &V) -> usize) -> Self {
         Self {
-            map: Mutex::new(HashMap::new()),
+            inner: Mutex::new(CacheInner {
+                map: HashMap::new(),
+                bytes: 0,
+            }),
             ttl,
             cap,
+            max_bytes,
+            weigh,
         }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, CacheInner<K, V>> {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     pub fn get(&self, k: &K) -> Option<V> {
-        let m = self.map.lock().unwrap_or_else(|e| e.into_inner());
-        m.get(k)
-            .filter(|(t, _)| t.elapsed() < self.ttl)
-            .map(|(_, v)| v.clone())
+        self.lock()
+            .map
+            .get(k)
+            .filter(|(t, _, _)| t.elapsed() < self.ttl)
+            .map(|(_, v, _)| v.clone())
     }
 
     pub fn put(&self, k: K, v: V) {
-        let mut m = self.map.lock().unwrap_or_else(|e| e.into_inner());
-        if m.len() >= self.cap && !m.contains_key(&k) {
+        let w = (self.weigh)(&k, &v);
+        let mut c = self.lock();
+        if let Some((_, _, old)) = c.map.remove(&k) {
+            c.bytes -= old;
+        }
+        if w > self.max_bytes {
+            return;
+        }
+        if c.map.len() >= self.cap || c.bytes + w > self.max_bytes {
             let ttl = self.ttl;
-            m.retain(|_, (t, _)| t.elapsed() < ttl);
-            if m.len() >= self.cap {
-                m.clear();
+            c.map.retain(|_, (t, _, _)| t.elapsed() < ttl);
+            c.bytes = c.map.values().map(|(_, _, w)| w).sum();
+            if c.map.len() >= self.cap || c.bytes + w > self.max_bytes {
+                c.map.clear();
+                c.bytes = 0;
             }
         }
-        m.insert(k, (Instant::now(), v));
+        c.bytes += w;
+        c.map.insert(k, (Instant::now(), v, w));
     }
 
     pub fn clear(&self) {
-        self.map.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        let mut c = self.lock();
+        c.map.clear();
+        c.bytes = 0;
     }
 
     pub fn remove(&self, k: &K) {
-        self.map.lock().unwrap_or_else(|e| e.into_inner()).remove(k);
+        let mut c = self.lock();
+        if let Some((_, _, w)) = c.map.remove(k) {
+            c.bytes -= w;
+        }
+    }
+
+    /// Bytes of the entries held, as the weigher counts them.
+    pub fn bytes(&self) -> usize {
+        self.lock().bytes
     }
 }
+
+/// Bytes of the cached launches of a replica, at most.
+pub const LAUNCH_CACHE_BYTES: usize = 64 * 1024 * 1024;
+/// Bytes of the cached item routes of a replica, at most.
+pub const ITEM_CACHE_BYTES: usize = 64 * 1024 * 1024;
+/// How long a caller checked as a contributor of a launch is trusted without a new check
+/// (a launch finished on another replica refuses non-creators again after this long).
+pub const CONTRIBUTOR_RECHECK: Duration = Duration::from_secs(5);
 
 /// A ReportPortal launch as handlers use it.
 #[derive(Clone)]
@@ -260,10 +306,21 @@ pub struct LaunchInfo {
     pub creator: String,
     /// Items started on this replica and not yet counted in `rp_launches`.
     pub uncounted: Arc<AtomicI64>,
+    /// Items the launch may still take as far as this replica knows (`rp_launches` is asked
+    /// at once when fewer than 100 are left).
+    pub headroom: Arc<AtomicI64>,
     /// When this replica last told `rp_launches` about calls into the launch.
     pub touched: Arc<Mutex<Instant>>,
-    /// Callers this replica checked as contributors of the launch.
-    pub contributors: Arc<Mutex<HashSet<String>>>,
+    /// Callers this replica checked as contributors of the launch, and when.
+    pub contributors: Arc<Mutex<HashMap<String, Instant>>>,
+}
+
+impl LaunchInfo {
+    /// Approximate bytes of a cached launch.
+    fn weight(_: &(Uuid, String), l: &LaunchInfo) -> usize {
+        let launch = serde_json::to_vec(&l.launch).map_or(64 * 1024, |v| v.len());
+        512 + 2 * l.uuid.len() + l.creator.len() + launch
+    }
 }
 
 /// A cached item: its place in the tree.
@@ -276,6 +333,23 @@ pub struct ItemRoute {
 }
 
 impl ItemRoute {
+    /// Approximate bytes of a cached route.
+    fn weight(k: &(Uuid, String), r: &ItemRoute) -> usize {
+        let p = &r.parent;
+        let opt = |s: &Option<String>| s.as_ref().map_or(0, String::len);
+        256 + k.1.len()
+            + r.rp_launch.len()
+            + p.uuid.len()
+            + p.item_type.len()
+            + p.name.len()
+            + p.log_key.len()
+            + opt(&p.owner_uuid)
+            + opt(&p.log_step)
+            + opt(&p.seq_uuid)
+            + opt(&p.error_uuid)
+            + p.suite_path.iter().map(|x| x.len() + 24).sum::<usize>()
+    }
+
     pub fn of(r: &RpItem) -> Self {
         Self {
             launch_id: r.launch_id,
@@ -328,9 +402,11 @@ impl RpState {
         (
             Self {
                 inflight: Arc::new(Semaphore::new(cfg.max_inflight)),
-                launches: Cache::new(CACHE_TTL, 10_000),
-                items: Cache::new(CACHE_TTL, 200_000),
-                aliases: Cache::new(CACHE_TTL, 10_000),
+                launches: Cache::new(CACHE_TTL, 10_000, LAUNCH_CACHE_BYTES, LaunchInfo::weight),
+                items: Cache::new(CACHE_TTL, 200_000, ITEM_CACHE_BYTES, ItemRoute::weight),
+                aliases: Cache::new(CACHE_TTL, 10_000, 4 * 1024 * 1024, |k, v| {
+                    64 + k.len() + v.as_ref().map_or(0, String::len)
+                }),
                 logs,
                 running,
                 wake: Arc::new(Notify::new()),
@@ -535,10 +611,27 @@ impl AppState {
         Ok((auth, project))
     }
 
-    /// The ReportPortal launch `uuid` of a project: a launch started through this endpoint, a
-    /// FastProof launch id (the CI recipe: `fastproof launch start` prints it and agents join
-    /// it), or a launch started with that client uuid.
+    /// The ReportPortal launch `uuid` of a project, for a call that writes into it: a launch
+    /// started through this endpoint, a FastProof launch id (the CI recipe: `fastproof launch
+    /// start` prints it and agents join it), or a launch started with that client uuid. The
+    /// launch is recorded in `rp_launches` (item count, idle timeout, finish).
     pub async fn rp_launch_info(&self, project: &Project, uuid: &str) -> RpResult<LaunchInfo> {
+        self.rp_launch_resolve(project, uuid, true).await
+    }
+
+    /// [`AppState::rp_launch_info`] for a call that only reads: a launch not recorded yet
+    /// stays unrecorded, so reading a native launch never puts it under the endpoint's idle
+    /// timeout.
+    pub async fn rp_launch_lookup(&self, project: &Project, uuid: &str) -> RpResult<LaunchInfo> {
+        self.rp_launch_resolve(project, uuid, false).await
+    }
+
+    async fn rp_launch_resolve(
+        &self,
+        project: &Project,
+        uuid: &str,
+        record: bool,
+    ) -> RpResult<LaunchInfo> {
         if !fastproof_rp::ids::valid_uuid(uuid) {
             return Err(RpError::not_found("launch"));
         }
@@ -546,7 +639,8 @@ impl AppState {
         if let Some(l) = self.rp.launches.get(&key) {
             return Ok(l);
         }
-        let launch_id = match self.store.rp_launch(project.id, uuid).await? {
+        let row = self.store.rp_launch(project.id, uuid).await?;
+        let launch_id = match &row {
             Some(rl) => Some(rl.launch_id),
             None => {
                 let by_id = match Uuid::parse_str(uuid) {
@@ -567,30 +661,43 @@ impl AppState {
             return Err(RpError::not_found("launch"));
         };
         let launch = self.launch_of(project, launch_id).await?;
-        let creator = self
-            .store
-            .launch_creator(launch.id)
-            .await?
-            .unwrap_or_default();
-        let rl = self
-            .store
-            .rp_launch_insert(project.id, uuid, launch.id, &creator)
-            .await?;
+        let rl = match row {
+            Some(rl) => Some(rl),
+            None if record => {
+                let creator = self
+                    .store
+                    .launch_creator(launch.id)
+                    .await?
+                    .unwrap_or_default();
+                Some(
+                    self.store
+                        .rp_launch_insert(project.id, uuid, launch.id, &creator)
+                        .await?,
+                )
+            }
+            None => None,
+        };
+        let max = self.cfg.rp.max_items_per_launch;
         let info = LaunchInfo {
             uuid: uuid.to_string(),
             launch,
-            creator: rl.creator,
+            creator: rl.as_ref().map(|r| r.creator.clone()).unwrap_or_default(),
             uncounted: Arc::new(AtomicI64::new(0)),
+            headroom: Arc::new(AtomicI64::new(
+                max - rl.as_ref().map_or(0, |r| r.item_count),
+            )),
             touched: Arc::new(Mutex::new(Instant::now() - Duration::from_secs(3600))),
-            contributors: Arc::new(Mutex::new(HashSet::new())),
+            contributors: Arc::new(Mutex::new(HashMap::new())),
         };
-        self.rp.launches.put(key, info.clone());
+        if rl.is_some() {
+            self.rp.launches.put(key, info.clone());
+        }
         Ok(info)
     }
 
     /// A caller writes into a launch: the native contributor rules (a merged launch refuses,
     /// a finished one takes data only from its creator or a caller with `cases:sync`), checked
-    /// once per caller and launch on a replica.
+    /// again for a caller after [`CONTRIBUTOR_RECHECK`] on a replica.
     pub async fn rp_contributor(
         &self,
         auth: &Auth,
@@ -598,56 +705,75 @@ impl AppState {
         info: &LaunchInfo,
     ) -> RpResult<()> {
         let who = crate::limits::caller_key(auth);
-        let known = info
+        let fresh = info
             .contributors
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .contains(&who);
-        if known && info.launch.finished_at.is_none() {
+            .get(&who)
+            .is_some_and(|t| t.elapsed() < CONTRIBUTOR_RECHECK);
+        if fresh && info.launch.finished_at.is_none() {
             return Ok(());
         }
         let current = self.launch_of(project, info.launch.id).await?;
         self.note_plan_contributor(auth, project, &current).await?;
-        info.contributors
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(who);
+        let mut known = info.contributors.lock().unwrap_or_else(|e| e.into_inner());
+        if known.len() >= 10_000 {
+            known.clear();
+        }
+        known.insert(who, Instant::now());
         Ok(())
     }
 
     /// Counts a started item against the launch's item limit and notes the call for the
-    /// idle timeout; `rp_launches` is told every 100 items or 5 seconds.
+    /// idle timeout; `rp_launches` is told every 100 items or 5 seconds, and on every item
+    /// once fewer than 100 are left. A launch at its limit refuses further items; calls that
+    /// start none (finishes, log lines) always pass.
     pub async fn rp_count_items(
         &self,
         project: &Project,
         info: &LaunchInfo,
         items: i64,
     ) -> RpResult<()> {
+        let max = self.cfg.rp.max_items_per_launch;
+        let refuse = || {
+            metrics::counter!("fastproof_guard_rejections_total", "guard" => "rp_items")
+                .increment(1);
+            RpError::new(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                format!("the launch has more than FASTPROOF_RP_MAX_ITEMS_PER_LAUNCH ({max}) items"),
+            )
+        };
+        let headroom = info.headroom.load(Ordering::Relaxed);
+        if items > 0 && headroom < items {
+            return Err(refuse());
+        }
         let pending = info.uncounted.fetch_add(items, Ordering::Relaxed) + items;
         let due = {
             let t = info.touched.lock().unwrap_or_else(|e| e.into_inner());
             t.elapsed() >= Duration::from_secs(5)
         };
-        if pending < 100 && !due {
+        if pending < 100.min(headroom.max(1)) && !due {
             return Ok(());
         }
         let n = info.uncounted.swap(0, Ordering::Relaxed);
         *info.touched.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
-        let max = self.cfg.rp.max_items_per_launch;
-        if self
+        match self
             .store
             .rp_launch_touch(project.id, &info.uuid, n, max)
             .await?
-            .is_none()
         {
-            metrics::counter!("fastproof_guard_rejections_total", "guard" => "rp_items")
-                .increment(1);
-            return Err(RpError::new(
-                StatusCode::PAYLOAD_TOO_LARGE,
-                format!("the launch has more than FASTPROOF_RP_MAX_ITEMS_PER_LAUNCH ({max}) items"),
-            ));
+            Some(count) => {
+                info.headroom.store(max - count, Ordering::Relaxed);
+                Ok(())
+            }
+            None => {
+                info.headroom.store(0, Ordering::Relaxed);
+                self.store
+                    .rp_launch_touch(project.id, &info.uuid, 0, max)
+                    .await?;
+                Err(refuse())
+            }
         }
-        Ok(())
     }
 
     /// The item `uuid` of a project, from the cache or the store.
@@ -704,9 +830,15 @@ fn endpoint(req: &Request) -> String {
         .unwrap_or_else(|| "other".into())
 }
 
-/// Every `/rp` request: compressed bodies are refused, at most `FASTPROOF_RP_MAX_INFLIGHT`
-/// are served at once (503 with `Retry-After` beyond), and each is counted by route template
-/// and status.
+/// Routes that answer 501 for everyone, without authentication.
+fn unsupported_route(ep: &str) -> bool {
+    ep == "/rp" || ep == "/rp/{*rest}" || ep.ends_with("/launch/merge")
+}
+
+/// Every `/rp` request: compressed bodies are refused, the caller is authenticated before
+/// anything else (no body is read and no slot is taken for an unauthenticated request), at
+/// most `FASTPROOF_RP_MAX_INFLIGHT` are served at once (503 with `Retry-After` beyond), and
+/// each is counted by route template and status.
 async fn guard(State(s): State<AppState>, req: Request, next: Next) -> Response {
     let ep = endpoint(&req);
     let resp = if !s.cfg.rp.enabled {
@@ -722,21 +854,36 @@ async fn guard(State(s): State<AppState>, req: Request, next: Next) -> Response 
         )
         .into_response()
     } else {
-        // A short wait before refusing: some agents (pytest) do not retry a refused start.
-        match tokio::time::timeout(INFLIGHT_WAIT, s.rp.inflight.clone().acquire_owned()).await {
-            Ok(Ok(permit)) => {
-                let r = next.run(req).await;
-                drop(permit);
-                r
-            }
-            _ => {
-                metrics::counter!("fastproof_guard_rejections_total", "guard" => "rp_inflight")
-                    .increment(1);
-                RpError::new(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "too many requests in progress; retry later",
-                )
-                .into_response()
+        let (mut parts, body) = req.into_parts();
+        let authed = if unsupported_route(&ep) {
+            Ok(())
+        } else {
+            // The handlers take the principal from the request extensions.
+            Auth::from_request_parts(&mut parts, &s).await.map(|_| ())
+        };
+        match authed {
+            Err(e) => RpError::from(e).into_response(),
+            Ok(()) => {
+                let req = Request::from_parts(parts, body);
+                // A short wait before refusing: some agents (pytest) do not retry a refused start.
+                match tokio::time::timeout(INFLIGHT_WAIT, s.rp.inflight.clone().acquire_owned())
+                    .await
+                {
+                    Ok(Ok(permit)) => {
+                        let r = next.run(req).await;
+                        drop(permit);
+                        r
+                    }
+                    _ => {
+                        metrics::counter!("fastproof_guard_rejections_total", "guard" => "rp_inflight")
+                            .increment(1);
+                        RpError::new(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            "too many requests in progress; retry later",
+                        )
+                        .into_response()
+                    }
+                }
             }
         }
     };
@@ -813,7 +960,7 @@ mod tests {
 
     #[test]
     fn caches_expire_and_stay_bounded() {
-        let c: Cache<u32, u32> = Cache::new(Duration::from_secs(60), 2);
+        let c: Cache<u32, u32> = Cache::new(Duration::from_secs(60), 2, usize::MAX, |_, _| 1);
         c.put(1, 1);
         c.put(2, 2);
         c.put(3, 3);
@@ -821,9 +968,57 @@ mod tests {
         assert!(c.get(&1).is_none() || c.get(&2).is_none());
         c.remove(&3);
         assert_eq!(c.get(&3), None);
-        let e: Cache<u32, u32> = Cache::new(Duration::from_millis(0), 2);
+        let e: Cache<u32, u32> = Cache::new(Duration::from_millis(0), 2, usize::MAX, |_, _| 1);
         e.put(1, 1);
         assert_eq!(e.get(&1), None);
+    }
+
+    #[test]
+    fn caches_stay_within_their_byte_budget() {
+        let c: Cache<u32, String> =
+            Cache::new(Duration::from_secs(60), 1_000_000, 10_000, |_, v| v.len());
+        for i in 0..1000 {
+            c.put(i, "x".repeat(1000));
+            assert!(c.bytes() <= 10_000, "{}", c.bytes());
+        }
+        c.put(5000, "y".repeat(20_000));
+        assert_eq!(
+            c.get(&5000),
+            None,
+            "an entry over the whole budget is not kept"
+        );
+        c.put(1, "z".repeat(10));
+        c.put(1, "z".repeat(20));
+        assert_eq!(c.get(&1).map(|v| v.len()), Some(20));
+        let before = c.bytes();
+        c.remove(&1);
+        assert_eq!(c.bytes(), before - 20);
+
+        let deep = ItemRoute {
+            launch_id: Uuid::nil(),
+            rp_launch: "l".into(),
+            num_id: 1,
+            parent: Parent {
+                uuid: "u".into(),
+                role: Role::Result,
+                item_type: "STEP".into(),
+                name: "n".repeat(4096),
+                depth: 64,
+                owner_uuid: None,
+                log_key: "rp:u".into(),
+                log_step: Some("s".repeat(1024)),
+                seq_uuid: Some("u".into()),
+                error_uuid: Some("u".into()),
+                suite_path: vec!["p".repeat(1024); 4],
+            },
+        };
+        let routes: Cache<(Uuid, String), ItemRoute> =
+            Cache::new(CACHE_TTL, 200_000, ITEM_CACHE_BYTES, ItemRoute::weight);
+        for i in 0..20_000 {
+            routes.put((Uuid::nil(), format!("item-{i}")), deep.clone());
+        }
+        assert!(routes.bytes() <= ITEM_CACHE_BYTES);
+        assert!(ItemRoute::weight(&(Uuid::nil(), "u".into()), &deep) > 9 * 1024);
     }
 
     #[test]

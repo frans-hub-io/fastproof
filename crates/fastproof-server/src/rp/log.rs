@@ -26,6 +26,7 @@ use fastproof_rp::{clean_text, ids};
 use fastproof_store::Project;
 use fastproof_store::attachments::NewAttachment;
 use fastproof_store::logs::{LogLevel, LogLine, LogStream};
+use fastproof_store::rp::Attach;
 use franshub_auth::Auth;
 use franshub_http::ApiError;
 use futures::StreamExt;
@@ -609,6 +610,10 @@ async fn store_file(
         .ok_or_else(|| anyhow::anyhow!("attachment row missing"))
 }
 
+/// Files of a batch by the item (and owner) that gets them, with the index of each entry's
+/// answer.
+type PendingAttachments = BTreeMap<(String, Option<String>), Vec<(usize, Attached)>>;
+
 /// Lines (and files) of a batch with one answer per entry: `{"id"}`, or `{"message"}` for an
 /// entry that was refused (an unknown item, a missing or too large file).
 async fn lines_of(
@@ -627,6 +632,7 @@ async fn lines_of(
     }
     let mut lines = Vec::with_capacity(entries.len());
     let mut responses = Vec::with_capacity(entries.len());
+    let mut attach: PendingAttachments = BTreeMap::new();
     for rq in entries {
         let file_name = rq
             .file
@@ -665,29 +671,21 @@ async fn lines_of(
                 }
             };
             match &target {
-                Some(t) => {
-                    let attached = json!([Attached {
-                        id: id.to_string(),
-                        name: shown.clone(),
-                        content_type: f
-                            .content_type
-                            .as_deref()
-                            .map(|c| clean_content_type(Some(c)))
-                            .filter(|c| c != "application/octet-stream"),
-                    }]);
-                    if !s
-                        .store
-                        .rp_item_attach(p.id, &t.item, t.owner.as_deref(), &attached)
-                        .await?
-                    {
-                        metrics::counter!("fastproof_rp_late_total", "kind" => "attachment")
-                            .increment(1);
-                        if let Some(o) = &t.owner {
-                            s.store.rp_hold(p.id, std::slice::from_ref(o)).await?;
-                        }
-                        tracing::warn!(project = %p.key, item = %t.item, "a ReportPortal attachment came after its result was emitted; dropped");
-                    }
-                }
+                Some(t) => attach
+                    .entry((t.item.clone(), t.owner.clone()))
+                    .or_default()
+                    .push((
+                        responses.len(),
+                        Attached {
+                            id: id.to_string(),
+                            name: shown.clone(),
+                            content_type: f
+                                .content_type
+                                .as_deref()
+                                .map(|c| clean_content_type(Some(c)))
+                                .filter(|c| c != "application/octet-stream"),
+                        },
+                    )),
                 None => {
                     metrics::counter!("fastproof_rp_late_total", "kind" => "container_attachment")
                         .increment(1);
@@ -696,6 +694,47 @@ async fn lines_of(
         }
         responses.push(json!({"id": log_id(rq)}));
         lines.push(line);
+    }
+    // One update per item and request, and no item holds more references than a native
+    // result may.
+    for ((item, owner), list) in attach {
+        let refs: Vec<&Attached> = list.iter().map(|(_, a)| a).collect();
+        let added = match s
+            .store
+            .rp_item_attach(
+                p.id,
+                &item,
+                owner.as_deref(),
+                &json!(refs),
+                fastproof_ingest::MAX_ATTACHMENTS_PER_RESULT as i64,
+            )
+            .await?
+        {
+            Attach::Added(n) => n,
+            Attach::Full => 0,
+            Attach::Late => {
+                metrics::counter!("fastproof_rp_late_total", "kind" => "attachment")
+                    .increment(list.len() as u64);
+                if let Some(o) = &owner {
+                    s.store.rp_hold(p.id, std::slice::from_ref(o)).await?;
+                }
+                tracing::warn!(project = %p.key, item = %item, "a ReportPortal attachment came after its result was emitted; dropped");
+                continue;
+            }
+        };
+        if added < list.len() {
+            metrics::counter!("fastproof_guard_rejections_total", "guard" => "rp_attachments")
+                .increment((list.len() - added) as u64);
+        }
+        for (i, _) in list.iter().skip(added) {
+            responses[*i] = json!({
+                "message": format!(
+                    "Binary data cannot be saved: the item already has {} attachments",
+                    fastproof_ingest::MAX_ATTACHMENTS_PER_RESULT
+                ),
+                "stackTrace": "",
+            });
+        }
     }
     Ok((lines, responses))
 }

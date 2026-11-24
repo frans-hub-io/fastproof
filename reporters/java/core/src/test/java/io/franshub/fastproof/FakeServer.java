@@ -31,6 +31,8 @@ public final class FakeServer implements AutoCloseable {
     public final Map<String, String> launches = new LinkedHashMap<>();
     public final List<String> finished = new ArrayList<>();
     public int uploads;
+    public volatile long resultsDelayMs;
+    public volatile int resultRequests;
     public boolean direct;
     public String s3Mode = "ok";
     public final Map<String, String[]> pendingDirect = new LinkedHashMap<>();
@@ -160,6 +162,14 @@ public final class FakeServer implements AutoCloseable {
             attachmentBodies.putIfAbsent(sha, body);
             attachmentNames.putIfAbsent(sha, attName);
             return new Object[] {201, Map.of("id", sha, "sha256", sha, "size", body.length)};
+        }
+        if (what.equals("results")) {
+            resultRequests++;
+            try {
+                Thread.sleep(resultsDelayMs);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
         }
         final List<Map<String, Object>> lines = new ArrayList<>();
         for (final String l : new String(body, StandardCharsets.UTF_8).split("\n")) {

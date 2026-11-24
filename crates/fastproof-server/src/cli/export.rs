@@ -254,6 +254,52 @@ pub async fn run(a: ExportArgs) -> anyhow::Result<i32> {
     Ok(0)
 }
 
+const HOW_TO_PASS_BROWSER: &str = "pass a working Chromium or Chrome with --chromium /path/to/chrome or FASTPROOF_CHROMIUM (a full browser, not a chrome-headless-shell build), add --no-sandbox when running as root in a container, or export --format html and print it from any browser";
+
+const STDERR_LINES: usize = 8;
+const LINE_CHARS: usize = 300;
+
+fn is_noise(line: &str) -> bool {
+    let l = line.to_ascii_lowercase();
+    l.contains("dbus") || l.contains("bus.cc") || l.contains("org.freedesktop")
+}
+
+/// The last lines of a browser's stderr that say something, without the D-Bus chatter that
+/// every container run prints.
+fn stderr_tail(stderr: &[u8]) -> String {
+    let text = String::from_utf8_lossy(stderr);
+    let lines: Vec<String> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !is_noise(l))
+        .map(|l| l.chars().take(LINE_CHARS).collect())
+        .collect();
+    let from = lines.len().saturating_sub(STDERR_LINES);
+    lines[from..].join("\n")
+}
+
+/// The error for a browser that did not leave a PDF.
+fn chromium_failure(chromium: &Path, status: &str, wrote: bool, stderr: &[u8]) -> String {
+    let what = if wrote {
+        format!("exited with {status}")
+    } else if status.contains("exit status: 0") {
+        "exited with exit status: 0 but wrote no PDF".to_string()
+    } else {
+        format!("exited with {status} and wrote no PDF")
+    };
+    let tail = stderr_tail(stderr);
+    let mut m = format!("Chromium ({}) {what}", chromium.display());
+    if tail.is_empty() {
+        m.push_str("; it printed nothing else to stderr");
+    } else {
+        m.push_str(", last lines of its stderr:\n");
+        m.push_str(&tail);
+    }
+    m.push_str("\nTo fix: ");
+    m.push_str(HOW_TO_PASS_BROWSER);
+    m
+}
+
 async fn print_pdf(
     chromium: &Path,
     html: &Path,
@@ -285,16 +331,66 @@ async fn print_pdf(
         .with_context(|| format!("starting {}", chromium.display()))?;
     let o = tokio::time::timeout(Duration::from_secs(180), child.wait_with_output())
         .await
-        .context("Chromium did not finish within 180 s")??;
-    if !o.status.success() || !out.is_file() {
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "{} did not finish within 180 s; {HOW_TO_PASS_BROWSER}",
+                chromium.display()
+            )
+        })??;
+    let wrote = out.is_file();
+    if !o.status.success() || !wrote {
         bail!(
-            "Chromium failed ({}): {}",
-            o.status,
-            String::from_utf8_lossy(&o.stderr)
-                .chars()
-                .take(500)
-                .collect::<String>()
+            "{}",
+            chromium_failure(chromium, &o.status.to_string(), wrote, &o.stderr)
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failure_names_the_binary_status_and_the_last_real_lines() {
+        let mut err = String::new();
+        for i in 0..20 {
+            err.push_str(&format!(
+                "[1:1:1124/000000.000:ERROR:bus.cc(407)] Failed to connect to the bus: {i}\n"
+            ));
+        }
+        err.push_str("Failed to move to new namespace: Operation not permitted\n");
+        err.push_str("[0:0:0:FATAL:zygote_host_impl_linux.cc(132)] No usable sandbox!\n");
+        let m = chromium_failure(
+            Path::new("/opt/chrome/chrome"),
+            "exit status: 133",
+            false,
+            err.as_bytes(),
+        );
+        assert!(m.contains("/opt/chrome/chrome"), "{m}");
+        assert!(m.contains("exit status: 133"), "{m}");
+        assert!(m.contains("No usable sandbox"), "{m}");
+        assert!(m.contains("new namespace"), "{m}");
+        assert!(!m.to_lowercase().contains("bus"), "{m}");
+        assert!(
+            m.contains("--chromium") && m.contains("FASTPROOF_CHROMIUM"),
+            "{m}"
+        );
+        assert!(m.contains("--no-sandbox"), "{m}");
+    }
+
+    #[test]
+    fn clean_exit_without_a_file_is_said_plainly() {
+        let m = chromium_failure(Path::new("chromium"), "exit status: 0", false, b"");
+        assert!(m.contains("exit status: 0 but wrote no PDF"), "{m}");
+        assert!(m.contains("printed nothing else"), "{m}");
+    }
+
+    #[test]
+    fn only_the_tail_is_kept() {
+        let err: String = (0..50).map(|i| format!("line {i}\n")).collect();
+        let t = stderr_tail(err.as_bytes());
+        assert_eq!(t.lines().count(), STDERR_LINES);
+        assert!(t.ends_with("line 49"));
+    }
 }

@@ -332,7 +332,7 @@ function View({ project, doc, etag }: { project: string; doc: DashboardDoc; etag
           style={wide ? { display: 'grid', gridTemplateColumns: `repeat(${String(GRID_COLUMNS)}, minmax(0, 1fr))`, gridAutoRows: `${String(ROW)}px`, gap: 12 } : { display: 'flex', flexDirection: 'column', gap: 12 }}
         >
           {widgets.map((w, i) => (
-            <div key={w.id} style={wide ? { gridColumn: `${String(w.x + 1)} / span ${String(w.w)}`, gridRow: `${String(w.y + 1)} / span ${String(w.h)}`, minWidth: 0, display: 'flex', flexDirection: 'column' } : { minHeight: Math.min(w.h, 5) * ROW, display: 'flex', flexDirection: 'column' }}>
+            <div key={w.id} style={wide ? { gridColumn: `${String(w.x + 1)} / span ${String(w.w)}`, gridRow: `${String(w.y + 1)} / span ${String(w.h)}`, minWidth: 0, display: 'flex', flexDirection: 'column' } : { display: 'flex', flexDirection: 'column' }}>
               <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
                 <WidgetCard project={project} w={w} result={data?.widgets[w.id]} editing={editing} first={i === 0} last={i === widgets.length - 1} onMove={(d) => move(i, d)} onChange={(p) => patch(w.id, p)} onRemove={() => update((ws) => ws.filter((x) => x.id !== w.id))} onSettings={() => setSettingsOf(w.id)} />
               </div>

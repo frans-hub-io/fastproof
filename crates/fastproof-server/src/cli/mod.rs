@@ -12,6 +12,7 @@ pub mod export;
 pub mod gate;
 pub mod import;
 pub mod merge;
+pub mod settle;
 pub mod watch;
 
 use std::path::PathBuf;
@@ -506,6 +507,7 @@ async fn upload(u: UploadArgs) -> anyhow::Result<i32> {
     let shared = start.external_id.is_some() || u.launch.rerun_of.is_some();
     let finish = u.finish || (!shared && !u.no_finish);
     let launch = u.launch.resolve(&client).await?;
+    let baseline = launch.counts.total;
     eprintln!("launch #{} {} ({})", launch.number, launch.name, launch.id);
     let (body, file_name) = if meta.is_dir() && u.direct_uploads == direct::Mode::Auto {
         let dir = u.path.clone();
@@ -559,13 +561,10 @@ async fn upload(u: UploadArgs) -> anyhow::Result<i32> {
         );
         return Ok(0);
     }
+    let started = tokio::time::Instant::now();
+    let budget = Duration::from_secs(u.timeout);
     let done = client
-        .wait_uploads(
-            &project,
-            launch.id,
-            &[up.id],
-            Duration::from_secs(u.timeout),
-        )
+        .wait_uploads(&project, launch.id, &[up.id], budget)
         .await?;
     let mut code = 0;
     for d in &done {
@@ -592,13 +591,41 @@ async fn upload(u: UploadArgs) -> anyhow::Result<i32> {
             eprintln!("  warning: {w}");
         }
     }
+    let parsed: i64 = done
+        .iter()
+        .filter(|d| d.error.is_none())
+        .map(|d| d.counts.results)
+        .sum();
+    let (seen, settled) = settle::wait_stored(
+        &client,
+        &project,
+        launch.id,
+        baseline,
+        parsed,
+        budget.saturating_sub(started.elapsed()),
+    )
+    .await?;
     let l = if finish {
         client
             .finish_launch(&project, launch.id, "finished")
             .await?
+    } else if settled == settle::Settled::Complete {
+        seen
     } else {
         client.launch(&project, launch.id).await?
     };
+    match settled {
+        settle::Settled::Complete => {}
+        settle::Settled::Quiet => eprintln!(
+            "note: the launch holds {} results of the {parsed} parsed from the upload (attempts of one test are one result); the counts stopped changing",
+            l.counts.total - baseline
+        ),
+        settle::Settled::TimedOut => eprintln!(
+            "warning: the server was still storing results after {} s ({} of {parsed} so far); the counts below are not final, check `fastproof launch show` later or raise --timeout",
+            u.timeout,
+            l.counts.total - baseline
+        ),
+    }
     print_launch(&l);
     if !finish {
         eprintln!(

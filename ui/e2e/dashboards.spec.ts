@@ -5,6 +5,18 @@ import path from 'node:path';
 const SEEDED = 'd0000000-0000-4000-8000-000000000001';
 const dir = process.env.FASTPROOF_DASH_SHOTS;
 
+test('at phone width widgets follow each other without gaps', async ({ page }) => {
+  await page.setViewportSize({ width: 360, height: 780 });
+  await page.goto(`/p/web-shop/dashboards/${SEEDED}`);
+  await expect(page.getByTestId('widget-w2').locator('svg.recharts-surface').first()).toBeVisible();
+  const boxes = await page.getByTestId('dashboard-grid').locator('section').evaluateAll((els) => els.map((e) => e.getBoundingClientRect()).map((r) => ({ top: r.top, bottom: r.bottom })));
+  expect(boxes.length).toBeGreaterThan(2);
+  for (let i = 1; i < boxes.length; i++) {
+    const [prev, next] = [boxes[i - 1], boxes[i]];
+    if (prev && next) expect(next.top - prev.bottom).toBeLessThanOrEqual(16);
+  }
+});
+
 test('a dashboard renders its charts and lists, with data tables for screen readers', async ({ page }) => {
   await page.goto(`/p/web-shop/dashboards/${SEEDED}`);
   await expect(page.getByRole('heading', { name: 'Release health' })).toBeVisible();

@@ -121,6 +121,10 @@ finishes the launch and prints a summary. With an external id (`FASTPROOF_LAUNCH
 derived in CI) the launch is shared by several commands instead: the upload joins it, returns as soon as the
 upload is queued, and the launch stays open until `fastproof launch finish` (see
 [CI recipes](ci-recipes.md)). `--finish` and `--no-finish` override the default.
+`--wait` (and the default for an own launch) waits until the results are stored, not only until the upload is
+processed: with a streaming deployment the writers store them a moment later, so the summary is printed when the
+launch holds the uploaded results. It waits at most `--timeout` seconds (600 by default) and prints a warning that
+the counts are not final when that runs out.
 
 Any report format works the same way: a `junit.xml` file, a CTRF `ctrf-report.json`, a Playwright
 `results.json` or a directory of them. See [Report formats](formats.md).

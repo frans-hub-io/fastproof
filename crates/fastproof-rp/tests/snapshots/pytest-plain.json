@@ -1,0 +1,513 @@
+{
+  "launch": {
+    "status": "finished",
+    "counts": {
+      "total": 19,
+      "passed": 9,
+      "failed": 8,
+      "broken": 0,
+      "skipped": 2,
+      "unknown": 0,
+      "flaky": 0,
+      "muted": 0
+    },
+    "logLines": 21
+  },
+  "results": [
+    {
+      "name": "tests/test_basic.py::TestNested::TestInner::test_inner",
+      "fullName": "tests/test_basic.py:TestNested.TestInner.test_inner",
+      "status": "passed",
+      "message": null,
+      "flakyInRun": false,
+      "suitePath": [
+        "tests/test_basic.py:TestNested.TestInner"
+      ],
+      "labels": [],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "passed",
+          "error": null,
+          "steps": [],
+          "attachments": []
+        }
+      ],
+      "logLevels": {}
+    },
+    {
+      "name": "tests/test_basic.py::TestNested::test_in_class_fail",
+      "fullName": "tests/test_basic.py:TestNested.test_in_class_fail",
+      "status": "failed",
+      "message": "self = <test_basic.TestNested object at 0xffff81113450>",
+      "flakyInRun": false,
+      "suitePath": [
+        "tests/test_basic.py:TestNested"
+      ],
+      "labels": [],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "failed",
+          "error": "self = <test_basic.TestNested object at 0xffff81113450>",
+          "steps": [],
+          "attachments": []
+        }
+      ],
+      "logLevels": {
+        "error": 1
+      }
+    },
+    {
+      "name": "tests/test_basic.py::TestNested::test_in_class_ok",
+      "fullName": "tests/test_basic.py:TestNested.test_in_class_ok",
+      "status": "passed",
+      "message": null,
+      "flakyInRun": false,
+      "suitePath": [
+        "tests/test_basic.py:TestNested"
+      ],
+      "labels": [],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "passed",
+          "error": null,
+          "steps": [],
+          "attachments": []
+        }
+      ],
+      "logLevels": {}
+    },
+    {
+      "name": "tests/test_basic.py::test_fail",
+      "fullName": "tests/test_basic.py:test_fail",
+      "status": "failed",
+      "message": "def test_fail():",
+      "flakyInRun": false,
+      "suitePath": [
+        "tests/test_basic"
+      ],
+      "labels": [],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "failed",
+          "error": "def test_fail():",
+          "steps": [],
+          "attachments": []
+        }
+      ],
+      "logLevels": {
+        "error": 1
+      }
+    },
+    {
+      "name": "tests/test_basic.py::test_flaky",
+      "fullName": "tests/test_basic.py:test_flaky",
+      "status": "passed",
+      "message": "@pytest.mark.flaky(reruns=2)",
+      "flakyInRun": false,
+      "suitePath": [
+        "tests/test_basic"
+      ],
+      "labels": [
+        "tag=flaky"
+      ],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "passed",
+          "error": "@pytest.mark.flaky(reruns=2)",
+          "steps": [],
+          "attachments": []
+        }
+      ],
+      "logLevels": {
+        "error": 2
+      }
+    },
+    {
+      "name": "tests/test_basic.py::test_known_defect",
+      "fullName": "tests/test_basic.py:test_known_defect",
+      "status": "failed",
+      "message": "@pytest.mark.issue(reason=\"tracked defect\", issue_id=\"PROJ-123\", issue_type=\"PB\")",
+      "flakyInRun": false,
+      "suitePath": [
+        "tests/test_basic"
+      ],
+      "labels": [
+        "issue=PROJ-123",
+        "rp.issue=productBug"
+      ],
+      "links": [
+        "issue https://tracker.example.com/browse/PROJ-123"
+      ],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "failed",
+          "error": "@pytest.mark.issue(reason=\"tracked defect\", issue_id=\"PROJ-123\", issue_type=\"PB\")",
+          "steps": [],
+          "attachments": []
+        }
+      ],
+      "logLevels": {
+        "error": 1
+      }
+    },
+    {
+      "name": "tests/test_basic.py::test_marked",
+      "fullName": "tests/test_basic.py:test_marked",
+      "status": "passed",
+      "message": null,
+      "flakyInRun": false,
+      "suitePath": [
+        "tests/test_basic"
+      ],
+      "labels": [
+        "tag=tag_one",
+        "tag=tag_two"
+      ],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "passed",
+          "error": null,
+          "steps": [],
+          "attachments": []
+        }
+      ],
+      "logLevels": {}
+    },
+    {
+      "name": "tests/test_basic.py::test_param[1-2]",
+      "fullName": "tests/test_basic.py:test_param",
+      "status": "passed",
+      "message": null,
+      "flakyInRun": false,
+      "suitePath": [
+        "tests/test_basic"
+      ],
+      "labels": [],
+      "links": [],
+      "parameters": [
+        "a=1",
+        "b=2"
+      ],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "passed",
+          "error": null,
+          "steps": [],
+          "attachments": []
+        }
+      ],
+      "logLevels": {}
+    },
+    {
+      "name": "tests/test_basic.py::test_param[3-4]",
+      "fullName": "tests/test_basic.py:test_param",
+      "status": "passed",
+      "message": null,
+      "flakyInRun": false,
+      "suitePath": [
+        "tests/test_basic"
+      ],
+      "labels": [],
+      "links": [],
+      "parameters": [
+        "a=3",
+        "b=4"
+      ],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "passed",
+          "error": null,
+          "steps": [],
+          "attachments": []
+        }
+      ],
+      "logLevels": {}
+    },
+    {
+      "name": "tests/test_basic.py::test_param[5-5]",
+      "fullName": "tests/test_basic.py:test_param",
+      "status": "failed",
+      "message": "a = 5, b = 5",
+      "flakyInRun": false,
+      "suitePath": [
+        "tests/test_basic"
+      ],
+      "labels": [],
+      "links": [],
+      "parameters": [
+        "a=5",
+        "b=5"
+      ],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "failed",
+          "error": "a = 5, b = 5",
+          "steps": [],
+          "attachments": []
+        }
+      ],
+      "logLevels": {
+        "error": 1
+      }
+    },
+    {
+      "name": "tests/test_basic.py::test_pass",
+      "fullName": "tests/test_basic.py:test_pass",
+      "status": "passed",
+      "message": null,
+      "flakyInRun": false,
+      "suitePath": [
+        "tests/test_basic"
+      ],
+      "labels": [],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "passed",
+          "error": null,
+          "steps": [],
+          "attachments": []
+        }
+      ],
+      "logLevels": {}
+    },
+    {
+      "name": "tests/test_basic.py::test_setup_error",
+      "fullName": "tests/test_basic.py:test_setup_error",
+      "status": "failed",
+      "message": "@pytest.fixture",
+      "flakyInRun": false,
+      "suitePath": [
+        "tests/test_basic"
+      ],
+      "labels": [],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "failed",
+          "error": "@pytest.fixture",
+          "steps": [],
+          "attachments": []
+        }
+      ],
+      "logLevels": {
+        "error": 1
+      }
+    },
+    {
+      "name": "tests/test_basic.py::test_skipped",
+      "fullName": "tests/test_basic.py:test_skipped",
+      "status": "skipped",
+      "message": "('/home/runner/work/example/py/proj/tests/test_basic.py', 15, 'Skipped: not today')",
+      "flakyInRun": false,
+      "suitePath": [
+        "tests/test_basic"
+      ],
+      "labels": [
+        "tag=skip"
+      ],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "skipped",
+          "error": "('/home/runner/work/example/py/proj/tests/test_basic.py', 15, 'Skipped: not today')",
+          "steps": [],
+          "attachments": []
+        }
+      ],
+      "logLevels": {
+        "error": 1
+      }
+    },
+    {
+      "name": "tests/test_basic.py::test_teardown_error",
+      "fullName": "tests/test_basic.py:test_teardown_error",
+      "status": "failed",
+      "message": "@pytest.fixture",
+      "flakyInRun": false,
+      "suitePath": [
+        "tests/test_basic"
+      ],
+      "labels": [],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "failed",
+          "error": "@pytest.fixture",
+          "steps": [],
+          "attachments": []
+        }
+      ],
+      "logLevels": {
+        "error": 1
+      }
+    },
+    {
+      "name": "tests/test_basic.py::test_xfail",
+      "fullName": "tests/test_basic.py:test_xfail",
+      "status": "skipped",
+      "message": "@pytest.mark.xfail(reason=\"known\")",
+      "flakyInRun": false,
+      "suitePath": [
+        "tests/test_basic"
+      ],
+      "labels": [],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "skipped",
+          "error": "@pytest.mark.xfail(reason=\"known\")",
+          "steps": [],
+          "attachments": []
+        }
+      ],
+      "logLevels": {
+        "error": 1
+      }
+    },
+    {
+      "name": "tests/test_logs.py::test_attachment",
+      "fullName": "tests/test_logs.py:test_attachment",
+      "status": "passed",
+      "message": "with binary [attachment: blob.bin]",
+      "flakyInRun": false,
+      "suitePath": [
+        "tests/test_logs"
+      ],
+      "labels": [],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "passed",
+          "error": "with binary [attachment: blob.bin]",
+          "steps": [],
+          "attachments": [
+            "blob.bin other 256",
+            "note.txt text 17",
+            "pixel.png image 69"
+          ]
+        }
+      ],
+      "logLevels": {
+        "error": 1,
+        "info": 2
+      }
+    },
+    {
+      "name": "tests/test_logs.py::test_attachment_then_fail",
+      "fullName": "tests/test_logs.py:test_attachment_then_fail",
+      "status": "failed",
+      "message": "rp_logger = <RPLogger rp-recording (DEBUG)>",
+      "flakyInRun": false,
+      "suitePath": [
+        "tests/test_logs"
+      ],
+      "labels": [],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "failed",
+          "error": "rp_logger = <RPLogger rp-recording (DEBUG)>",
+          "steps": [],
+          "attachments": [
+            "log.txt text 2048"
+          ]
+        }
+      ],
+      "logLevels": {
+        "error": 1,
+        "info": 1
+      }
+    },
+    {
+      "name": "tests/test_logs.py::test_levels",
+      "fullName": "tests/test_logs.py:test_levels",
+      "status": "passed",
+      "message": "critical line",
+      "flakyInRun": false,
+      "suitePath": [
+        "tests/test_logs"
+      ],
+      "labels": [],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "passed",
+          "error": "critical line",
+          "steps": [],
+          "attachments": []
+        }
+      ],
+      "logLevels": {
+        "debug": 1,
+        "error": 2,
+        "info": 1,
+        "warn": 1
+      }
+    },
+    {
+      "name": "tests/test_logs.py::test_multiline_trace",
+      "fullName": "tests/test_logs.py:test_multiline_trace",
+      "status": "failed",
+      "message": "def test_multiline_trace():",
+      "flakyInRun": false,
+      "suitePath": [
+        "tests/test_logs"
+      ],
+      "labels": [],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "failed",
+          "error": "def test_multiline_trace():",
+          "steps": [],
+          "attachments": []
+        }
+      ],
+      "logLevels": {
+        "error": 1
+      }
+    }
+  ]
+}

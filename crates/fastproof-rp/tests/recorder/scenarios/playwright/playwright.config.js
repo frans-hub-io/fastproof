@@ -2,9 +2,9 @@ const { defineConfig } = require('@playwright/test');
 
 const apiVersion = process.env.RP_API_VERSION || 'v2';
 const rpConfig = {
-  apiKey: 'fp_example_recording_token',
-  endpoint: `http://127.0.0.1:8089/rp/api/${apiVersion}`,
-  project: 'example-project',
+  apiKey: process.env.RP_API_KEY || 'fp_example_recording_token',
+  endpoint: `${process.env.RP_ENDPOINT || 'http://127.0.0.1:8089/rp'}/api/${apiVersion}`,
+  project: process.env.RP_PROJECT || 'example-project',
   launch: 'playwright-recording',
   description: 'recorded run',
   attributes: [{ key: 'build', value: '42' }, { key: 'branch', value: 'main' }, { value: 'smoke' }],

@@ -1,0 +1,398 @@
+{
+  "launch": {
+    "status": "finished",
+    "counts": {
+      "total": 11,
+      "passed": 8,
+      "failed": 2,
+      "broken": 0,
+      "skipped": 1,
+      "unknown": 0,
+      "flaky": 1,
+      "muted": 0
+    },
+    "logLines": 32
+  },
+  "results": [
+    {
+      "name": "always fails",
+      "fullName": "basic.spec.js/checkout/always fails",
+      "status": "failed",
+      "message": "Error: expect(locator).toHaveText(expected) failed",
+      "flakyInRun": false,
+      "suitePath": [
+        "basic.spec.js",
+        "checkout"
+      ],
+      "labels": [
+        "parentSuite=basic.spec.js",
+        "suite=checkout"
+      ],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "failed",
+          "error": "Error: expect(locator).toHaveText(expected) failed",
+          "steps": [],
+          "attachments": [
+            "always-fails_error-context text 57",
+            "always-fails_screenshot image 5396",
+            "always-fails_trace other 7658"
+          ]
+        },
+        {
+          "no": 2,
+          "status": "failed",
+          "error": "Error: expect(locator).toHaveText(expected) failed",
+          "steps": [],
+          "attachments": [
+            "always-fails_error-context text 57",
+            "always-fails_screenshot image 5396",
+            "always-fails_trace other 7831"
+          ]
+        }
+      ],
+      "logLevels": {
+        "error": 2,
+        "info": 6
+      }
+    },
+    {
+      "name": "annotated @smoke",
+      "fullName": "basic.spec.js/checkout/annotated @smoke",
+      "status": "passed",
+      "message": null,
+      "flakyInRun": false,
+      "suitePath": [
+        "basic.spec.js",
+        "checkout"
+      ],
+      "labels": [
+        "parentSuite=basic.spec.js",
+        "suite=checkout"
+      ],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "passed",
+          "error": null,
+          "steps": [],
+          "attachments": [
+            "annotated-smoke_trace other 410"
+          ]
+        }
+      ],
+      "logLevels": {
+        "info": 1
+      }
+    },
+    {
+      "name": "fails on first attempt then passes",
+      "fullName": "basic.spec.js/checkout/fails on first attempt then passes",
+      "status": "passed",
+      "message": null,
+      "flakyInRun": true,
+      "suitePath": [
+        "basic.spec.js",
+        "checkout"
+      ],
+      "labels": [
+        "parentSuite=basic.spec.js",
+        "suite=checkout"
+      ],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "failed",
+          "error": "Error: expect(received).toBeGreaterThan(expected)",
+          "steps": [],
+          "attachments": [
+            "fails-on-first-attempt-then-passes_error-context text 56",
+            "fails-on-first-attempt-then-passes_screenshot image 5022",
+            "fails-on-first-attempt-then-passes_trace other 6190"
+          ]
+        },
+        {
+          "no": 2,
+          "status": "passed",
+          "error": null,
+          "steps": [],
+          "attachments": [
+            "fails-on-first-attempt-then-passes_screenshot image 5022",
+            "fails-on-first-attempt-then-passes_trace other 5681"
+          ]
+        }
+      ],
+      "logLevels": {
+        "error": 1,
+        "info": 5
+      }
+    },
+    {
+      "name": "nested pass",
+      "fullName": "basic.spec.js/checkout/nested group/nested pass",
+      "status": "passed",
+      "message": null,
+      "flakyInRun": false,
+      "suitePath": [
+        "basic.spec.js",
+        "checkout",
+        "nested group"
+      ],
+      "labels": [
+        "parentSuite=basic.spec.js",
+        "subSuite=nested group",
+        "suite=checkout"
+      ],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "passed",
+          "error": null,
+          "steps": [],
+          "attachments": [
+            "nested-pass_trace other 412"
+          ]
+        }
+      ],
+      "logLevels": {
+        "info": 1
+      }
+    },
+    {
+      "name": "skipped by code",
+      "fullName": "basic.spec.js/checkout/nested group/skipped by code",
+      "status": "skipped",
+      "message": null,
+      "flakyInRun": false,
+      "suitePath": [
+        "basic.spec.js",
+        "checkout",
+        "nested group"
+      ],
+      "labels": [
+        "parentSuite=basic.spec.js",
+        "subSuite=nested group",
+        "suite=checkout"
+      ],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "skipped",
+          "error": null,
+          "steps": [],
+          "attachments": []
+        }
+      ],
+      "logLevels": {}
+    },
+    {
+      "name": "passes with steps",
+      "fullName": "basic.spec.js/checkout/passes with steps",
+      "status": "passed",
+      "message": null,
+      "flakyInRun": false,
+      "suitePath": [
+        "basic.spec.js",
+        "checkout"
+      ],
+      "labels": [
+        "parentSuite=basic.spec.js",
+        "suite=checkout"
+      ],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "passed",
+          "error": null,
+          "steps": [],
+          "attachments": [
+            "passes-with-steps_screenshot image 5732",
+            "passes-with-steps_trace other 7419"
+          ]
+        }
+      ],
+      "logLevels": {
+        "info": 2
+      }
+    },
+    {
+      "name": "with attachment and logs",
+      "fullName": "basic.spec.js/checkout/with attachment and logs",
+      "status": "passed",
+      "message": null,
+      "flakyInRun": false,
+      "suitePath": [
+        "basic.spec.js",
+        "checkout"
+      ],
+      "labels": [
+        "parentSuite=basic.spec.js",
+        "suite=checkout"
+      ],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "passed",
+          "error": null,
+          "steps": [],
+          "attachments": [
+            "with-attachment-and-logs_data.json json 7",
+            "with-attachment-and-logs_note.txt text 16",
+            "with-attachment-and-logs_screenshot image 4253",
+            "with-attachment-and-logs_trace other 4572"
+          ]
+        }
+      ],
+      "logLevels": {
+        "info": 5,
+        "warn": 1
+      }
+    },
+    {
+      "name": "parametrized 1",
+      "fullName": "basic.spec.js/parametrized 1",
+      "status": "passed",
+      "message": null,
+      "flakyInRun": false,
+      "suitePath": [
+        "basic.spec.js"
+      ],
+      "labels": [
+        "suite=basic.spec.js"
+      ],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "passed",
+          "error": null,
+          "steps": [],
+          "attachments": [
+            "parametrized-1_trace other 1376"
+          ]
+        }
+      ],
+      "logLevels": {
+        "info": 1
+      }
+    },
+    {
+      "name": "parametrized 2",
+      "fullName": "basic.spec.js/parametrized 2",
+      "status": "passed",
+      "message": null,
+      "flakyInRun": false,
+      "suitePath": [
+        "basic.spec.js"
+      ],
+      "labels": [
+        "suite=basic.spec.js"
+      ],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "passed",
+          "error": null,
+          "steps": [],
+          "attachments": [
+            "parametrized-2_trace other 1375"
+          ]
+        }
+      ],
+      "logLevels": {
+        "info": 1
+      }
+    },
+    {
+      "name": "fails with assertion",
+      "fullName": "second.spec.js/profile/fails with assertion",
+      "status": "failed",
+      "message": "Error: expect(received).toBe(expected) // Object.is equality",
+      "flakyInRun": false,
+      "suitePath": [
+        "second.spec.js",
+        "profile"
+      ],
+      "labels": [
+        "parentSuite=second.spec.js",
+        "suite=profile"
+      ],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "failed",
+          "error": "Error: expect(received).toBe(expected) // Object.is equality",
+          "steps": [],
+          "attachments": [
+            "fails-with-assertion_trace other 1316"
+          ]
+        },
+        {
+          "no": 2,
+          "status": "failed",
+          "error": "Error: expect(received).toBe(expected) // Object.is equality",
+          "steps": [],
+          "attachments": [
+            "fails-with-assertion_trace other 1278"
+          ]
+        }
+      ],
+      "logLevels": {
+        "error": 2,
+        "info": 2
+      }
+    },
+    {
+      "name": "renders name",
+      "fullName": "second.spec.js/profile/renders name",
+      "status": "passed",
+      "message": null,
+      "flakyInRun": false,
+      "suitePath": [
+        "second.spec.js",
+        "profile"
+      ],
+      "labels": [
+        "parentSuite=second.spec.js",
+        "suite=profile"
+      ],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "passed",
+          "error": null,
+          "steps": [],
+          "attachments": [
+            "renders-name_screenshot image 5105",
+            "renders-name_trace other 5754"
+          ]
+        }
+      ],
+      "logLevels": {
+        "info": 2
+      }
+    }
+  ]
+}

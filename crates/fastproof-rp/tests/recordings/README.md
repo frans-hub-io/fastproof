@@ -36,3 +36,13 @@ Install, pinned: `pip install pytest-reportportal==5.6.13 pytest-rerunfailures p
 Run: `pytest --reportportal`, `npx playwright test`, `mvn test`,
 `robot --listener robotframework_reportportal.listener --variable RP_ENDPOINT:... suite`.
 The Playwright `RP_API_VERSION`, `RP_STEPS` and `RP_LAUNCH_ID` environment variables select the variants.
+
+## Contract tests and snapshots
+
+`crates/fastproof-server/tests/rp_contract.rs` replays every recording against the real `/rp` routes (direct, and Kafka
+when `FASTPROOF_TEST_KAFKA_BROKERS` is set) and compares what a user sees (launch counts, results, attempts, steps,
+logs per level, attachments, links, labels) with `snapshots/<recording>.json`. Rewrite them with
+`FASTPROOF_UPDATE_SNAPSHOTS=1 cargo test -p fastproof-server --test rp_contract`, and read the diff before committing.
+Requests the recorder answered with an injected fault are skipped on replay (the agents saw them fail).
+`bench/rp_bench.py` is the synthetic agent load of design section 9; `reporters/integration/test_rp_agents.py` runs the
+real pytest and Playwright agents against a real server (`FASTPROOF_TEST_RP_AGENTS`).

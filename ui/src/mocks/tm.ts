@@ -177,6 +177,10 @@ function caseView(c: MockCase, key: string): Case {
     updatedBy: c.updatedBy,
     updatedAt: c.updatedAt,
     archivedAt: c.archivedAt,
+    state: null,
+    approvedVersion: null,
+    reviewState: null,
+    sharedSteps: [],
   };
 }
 
@@ -439,11 +443,15 @@ function runItemView(r: MockRunItem, key: string): RunItem {
     startedAt: r.startedAt,
     finishedAt: r.finishedAt,
     revision: r.revision,
+    iterationCount: 0,
+    sharedPins: [],
+    iterations: [],
+    parameterColumns: [],
   };
 }
 
 function runSummary(r: MockRunItem): RunItemSummary {
-  return { id: r.id, caseNumber: r.caseNumber, name: r.name, folderPath: r.folderPath, status: r.status, assignee: r.assignee, executionNo: r.executionNo, updatedAt: r.updatedAt };
+  return { id: r.id, caseNumber: r.caseNumber, name: r.name, folderPath: r.folderPath, status: r.status, assignee: r.assignee, executionNo: r.executionNo, updatedAt: r.updatedAt, iterationCount: 0 };
 }
 
 const FINAL: RunStatus[] = ['passed', 'failed', 'blocked', 'skipped'];
@@ -1566,6 +1574,9 @@ export function tmHandlers({ role, error, audit }: Helpers) {
         launch: manualLaunchView(id) ?? launch,
         testplanUrl: `${API}/projects/${key}/launches/${id}/testplan.json`,
         ciHint: `fastproof testplan --launch ${externalId} > testplan.json\nexport ALLURE_TESTPLAN_PATH="$PWD/testplan.json"`,
+        launches: [manualLaunchView(id) ?? launch],
+        dispatches: [],
+        skips: [],
       };
       return HttpResponse.json(body, { status: 201 });
     }),

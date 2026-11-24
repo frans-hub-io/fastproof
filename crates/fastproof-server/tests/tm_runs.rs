@@ -23,6 +23,7 @@ fn step(action: &str, expected: &str, children: Vec<CaseStep>) -> CaseStep {
         data: String::new(),
         attachments: Vec::new(),
         steps: children,
+        shared: None,
     }
 }
 
@@ -42,6 +43,7 @@ async fn case(db: &TestDb, project: Uuid, name: &str, steps: Vec<CaseStep>) -> i
         preconditions: "Signed in as **admin**".into(),
         steps,
         links: Vec::new(),
+        parameters: None,
     };
     fastproof_store::tm::testutil::insert_case(&mut conn, project, name, &body, None)
         .await
@@ -2106,6 +2108,7 @@ async fn start_from_a_plan_of_5000_cases() {
             .map(|k| step(&format!("s{k}"), "e", vec![]))
             .collect(),
         links: Vec::new(),
+        parameters: None,
     };
     let snapshot = CaseSnapshot {
         name: "case".into(),

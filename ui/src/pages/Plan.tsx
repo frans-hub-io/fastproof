@@ -13,7 +13,9 @@ import { QueryState } from '../components/QueryState';
 import { formatDateTime, formatRelative } from '../lib/format';
 import { describeFilter } from '../lib/tm/filters';
 import { folderPathLabel } from '../lib/tm/ui';
-import { FilterDialog, StartLaunchDialog, SyncDialog } from './cases/PlanDialogs';
+import { FilterDialog, SyncDialog } from './cases/PlanDialogs';
+import { PlanDispatches } from './cases/PlanDispatches';
+import { StartLaunchDialog } from './cases/StartLaunchDialog';
 import { PlanItems } from './cases/PlanItems';
 import { PlanTree } from './cases/PlanTree';
 
@@ -237,6 +239,7 @@ export default function PlanPage() {
                 }}
               />
             )}
+            <PlanDispatches projectKey={key} planId={plan.id} />
             {dialog === 'start' && <StartLaunchDialog project={key} plan={plan} onClose={() => setDialog(null)} />}
             {diff && <SyncDialog project={key} plan={plan} items={items.data ?? []} diff={diff} onClose={() => setDiff(null)} />}
           </>

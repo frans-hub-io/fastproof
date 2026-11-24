@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
-use super::{ErrorBody, P, Q};
+use super::{ErrorBody, P, Q, tm_error};
 use crate::state::AppState;
 
 /// `{items}` of defect types.
@@ -577,13 +577,15 @@ pub async fn get_settings(
 
 #[utoipa::path(put, path = "/api/v1/projects/{key}/settings", tag = "analysis", operation_id = "analysis_put_settings",
     request_body(content = ProjectSettings, description = "The areas to change. Each top-level area present in the body \
-        (`flaky`, `retention`, `rollup`, `gates`, `notifications`, `issueTrackers`, `fastmock`, `vcs`, `rerun`) replaces the stored \
-        one as a whole; areas left out are kept; `null` resets an area to its default (removes it). `caseSync` is merged \
-        by key instead (and its `fields` by field): keys left out keep their values, a `null` key returns to its default. \
-        The answer is the whole stored document."),
+        (`flaky`, `retention`, `rollup`, `gates`, `notifications`, `issueTrackers`, `fastmock`, `vcs`, `rerun`, `caseWorkflow`, \
+        `caseReview`) replaces the stored one as a whole; areas left out are kept; `null` resets an area to its default \
+        (removes it). `caseSync` is merged by key instead (and its `fields` by field): keys left out keep their values, a \
+        `null` key returns to its default. New formats (`caseSync.requirementLinkTypes` other than the default, \
+        `rerun.variables`, `rerun.refs`, the `caseReviewRequested` notification event) answer 409 `upgrade_in_progress` \
+        while an older replica runs. The answer is the whole stored document."),
     params(("key" = String, Path)),
     responses((status = 200, body = ProjectSettings), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),
-        (status = 404, body = ErrorBody)))]
+        (status = 404, body = ErrorBody), (status = 409, body = ErrorBody, description = "`upgrade_in_progress`, `workflow_status_in_use`")))]
 pub async fn put_settings(
     State(s): State<AppState>,
     auth: Auth,
@@ -606,6 +608,30 @@ pub async fn put_settings(
     crate::integrations::settings::check_tracker_rebinds(&s, p.id, &old_doc, &new_doc)
         .await
         .map_err(ApiError::bad_request)?;
+    let old = ProjectSettings::from_value(old_doc.clone());
+    {
+        let mut conn = s
+            .store
+            .pool()
+            .acquire()
+            .await
+            .map_err(anyhow::Error::from)?;
+        for what in gated_settings(&old_doc, &new_doc) {
+            fastproof_store::tm::gate::require(&mut conn, &s.cfg.tm, what)
+                .await
+                .map_err(tm_error)?;
+        }
+        if areas.iter().any(|a| a == "caseWorkflow") {
+            fastproof_store::tm::workflow::check_settings_change(
+                &mut conn,
+                p.id,
+                old.case_workflow.as_ref(),
+                body.case_workflow.as_ref(),
+            )
+            .await
+            .map_err(tm_error)?;
+        }
+    }
     s.store.put_project_settings(p.id, &body).await?;
     let tracker_changes = crate::integrations::settings::tracker_changes(&old_doc, &new_doc);
     if !tracker_changes.is_empty() {
@@ -645,6 +671,24 @@ pub async fn put_settings(
         )
         .await;
     }
+    if areas.iter().any(|a| a == "caseWorkflow") {
+        s.audit(
+            &auth,
+            "caseWorkflow.settings",
+            Some(&p.key),
+            serde_json::json!({"old": old.case_workflow, "new": body.case_workflow}),
+        )
+        .await;
+    }
+    if areas.iter().any(|a| a == "caseReview") {
+        s.audit(
+            &auth,
+            "caseReview.settings",
+            Some(&p.key),
+            serde_json::json!({"old": old.case_review, "new": body.case_review}),
+        )
+        .await;
+    }
     s.audit(
         &auth,
         "project.settings",
@@ -655,6 +699,48 @@ pub async fn put_settings(
     )
     .await;
     Ok(Json(s.store.project_settings(p.id).await?))
+}
+
+/// The new formats a settings document writes (§3 of the TM next contract) that the stored one
+/// does not hold in the same form: `caseSync.requirementLinkTypes` other than the default,
+/// `rerun.variables`, `rerun.refs`, and `caseReviewRequested` in `notifications[].on`.
+pub fn gated_settings(old: &serde_json::Value, new: &serde_json::Value) -> Vec<&'static str> {
+    let at = |d: &serde_json::Value, a: &str, b: &str| d.get(a).and_then(|x| x.get(b)).cloned();
+    let mut out = Vec::new();
+    let types = at(new, "caseSync", "requirementLinkTypes");
+    if types.is_some() && types != at(old, "caseSync", "requirementLinkTypes") {
+        out.push("caseSync.requirementLinkTypes");
+    }
+    for k in ["variables", "refs"] {
+        let v = at(new, "rerun", k).filter(|v| !v.is_null());
+        if v.is_some() && v != at(old, "rerun", k) {
+            out.push(if k == "variables" {
+                "rerun.variables"
+            } else {
+                "rerun.refs"
+            });
+        }
+    }
+    let review_channels = |d: &serde_json::Value| -> Vec<serde_json::Value> {
+        d.get("notifications")
+            .and_then(|n| n.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter(|n| {
+                        n.get("on").and_then(|o| o.as_array()).is_some_and(|o| {
+                            o.iter().any(|e| e.as_str() == Some("caseReviewRequested"))
+                        })
+                    })
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let new_review = review_channels(new);
+    if !new_review.is_empty() && new_review != review_channels(old) {
+        out.push("notifications.caseReviewRequested");
+    }
+    out
 }
 
 /// The settings document after a `PUT`: each top-level area present in `patch` replaces the

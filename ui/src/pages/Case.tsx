@@ -17,12 +17,17 @@ import { mergeCaseWrite, bothChanged } from '../lib/tm/merge';
 import { toWrite } from '../lib/tm/versionDiff';
 
 import { editorAction } from './runner/keymap';
+import { FEATURES } from '../features';
 import { AiDraftBadge, AutomationIcon, CaseStatusBadge, FromCodeBadge, LiveRegion } from './cases/common';
 import { ConflictDialog } from './cases/ConflictDialog';
 import { DetailsTab } from './cases/DetailsTab';
 import { HistoryTab } from './cases/HistoryTab';
 import { MarkdownField } from './cases/MarkdownField';
 import { ScenarioView } from './cases/ScenarioView';
+import { ParametersTab } from './cases/ParametersTab';
+import { RequirementsTab } from './cases/RequirementsTab';
+import { ReviewTab } from './cases/ReviewTab';
+import { StateChip } from './cases/StateChip';
 import { StepsEditor } from './cases/StepsEditor';
 import { Suggestions } from './cases/Suggestions';
 import { VersionsTab } from './cases/VersionsTab';
@@ -204,6 +209,7 @@ function CaseBody({ project, projectName, c, etag, reload }: { project: string; 
           <>
             <AutomationIcon automated={c.automated} />
             <CaseStatusBadge status={c.status} />
+            <StateChip projectKey={project} caseNumber={c.number} />
             {owned.has('name') && <FromCodeBadge hint="The name comes from the test in code" />}
             {c.aiUnreviewed && <AiDraftBadge />}
             {c.archivedAt && (
@@ -333,6 +339,9 @@ function CaseBody({ project, projectName, c, etag, reload }: { project: string; 
             <Tabs.Tab value="versions" leftSection={<IconVersions size={14} />} rightSection={<Badge size="xs" variant="light">{c.version}</Badge>}>
               Versions
             </Tabs.Tab>
+            <Tabs.Tab value="review">Review</Tabs.Tab>
+            {FEATURES.requirements && <Tabs.Tab value="requirements">Requirements</Tabs.Tab>}
+            {FEATURES.parameters && <Tabs.Tab value="parameters">Parameters</Tabs.Tab>}
           </Tabs.List>
           <Tabs.Panel value="scenario" pt="md">
             {d ? (
@@ -365,6 +374,19 @@ function CaseBody({ project, projectName, c, etag, reload }: { project: string; 
               <VersionsTab project={project} c={c} etag={etag} onRestored={() => setAnnounce('Version restored')} />
             )}
           </Tabs.Panel>
+          <Tabs.Panel value="review" pt="md">
+            <ReviewTab projectKey={project} caseNumber={c.number} />
+          </Tabs.Panel>
+          {FEATURES.requirements && (
+            <Tabs.Panel value="requirements" pt="md">
+              <RequirementsTab projectKey={project} caseNumber={c.number} />
+            </Tabs.Panel>
+          )}
+          {FEATURES.parameters && (
+            <Tabs.Panel value="parameters" pt="md">
+              <ParametersTab projectKey={project} caseNumber={c.number} />
+            </Tabs.Panel>
+          )}
         </Tabs>
         <div className="fp-print-only" aria-hidden>
           <ScenarioView project={project} c={c} print />

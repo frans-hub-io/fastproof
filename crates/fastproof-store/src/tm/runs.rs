@@ -21,6 +21,7 @@ use sqlx::{PgConnection, Postgres, QueryBuilder, Row};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
+use super::expand::SharedPins;
 use super::identity::manual_hash;
 use super::lookup::case_version_snapshot;
 use super::projection::{CountDelta, Projected};
@@ -409,12 +410,25 @@ pub async fn insert_run_items(
         .map(|i| i.assignee.as_deref().map(no_nul))
         .collect();
     let names: Vec<String> = items.iter().map(|i| no_nul(&i.name)).collect();
-    Ok(sqlx::query(
+    let review = super::review::review_settings(conn, project_id).await?;
+    let keys: Vec<(Uuid, i32)> = items.iter().map(|i| (i.case_id, i.version)).collect();
+    let pins = super::expand::pins_for_items(conn, project_id, &keys, &review).await?;
+    let pin_values: Vec<Option<serde_json::Value>> = items
+        .iter()
+        .map(|i| {
+            pins.get(&i.case_id)
+                .filter(|p| !p.is_empty())
+                .map(serde_json::to_value)
+                .transpose()
+        })
+        .collect::<Result<_, _>>()?;
+    let inserted: Vec<(Uuid, Uuid, i32)> = sqlx::query_as(
         "insert into run_items (id, project_id, launch_id, launch_created_at, case_id, case_version, series_id, assignee, \
-           case_name) \
-         select i, $1, $2, $3, c, v, s, a, n \
-         from unnest($4::uuid[], $5::uuid[], $6::int[], $7::uuid[], $8::text[], $9::text[]) as t(i, c, v, s, a, n) \
-         on conflict (launch_id, case_id) do nothing",
+           case_name, shared_pins) \
+         select i, $1, $2, $3, c, v, s, a, n, p \
+         from unnest($4::uuid[], $5::uuid[], $6::int[], $7::uuid[], $8::text[], $9::text[], $10::jsonb[]) \
+           as t(i, c, v, s, a, n, p) \
+         on conflict (launch_id, case_id) do nothing returning id, case_id, case_version",
     )
     .bind(project_id)
     .bind(launch_id)
@@ -425,9 +439,13 @@ pub async fn insert_run_items(
     .bind(&series)
     .bind(&assignees)
     .bind(&names)
-    .execute(&mut *conn)
-    .await?
-    .rows_affected())
+    .bind(&pin_values)
+    .fetch_all(&mut *conn)
+    .await?;
+    if !inserted.is_empty() {
+        super::iterations::create_iterations(conn, project_id, launch_id, &inserted).await?;
+    }
+    Ok(inserted.len() as u64)
 }
 
 /// Manual progress of a launch (`None` without a manual run).
@@ -536,7 +554,7 @@ pub(crate) const FOLDER_PATH_SQL: &str = "coalesce((select array_agg(f2.name ord
 fn summary_select() -> String {
     format!(
         "select ri.id, c.number, coalesce(ri.case_name, c.name) as name, ri.status, ri.assignee, ri.execution_no, \
-         ri.updated_at, {FOLDER_PATH_SQL} as folder_path"
+         ri.updated_at, ri.iterations, {FOLDER_PATH_SQL} as folder_path"
     )
 }
 
@@ -551,6 +569,7 @@ fn summary_row(r: &PgRow) -> sqlx::Result<RunItemSummary> {
         assignee: r.try_get("assignee")?,
         execution_no: r.try_get("execution_no")?,
         updated_at: r.try_get("updated_at")?,
+        iteration_count: r.try_get("iterations")?,
     })
 }
 
@@ -571,27 +590,50 @@ fn decode_cursor(c: &str) -> TmResult<String> {
 }
 
 /// The executed snapshot of an item (falls back to the current case when the version row is
-/// missing).
+/// missing), with its `shared` steps expanded to the pinned versions when `pins` is given.
 pub(crate) async fn executed_snapshot(
     conn: &mut PgConnection,
     project_id: Uuid,
     case_id: Uuid,
     version: i32,
+    pins: Option<&SharedPins>,
 ) -> anyhow::Result<CaseSnapshot> {
-    if let Some(s) = case_version_snapshot(conn, case_id, version).await? {
-        return Ok(s);
+    let mut snap = match case_version_snapshot(conn, case_id, version).await? {
+        Some(s) => s,
+        None => {
+            let c = super::lookup::case_by_id(conn, project_id, case_id)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("case of a run item vanished"))?;
+            CaseSnapshot {
+                name: c.name,
+                status: c.status,
+                folder_id: c.folder_id,
+                body: c.body,
+                fields: c.fields,
+                tags: c.tags,
+            }
+        }
+    };
+    if let Some(p) = pins {
+        super::expand::expand_steps(conn, project_id, &mut snap.body.steps, p).await?;
     }
-    let c = super::lookup::case_by_id(conn, project_id, case_id)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("case of a run item vanished"))?;
-    Ok(CaseSnapshot {
-        name: c.name,
-        status: c.status,
-        folder_id: c.folder_id,
-        body: c.body,
-        fields: c.fields,
-        tags: c.tags,
-    })
+    Ok(snap)
+}
+
+/// `run_items.shared_pins` (or `run_item_executions.shared_pins`) as stored.
+pub(crate) fn pins_of(v: Option<serde_json::Value>) -> Option<SharedPins> {
+    v.and_then(|v| serde_json::from_value(v).ok())
+}
+
+/// A cache key of an executed snapshot: the case version and its pins.
+pub(crate) type SnapshotKey = (Uuid, i32, Option<String>);
+
+pub(crate) fn snapshot_key(case_id: Uuid, version: i32, pins: Option<&SharedPins>) -> SnapshotKey {
+    (
+        case_id,
+        version,
+        pins.map(|p| serde_json::to_string(p).unwrap_or_default()),
+    )
 }
 
 /// Attachment references by id (attachments of the project).
@@ -787,6 +829,59 @@ fn closed() -> TmError {
     )
 }
 
+/// Which version of a case runs and which cases stay out (§7.3): the runnable version under
+/// the project's review policy, and states that block runs. `includeUnapproved` (checked for
+/// `cases:review` by the caller) runs the head and ignores both skips.
+pub struct RunnableRule {
+    /// SQL of the version over alias `c` (null: not runnable).
+    pub version_sql: &'static str,
+    /// Workflow states whose cases do not run.
+    pub blocking: Vec<String>,
+}
+
+impl RunnableRule {
+    /// The rule of a project.
+    pub async fn of(
+        conn: &mut PgConnection,
+        project_id: Uuid,
+        include_unapproved: bool,
+    ) -> anyhow::Result<Self> {
+        if include_unapproved {
+            return Ok(Self {
+                version_sql: "c.version",
+                blocking: Vec::new(),
+            });
+        }
+        let v: Option<serde_json::Value> =
+            sqlx::query_scalar("select settings from projects where id = $1")
+                .bind(project_id)
+                .fetch_optional(&mut *conn)
+                .await?;
+        let s = crate::analysis::settings::ProjectSettings::from_value(
+            v.unwrap_or(serde_json::Value::Null),
+        );
+        Ok(Self {
+            version_sql: super::review::runnable_version_sql(&s.case_review),
+            blocking: s
+                .case_workflow
+                .as_ref()
+                .map(|w| w.blocking_keys())
+                .unwrap_or_default(),
+        })
+    }
+
+    /// Why a case with this runnable version and state does not run, if it does not.
+    pub fn skip(&self, runnable: Option<i32>, state: Option<&str>) -> Option<RunItemSkipCode> {
+        if state.is_some_and(|st| self.blocking.iter().any(|b| b == st)) {
+            return Some(RunItemSkipCode::BlockedByState);
+        }
+        if runnable.is_none() {
+            return Some(RunItemSkipCode::NotApproved);
+        }
+        None
+    }
+}
+
 /// The current row of a locked item.
 struct LockedItem {
     case_id: Uuid,
@@ -801,12 +896,13 @@ struct LockedItem {
     started_at: Option<DateTime<Utc>>,
     finished_at: Option<DateTime<Utc>>,
     defect: Option<serde_json::Value>,
+    shared_pins: Option<serde_json::Value>,
 }
 
 async fn lock_item(conn: &mut PgConnection, item_id: Uuid) -> TmResult<LockedItem> {
     let r = sqlx::query(
         "select ri.case_id, ri.case_version, ri.status, ri.revision, ri.executed_by, ri.assignee, c.number, \
-           ri.execution_no, ri.comment, ri.started_at, ri.finished_at, ri.defect \
+           ri.execution_no, ri.comment, ri.started_at, ri.finished_at, ri.defect, ri.shared_pins \
          from run_items ri join cases c on c.id = ri.case_id where ri.id = $1 for update of ri",
     )
     .bind(item_id)
@@ -827,6 +923,7 @@ async fn lock_item(conn: &mut PgConnection, item_id: Uuid) -> TmResult<LockedIte
         started_at: r.try_get("started_at")?,
         finished_at: r.try_get("finished_at")?,
         defect: r.try_get("defect")?,
+        shared_pins: r.try_get("shared_pins")?,
     })
 }
 
@@ -979,12 +1076,30 @@ impl Store {
         if existing as usize + fresh.len() > limits.max_run_items {
             return Err(TmError::limit("maxRunItems", limits.max_run_items as u64));
         }
-        let rows: Vec<(Uuid, i64, String, i32)> = sqlx::query_as(
-            "select id, number, name, version from cases where id = any($1) order by number",
-        )
+        let rule = RunnableRule::of(&mut tx, project.id, add.include_unapproved).await?;
+        type Candidate = (Uuid, i64, String, Option<i32>, Option<String>);
+        let candidates: Vec<Candidate> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select c.id, c.number, c.name, {} as runnable, c.state from cases c \
+                 where c.id = any($1) order by c.number",
+            rule.version_sql
+        )))
         .bind(&fresh)
         .fetch_all(&mut *tx)
         .await?;
+        let mut rows: Vec<(Uuid, i64, String, i32)> = Vec::with_capacity(candidates.len());
+        for (id, number, name, runnable, state) in candidates {
+            match rule.skip(runnable, state.as_deref()) {
+                Some(code) => {
+                    if skips.len() < MAX_SKIPS_LISTED {
+                        skips.push(RunItemSkip {
+                            case_number: number,
+                            code,
+                        });
+                    }
+                }
+                None => rows.push((id, number, name, runnable.unwrap_or(1))),
+            }
+        }
         let items: Vec<NewRunItem> = rows
             .into_iter()
             .map(|(case_id, number, name, version)| NewRunItem {
@@ -1133,7 +1248,7 @@ impl Store {
         let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(summary_select());
         qb.push(
             ", ri.launch_id, ri.case_id, ri.case_version, ri.comment, ri.defect, ri.result_id, ri.executed_by, \
-             ri.started_at, ri.finished_at, ri.revision \
+             ri.started_at, ri.finished_at, ri.revision, ri.shared_pins \
              from run_items ri join cases c on c.id = ri.case_id where ri.project_id = ",
         )
         .push_bind(project_id)
@@ -1147,7 +1262,9 @@ impl Store {
         let summary = summary_row(&r)?;
         let case_id: Uuid = r.try_get("case_id")?;
         let case_version: i32 = r.try_get("case_version")?;
-        let snapshot = executed_snapshot(&mut conn, project_id, case_id, case_version).await?;
+        let pins = pins_of(r.try_get("shared_pins")?);
+        let snapshot =
+            executed_snapshot(&mut conn, project_id, case_id, case_version, pins.as_ref()).await?;
         let mut steps = step_rows(&mut conn, item_id).await?;
         steps.sort_by_key(|s| path_key(&s.0));
         let att_ids: Vec<Uuid> = steps.iter().flat_map(|s| s.4.iter().copied()).collect();
@@ -1172,6 +1289,9 @@ impl Store {
             started_at: r.try_get("started_at")?,
             finished_at: r.try_get("finished_at")?,
             revision: r.try_get("revision")?,
+            shared_pins: Vec::new(),
+            iterations: Vec::new(),
+            parameter_columns: Vec::new(),
         })
     }
 
@@ -1221,8 +1341,14 @@ impl Store {
         let mut tx = self.pool.begin().await?;
         let item = lock_item(&mut tx, item_id).await?;
         let launch = open_launch(&mut tx, project, brief.launch_id, false).await?;
-        let snapshot =
-            executed_snapshot(&mut tx, project.id, item.case_id, item.case_version).await?;
+        let snapshot = executed_snapshot(
+            &mut tx,
+            project.id,
+            item.case_id,
+            item.case_version,
+            pins_of(item.shared_pins.clone()).as_ref(),
+        )
+        .await?;
         if step_at(&snapshot.body.steps, path).is_none() {
             return Err(TmError::NotFound("step"));
         }
@@ -1339,8 +1465,14 @@ impl Store {
             });
         }
         if p.untested_steps_to == Some(UntestedStepsTo::Skipped) {
-            let snapshot =
-                executed_snapshot(&mut tx, project.id, item.case_id, item.case_version).await?;
+            let snapshot = executed_snapshot(
+                &mut tx,
+                project.id,
+                item.case_id,
+                item.case_version,
+                pins_of(item.shared_pins.clone()).as_ref(),
+            )
+            .await?;
             let paths: Vec<String> = step_paths(&snapshot.body.steps)
                 .into_iter()
                 .filter(|p| p.leaf)
@@ -1450,8 +1582,8 @@ impl Store {
         }
         sqlx::query(
             "insert into run_item_executions (run_item_id, execution_no, status, case_version, comment, executed_by, \
-               started_at, finished_at, defect, rerun_by) \
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) on conflict (run_item_id, execution_no) do nothing",
+               started_at, finished_at, defect, rerun_by, shared_pins) \
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) on conflict (run_item_id, execution_no) do nothing",
         )
         .bind(item_id)
         .bind(item.execution_no)
@@ -1463,8 +1595,11 @@ impl Store {
         .bind(item.finished_at)
         .bind(item.defect.as_ref())
         .bind(no_nul(by))
+        .bind(item.shared_pins.as_ref())
         .execute(&mut *tx)
         .await?;
+        let review = super::review::review_settings(&mut tx, project.id).await?;
+        super::expand::repin_item(&mut tx, project.id, item_id, &review).await?;
         let revision: i64 = sqlx::query_scalar(
             "update run_items set execution_no = execution_no + 1, status = 'untested', started_at = null, \
                finished_at = null, executed_by = null, comment = '', revision = revision + 1, updated_at = now() \
@@ -1859,7 +1994,8 @@ impl Store {
         let mut conn = self.pool.acquire().await?;
         let rows = sqlx::query(
             "select ri.id, ri.case_id, c.number, coalesce(ri.case_name, c.name) as name, ri.case_version, ri.status, \
-               ri.execution_no, ri.assignee, ri.executed_by, ri.started_at, ri.finished_at, ri.comment, ri.defect \
+               ri.execution_no, ri.assignee, ri.executed_by, ri.started_at, ri.finished_at, ri.comment, ri.defect, \
+               ri.shared_pins \
              from run_items ri join cases c on c.id = ri.case_id \
              where ri.project_id = $1 and ri.launch_id = $2 and c.number > $3 order by c.number limit $4",
         )
@@ -1885,18 +2021,21 @@ impl Store {
         for (i, p, s, a, c) in srows {
             steps.entry(i).or_default().push((p, s, a, c));
         }
-        let mut snapshots: HashMap<(Uuid, i32), CaseSnapshot> = HashMap::new();
+        let mut snapshots: HashMap<SnapshotKey, CaseSnapshot> = HashMap::new();
         let mut out = Vec::with_capacity(rows.len());
         for r in &rows {
             let id: Uuid = r.try_get("id")?;
             let case_id: Uuid = r.try_get("case_id")?;
             let version: i32 = r.try_get("case_version")?;
-            if let std::collections::hash_map::Entry::Vacant(e) =
-                snapshots.entry((case_id, version))
-            {
-                e.insert(executed_snapshot(&mut conn, project_id, case_id, version).await?);
+            let pins = pins_of(r.try_get("shared_pins")?);
+            let key = snapshot_key(case_id, version, pins.as_ref());
+            if let std::collections::hash_map::Entry::Vacant(e) = snapshots.entry(key.clone()) {
+                e.insert(
+                    executed_snapshot(&mut conn, project_id, case_id, version, pins.as_ref())
+                        .await?,
+                );
             }
-            let snap = &snapshots[&(case_id, version)];
+            let snap = &snapshots[&key];
             let results: HashMap<String, (String, String, String)> = steps
                 .remove(&id)
                 .unwrap_or_default()
@@ -1958,6 +2097,7 @@ mod tests {
             data: String::new(),
             attachments: Vec::new(),
             steps: children,
+            shared: None,
         }
     }
 

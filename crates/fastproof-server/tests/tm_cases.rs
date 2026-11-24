@@ -1680,11 +1680,19 @@ async fn code_sync_trust_allure_id_and_rename() {
         json!([result("r8", "off", "shop.Cart#off", json!([]))]),
     )
     .await;
+    // Every finished launch is queued for the last result of cases; with sync off the job
+    // leaves the cases' content alone.
     let queued: i64 = sqlx::query_scalar("select count(*) from case_sync_queue")
         .fetch_one(&db.pool)
         .await
         .unwrap();
-    assert_eq!(queued, 0, "sync off: nothing queued");
+    assert_eq!(queued, 1, "sync off: queued for the last result only");
+    let st = sync(&db).await;
+    assert_eq!(
+        (st.created, st.linked, st.updated),
+        (0, 0, 0),
+        "sync off: {st:?}"
+    );
     audit_has(&s, &["case.linkIdentity", "case.unlinkIdentity"]).await;
 }
 

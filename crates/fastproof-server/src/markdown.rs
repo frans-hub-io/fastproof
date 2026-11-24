@@ -583,8 +583,10 @@ mod tests {
                     action: format!("![s](attachment:{ID})"),
                     ..Default::default()
                 }],
+                shared: None,
             }],
             links: vec![],
+            parameters: None,
         };
         let h = render_body(&body, KEY);
         assert_eq!(h.description, "<p><strong>d</strong></p>\n");

@@ -59,6 +59,10 @@ pub fn catalog() -> anyhow::Result<Catalog> {
             "cases:sync",
             "Update test cases from code through uploaded results (CI tokens)",
         )
+        .permission(
+            "cases:review",
+            "Approve test cases and shared steps; start runs with unapproved versions",
+        )
         .permission("plans:write", "Create and change test plans")
         .permission("runs:execute", "Execute manual runs")
         .permission(
@@ -110,6 +114,7 @@ pub fn catalog() -> anyhow::Result<Catalog> {
                 "rules:write",
                 "cases:write",
                 "cases:import",
+                "cases:review",
                 "plans:write",
                 "runs:execute",
                 "dashboards:write",
@@ -148,6 +153,7 @@ pub struct Perms {
     pub cases_write: Permission,
     pub cases_import: Permission,
     pub cases_sync: Permission,
+    pub cases_review: Permission,
     pub plans_write: Permission,
     pub runs_execute: Permission,
     pub ai_propose: Permission,
@@ -172,6 +178,7 @@ impl Perms {
             cases_write: p.permission("cases:write"),
             cases_import: p.permission("cases:import"),
             cases_sync: p.permission("cases:sync"),
+            cases_review: p.permission("cases:review"),
             plans_write: p.permission("plans:write"),
             runs_execute: p.permission("runs:execute"),
             ai_propose: p.permission("ai:propose"),

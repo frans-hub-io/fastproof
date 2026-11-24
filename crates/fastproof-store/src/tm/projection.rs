@@ -28,7 +28,7 @@ use fastproof_model::{
 use sqlx::{PgConnection, Row};
 use uuid::Uuid;
 
-use super::runs::{FOLDER_PATH_SQL, attachment_refs, executed_snapshot};
+use super::runs::{FOLDER_PATH_SQL, SnapshotKey, attachment_refs, executed_snapshot, snapshot_key};
 use super::{AttachmentRef, CaseSnapshot, CaseStep, RunStatus, StepStatus};
 use crate::ingest::LaunchRef;
 use crate::{codec, json_no_nul, no_nul};
@@ -396,6 +396,7 @@ struct ItemRow {
     defect: Option<serde_json::Value>,
     number: i64,
     folder_path: Vec<String>,
+    shared_pins: Option<super::expand::SharedPins>,
 }
 
 /// Projects run items of one launch (the caller holds the item rows) and returns what the
@@ -412,7 +413,7 @@ pub async fn project_run_items(
     crate::explorer::app_writes_keys(&mut *conn).await?;
     let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
         "select ri.id, ri.case_id, ri.case_version, ri.series_id, s.test_case_id, ri.status, ri.execution_no, \
-           ri.executed_by, ri.comment, ri.started_at, ri.finished_at, ri.defect, c.number, \
+           ri.executed_by, ri.comment, ri.started_at, ri.finished_at, ri.defect, c.number, ri.shared_pins, \
            {FOLDER_PATH_SQL} as folder_path \
          from run_items ri join cases c on c.id = ri.case_id join series s on s.id = ri.series_id \
          where ri.launch_id = $1 and ri.id = any($2) order by ri.id"
@@ -439,6 +440,7 @@ pub async fn project_run_items(
             defect: r.try_get("defect")?,
             number: r.try_get("number")?,
             folder_path: r.try_get("folder_path")?,
+            shared_pins: super::runs::pins_of(r.try_get("shared_pins")?),
         });
     }
     let (finals, opens): (Vec<&ItemRow>, Vec<&ItemRow>) =
@@ -506,13 +508,22 @@ pub async fn project_run_items(
         att_ids.sort();
         att_ids.dedup();
         let atts = attachment_refs(conn, launch.project_id, &att_ids).await?;
-        let mut snapshots: HashMap<(Uuid, i32), CaseSnapshot> = HashMap::new();
+        let mut snapshots: HashMap<SnapshotKey, CaseSnapshot> = HashMap::new();
         for i in &finals {
-            if let std::collections::hash_map::Entry::Vacant(e) =
-                snapshots.entry((i.case_id, i.case_version))
-            {
+            if let std::collections::hash_map::Entry::Vacant(e) = snapshots.entry(snapshot_key(
+                i.case_id,
+                i.case_version,
+                i.shared_pins.as_ref(),
+            )) {
                 e.insert(
-                    executed_snapshot(conn, launch.project_id, i.case_id, i.case_version).await?,
+                    executed_snapshot(
+                        conn,
+                        launch.project_id,
+                        i.case_id,
+                        i.case_version,
+                        i.shared_pins.as_ref(),
+                    )
+                    .await?,
                 );
             }
         }
@@ -546,7 +557,7 @@ pub async fn project_run_items(
         );
         let mut suite_tree: (Vec<serde_json::Value>, Vec<bool>) = (Vec::new(), Vec::new());
         for i in &finals {
-            let snap = &snapshots[&(i.case_id, i.case_version)];
+            let snap = &snapshots[&snapshot_key(i.case_id, i.case_version, i.shared_pins.as_ref())];
             let empty = HashMap::new();
             let st = steps.get(&i.id).unwrap_or(&empty);
             let status = result_status(i.status).unwrap_or(Status::Unknown);
@@ -801,6 +812,10 @@ pub async fn project_run_items(
     .bind(&rr)
     .execute(&mut *conn)
     .await?;
+    let mut case_ids: Vec<Uuid> = items.iter().map(|i| i.case_id).collect();
+    case_ids.sort();
+    case_ids.dedup();
+    super::last_status::apply_manual(conn, &case_ids).await?;
     let mut seen = HashSet::new();
     analyzed.retain(|s| seen.insert(*s));
     if !analyzed.is_empty() {

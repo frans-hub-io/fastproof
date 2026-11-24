@@ -14,6 +14,7 @@ import { DEFECT_GROUPS } from '../api/types-next';
 import { CopyValue } from '../components/CopyButton';
 import { HistoryImport } from '../components/HistoryImport';
 import { DefectChip } from '../components/Defect';
+import { WorkflowSettings } from './settings/WorkflowSettings';
 import { PageHeader } from '../components/PageHeader';
 import { QueryState } from '../components/QueryState';
 import { GROUP_COLOR, GROUP_LABEL, issueUrlFor } from '../lib/defects';
@@ -724,6 +725,7 @@ export default function SettingsPage() {
           <Tabs.Tab value="integrations">Integrations</Tabs.Tab>
           <Tabs.Tab value="secrets">Secrets</Tabs.Tab>
           <Tabs.Tab value="history">History import</Tabs.Tab>
+          <Tabs.Tab value="workflow">Workflow</Tabs.Tab>
         </Tabs.List>
         <Tabs.Panel value="general" pt="md">
           <QueryState query={settings}>{() => settings.data && <GeneralForm key={JSON.stringify(settings.data)} project={key} settings={settings.data} canWrite={canWrite} />}</QueryState>
@@ -739,6 +741,9 @@ export default function SettingsPage() {
         </Tabs.Panel>
         <Tabs.Panel value="history" pt="md">
           <HistoryImport project={key} canWrite={canWrite} />
+        </Tabs.Panel>
+        <Tabs.Panel value="workflow" pt="md">
+          <WorkflowSettings projectKey={key} />
         </Tabs.Panel>
       </Tabs>
     </>

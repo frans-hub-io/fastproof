@@ -47,6 +47,14 @@ pub struct TestPlanPatch {
     )]
     #[schema(value_type = Option<CaseFilter>)]
     pub filter: Option<Option<CaseFilter>>,
+    /// An FPQL query (exclusive with `filter`); `null` removes it.
+    #[serde(
+        default,
+        deserialize_with = "double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schema(value_type = Option<String>)]
+    pub query: Option<Option<String>>,
 }
 
 /// Filters of the item list of a plan.
@@ -79,10 +87,23 @@ pub struct StartedPlanLaunch {
     pub run_items: i64,
     /// The plan has automated cases (CI runs them from `testplan.json`).
     pub automated: i64,
+    /// Manual cases left out (not approved, or in a state that blocks runs), the first 1000.
+    pub skips: Vec<super::RunItemSkip>,
 }
 
 fn bad(message: impl Into<String>) -> TmError {
     TmError::bad_request(message)
+}
+
+/// Plan queries arrive with FPQL; until then a query is refused rather than ignored.
+fn no_query(q: Option<&Option<String>>) -> TmResult<()> {
+    if matches!(q, Some(Some(_))) {
+        return Err(TmError::invalid(
+            "invalid_query",
+            "plan queries are not available",
+        ));
+    }
+    Ok(())
 }
 
 /// An assignee: 1 to [`MAX_ASSIGNEE_BYTES`] bytes, no control characters.
@@ -163,7 +184,7 @@ pub(crate) async fn resolve_numbers(
     Ok(rows.into_iter().map(|(id, _)| id).collect())
 }
 
-const PLAN_COLS: &str = "p.id, p.kind, p.name, p.description, p.filter, p.revision, p.created_by, \
+const PLAN_COLS: &str = "p.id, p.kind, p.name, p.description, p.filter, p.query, p.revision, p.created_by, \
     p.created_at, p.updated_at, p.updated_by, p.archived_at, p.test_count, \
     coalesce(k.total, 0) as total, coalesce(k.manual, 0) as manual, coalesce(k.automated, 0) as automated";
 
@@ -208,6 +229,7 @@ fn plan_row(r: &PgRow) -> sqlx::Result<PlanRow> {
             name: r.try_get("name")?,
             description: r.try_get("description")?,
             filter: filter.and_then(|f| serde_json::from_value(f).ok()),
+            query: r.try_get("query")?,
             counts,
             revision: r.try_get("revision")?,
             created_by: r.try_get("created_by")?,
@@ -340,19 +362,35 @@ fn decode_cursor(c: &str, n: usize) -> TmResult<Vec<String>> {
 /// `{id: ALLURE_ID when the code has one, selector: full name}`; muted ones also in
 /// `mutedTests`. A plan without automated cases is a 409 `plan_has_no_automated_cases`.
 pub async fn managed_testplan(conn: &mut PgConnection, plan_id: Uuid) -> TmResult<TestPlanJson> {
-    let rows: Vec<(String, Option<String>, Option<String>, bool)> = sqlx::query_as(
-        "select tc.full_name, tc.explicit_id, tc.explicit_id_source, \
-           exists (select 1 from series s join series_mutes m on m.series_id = s.id \
-             where s.test_case_id = tc.id and (m.until is null or m.until > now())) as muted \
-         from test_plan_items i join cases c on c.id = i.case_id \
-           join test_cases tc on tc.case_id = c.id and tc.kind = 'code' \
-         where i.plan_id = $1 and c.archived_at is null and c.automated \
-         limit $2",
-    )
-    .bind(plan_id)
-    .bind(MAX_TESTPLAN_IDENTITIES)
-    .fetch_all(&mut *conn)
-    .await?;
+    let project_id: Option<Uuid> =
+        sqlx::query_scalar("select project_id from test_plans where id = $1")
+            .bind(plan_id)
+            .fetch_optional(&mut *conn)
+            .await?;
+    let rule = match project_id {
+        Some(p) => super::runs::RunnableRule::of(conn, p, false).await?,
+        None => super::runs::RunnableRule {
+            version_sql: "c.version",
+            blocking: Vec::new(),
+        },
+    };
+    let rows: Vec<(String, Option<String>, Option<String>, bool)> =
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select tc.full_name, tc.explicit_id, tc.explicit_id_source, \
+               exists (select 1 from series s join series_mutes m on m.series_id = s.id \
+                 where s.test_case_id = tc.id and (m.until is null or m.until > now())) as muted \
+             from test_plan_items i join cases c on c.id = i.case_id \
+               join test_cases tc on tc.case_id = c.id and tc.kind = 'code' \
+             where i.plan_id = $1 and c.archived_at is null and c.automated \
+               and {} is not null and (c.state is null or not (c.state = any($3))) \
+             limit $2",
+            rule.version_sql
+        )))
+        .bind(plan_id)
+        .bind(MAX_TESTPLAN_IDENTITIES)
+        .bind(&rule.blocking)
+        .fetch_all(&mut *conn)
+        .await?;
     if rows.is_empty() {
         return Err(TmError::conflict(
             "plan_has_no_automated_cases",
@@ -484,6 +522,7 @@ impl Store {
                 ),
             });
         }
+        no_query(w.query.as_ref())?;
         let filter = w.filter.clone().flatten().map(plan_filter);
         if let Some(f) = &filter {
             super::cases::check_filter(f)?;
@@ -603,6 +642,7 @@ impl Store {
                 ),
             });
         }
+        no_query(p.query.as_ref())?;
         if let Some(Some(f)) = &p.filter {
             super::cases::check_filter(f)?;
         }
@@ -993,27 +1033,60 @@ impl Store {
                     created: false,
                     run_items: items,
                     automated: row.plan.counts.automated,
+                    skips: Vec::new(),
                 });
             }
         }
-        if row.plan.counts.manual as usize > limits.max_run_items {
+        let include_manual = req.include_manual.unwrap_or(true);
+        if include_manual && row.plan.counts.manual as usize > limits.max_run_items {
             return Err(TmError::limit("maxRunItems", limits.max_run_items as u64));
         }
-        if row.plan.counts.manual > 0 {
+        if include_manual && row.plan.counts.manual > 0 {
             check_open_plan_launches(&mut tx, project.id, by, limits).await?;
         }
-        let manual: Vec<(Uuid, i64, String, i32, Option<String>)> = sqlx::query_as(
-            "select c.id, c.number, c.name, c.version, i.assignee from test_plan_items i \
-             join cases c on c.id = i.case_id \
-             where i.plan_id = $1 and c.archived_at is null and not c.automated \
-             order by i.position, c.number limit $2",
-        )
-        .bind(plan_id)
-        .bind(limits.max_run_items as i64 + 1)
-        .fetch_all(&mut *tx)
-        .await?;
-        if manual.len() > limits.max_run_items {
+        let rule =
+            super::runs::RunnableRule::of(&mut tx, project.id, req.include_unapproved).await?;
+        type Candidate = (
+            Uuid,
+            i64,
+            String,
+            Option<i32>,
+            Option<String>,
+            Option<String>,
+        );
+        let candidates: Vec<Candidate> = if include_manual {
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "select c.id, c.number, c.name, {} as runnable, c.state, i.assignee \
+                     from test_plan_items i join cases c on c.id = i.case_id \
+                     where i.plan_id = $1 and c.archived_at is null and not c.automated \
+                     order by i.position, c.number limit $2",
+                rule.version_sql
+            )))
+            .bind(plan_id)
+            .bind(limits.max_run_items as i64 + 1)
+            .fetch_all(&mut *tx)
+            .await?
+        } else {
+            Vec::new()
+        };
+        if candidates.len() > limits.max_run_items {
             return Err(TmError::limit("maxRunItems", limits.max_run_items as u64));
+        }
+        let mut skips = Vec::new();
+        let mut manual: Vec<(Uuid, i64, String, i32, Option<String>)> =
+            Vec::with_capacity(candidates.len());
+        for (id, number, name, runnable, state, assignee) in candidates {
+            match rule.skip(runnable, state.as_deref()) {
+                Some(code) => {
+                    if skips.len() < super::runs::MAX_SKIPS_LISTED {
+                        skips.push(super::RunItemSkip {
+                            case_number: number,
+                            code,
+                        });
+                    }
+                }
+                None => manual.push((id, number, name, runnable.unwrap_or(1), assignee)),
+            }
         }
         let Some(launch_id) =
             crate::launches::insert_launch(&mut tx, project, start, by, can_sync).await?
@@ -1061,6 +1134,7 @@ impl Store {
             created: true,
             run_items: n as i64,
             automated: row.plan.counts.automated,
+            skips,
         })
     }
 }

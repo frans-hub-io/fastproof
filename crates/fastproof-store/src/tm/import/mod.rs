@@ -191,7 +191,7 @@ impl Store {
         match kind {
             TmJobKind::Import => busy(&mut tx, project_id, None).await?,
             TmJobKind::Export => exports_busy(&mut tx, project_id, owner).await?,
-            TmJobKind::Backfill => {}
+            _ => {}
         }
         let r = sqlx::query(sqlx::AssertSqlSafe(format!(
             "insert into tm_jobs (id, project_id, kind, params, status, progress, created_by, owner_key) \
@@ -360,7 +360,7 @@ impl Store {
             "select j.id, j.project_id, p.key, j.kind, j.status, j.params, j.progress, j.created_by, j.report \
              from tm_jobs j join projects p on p.id = j.project_id \
              where j.kind = $1 and p.deleted_at is null and ( \
-               (j.kind = 'export' and (j.status = 'queued' or (j.status = 'running' and j.lease_until < now()))) \
+               (j.kind not in ('import', 'backfill') and (j.status = 'queued' or (j.status = 'running' and j.lease_until < now()))) \
                or (j.kind = 'import' and (j.status = 'queued' \
                  or (j.status in ('dry_run', 'running') and (j.lease_until is null or j.lease_until < now()))))) \
              order by j.created_at limit 1 for update of j skip locked",

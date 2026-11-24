@@ -168,6 +168,7 @@ async fn run(
         description: None,
         case_numbers: None,
         filter: None,
+        query: None,
     };
     match body.mode {
         RerunMode::Failed => {

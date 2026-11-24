@@ -18,7 +18,7 @@ use super::folders::{folder, folder_level, folder_path};
 use super::identity::manual_identity;
 use super::keys::{case_keys, set_case_key};
 use super::lookup::{CASE_COLS, case_by_id, case_by_number, case_row};
-use super::versions::{CONTENT_KEYS, changed_keys, insert_version, last_source, snapshot_of};
+use super::versions::{changed_keys, initial_keys, insert_version, last_source, snapshot_of};
 use super::{
     AttachmentRef, Case, CaseBody, CaseBulk, CaseBulkAction, CaseBulkResult, CaseBulkSkip,
     CaseFieldDef, CaseFilter, CaseFolderRef, CaseHistoryEntry, CaseHtml, CaseIdentity, CaseKeyKind,
@@ -64,6 +64,8 @@ pub struct CaseCtx<'a> {
     pub project_key: &'a str,
     pub by: &'a str,
     pub limits: &'a TmLimits,
+    /// The caller has `cases:review` (`false` for sync, imports, MCP and jobs).
+    pub can_review: bool,
 }
 
 /// How [`commit`] records a change.
@@ -549,6 +551,8 @@ pub async fn prepare_write(
         attachments: Vec::new(),
     };
     walk.walk(&mut body.steps, "body.steps", 1, &mut p)?;
+    super::shared_steps::validate_refs(conn, ctx, &body, current).await?;
+    super::parameters::validate_parameters(&body, l)?;
     check_links(&mut body.links, l, &mut p);
     if serde_json::to_vec(&body)?.len() > l.max_body_bytes {
         return Err(TmError::limit("maxBodyBytes", l.max_body_bytes as u64));
@@ -830,7 +834,7 @@ pub async fn commit(
     let Some(r) = r else {
         return Err(stale(conn, cur).await);
     };
-    let row = case_row(&r)?;
+    let mut row = case_row(&r)?;
     if !changed.is_empty() {
         insert_version(
             conn,
@@ -844,6 +848,9 @@ pub async fn commit(
             ctx.by,
         )
         .await?;
+        super::review::on_save(conn, ctx, Some(cur), &row, &changed, c.source).await?;
+        super::shared_steps::sync_usages(conn, ctx.project_id, row.id, &new.body).await?;
+        row = reread(conn, ctx.project_id, row.id).await?;
     }
     if cur.name != row.name {
         sqlx::query(
@@ -863,6 +870,51 @@ pub async fn commit(
     )
     .await?;
     Ok(row)
+}
+
+async fn reread(conn: &mut PgConnection, project_id: Uuid, id: Uuid) -> TmResult<CaseRow> {
+    case_by_id(conn, project_id, id)
+        .await?
+        .ok_or_else(|| TmError::Other(anyhow::anyhow!("case vanished")))
+}
+
+/// The workflow state a case takes when its status changes to `to` (§4.3): a checked
+/// transition for people (`ui`, `ai`, `restore`, `bulk`), the system state for code and
+/// imports. `None` keeps the current state.
+pub async fn state_for_status(
+    conn: &mut PgConnection,
+    ctx: &CaseCtx<'_>,
+    cur: &CaseRow,
+    to: CaseStatus,
+    source: VersionSource,
+) -> TmResult<Option<String>> {
+    if to == cur.status {
+        return Ok(None);
+    }
+    match source {
+        VersionSource::Code | VersionSource::Import => {
+            super::workflow::system_state(conn, ctx.project_id, cur.automated, to).await
+        }
+        VersionSource::Ui | VersionSource::Ai | VersionSource::Restore | VersionSource::Bulk => {
+            super::workflow::check_transition(conn, ctx, cur, to).await
+        }
+    }
+}
+
+/// Writes the workflow state of a locked case (same transaction as the change).
+pub async fn write_state(
+    conn: &mut PgConnection,
+    case_id: Uuid,
+    state: Option<&str>,
+) -> sqlx::Result<()> {
+    if let Some(st) = state {
+        sqlx::query("update cases set state = $2 where id = $1")
+            .bind(case_id)
+            .bind(no_nul(st))
+            .execute(&mut *conn)
+            .await?;
+    }
+    Ok(())
 }
 
 async fn check_case_count(
@@ -979,11 +1031,13 @@ pub async fn create_case_in(
         }
     };
     let id = Uuid::now_v7();
+    let state =
+        super::workflow::system_state(conn, ctx.project_id, meta.automated, snap.status).await?;
     sqlx::query(
         "insert into cases (id, project_id, number, name, status, automated, origin, ai_unreviewed, folder_id, \
-           body, fields, tags, search_text, code_hash, last_trusted_at, created_by, updated_by) \
+           body, fields, tags, search_text, code_hash, last_trusted_at, created_by, updated_by, state) \
          values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, \
-           case when $6 then now() end, $15, $15)",
+           case when $6 then now() end, $15, $15, $16)",
     )
     .bind(id)
     .bind(ctx.project_id)
@@ -1000,6 +1054,7 @@ pub async fn create_case_in(
     .bind(search_text(&snap.name, &snap.body))
     .bind(&meta.code_hash)
     .bind(no_nul(ctx.by))
+    .bind(state.as_deref().map(no_nul))
     .execute(&mut *conn)
     .await
     .map_err(|e| {
@@ -1010,7 +1065,7 @@ pub async fn create_case_in(
         }
     })?;
     link_attachments(conn, ctx, id, &snap.body).await?;
-    let all: Vec<String> = CONTENT_KEYS.iter().map(|k| k.to_string()).collect();
+    let all = initial_keys(&snap);
     insert_version(
         conn,
         ctx.project_id,
@@ -1041,9 +1096,10 @@ pub async fn create_case_in(
         json!({"number": number, "revision": 1, "source": meta.source.as_str()}),
     )
     .await?;
-    case_by_id(conn, ctx.project_id, id)
-        .await?
-        .ok_or_else(|| TmError::Other(anyhow::anyhow!("created case vanished")))
+    let row = reread(conn, ctx.project_id, id).await?;
+    super::review::on_save(conn, ctx, None, &row, &all, meta.source).await?;
+    super::shared_steps::sync_usages(conn, ctx.project_id, id, &snap.body).await?;
+    reread(conn, ctx.project_id, id).await
 }
 
 /// Applies a merge patch to a snapshot: `folderId` (`null` = root), `status`, `fields` (keys
@@ -1101,6 +1157,8 @@ pub async fn update_case_in(
             return Err(field_from_code(conflicts));
         }
     }
+    let state = state_for_status(conn, ctx, cur, snap.status, source).await?;
+    write_state(conn, cur.id, state.as_deref()).await?;
     let mut row = commit(
         conn,
         ctx,
@@ -1303,31 +1361,33 @@ pub fn push_filter(qb: &mut QueryBuilder<Postgres>, project_id: Uuid, f: &CaseFi
     }
 }
 
+/// The case list reads the denormalized last result (`cases.last_*`, §4.6).
 const SUMMARY_SELECT: &str = "select c.id, c.number, c.name, c.status, c.automated, c.folder_id, c.fields, c.tags, \
-    c.updated_at, c.ai_unreviewed, c.archived_at is not null as archived, \
-    lr.status as lr_status, lr.at as lr_at, lr.manual as lr_manual, lr.launch_id as lr_launch, lr.id as lr_id \
-    from cases c left join lateral (select x.status, x.at, x.manual, x.launch_id, x.id from test_cases t \
-      cross join lateral (select r.status, coalesce(r.stopped_at, r.updated_at) as at, r.run_item_id is not null as manual, \
-        r.launch_id, r.id, r.launch_created_at from results r where r.test_case_id = t.id \
-        order by r.launch_created_at desc, r.updated_at desc limit 1) x \
-      where t.case_id = c.id order by x.launch_created_at desc limit 1) lr on true ";
+    c.updated_at, c.ai_unreviewed, c.archived_at is not null as archived, c.state, c.review_state, \
+    c.last_status as lr_status, c.last_status_at as lr_at, c.last_source as lr_source, \
+    c.last_launch_id as lr_launch, c.last_result_id as lr_id \
+    from cases c ";
 
 fn summary_row(r: &PgRow) -> sqlx::Result<CaseSummary> {
     let status: String = r.try_get("status")?;
     let fields: Value = r.try_get("fields")?;
-    let last = match r.try_get::<Option<String>, _>("lr_status")? {
-        Some(s) => Some(LastResult {
-            status: s,
-            at: r.try_get("lr_at")?,
-            source: if r.try_get::<bool, _>("lr_manual")? {
-                ResultSource::Manual
-            } else {
-                ResultSource::Automated
-            },
-            launch_id: r.try_get("lr_launch")?,
-            result_id: r.try_get("lr_id")?,
+    let last = match (
+        r.try_get::<Option<String>, _>("lr_status")?,
+        r.try_get::<Option<DateTime<Utc>>, _>("lr_at")?,
+        r.try_get::<Option<Uuid>, _>("lr_launch")?,
+        r.try_get::<Option<Uuid>, _>("lr_id")?,
+    ) {
+        (Some(status), Some(at), Some(launch_id), Some(result_id)) => Some(LastResult {
+            status,
+            at,
+            source: r
+                .try_get::<Option<String>, _>("lr_source")?
+                .and_then(|s| ResultSource::parse(&s))
+                .unwrap_or_default(),
+            launch_id,
+            result_id,
         }),
-        None => None,
+        _ => None,
     };
     Ok(CaseSummary {
         number: r.try_get("number")?,
@@ -1341,6 +1401,10 @@ fn summary_row(r: &PgRow) -> sqlx::Result<CaseSummary> {
         updated_at: r.try_get("updated_at")?,
         ai_unreviewed: r.try_get("ai_unreviewed")?,
         archived: r.try_get("archived")?,
+        state: r.try_get("state")?,
+        review_state: r
+            .try_get::<Option<String>, _>("review_state")?
+            .and_then(|s| super::ReviewState::parse(&s)),
     })
 }
 
@@ -1434,6 +1498,12 @@ pub async fn case_view(conn: &mut PgConnection, project_id: Uuid, row: &CaseRow)
     } else {
         Vec::new()
     };
+    let shared_steps = if row.body.steps.iter().any(|s| s.shared.is_some()) {
+        let review = super::review::review_settings(conn, project_id).await?;
+        super::shared_steps::briefs_for_case(conn, project_id, &row.body, &review).await?
+    } else {
+        Vec::new()
+    };
     Ok(Case {
         number: row.number,
         id: row.id,
@@ -1459,6 +1529,10 @@ pub async fn case_view(conn: &mut PgConnection, project_id: Uuid, row: &CaseRow)
         updated_by: row.updated_by.clone(),
         updated_at: row.updated_at,
         archived_at: row.archived_at,
+        state: row.state.clone(),
+        approved_version: row.approved_version,
+        review_state: row.review_state,
+        shared_steps,
     })
 }
 
@@ -1516,6 +1590,8 @@ pub struct IdentityQuery {
 enum BulkOp {
     Move(Option<Uuid>),
     Status(CaseStatus),
+    /// A workflow state key (its category becomes the status).
+    State(String),
     Field(String, FieldValue),
     AddTags(Vec<String>),
     RemoveTags(Vec<String>),
@@ -1564,6 +1640,10 @@ fn bulk_op(b: &CaseBulk, limits: &TmLimits) -> TmResult<BulkOp> {
         }
         CaseBulkAction::Archive => BulkOp::Archive,
         CaseBulkAction::Restore => BulkOp::Restore,
+        CaseBulkAction::SetState => match v {
+            Value::String(k) if !k.is_empty() && k.len() <= 32 => BulkOp::State(k),
+            _ => return Err(bad("a workflow state key")),
+        },
     })
 }
 
@@ -1821,6 +1901,13 @@ impl Store {
                 "the case was executed in manual runs: archive it instead",
             ));
         }
+        sqlx::query(
+            "delete from review_votes where project_id = $1 and kind = 'case' and object_id = $2",
+        )
+        .bind(ctx.project_id)
+        .bind(cur.id)
+        .execute(&mut *tx)
+        .await?;
         sqlx::query("delete from cases where id = $1 and project_id = $2")
             .bind(cur.id)
             .bind(ctx.project_id)
@@ -2007,6 +2094,12 @@ impl Store {
     pub async fn bulk_cases(&self, ctx: &CaseCtx<'_>, b: &CaseBulk) -> TmResult<CaseBulkResult> {
         let l = ctx.limits;
         let op = bulk_op(b, l)?;
+        if b.query.is_some() {
+            return Err(TmError::invalid(
+                "invalid_query",
+                "queries are not available",
+            ));
+        }
         let mut tx = self.pool.begin().await?;
         let numbers: Vec<i64> = match (&b.numbers, &b.filter) {
             (Some(n), None) => {
@@ -2046,7 +2139,30 @@ impl Store {
                 .ok_or_else(|| invalid_case(&format!("value.{k}"), "unknown field"))?;
             check_value(def, v, l).map_err(|m| invalid_case(&format!("value.{k}"), m))?;
         }
-        let settings = case_sync_settings(&mut tx, ctx.project_id).await?;
+        let project_settings = {
+            let v: Option<Value> =
+                sqlx::query_scalar("select settings from projects where id = $1")
+                    .bind(ctx.project_id)
+                    .fetch_optional(&mut *tx)
+                    .await?;
+            ProjectSettings::from_value(v.unwrap_or(Value::Null))
+        };
+        let settings = project_settings.case_sync.clone();
+        let review_on = project_settings.case_review.mode != super::ReviewMode::Off;
+        let state_category = match &op {
+            BulkOp::State(k) => {
+                let w = project_settings
+                    .case_workflow
+                    .as_ref()
+                    .ok_or_else(|| TmError::bad_request("the project has no case workflow"))?;
+                Some(
+                    w.status(k)
+                        .ok_or_else(|| TmError::bad_request(format!("unknown state {k:?}")))?
+                        .category,
+                )
+            }
+            _ => None,
+        };
         let owned = owned_keys(&settings, &defs);
         let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
             "select {CASE_COLS} from cases where project_id = $1 and number = any($2) order by id for update"
@@ -2067,7 +2183,8 @@ impl Store {
                 code: code.to_string(),
             })
         };
-        let mut content: Vec<(CaseRow, CaseSnapshot, Vec<String>)> = Vec::new();
+        let mut content: Vec<(CaseRow, CaseSnapshot, Vec<String>, Option<String>)> = Vec::new();
+        let mut state_only: Vec<(Uuid, String)> = Vec::new();
         let mut archive_ids: Vec<Uuid> = Vec::new();
         for n in &numbers {
             let Some(cur) = by_number.get(n) else {
@@ -2094,6 +2211,11 @@ impl Store {
             match &op {
                 BulkOp::Move(f) => snap.folder_id = *f,
                 BulkOp::Status(s) => snap.status = *s,
+                BulkOp::State(_) => {
+                    if let Some(c) = state_category {
+                        snap.status = c;
+                    }
+                }
                 BulkOp::Field(k, v) => {
                     if v.is_null() {
                         snap.fields.remove(k);
@@ -2134,12 +2256,41 @@ impl Store {
                 skip(&mut out, *n, "field_from_code");
                 continue;
             }
+            let state = match &op {
+                BulkOp::Status(_) | BulkOp::State(_) => {
+                    let checked = if snap.status != cur.status {
+                        state_for_status(&mut tx, ctx, cur, snap.status, VersionSource::Bulk).await
+                    } else if let (BulkOp::State(_), Some(c)) = (&op, state_category) {
+                        super::workflow::check_transition(&mut tx, ctx, cur, c).await
+                    } else {
+                        Ok(None)
+                    };
+                    match checked {
+                        Ok(st) => match &op {
+                            BulkOp::State(k) => Some(k.clone()),
+                            _ => st,
+                        },
+                        Err(TmError::Conflict { code, .. })
+                        | Err(TmError::Forbidden { code, .. }) => {
+                            skip(&mut out, *n, code);
+                            continue;
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
+                _ => None,
+            };
             let changed = changed_keys(&snapshot_of(cur), &snap);
             if changed.is_empty() {
-                skip(&mut out, *n, "unchanged");
+                match state {
+                    Some(st) if cur.state.as_deref() != Some(st.as_str()) => {
+                        state_only.push((cur.id, st));
+                    }
+                    _ => skip(&mut out, *n, "unchanged"),
+                }
                 continue;
             }
-            content.push((cur.clone(), snap, changed));
+            content.push((cur.clone(), snap, changed, state));
         }
         let mut notify_items: Vec<Value> = Vec::new();
         for chunk in content.chunks(1000) {
@@ -2151,7 +2302,9 @@ impl Store {
             let mut versions = Vec::with_capacity(chunk.len());
             let mut changed = Vec::with_capacity(chunk.len());
             let mut snaps = Vec::with_capacity(chunk.len());
-            for (cur, snap, ch) in chunk {
+            let mut states: Vec<Option<String>> = Vec::with_capacity(chunk.len());
+            for (cur, snap, ch, st) in chunk {
+                states.push(st.clone());
                 ids.push(cur.id);
                 folders.push(snap.folder_id);
                 statuses.push(snap.status.as_str().to_string());
@@ -2165,9 +2318,9 @@ impl Store {
                 "update cases c set folder_id = t.f, status = t.s, fields = t.fl, \
                    tags = array(select jsonb_array_elements_text(t.tg)), revision = c.revision + 1, \
                    version = t.v, updated_by = $2, updated_at = now(), \
-                   ai_unreviewed = c.ai_unreviewed and t.s <> 'active' \
-                 from unnest($3::uuid[], $4::uuid[], $5::text[], $6::jsonb[], $7::jsonb[], $8::int[]) \
-                   as t(id, f, s, fl, tg, v) \
+                   ai_unreviewed = c.ai_unreviewed and t.s <> 'active', state = coalesce(t.st, c.state) \
+                 from unnest($3::uuid[], $4::uuid[], $5::text[], $6::jsonb[], $7::jsonb[], $8::int[], $9::text[]) \
+                   as t(id, f, s, fl, tg, v, st) \
                  where c.project_id = $1 and c.id = t.id returning c.number, c.revision",
             )
             .bind(ctx.project_id)
@@ -2178,6 +2331,7 @@ impl Store {
             .bind(&fields)
             .bind(&tags)
             .bind(&versions)
+            .bind(&states)
             .fetch_all(&mut *tx)
             .await?;
             sqlx::query(
@@ -2192,6 +2346,40 @@ impl Store {
             .bind(&changed)
             .bind(&snaps)
             .execute(&mut *tx)
+            .await?;
+            if review_on {
+                for (cur, _, ch, _) in chunk {
+                    let after = reread(&mut tx, ctx.project_id, cur.id).await?;
+                    super::review::on_save(
+                        &mut tx,
+                        ctx,
+                        Some(cur),
+                        &after,
+                        ch,
+                        VersionSource::Bulk,
+                    )
+                    .await?;
+                }
+            }
+            out.updated += updated.len() as i64;
+            notify_items.extend(
+                updated
+                    .into_iter()
+                    .map(|(n, r)| json!({"number": n, "revision": r, "source": "bulk"})),
+            );
+        }
+        if !state_only.is_empty() {
+            let (ids, keys): (Vec<Uuid>, Vec<String>) = state_only.into_iter().unzip();
+            let updated: Vec<(i64, i64)> = sqlx::query_as(
+                "update cases c set state = t.st, revision = c.revision + 1, updated_by = $2, updated_at = now() \
+                 from unnest($3::uuid[], $4::text[]) as t(id, st) \
+                 where c.project_id = $1 and c.id = t.id returning c.number, c.revision",
+            )
+            .bind(ctx.project_id)
+            .bind(no_nul(ctx.by))
+            .bind(&ids)
+            .bind(&keys)
+            .fetch_all(&mut *tx)
             .await?;
             out.updated += updated.len() as i64;
             notify_items.extend(
@@ -2373,7 +2561,11 @@ impl Store {
         .bind(no_nul(ctx.by))
         .fetch_one(&mut *tx)
         .await?;
-        let row = case_row(&r)?;
+        let mut row = case_row(&r)?;
+        let mut moved = vec![target.id];
+        moved.extend(old_case);
+        super::last_status::apply_manual(&mut tx, &moved).await?;
+        row = reread(&mut tx, ctx.project_id, row.id).await?;
         case_event(
             &mut tx,
             ctx.project_key,
@@ -2425,7 +2617,9 @@ impl Store {
         .bind(no_nul(ctx.by))
         .fetch_one(&mut *tx)
         .await?;
-        let row = case_row(&r)?;
+        let mut row = case_row(&r)?;
+        super::last_status::apply_manual(&mut tx, &[cur.id]).await?;
+        row = reread(&mut tx, ctx.project_id, row.id).await?;
         case_event(
             &mut tx,
             ctx.project_key,
@@ -2852,6 +3046,7 @@ mod tests {
                 ..Default::default()
             }],
             links: vec![],
+            parameters: None,
         };
         assert_eq!(
             search_text("Pay", &body),

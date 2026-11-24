@@ -295,6 +295,7 @@ fn steps_of(s: &[DraftStep], depth: usize) -> Vec<CaseStep> {
             data: d.data.clone(),
             attachments: Vec::new(),
             steps: steps_of(&d.steps, depth + 1),
+            shared: None,
         })
         .collect()
 }
@@ -321,6 +322,7 @@ fn ctx<'a>(s: &'a AppState, p: &'a fastproof_store::Project, auth: &'a Auth) -> 
         project_key: &p.key,
         by: &auth.principal.name,
         limits: &s.cfg.tm,
+        can_review: false,
     }
 }
 
@@ -601,6 +603,7 @@ async fn run_tool(s: &AppState, name: &str, a: &Value, auth: &Auth) -> ToolResul
                     url: format!("/p/{}/results/{}", p.key, d.summary.id),
                     link_type: CaseLinkType::Link,
                 }],
+                parameters: None,
             };
             let w = CaseWrite {
                 name: x.name.clone().unwrap_or_else(|| d.summary.name.clone()),
@@ -638,6 +641,7 @@ async fn run_tool(s: &AppState, name: &str, a: &Value, auth: &Auth) -> ToolResul
                     preconditions: x.preconditions.clone(),
                     steps: steps_of(&x.steps, 1),
                     links: Vec::new(),
+                    parameters: None,
                 }),
                 fields: field_values(&x.fields)?,
                 tags: x.tags.clone(),
@@ -696,6 +700,7 @@ async fn run_tool(s: &AppState, name: &str, a: &Value, auth: &Auth) -> ToolResul
                         None => cur.body.steps.clone(),
                     },
                     links: cur.body.links.clone(),
+                    parameters: None,
                 })
             } else {
                 None
@@ -789,6 +794,7 @@ fn step_of(st: &fastproof_store::StepView, depth: usize) -> CaseStep {
         } else {
             Vec::new()
         },
+        shared: None,
     }
 }
 

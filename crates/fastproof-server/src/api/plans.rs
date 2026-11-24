@@ -429,6 +429,14 @@ pub async fn start_plan_launch(
         debug: None,
     };
     super::launches::validate_start(&start)?;
+    if body.include_unapproved {
+        franshub_auth::require(&auth, &s.perms.cases_review, Some(&p.key))?;
+    }
+    if body.ci.as_ref().is_some_and(|c| c.dispatch) {
+        return Err(ApiError::bad_request(
+            "CI dispatch from plans is not available",
+        ));
+    }
     let can_sync = auth.principal.allowed(&s.perms.cases_sync, Some(&p.key));
     let started = s
         .store
@@ -473,9 +481,12 @@ pub async fn start_plan_launch(
             StatusCode::OK
         },
         Json(PlanLaunch {
+            launches: vec![launch.clone()],
             launch,
             testplan_url,
             ci_hint,
+            dispatches: Vec::new(),
+            skips: started.skips,
         }),
     ))
 }

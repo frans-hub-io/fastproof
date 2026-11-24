@@ -133,7 +133,7 @@ pub struct Notification {
     pub id: String,
     /// `webhook`, `slack`, `teams`, `email` or `telegram`.
     pub kind: String,
-    /// `launchFinished`, `gateFailed`, `newFailures`, `manualRunClosed`.
+    /// `launchFinished`, `gateFailed`, `newFailures`, `manualRunClosed`, `caseReviewRequested`.
     pub on: Vec<String>,
     /// Webhook or Slack URL, Telegram chat id, or comma-separated email addresses. A URL that
     /// is itself a credential (a Slack webhook URL) belongs in a secret (`targetSecretRef`).
@@ -445,6 +445,39 @@ pub struct RerunSettings {
     /// signature in `X-FastProof-Signature` (see the Rerun guide).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signing_secret_ref: Option<String>,
+    /// Branch globs a plan's CI dispatch may run on (0 to 20; `*` within a segment, `**`
+    /// across `/`). Absent: only `ref`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refs: Option<Vec<String>>,
+    /// CI variables a plan's CI dispatch may set, by name (0 to 20).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variables: Option<Vec<fastproof_store::tm::RerunVariable>>,
+}
+
+/// Branch globs of `rerun.refs`, at most.
+pub const MAX_RERUN_REFS: usize = 20;
+/// Variables of `rerun.variables`, at most.
+pub const MAX_RERUN_VARIABLES: usize = 20;
+/// Allowed values of one variable, at most.
+pub const MAX_VARIABLE_VALUES: usize = 50;
+/// Bytes of one variable value, at most.
+pub const MAX_VARIABLE_VALUE_BYTES: usize = 256;
+
+/// A CI variable value: 1 to [`MAX_VARIABLE_VALUE_BYTES`] bytes without control characters.
+pub fn valid_variable_value(v: &str) -> bool {
+    !v.is_empty() && v.len() <= MAX_VARIABLE_VALUE_BYTES && !v.chars().any(char::is_control)
+}
+
+/// A CI variable name: `^[A-Z][A-Z0-9_]{0,63}$`, not starting with `FASTPROOF_`.
+pub fn valid_variable_name(n: &str) -> bool {
+    let b = n.as_bytes();
+    !b.is_empty()
+        && b.len() <= 64
+        && b[0].is_ascii_uppercase()
+        && b[1..]
+            .iter()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || *c == b'_')
+        && !n.starts_with("FASTPROOF_")
 }
 
 /// The integration keys of the settings document.
@@ -458,11 +491,12 @@ pub struct IntegrationSettings {
     pub fastmock: Option<FastMockSettings>,
 }
 
-pub const EVENTS: [&str; 4] = [
+pub const EVENTS: [&str; 5] = [
     "launchFinished",
     "gateFailed",
     "newFailures",
     "manualRunClosed",
+    "caseReviewRequested",
 ];
 
 fn field<T: serde::de::DeserializeOwned>(
@@ -578,7 +612,7 @@ impl IntegrationSettings {
             }
             if n.on.is_empty() || n.on.iter().any(|e| !EVENTS.contains(&e.as_str())) {
                 return Err(
-                    "notifications.on: one or more of launchFinished, gateFailed, newFailures, manualRunClosed"
+                    "notifications.on: one or more of launchFinished, gateFailed, newFailures, manualRunClosed, caseReviewRequested"
                         .into(),
                 );
             }
@@ -838,6 +872,76 @@ impl RerunSettings {
                 }
                 if p == "github" && self.token_secret_ref.is_none() {
                     return Err("rerun.tokenSecretRef is required for github".into());
+                }
+            }
+        }
+        self.check_plan_fields()
+    }
+
+    /// `refs` and `variables` (§4.4 of the TM next contract).
+    fn check_plan_fields(&self) -> Result<(), String> {
+        if let Some(refs) = &self.refs {
+            if refs.len() > MAX_RERUN_REFS {
+                return Err(format!("rerun.refs: at most {MAX_RERUN_REFS} patterns"));
+            }
+            for r in refs {
+                fastproof_store::analysis::settings::check_branch_glob(r)
+                    .map_err(|e| format!("rerun.refs: {e}"))?;
+            }
+        }
+        if let Some(vars) = &self.variables {
+            if vars.len() > MAX_RERUN_VARIABLES {
+                return Err(format!(
+                    "rerun.variables: at most {MAX_RERUN_VARIABLES} variables"
+                ));
+            }
+            let mut names = std::collections::HashSet::new();
+            for v in vars {
+                if !valid_variable_name(&v.name) {
+                    return Err(format!(
+                        "rerun.variables: {:?} must match ^[A-Z][A-Z0-9_]{{0,63}}$ and not start with FASTPROOF_",
+                        v.name
+                    ));
+                }
+                if !names.insert(v.name.as_str()) {
+                    return Err(format!("rerun.variables: {} is listed twice", v.name));
+                }
+                if let Some(values) = &v.values {
+                    if values.is_empty() || values.len() > MAX_VARIABLE_VALUES {
+                        return Err(format!(
+                            "rerun.variables.{}.values: 1 to {MAX_VARIABLE_VALUES} values",
+                            v.name
+                        ));
+                    }
+                    if values.iter().any(|x| !valid_variable_value(x)) {
+                        return Err(format!(
+                            "rerun.variables.{}.values: 1 to {MAX_VARIABLE_VALUE_BYTES} bytes without control characters",
+                            v.name
+                        ));
+                    }
+                }
+                if let Some(d) = &v.default {
+                    if !valid_variable_value(d) {
+                        return Err(format!(
+                            "rerun.variables.{}.default: 1 to {MAX_VARIABLE_VALUE_BYTES} bytes without control characters",
+                            v.name
+                        ));
+                    }
+                    if v.values.as_ref().is_some_and(|vs| !vs.contains(d)) {
+                        return Err(format!(
+                            "rerun.variables.{}.default must be one of its values",
+                            v.name
+                        ));
+                    }
+                }
+                if v.description
+                    .as_ref()
+                    .is_some_and(|d| d.len() > 200 || d.chars().any(char::is_control))
+                {
+                    return Err(format!(
+                        "rerun.variables.{}.description: at most 200 bytes without control characters",
+                        v.name
+                    ));
                 }
             }
         }

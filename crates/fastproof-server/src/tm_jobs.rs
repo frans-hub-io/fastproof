@@ -53,11 +53,20 @@ fn workers(instance: &str, kind: TmJobKind) -> Arc<Semaphore> {
         .clone()
 }
 
-/// Starts an import and an export worker on this replica when one is free (each runs jobs
-/// of its kind until none is left).
+/// Starts a worker per job kind on this replica when one is free (each runs jobs of its kind
+/// until none is left).
 pub fn kick(s: &AppState) {
-    kick_kind(s, TmJobKind::Import);
-    kick_kind(s, TmJobKind::Export);
+    for kind in [
+        TmJobKind::Import,
+        TmJobKind::Export,
+        TmJobKind::LastStatus,
+        TmJobKind::SharedInline,
+        TmJobKind::WorkflowRemap,
+        TmJobKind::Requirements,
+        TmJobKind::CoverageExport,
+    ] {
+        kick_kind(s, kind);
+    }
 }
 
 fn kick_kind(s: &AppState, kind: TmJobKind) {
@@ -67,6 +76,18 @@ fn kick_kind(s: &AppState, kind: TmJobKind) {
     let s = s.clone();
     tokio::spawn(async move {
         let _permit = permit;
+        if !matches!(kind, TmJobKind::Import | TmJobKind::Export) {
+            // Rare kinds: look before taking the claim lock, so idle kinds hold no connection.
+            let waiting: Result<bool, sqlx::Error> = sqlx::query_scalar(
+                "select exists (select 1 from tm_jobs where kind = $1 and status in ('queued', 'running'))",
+            )
+            .bind(kind.as_str())
+            .fetch_one(s.store.pool())
+            .await;
+            if !matches!(waiting, Ok(true)) {
+                return;
+            }
+        }
         loop {
             let owner = format!("{}-tm-{}", s.instance, Uuid::now_v7());
             match s.store.claim_tm_job(&owner, kind).await {
@@ -115,6 +136,24 @@ async fn run(s: &AppState, job: ClaimedJob, owner: &str) {
         (TmJobKind::Import, _) => apply(s, &job, owner).await,
         (TmJobKind::Export, _) => export(s, &job, owner).await,
         (TmJobKind::Backfill, _) => Ok(()),
+        (TmJobKind::LastStatus, _) => s
+            .store
+            .run_last_status_job(job.id, owner)
+            .await
+            .map_err(anyhow::Error::from),
+        (TmJobKind::SharedInline, _) => s
+            .store
+            .run_shared_inline_job(job.id, owner, &s.cfg.tm)
+            .await
+            .map_err(anyhow::Error::from),
+        (TmJobKind::WorkflowRemap, _) => s
+            .store
+            .run_workflow_remap_job(job.id, owner)
+            .await
+            .map_err(anyhow::Error::from),
+        (TmJobKind::Requirements | TmJobKind::CoverageExport, _) => {
+            Err(ImportError::invalid(format!("{} jobs are not available", job.kind)).into())
+        }
     };
     if let Err(e) = r {
         let (code, message) = match e.downcast_ref::<ImportError>() {
@@ -283,6 +322,7 @@ async fn dry_run(s: &AppState, job: &ClaimedJob, owner: &str) -> anyhow::Result<
         project_key: &job.project_key,
         by: &by,
         limits: &s.cfg.tm,
+        can_review: false,
     };
     let mut patch = json!({});
     if params.source == "testops" && params.blob.is_none() {
@@ -645,6 +685,7 @@ async fn apply(s: &AppState, job: &ClaimedJob, owner: &str) -> anyhow::Result<()
         project_key: &job.project_key,
         by: &by,
         limits: &s.cfg.tm,
+        can_review: false,
     };
     let blob = params
         .blob

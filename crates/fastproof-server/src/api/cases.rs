@@ -84,6 +84,7 @@ fn ctx<'a>(s: &'a AppState, p: &'a Project, auth: &'a Auth) -> CaseCtx<'a> {
         project_key: &p.key,
         by: &auth.principal.name,
         limits: &s.cfg.tm,
+        can_review: auth.principal.allowed(&s.perms.cases_review, Some(&p.key)),
     }
 }
 

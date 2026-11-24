@@ -441,6 +441,7 @@ mod tests {
             },
             events: vec!["gateFailed".into()],
             test: false,
+            plan_check: None,
         }
     }
 

@@ -84,6 +84,7 @@ async fn manual_launch(
                 })
                 .collect(),
             links: vec![],
+            parameters: None,
         };
         let mut conn = db.pool.acquire().await.unwrap();
         let row = tm::testutil::insert_case(&mut conn, p.id, &format!("case {c}"), &body, None)
@@ -110,6 +111,7 @@ async fn manual_launch(
                 case_numbers: Some(numbers),
                 plan_id: None,
                 assignee: None,
+                include_unapproved: false,
             },
             &TmLimits::default(),
         )

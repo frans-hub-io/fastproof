@@ -5,7 +5,9 @@ pub mod analysis;
 pub mod attachments;
 pub mod case_fields;
 pub mod case_folders;
+pub mod case_workflow;
 pub mod cases;
+pub mod coverage;
 pub mod dashboards;
 pub mod direct_uploads;
 pub mod events;
@@ -18,13 +20,18 @@ pub mod launches;
 pub mod logs;
 pub mod media;
 pub mod merges;
+pub mod parameters;
 pub mod plans;
 pub mod projects;
+pub mod queries;
 pub mod range;
+pub mod requirements;
 pub mod reruns;
 pub mod results;
+pub mod reviews;
 pub mod runs;
 pub mod search;
+pub mod shared_steps;
 pub mod trackers;
 pub mod uploads;
 pub mod version;
@@ -121,7 +128,29 @@ pub fn type_project_settings(doc: &mut utoipa::openapi::OpenApi) {
         tm::LaunchManual, tm::RunItemSummary, tm::RunStepResult, tm::RunItem, tm::RunStepWrite, tm::RunStepAck,
         tm::RunItemPatch, tm::RunItemsAdd, tm::RunItemsAdded, tm::RunDefect, tm::ManualClose, tm::TmJob,
         tm::ImportPreview, tm::ImportOptions, tm::TestOpsImport, tm::ImportReport, tm::FolderDeleteMode,
-        tm::RunItemExecution, tm::RunItemSkip, tm::RunItemSkipCode, tm::ImportCaseStatus)),
+        tm::RunItemExecution, tm::RunItemSkip, tm::RunItemSkipCode, tm::ImportCaseStatus,
+        tm::TmJobKind, tm::TmGateMode, tm::SharedStepRef, tm::SharedStepOrigin, tm::SharedStepBrief, tm::SharedStepHtml,
+        tm::SharedStep, tm::SharedStepUsageCount, tm::SharedStepSummary, tm::SharedStepList, tm::SharedStepWrite,
+        tm::SharedStepVersionSummary, tm::SharedStepSnapshot, tm::SharedStepVersion, tm::SharedStepVersionList,
+        tm::SharedStepUsage, tm::SharedStepUsageList, tm::ExtractSharedStep, tm::ExtractedSharedStep,
+        tm::SharedStepChange, tm::SharedStepChangeList, tm::SharedPin, tm::ReviewState, tm::ReviewDecision,
+        tm::ReviewKind, tm::ReviewMode, tm::WorkflowGuard, tm::WorkflowPermission, tm::ReviewResetOn, tm::ReviewImports,
+        tm::CaseWorkflowStatus, tm::CaseWorkflowTransition, tm::CaseWorkflowFlow, tm::CaseWorkflowSettings,
+        tm::CaseReviewSettings, tm::CaseWorkflowView, tm::CaseWorkflowPut, tm::CaseWorkflowSaved, tm::CaseTransition,
+        tm::AllowedTransition, tm::ReviewVote, tm::ReviewThread, tm::ReviewVoteWrite, tm::ReviewQueueItem,
+        tm::ReviewQueue, tm::ReviewBulkItem, tm::ReviewBulk, tm::ReviewBulkSkip, tm::ReviewBulkResult,
+        tm::QueryEntity, tm::QueryAttributeType, tm::QueryError, tm::QueryValidate, tm::QueryValidation,
+        tm::QueryAttribute, tm::QueryFunction, tm::QueryField, tm::QuerySchema, tm::SavedQuery, tm::SavedQueryWrite,
+        tm::SavedQueryPatch, tm::SavedQueryList, tm::PlanCiEnvironment, tm::PlanCi, tm::PlanDispatchStatus,
+        tm::PlanDispatch, tm::PlanDispatchList, tm::PlanCheck, tm::RerunVariable, tm::ParameterMode, tm::ParameterRow,
+        tm::ParameterGenerator, tm::CaseParameters, tm::ParameterGenerate, tm::ParameterRows, tm::RunIteration,
+        tm::RunIterationPatch, tm::RunIterationStepAck, tm::RequirementStatus, tm::RequirementOrigin,
+        tm::RequirementLinkOrigin, tm::RequirementLinkStatus, tm::CoverageStatus, tm::CoverageScopeKind,
+        tm::CoverageExportFormat, tm::RequirementPathEntry, tm::RequirementTracker, tm::Requirement,
+        tm::RequirementSummary, tm::RequirementList, tm::RequirementWrite, tm::RequirementPatch,
+        tm::RequirementLinksChange, tm::RequirementLink, tm::RequirementLinkList, tm::CaseRequirement,
+        tm::RequirementImport, tm::CoverageCounts, tm::RequirementCoverage, tm::CoverageScopeView, tm::CoveragePage,
+        tm::CoverageExportRequest, tm::ReplicaLevel, tm::ReplicaLevels)),
     tags(
         (name = "projects"), (name = "launches"), (name = "uploads"), (name = "results"),
         (name = "attachments"), (name = "events"), (name = "admin"), (name = "integrations"),
@@ -129,7 +158,11 @@ pub fn type_project_settings(doc: &mut utoipa::openapi::OpenApi) {
         (name = "cases", description = "Test cases, folders, fields, versions and AI suggestions"),
         (name = "plans", description = "Managed test plans"),
         (name = "runs", description = "Manual runs: run items and step results"),
-        (name = "imports", description = "Imports and exports of test cases")
+        (name = "imports", description = "Imports and exports of test cases"),
+        (name = "shared-steps", description = "Shared steps: reusable step sequences that cases reference, with versions and usages"),
+        (name = "reviews", description = "Case workflow and version review of cases and shared steps"),
+        (name = "queries", description = "FPQL: validation, the query schema and saved queries"),
+        (name = "requirements", description = "Requirements, their links to cases, and coverage")
     )
 )]
 pub struct ApiDoc;
@@ -324,6 +357,11 @@ impl AppState {
                 "the launch is finished: only its creator or a caller with cases:sync may add to it",
             )),
         }
+    }
+
+    /// Whether the caller has `cases:review` in the project.
+    pub fn can_review(&self, auth: &Auth, key: &str) -> bool {
+        auth.principal.allowed(&self.perms.cases_review, Some(key))
     }
 
     pub async fn audit(

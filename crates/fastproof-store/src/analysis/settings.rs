@@ -5,7 +5,107 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
+use crate::tm::{CaseReviewSettings, CaseStatus, CaseWorkflowFlow, CaseWorkflowSettings};
 use crate::{Store, json_no_nul};
+
+fn is_default_review(r: &CaseReviewSettings) -> bool {
+    *r == CaseReviewSettings::default()
+}
+
+/// Statuses of a case workflow, at most.
+pub const MAX_WORKFLOW_STATUSES: usize = 20;
+/// Transitions of one workflow flow, at most.
+pub const MAX_WORKFLOW_TRANSITIONS: usize = 100;
+
+fn valid_state_key(k: &str) -> bool {
+    let b = k.as_bytes();
+    !b.is_empty()
+        && b.len() <= 32
+        && b[0].is_ascii_lowercase()
+        && b[1..]
+            .iter()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'_')
+}
+
+fn valid_color(c: &str) -> bool {
+    let b = c.as_bytes();
+    b.len() == 7 && b[0] == b'#' && b[1..].iter().all(u8::is_ascii_hexdigit)
+}
+
+/// Checks a case workflow (§4.4); the message names the field.
+pub fn check_case_workflow(w: &CaseWorkflowSettings) -> Result<(), String> {
+    if w.statuses.is_empty() || w.statuses.len() > MAX_WORKFLOW_STATUSES {
+        return Err(format!(
+            "caseWorkflow.statuses: 1 to {MAX_WORKFLOW_STATUSES} statuses"
+        ));
+    }
+    let mut keys = std::collections::HashSet::new();
+    for (i, st) in w.statuses.iter().enumerate() {
+        if !valid_state_key(&st.key) {
+            return Err(format!(
+                "caseWorkflow.statuses[{i}].key must match ^[a-z][a-z0-9_]{{0,31}}$"
+            ));
+        }
+        if !keys.insert(st.key.as_str()) {
+            return Err(format!("caseWorkflow.statuses[{i}].key is not unique"));
+        }
+        let n = st.name.trim();
+        if n.is_empty() || st.name.len() > 100 || st.name.chars().any(char::is_control) {
+            return Err(format!(
+                "caseWorkflow.statuses[{i}].name must have 1 to 100 bytes without control characters"
+            ));
+        }
+        if st.color.as_deref().is_some_and(|c| !valid_color(c)) {
+            return Err(format!("caseWorkflow.statuses[{i}].color must be #rrggbb"));
+        }
+    }
+    for c in CaseStatus::ALL {
+        if !w.statuses.iter().any(|s| s.category == *c) {
+            return Err(format!("caseWorkflow.statuses: no status of category {c}"));
+        }
+    }
+    let flow = |name: &str, f: &CaseWorkflowFlow| -> Result<(), String> {
+        if !keys.contains(f.initial.as_str()) {
+            return Err(format!("caseWorkflow.{name}.initial names no status"));
+        }
+        if f.transitions.len() > MAX_WORKFLOW_TRANSITIONS {
+            return Err(format!(
+                "caseWorkflow.{name}.transitions: at most {MAX_WORKFLOW_TRANSITIONS}"
+            ));
+        }
+        for (i, t) in f.transitions.iter().enumerate() {
+            if t.from.is_empty() || t.from.len() > MAX_WORKFLOW_STATUSES + 1 {
+                return Err(format!(
+                    "caseWorkflow.{name}.transitions[{i}].from: 1 to {} entries",
+                    MAX_WORKFLOW_STATUSES + 1
+                ));
+            }
+            for k in t.from.iter().chain(std::iter::once(&t.to)) {
+                if k != "*" && !keys.contains(k.as_str()) {
+                    return Err(format!(
+                        "caseWorkflow.{name}.transitions[{i}]: {k:?} names no status"
+                    ));
+                }
+            }
+            if t.requires.as_ref().is_some_and(|r| r.len() > 3) {
+                return Err(format!(
+                    "caseWorkflow.{name}.transitions[{i}].requires: at most 3 guards"
+                ));
+            }
+        }
+        Ok(())
+    };
+    flow("manual", &w.manual)?;
+    flow("automated", &w.automated)
+}
+
+/// Checks a review policy (§4.4); the message names the field.
+pub fn check_case_review(r: &CaseReviewSettings) -> Result<(), String> {
+    if !(1..=5).contains(&r.approvals) {
+        return Err("caseReview.approvals must be 1..=5".into());
+    }
+    Ok(())
+}
 
 /// Largest settings document, in bytes of JSON.
 pub const MAX_SETTINGS_BYTES: usize = 64 * 1024;
@@ -185,6 +285,27 @@ pub struct CaseSyncSettings {
     /// Match identities to cases by TMS links (`tms` labels) of TestRail or Qase keys.
     pub match_tms_links: bool,
     pub fields: CaseSyncFields,
+    /// Allure link types whose links name requirements (skipped when the default).
+    #[serde(skip_serializing_if = "is_default_link_types")]
+    pub requirement_link_types: Vec<String>,
+}
+
+/// Requirement link types, at most.
+pub const MAX_REQUIREMENT_LINK_TYPES: usize = 10;
+
+fn default_link_types() -> Vec<String> {
+    vec!["requirement".into()]
+}
+
+fn is_default_link_types(v: &[String]) -> bool {
+    v.len() == 1 && v[0] == "requirement"
+}
+
+impl CaseSyncSettings {
+    /// Whether `requirementLinkTypes` differs from the default (a gated write, §3).
+    pub fn custom_link_types(&self) -> bool {
+        !is_default_link_types(&self.requirement_link_types)
+    }
 }
 
 impl Default for CaseSyncSettings {
@@ -200,6 +321,7 @@ impl Default for CaseSyncSettings {
             stale_after_days: 30,
             match_tms_links: false,
             fields: CaseSyncFields::default(),
+            requirement_link_types: default_link_types(),
         }
     }
 }
@@ -223,6 +345,31 @@ impl CaseSyncSettings {
         }
         if !(1..=3650).contains(&self.stale_after_days) {
             return Err("caseSync.staleAfterDays must be 1..=3650".into());
+        }
+        if self.requirement_link_types.len() > MAX_REQUIREMENT_LINK_TYPES {
+            return Err(format!(
+                "caseSync.requirementLinkTypes: at most {MAX_REQUIREMENT_LINK_TYPES} types"
+            ));
+        }
+        let mut seen = std::collections::HashSet::new();
+        for t in &self.requirement_link_types {
+            let b = t.as_bytes();
+            let ok = !b.is_empty()
+                && b.len() <= 32
+                && b[0].is_ascii_alphabetic()
+                && b[1..]
+                    .iter()
+                    .all(|c| c.is_ascii_alphanumeric() || *c == b'_' || *c == b'-');
+            if !ok {
+                return Err(format!(
+                    "caseSync.requirementLinkTypes: {t:?} must match ^[A-Za-z][A-Za-z0-9_-]{{0,31}}$"
+                ));
+            }
+            if !seen.insert(t.as_str()) {
+                return Err(format!(
+                    "caseSync.requirementLinkTypes: {t:?} is listed twice"
+                ));
+            }
         }
         Ok(())
     }
@@ -340,6 +487,12 @@ pub struct ProjectSettings {
     pub rollup: RollupSettings,
     /// Code sync of test cases.
     pub case_sync: CaseSyncSettings,
+    /// Configured workflow of cases (absent: any status to any, no states).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub case_workflow: Option<CaseWorkflowSettings>,
+    /// Version review of cases and shared steps (skipped when the default, review off).
+    #[serde(skip_serializing_if = "is_default_review")]
+    pub case_review: CaseReviewSettings,
     /// Quality gates.
     #[schema(value_type = Vec<Object>)]
     pub gates: Vec<serde_json::Value>,
@@ -418,6 +571,10 @@ impl ProjectSettings {
             return Err("retention.caseVersionsDays must be 0..=36500".into());
         }
         self.case_sync.validate()?;
+        if let Some(w) = &self.case_workflow {
+            check_case_workflow(w)?;
+        }
+        check_case_review(&self.case_review)?;
         if self.gates.len() > MAX_SETTINGS_ITEMS || self.notifications.len() > MAX_SETTINGS_ITEMS {
             return Err(format!(
                 "at most {MAX_SETTINGS_ITEMS} gates and {MAX_SETTINGS_ITEMS} notifications"
@@ -460,6 +617,8 @@ impl ProjectSettings {
                     ("retention", 1),
                     ("rollup", 2),
                     ("caseSync", 3),
+                    ("caseWorkflow", 4),
+                    ("caseReview", 5),
                 ] {
                     if let Some(x) = o.get(k) {
                         match slot {
@@ -468,8 +627,13 @@ impl ProjectSettings {
                                 d.retention = serde_json::from_value(x.clone()).unwrap_or_default()
                             }
                             2 => d.rollup = serde_json::from_value(x.clone()).unwrap_or_default(),
-                            _ => {
+                            3 => {
                                 d.case_sync = serde_json::from_value(x.clone()).unwrap_or_default()
+                            }
+                            4 => d.case_workflow = serde_json::from_value(x.clone()).ok(),
+                            _ => {
+                                d.case_review =
+                                    serde_json::from_value(x.clone()).unwrap_or_default()
                             }
                         }
                     }

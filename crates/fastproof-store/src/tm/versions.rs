@@ -24,10 +24,21 @@ pub const CONTENT_KEYS: &[&str] = &[
     "description",
     "preconditions",
     "steps",
+    "parameters",
     "links",
     "fields",
     "tags",
 ];
+
+/// The keys version 1 of a case lists as changed: every content key, `parameters` only when
+/// the case has them.
+pub fn initial_keys(snap: &CaseSnapshot) -> Vec<String> {
+    CONTENT_KEYS
+        .iter()
+        .filter(|k| **k != "parameters" || snap.body.parameters.is_some())
+        .map(|k| k.to_string())
+        .collect()
+}
 
 /// The content of a case as a snapshot.
 pub fn snapshot_of(row: &CaseRow) -> CaseSnapshot {
@@ -50,6 +61,7 @@ pub fn changed_keys(old: &CaseSnapshot, new: &CaseSnapshot) -> Vec<String> {
         old.body.description != new.body.description,
         old.body.preconditions != new.body.preconditions,
         old.body.steps != new.body.steps,
+        old.body.parameters != new.body.parameters,
         old.body.links != new.body.links,
         old.fields != new.fields,
         old.tags != new.tags,
@@ -227,6 +239,10 @@ impl Store {
             let owned = super::cases::code_owned_keys(&mut tx, ctx.project_id).await?;
             super::cases::keep_code_owned(&cur, &mut snap, &owned);
         }
+        let state =
+            super::cases::state_for_status(&mut tx, ctx, &cur, snap.status, VersionSource::Restore)
+                .await?;
+        super::cases::write_state(&mut tx, cur.id, state.as_deref()).await?;
         let row = commit(
             &mut tx,
             ctx,

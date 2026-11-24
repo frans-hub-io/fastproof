@@ -15,7 +15,7 @@ use sqlx::{PgConnection, PgPool, Row};
 use uuid::Uuid;
 
 use super::cases::{
-    CaseCtx, Commit, MAX_LINKS, NewCaseMeta, case_event, case_sync_settings, commit,
+    CaseCtx, Commit, MAX_LINKS, MAX_URL_BYTES, NewCaseMeta, case_event, case_sync_settings, commit,
     create_case_in, reserve_numbers, valid_link_url,
 };
 use super::fields::field_defs;
@@ -70,6 +70,17 @@ pub struct CodeData {
     pub suite_path: Vec<String>,
     /// `ALLURE_ID` of the result, else the explicit id of the identity when it is one.
     pub allure_id: Option<String>,
+    /// Links as sent, with their Allure link type (at most [`MAX_LINKS`]); requirement links
+    /// come from them.
+    pub raw_links: Vec<RawLink>,
+}
+
+/// A link of a result with the Allure link type as sent.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RawLink {
+    pub link_type: String,
+    pub name: String,
+    pub url: String,
 }
 
 impl CodeData {
@@ -278,6 +289,7 @@ pub fn synced_snapshot(
                 preconditions: String::new(),
                 steps: Vec::new(),
                 links: v.links.clone(),
+                parameters: None,
             },
             fields: v.fields.clone(),
             tags: v.tags.clone(),
@@ -589,6 +601,8 @@ pub async fn sync_items(
     if items.is_empty() {
         return Ok(stats);
     }
+    let mut pairs: Vec<(Uuid, &CodeData)> = Vec::with_capacity(items.len());
+    let mut relinked: Vec<Uuid> = Vec::new();
     let mut tx = pool.begin().await?;
     let defs = field_defs(&mut tx, ctx.project_id, false).await?;
     let mut ids: Vec<Uuid> = items.iter().map(|i| i.test_case_id).collect();
@@ -721,6 +735,8 @@ pub async fn sync_items(
                             .await?;
                     }
                     link(&mut tx, it.test_case_id, row.id).await?;
+                    relinked.push(row.id);
+                    pairs.push((row.id, &it.data));
                     stats.created += 1;
                     continue;
                 }
@@ -731,6 +747,7 @@ pub async fn sync_items(
                     }
                     if linked.get(&it.test_case_id) == Some(&None) {
                         link(&mut tx, it.test_case_id, case_id).await?;
+                        relinked.push(case_id);
                         stats.linked += 1;
                     }
                     case_id
@@ -742,6 +759,7 @@ pub async fn sync_items(
                     };
                     let to_number = new.number;
                     link(&mut tx, it.test_case_id, to).await?;
+                    relinked.extend([from, to]);
                     let (old_row, archived) =
                         settle_relinked(&mut tx, ctx, &old, to_number, it.launch_id).await?;
                     stats.relinked += 1;
@@ -803,7 +821,12 @@ pub async fn sync_items(
         row.automated = true;
         row.code_hash = Some(hash);
         cases.insert(case_id, row);
+        pairs.push((case_id, &it.data));
     }
+    super::requirements::sync_code_links(&mut tx, ctx, s, &pairs).await?;
+    relinked.sort();
+    relinked.dedup();
+    super::last_status::apply_manual(&mut tx, &relinked).await?;
     tx.commit().await?;
     Ok(stats)
 }
@@ -856,6 +879,32 @@ pub fn code_data(
         .and_then(|d| d.get("text"))
         .and_then(Value::as_str)
         .map(str::to_string);
+    let raw_links: Vec<RawLink> = detail
+        .and_then(|d| d.get("links"))
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|l| {
+                    let s = |k: &str| {
+                        l.get(k)
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .chars()
+                            .take(MAX_URL_BYTES)
+                            .collect::<String>()
+                    };
+                    let url = s("url");
+                    let name = s("name");
+                    (!url.is_empty() || !name.is_empty()).then(|| RawLink {
+                        link_type: s("type").chars().take(64).collect(),
+                        name,
+                        url,
+                    })
+                })
+                .take(MAX_LINKS)
+                .collect()
+        })
+        .unwrap_or_default();
     let links = detail
         .and_then(|d| d.get("links"))
         .and_then(Value::as_array)
@@ -886,22 +935,22 @@ pub fn code_data(
         labels,
         suite_path,
         allure_id,
+        raw_links,
     }
 }
 
-/// Queues a finished launch for code sync when the project has `caseSync.enabled` (the
-/// default). Called by `finish_launch` in its transaction.
+/// Queues a finished launch for the `cases.sync` job (always: the last result of cases follows
+/// every launch; `caseSync.enabled` only decides the content sync, in `sync_launch`). Called by
+/// `finish_launch` in its transaction.
 pub async fn queue_launch(
     conn: &mut PgConnection,
-    project_id: Uuid,
+    _project_id: Uuid,
     launch_id: Uuid,
 ) -> sqlx::Result<()> {
     sqlx::query(
-        "insert into case_sync_queue (launch_id) select $2 \
-         where (select settings -> 'caseSync' -> 'enabled' from projects where id = $1) is distinct from 'false'::jsonb \
+        "insert into case_sync_queue (launch_id) values ($1) \
          on conflict (launch_id) do update set queued_at = now(), lease_owner = null, lease_until = null, attempts = 0",
     )
-    .bind(project_id)
     .bind(launch_id)
     .execute(&mut *conn)
     .await?;
@@ -931,7 +980,8 @@ impl Store {
         }))
     }
 
-    /// Syncs one launch (trusted or not) and returns what it did.
+    /// Moves the last result of the launch's cases forward (every finished launch), then syncs
+    /// the content when `caseSync` is enabled and the launch trusted; returns whether it was.
     pub async fn sync_launch(
         &self,
         launch_id: Uuid,
@@ -952,6 +1002,7 @@ impl Store {
         let project_id: Uuid = r.try_get("project_id")?;
         let key: String = r.try_get("key")?;
         let created: chrono::DateTime<chrono::Utc> = r.try_get("created_at")?;
+        super::last_status::apply_launch(&mut conn, launch_id).await?;
         let trust = LaunchTrust {
             debug: r.try_get("debug")?,
             branch: r.try_get("branch")?,
@@ -977,6 +1028,7 @@ impl Store {
             project_key: &key,
             by: SYNC_ACTOR,
             limits,
+            can_review: false,
         };
         let mut stats = SyncStats::default();
         for chunk in ids.chunks(SYNC_BATCH) {
@@ -1151,6 +1203,7 @@ mod tests {
             ],
             suite_path: vec!["Cart".into(), "Add".into()],
             allure_id: Some("77".into()),
+            raw_links: Vec::new(),
         }
     }
 
@@ -1168,6 +1221,7 @@ mod tests {
                     ..Default::default()
                 }],
                 links: vec![],
+                parameters: None,
             },
             fields: BTreeMap::from([
                 ("severity".into(), FieldValue::Text("normal".into())),

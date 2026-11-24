@@ -17491,6 +17491,13 @@
             "items": {
               "$ref": "#/components/schemas/Rejected"
             }
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Rejected"
+            },
+            "description": "Accepted results that were changed to fit a limit (a name cut to `max_name_bytes`)."
           }
         }
       },

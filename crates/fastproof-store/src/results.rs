@@ -596,7 +596,7 @@ fn push_label_missing(qb: &mut QueryBuilder<Postgres>, name: &str) {
 fn push_extra_filter(qb: &mut QueryBuilder<Postgres>, f: &TreeFilter) {
     if let Some(m) = &f.message {
         qb.push(
-            " and to_tsvector('simple', coalesce(r.message, '')) @@ plainto_tsquery('simple', ",
+            " and to_tsvector('simple', left(coalesce(r.message, ''), 65536)) @@ plainto_tsquery('simple', ",
         )
         .push_bind(no_nul(m))
         .push(")");
@@ -1276,6 +1276,23 @@ fn env_key_part(env: Option<&EnvFilter>) -> serde_json::Value {
     }
 }
 
+/// The order of results by name within a launch. It leads with the expression of the name
+/// index of `results` (`results_launch_name_key`): a B-tree entry holds at most 2704 bytes,
+/// and a name may have up to `max_name_bytes` (4 KiB). Names that share their first 600
+/// characters are ordered by the whole name.
+pub const NAME_ORDER: &str = "left(r.full_name, 600), r.full_name, r.id";
+
+/// Keeps the results after `(name, id)` in [`NAME_ORDER`] (a page cursor).
+fn push_after_name(qb: &mut QueryBuilder<Postgres>, name: &str, id: Uuid) {
+    qb.push(" and (left(r.full_name, 600), r.full_name, r.id) > (left(")
+        .push_bind(name.to_string())
+        .push(", 600), ")
+        .push_bind(name.to_string())
+        .push(", ")
+        .push_bind(id)
+        .push(")");
+}
+
 /// SQL conditions that every result of the group `path` meets (a superset, checked in Rust).
 fn push_group_prefilter(qb: &mut QueryBuilder<Postgres>, by: &GroupBy, path: &[String]) {
     let Some(last) = path.last() else { return };
@@ -1342,7 +1359,9 @@ impl Store {
                 .push_bind(like.clone())
                 .push(" or r.name ilike ")
                 .push_bind(like)
-                .push(" or to_tsvector('simple', coalesce(r.message, '')) @@ plainto_tsquery('simple', ")
+                .push(
+                    " or to_tsvector('simple', left(coalesce(r.message, ''), 65536)) @@ plainto_tsquery('simple', ",
+                )
                 .push_bind(no_nul(q))
                 .push("))");
         }
@@ -1372,13 +1391,9 @@ impl Store {
         }
         push_extra_filter(&mut qb, &f.extra);
         if let Some((name, id)) = f.before.as_deref().and_then(decode_cursor) {
-            qb.push(" and (r.full_name, r.id) > (")
-                .push_bind(name)
-                .push(", ")
-                .push_bind(id)
-                .push(")");
+            push_after_name(&mut qb, &name, id);
         }
-        qb.push(" order by r.full_name, r.id limit ")
+        qb.push(format!(" order by {NAME_ORDER} limit "))
             .push_bind(f.limit + 1);
         let rows = qb.build().fetch_all(&self.pool).await?;
         let mut items: Vec<ResultSummary> =
@@ -1429,7 +1444,7 @@ impl Store {
             .push(" and r.launch_created_at = ")
             .push_bind(launch.created_at);
         push_tree_filter(&mut qb, &o.filter);
-        qb.push(" order by r.full_name, r.id limit ")
+        qb.push(format!(" order by {NAME_ORDER} limit "))
             .push_bind(MAX_TREE_RESULTS);
         let rows = qb.build().fetch_all(&self.pool).await?;
         let rows: Vec<TreeRow> = rows.iter().map(tree_row).collect::<Result<_, _>>()?;
@@ -1603,12 +1618,26 @@ impl Store {
                 .iter()
                 .map(|p| json_no_nul(serde_json::json!(p)))
                 .collect();
+            // The hashes of the paths, so the rows are found through the suite index.
+            let hashes: Vec<i64> = sqlx::query_scalar(
+                "select hash_array_extended(array(select jsonb_array_elements_text(p)), 0::bigint) \
+                 from unnest($1::jsonb[]) as w(p)",
+            )
+            .bind(&paths)
+            .fetch_all(&mut *tx)
+            .await?;
             let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(
                 "select r.id, r.name, r.full_name, '{}'::text[] as suite_path, '[]'::jsonb as labels, \
                  r.status, r.flaky_in_run, r.muted, r.duration_ms, r.attempt_count, r.flaky, r.transition, \
                  r.defect, r.suite_tree, coalesce(r.suite_titled, false) as suite_titled from results r",
             );
             launch_scope(&mut qb, launch);
+            qb.push(format!(
+                " and {} = any(",
+                crate::analysis::indexes::SUITE_HASH
+            ))
+            .push_bind(hashes)
+            .push("::bigint[])");
             push_tree_filter(&mut qb, &o.filter);
             if by_path_groups.len() <= 64 {
                 qb.push(" and (");
@@ -1626,7 +1655,7 @@ impl Store {
                     .push_bind(paths)
                     .push("::jsonb[]) as w(p))");
             }
-            qb.push(" order by r.full_name, r.id");
+            qb.push(format!(" order by {NAME_ORDER}"));
             let rows = qb.build().fetch_all(&mut *tx).await?;
             let mut found: HashMap<(Vec<String>, bool), Vec<Uuid>> = HashMap::new();
             for r in &rows {
@@ -1657,7 +1686,7 @@ impl Store {
                 "select r.id, r.name, r.full_name, '{}'::text[] as suite_path, '[]'::jsonb as labels, \
                  r.status, r.flaky_in_run, r.muted, r.duration_ms, r.attempt_count, r.flaky, r.transition, \
                  r.defect from results r where r.launch_id = $1 and r.launch_created_at = $2 \
-                 and r.id = any($3) order by r.full_name, r.id",
+                 and r.id = any($3) order by left(r.full_name, 600), r.full_name, r.id",
             )
             .bind(launch.id)
             .bind(launch.created_at)
@@ -1863,14 +1892,10 @@ impl Store {
             push_tree_filter(&mut qb, f);
             push_group_prefilter(&mut qb, by, path);
             if let Some((name, id)) = &after {
-                qb.push(" and (r.full_name, r.id) > (")
-                    .push_bind(name.clone())
-                    .push(", ")
-                    .push_bind(*id)
-                    .push(")");
+                push_after_name(&mut qb, name, *id);
             }
             let chunk = TREE_SCAN_CHUNK.min(MAX_TREE_RESULTS - scanned);
-            qb.push(" order by r.full_name, r.id limit ")
+            qb.push(format!(" order by {NAME_ORDER} limit "))
                 .push_bind(chunk);
             let rows = qb.build().fetch_all(&self.pool).await?;
             let n = rows.len() as i64;

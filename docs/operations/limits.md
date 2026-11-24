@@ -28,7 +28,8 @@ Only `max_upload_bytes` is a server setting; the other upload limits are fixed d
 | `max_json_values` | 5 000 000 | JSON values (scalars, arrays, objects) in one document, checked before it is parsed |
 | `max_zip_directory_bytes` | 64 MiB | Size of a zip central directory, declared or read while the archive is opened |
 | `max_log_bytes` | 1 MiB | Kept size of stdout, stderr, message and trace per result; longer text is truncated |
-| `max_name_bytes` | 4 KiB | Kept length of a test name and full name; longer names are truncated with a warning |
+| `max_name_bytes` | 4 KiB | Kept length of a test name and full name, in uploads and in `POST .../results`; longer names are truncated with a warning (`warnings` in the answer of `POST .../results`) |
+| writer-side result id (Allure `uuid`, CTRF `id`) | 256 B kept as is | A longer id is replaced by its SHA-256 in the stored attempt key; the same id still makes the same attempt |
 | label name, label value | 256 B, 1 KiB | Fixed, not configurable: longer label names and values are cut on a character boundary and end with an ellipsis, with a warning |
 | `max_steps_per_result` | 10 000 | Steps per result, counted across nesting, fixtures included |
 | `max_labels_per_result` | 500 | Labels (tags, properties, annotations) per result |

@@ -226,6 +226,97 @@ fn attempt_kinds(attachments: &[AttachmentRef], steps: &[Step]) -> i32 {
     m
 }
 
+/// Cursor of [`Store::warm_explorer_trees`] in `analysis_state`.
+pub const WARM_STATE: &str = "explorer.warm";
+
+/// Where the warming of finished launches is: the finish time and id of the last launch seen.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+struct WarmState {
+    at: Option<DateTime<Utc>>,
+    id: Option<Uuid>,
+}
+
+impl Store {
+    /// Builds the unfiltered Suites tree (what a launch page shows first) of launches with at
+    /// least `min_results` results that finished at least `settle` ago, so the first person to
+    /// open a large launch reads it from the cache. Walks launches by finish time from a cursor
+    /// in `analysis_state` ([`WARM_STATE`]; the first run starts at the present, so launches of
+    /// earlier versions are left alone), at most `limit` launches or `budget` per call; a tree
+    /// that fails is logged and skipped. Returns how many trees were built.
+    pub async fn warm_explorer_trees(
+        &self,
+        settle: Duration,
+        min_results: i64,
+        limit: i64,
+        budget: Duration,
+    ) -> anyhow::Result<u64> {
+        let started = Instant::now();
+        let state: Option<Value> =
+            sqlx::query_scalar("select value from analysis_state where name = $1")
+                .bind(WARM_STATE)
+                .fetch_optional(&self.pool)
+                .await?;
+        let Some(mut state) = state.and_then(|v| serde_json::from_value::<WarmState>(v).ok())
+        else {
+            sqlx::query(
+                "insert into analysis_state (name, value) \
+                 values ($1, jsonb_build_object('at', now() - make_interval(secs => $2))) \
+                 on conflict (name) do nothing",
+            )
+            .bind(WARM_STATE)
+            .bind(settle.as_secs_f64())
+            .execute(&self.pool)
+            .await?;
+            return Ok(0);
+        };
+        let due: Vec<(Uuid, Uuid, DateTime<Utc>)> = sqlx::query_as(
+            "select l.id, l.project_id, l.finished_at from launches l \
+             join projects p on p.id = l.project_id and p.deleted_at is null \
+             where l.finished_at is not null and l.finished_at <= now() - make_interval(secs => $1) \
+               and (l.finished_at, l.id) > (coalesce($2, '-infinity'::timestamptz), \
+                 coalesce($3, '00000000-0000-0000-0000-000000000000'::uuid)) \
+               and l.count_total >= $4 and l.status <> 'running' and l.merged_into is null \
+             order by l.finished_at, l.id limit $5",
+        )
+        .bind(settle.as_secs_f64())
+        .bind(state.at)
+        .bind(state.id)
+        .bind(min_results)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut built = 0;
+        for (id, project_id, at) in due {
+            if started.elapsed() > budget {
+                break;
+            }
+            state = WarmState {
+                at: Some(at),
+                id: Some(id),
+            };
+            let Some(launch) = self.launch(project_id, id).await? else {
+                continue;
+            };
+            let o = crate::results::TreeOptions {
+                include_tests: true,
+                ..crate::results::TreeOptions::groups(crate::results::GroupBy::Suite)
+            };
+            match self.tree_with(&launch, &o).await {
+                Ok(_) => built += 1,
+                Err(e) => {
+                    tracing::warn!(launch = %id, error = %format!("{e:#}"), "building the tree of a finished launch failed")
+                }
+            }
+        }
+        sqlx::query("update analysis_state set value = $2, updated_at = now() where name = $1")
+            .bind(WARM_STATE)
+            .bind(serde_json::to_value(&state)?)
+            .execute(&self.pool)
+            .await?;
+        Ok(built)
+    }
+}
+
 impl Store {
     /// Where the explorer backfill is.
     pub async fn explorer_backfill_progress(&self) -> anyhow::Result<BackfillProgress> {

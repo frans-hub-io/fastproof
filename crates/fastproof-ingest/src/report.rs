@@ -109,10 +109,27 @@ impl Walk<'_> {
     }
 }
 
+/// Warnings for a report result whose names [`report_to_parsed`] cuts to `max_name_bytes`.
+pub fn name_warnings(r: &ReportResult, limits: &Limits) -> Vec<String> {
+    let max = limits.max_name_bytes;
+    let full = r.full_name.as_deref().filter(|f| !f.trim().is_empty());
+    [("name", Some(r.name.as_str())), ("fullName", full)]
+        .into_iter()
+        .filter_map(|(what, v)| {
+            let n = v?.len();
+            (n as u64 > max)
+                .then(|| format!("{what} of {n} bytes truncated to max_name_bytes ({max})"))
+        })
+        .collect()
+}
+
 /// Validates a report result and converts it, computing its identity. Masked and hidden
 /// parameter values are dropped after hashing. The error is one sentence for the client.
-pub fn report_to_parsed(r: ReportResult, o: &ReportOptions<'_>) -> Result<ParsedResult, String> {
-    let id = r.id.trim();
+pub fn report_to_parsed(
+    mut r: ReportResult,
+    o: &ReportOptions<'_>,
+) -> Result<ParsedResult, String> {
+    let id = r.id.trim().to_string();
     if id.is_empty() || id.len() > MAX_CLIENT_ID_BYTES {
         return Err(format!("id must have 1 to {MAX_CLIENT_ID_BYTES} bytes"));
     }
@@ -125,12 +142,16 @@ pub fn report_to_parsed(r: ReportResult, o: &ReportOptions<'_>) -> Result<Parsed
         attachments: 0,
     };
     w.text("name", &r.name)?;
-    let full_name = r
+    let mut full_name = r
         .full_name
         .clone()
         .filter(|f| !f.trim().is_empty())
         .unwrap_or_else(|| r.name.clone());
     w.text("fullName", &full_name)?;
+    // Names are kept up to `max_name_bytes`, as in uploaded reports (see [`name_warnings`]).
+    let max_name = o.limits.max_name_bytes as usize;
+    crate::ctx::truncate_with_ellipsis(&mut r.name, max_name);
+    crate::ctx::truncate_with_ellipsis(&mut full_name, max_name);
     for p in &r.parameters {
         w.text("parameter", &p.name)?;
         if let Some(v) = &p.value {
@@ -220,6 +241,27 @@ mod tests {
             status: Status::Passed.into(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn long_names_are_cut_with_a_warning() {
+        let mut r = base();
+        r.name = "п".repeat(3000);
+        r.full_name = Some("x".repeat(4096));
+        let limits = Limits::default();
+        let w = name_warnings(&r, &limits);
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].starts_with("name of 6000 bytes"), "{w:?}");
+        let p = report_to_parsed(
+            r,
+            &ReportOptions {
+                limits: &limits,
+                environment_key: None,
+            },
+        )
+        .unwrap();
+        assert!(p.name.len() <= 4096 && p.name.ends_with('\u{2026}'));
+        assert_eq!(p.full_name.len(), 4096, "a name at the limit is kept");
     }
 
     #[test]

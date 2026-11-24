@@ -724,7 +724,7 @@ impl Store {
             "select r.id, r.launch_id, r.series_id, r.name, r.full_name from results r join launches l \
                on l.id = r.launch_id and l.created_at = r.launch_created_at \
              where l.project_id = $1 and l.id = $2 and r.fingerprint = $3 \
-             order by r.full_name, r.id limit $4",
+             order by left(r.full_name, 600), r.full_name, r.id limit $4",
         )
         .bind(project_id)
         .bind(launch_id)

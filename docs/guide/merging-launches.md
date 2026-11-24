@@ -82,6 +82,10 @@ Deleting the target of a merge deletes its hidden launches too (within a minute)
 - One merge, undo or finalization per project at a time: another one gets `409 merge_busy` at once instead
   of waiting. Merges, undos and previews count as heavy requests of the caller (`429` beyond
   `FASTPROOF_HEAVY_QUERIES_PER_CALLER`). A preview (`dryRun`) takes no locks.
+- Merges of different projects do not wait for each other. The analysis that a merge leaves to the
+  scheduled job runs in turns (one merge per project, then the next), and a merge whose launches are busy
+  (another merge or a manual run of the same project holds them) is left for the job's next run, a minute
+  later.
 - The launches to merge must be finished and have no upload in progress (`409 launch_running`,
   `409 launch_busy`). The target may still run: ingest into it and the merge wait for each other, and
   results that arrive after the merge become further attempts.

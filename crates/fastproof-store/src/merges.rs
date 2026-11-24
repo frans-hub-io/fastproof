@@ -52,10 +52,35 @@ pub const FINAL_GRACE: chrono::Duration = chrono::Duration::minutes(2);
 const LATE_DAYS: i32 = 7;
 /// How long a request runs the second phase before leaving the rest to the job.
 const REQUEST_BUDGET: std::time::Duration = std::time::Duration::from_secs(15);
-/// How long the job runs the second phase of one merge per run.
+/// How long the job runs second phases per run, all merges together.
 const JOB_BUDGET: std::time::Duration = std::time::Duration::from_secs(50);
+/// How long the job runs the second phase of one merge before it turns to the next one; the
+/// merges left take further turns while the run's budget lasts.
+const JOB_SLICE: std::time::Duration = std::time::Duration::from_secs(10);
 /// Lock wait of a merge transaction: a merge gives up instead of making ingest queue behind it.
 const LOCK_TIMEOUT: &str = "set local lock_timeout = '5s'";
+
+/// How a merge transaction waits for rows that another transaction holds.
+#[derive(Clone, Copy, Debug)]
+struct Patience {
+    lock_timeout: &'static str,
+    /// Whether a lock timeout is retried like a deadlock.
+    retry_lock_timeouts: bool,
+}
+
+/// Requests (merge, undo): wait a little, and retry.
+const REQUEST: Patience = Patience {
+    lock_timeout: LOCK_TIMEOUT,
+    retry_lock_timeouts: true,
+};
+
+/// The maintenance job: a merge whose rows are held (by its own project's ingest, merge or
+/// manual run) is left for the next run instead of being waited for, so the job goes on with
+/// the merges of other projects.
+const JOB: Patience = Patience {
+    lock_timeout: "set local lock_timeout = '1s'",
+    retry_lock_timeouts: false,
+};
 
 /// The statement that copies the attempts of the sources into the target (`$1` target creation
 /// time, `$2` project, `$3` target, `$4`..`$6` source ids, creation times and order, `$7` new
@@ -242,11 +267,21 @@ fn busy() -> MergeError {
 /// True for errors after which a merge transaction may simply run again: deadlock,
 /// serialization failure, lock timeout (SQLSTATE 55P03).
 pub fn merge_retryable(e: &anyhow::Error) -> bool {
-    retryable(e).is_some()
-        || e.chain().any(|c| {
-            matches!(c.downcast_ref::<sqlx::Error>(),
-                Some(sqlx::Error::Database(d)) if d.code().as_deref() == Some("55P03"))
-        })
+    retryable(e).is_some() || lock_timeout(e)
+}
+
+/// True when a statement gave up waiting for a lock (SQLSTATE 55P03).
+pub fn lock_timeout(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| {
+        matches!(c.downcast_ref::<sqlx::Error>(),
+            Some(sqlx::Error::Database(d)) if d.code().as_deref() == Some("55P03"))
+    })
+}
+
+impl Patience {
+    fn retryable(self, e: &anyhow::Error) -> bool {
+        retryable(e).is_some() || (self.retry_lock_timeouts && lock_timeout(e))
+    }
 }
 
 /// Server settings of merges.
@@ -295,6 +330,8 @@ pub struct MergeJobReport {
     pub orphans_deleted: u64,
     /// Merges that failed in this run (logged and counted; the others went on).
     pub errors: u64,
+    /// Merges left for the next run because another transaction held their rows.
+    pub busy: u64,
 }
 
 /// Validates the shape of a merge request.
@@ -1372,8 +1409,13 @@ async fn tombstone(conn: &mut PgConnection, sources: &[Src], t: Target) -> anyho
 /// The target (when it exists) is analysed as after an upload, with its statistics push
 /// suppressed (it is marked debug inside the transaction), then the statistics are rebuilt.
 /// Returns the series handled (0: nothing left).
-async fn work_chunk(conn: &mut PgConnection, ctx: &Ctx, m: &MergeRow) -> anyhow::Result<usize> {
-    sqlx::query(LOCK_TIMEOUT).execute(&mut *conn).await?;
+async fn work_chunk(
+    conn: &mut PgConnection,
+    ctx: &Ctx,
+    m: &MergeRow,
+    p: Patience,
+) -> anyhow::Result<usize> {
+    sqlx::query(p.lock_timeout).execute(&mut *conn).await?;
     let work: Vec<(Uuid, i32)> = sqlx::query_as(
         "select series_id, delta from launch_merge_work where merge_id = $1 order by series_id \
          limit $2 for update skip locked",
@@ -1500,9 +1542,20 @@ impl Store {
         id: Uuid,
         budget: std::time::Duration,
     ) -> anyhow::Result<usize> {
+        Ok(self.drain(project_id, id, budget, REQUEST).await?.0)
+    }
+
+    /// [`Self::drain_merge`] with the given patience; also tells whether nothing is left.
+    async fn drain(
+        &self,
+        project_id: Uuid,
+        id: Uuid,
+        budget: std::time::Duration,
+        p: Patience,
+    ) -> anyhow::Result<(usize, bool)> {
         let started = std::time::Instant::now();
         let Some(project) = self.project_by_id(project_id).await? else {
-            return Ok(0);
+            return Ok((0, true));
         };
         let mut total = 0;
         loop {
@@ -1522,21 +1575,24 @@ impl Store {
                     let Some(m) = m.as_ref().map(merge_row).transpose()? else {
                         return Ok::<_, anyhow::Error>(0);
                     };
-                    let n = work_chunk(&mut tx, &c, &m).await?;
+                    let n = work_chunk(&mut tx, &c, &m, p).await?;
                     tx.commit().await?;
                     Ok(n)
                 }
                 .await;
                 match r {
-                    Err(e) if attempt < TX_ATTEMPTS && merge_retryable(&e) => {
+                    Err(e) if attempt < TX_ATTEMPTS && p.retryable(&e) => {
                         retry_pause("merge_analysis", &e, attempt).await
                     }
                     r => break r?,
                 }
             };
             total += n;
-            if n == 0 || started.elapsed() > budget {
-                return Ok(total);
+            if n == 0 {
+                return Ok((total, true));
+            }
+            if started.elapsed() > budget {
+                return Ok((total, false));
             }
         }
     }
@@ -1740,7 +1796,12 @@ impl Store {
         }
     }
 
-    async fn with_retry<F, Fut>(&self, path: &'static str, f: F) -> anyhow::Result<bool>
+    async fn with_retry<F, Fut>(
+        &self,
+        path: &'static str,
+        p: Patience,
+        f: F,
+    ) -> anyhow::Result<bool>
     where
         F: Fn() -> Fut,
         Fut: std::future::Future<Output = anyhow::Result<bool>>,
@@ -1749,7 +1810,7 @@ impl Store {
         loop {
             attempt += 1;
             match f().await {
-                Err(e) if attempt < TX_ATTEMPTS && merge_retryable(&e) => {
+                Err(e) if attempt < TX_ATTEMPTS && p.retryable(&e) => {
                     retry_pause(path, &e, attempt).await
                 }
                 r => return r,
@@ -1758,15 +1819,17 @@ impl Store {
     }
 
     /// Copies late attempts and log lines of a merge into its target. Returns whether anything
-    /// was copied (false also when another merge operation holds the project).
+    /// was copied (false also when another merge operation holds the project). Rows held by
+    /// another transaction are waited for a second at most: the lock timeout is returned, not
+    /// retried (the job tries again at its next run).
     pub async fn sync_merge(&self, project_id: Uuid, id: Uuid) -> anyhow::Result<bool> {
         let Some(project) = self.project_by_id(project_id).await? else {
             return Ok(false);
         };
         let done = self
-            .with_retry("merge_sync", || async {
+            .with_retry("merge_sync", JOB, || async {
                 let mut tx = self.pool.begin().await?;
-                sqlx::query(LOCK_TIMEOUT).execute(&mut *tx).await?;
+                sqlx::query(JOB.lock_timeout).execute(&mut *tx).await?;
                 if !try_project_lock(&mut tx, project_id).await? {
                     return Ok(false);
                 }
@@ -1783,21 +1846,22 @@ impl Store {
             })
             .await?;
         if done {
-            self.drain_merge(project_id, id, REQUEST_BUDGET).await?;
+            self.drain(project_id, id, JOB_SLICE, JOB).await?;
         }
         Ok(done)
     }
 
     /// Ends the undo window of a merge: late attempts are copied, then the sources become
-    /// tombstones. Returns false when the merge is not active (or the project is busy).
+    /// tombstones. Returns false when the merge is not active (or the project is busy). Waits
+    /// for held rows as [`Self::sync_merge`] does.
     pub async fn finalize_merge(&self, project_id: Uuid, id: Uuid) -> anyhow::Result<bool> {
         let Some(project) = self.project_by_id(project_id).await? else {
             return Ok(false);
         };
         let done = self
-            .with_retry("merge_finalize", || async {
+            .with_retry("merge_finalize", JOB, || async {
                 let mut tx = self.pool.begin().await?;
-                sqlx::query(LOCK_TIMEOUT).execute(&mut *tx).await?;
+                sqlx::query(JOB.lock_timeout).execute(&mut *tx).await?;
                 if !try_project_lock(&mut tx, project_id).await? {
                     return Ok(false);
                 }
@@ -1845,7 +1909,7 @@ impl Store {
             })
             .await?;
         if done {
-            self.drain_merge(project_id, id, REQUEST_BUDGET).await?;
+            self.drain(project_id, id, JOB_SLICE, JOB).await?;
         }
         Ok(done)
     }
@@ -1853,29 +1917,57 @@ impl Store {
     /// The merge job: finishes analyses left over, copies late attempts and log lines of
     /// active (and recently finalized) merges, finalizes merges whose undo window ended and
     /// deletes hidden launches whose target is gone. Each merge is isolated: a failure is
-    /// logged and counted (`fastproof_merge_job_errors_total`) and the job goes on. Merges of
-    /// deleted projects are left to the project purge.
+    /// logged and counted (`fastproof_merge_job_errors_total`), a merge whose rows another
+    /// transaction holds is left for the next run (`fastproof_merge_job_busy_total`), and the
+    /// job goes on. Second phases take turns of [`JOB_SLICE`], one merge per project before a
+    /// second one of the same project, so a large merge or a held lock in one project does not
+    /// hold up the merges of others. Merges of deleted projects are left to the project purge.
     pub async fn merge_maintenance(&self) -> anyhow::Result<MergeJobReport> {
         let mut report = MergeJobReport::default();
         let fail = |what: &'static str, id: Uuid, e: anyhow::Error, r: &mut MergeJobReport| {
+            if lock_timeout(&e) {
+                metrics::counter!("fastproof_merge_job_busy_total", "step" => what).increment(1);
+                tracing::debug!(merge = %id, step = what, "merge rows held elsewhere; left for the next run");
+                r.busy += 1;
+                return;
+            }
             metrics::counter!("fastproof_merge_job_errors_total", "step" => what).increment(1);
             tracing::warn!(merge = %id, step = what, error = %format!("{e:#}"), "merge job step failed");
             r.errors += 1;
         };
-        let pending: Vec<(Uuid, Uuid)> = sqlx::query_as(
-            "select w.project_id, w.merge_id from (select distinct project_id, merge_id from launch_merge_work) w \
-             join projects p on p.id = w.project_id and p.deleted_at is null limit $1",
+        let mut turns: Vec<(Uuid, Uuid)> = sqlx::query_as(
+            "select w.project_id, w.merge_id from (select project_id, merge_id, \
+               row_number() over (partition by project_id order by merge_id) as turn \
+               from (select distinct project_id, merge_id from launch_merge_work) d) w \
+             join projects p on p.id = w.project_id and p.deleted_at is null \
+             order by w.turn, w.project_id limit $1",
         )
         .bind(JOB_BATCH)
         .fetch_all(&self.pool)
         .await?;
-        for (p, id) in pending {
-            match self.drain_merge(p, id, JOB_BUDGET).await {
-                Ok(n) if n > 0 => report.analysed += 1,
-                Ok(_) => {}
-                Err(e) => fail("analyse", id, e, &mut report),
+        let started = std::time::Instant::now();
+        let mut analysed = HashSet::new();
+        while !turns.is_empty() && started.elapsed() < JOB_BUDGET {
+            let mut left = Vec::new();
+            for (p, id) in turns {
+                if started.elapsed() >= JOB_BUDGET {
+                    break;
+                }
+                match self.drain(p, id, JOB_SLICE, JOB).await {
+                    Ok((n, done)) => {
+                        if n > 0 {
+                            analysed.insert(id);
+                        }
+                        if !done {
+                            left.push((p, id));
+                        }
+                    }
+                    Err(e) => fail("analyse", id, e, &mut report),
+                }
             }
+            turns = left;
         }
+        report.analysed = analysed.len() as u64;
         let late: Vec<(Uuid, Uuid)> = sqlx::query_as(
             "select m.project_id, m.id from launch_merges m join projects p on p.id = m.project_id \
              where p.deleted_at is null and (m.status = 'active' or (m.status = 'final' \
@@ -1934,9 +2026,9 @@ impl Store {
     }
 
     async fn delete_orphan(&self, id: Uuid, project_id: Uuid, key: &str) -> anyhow::Result<bool> {
-        self.with_retry("merge_orphan", || async {
+        self.with_retry("merge_orphan", JOB, || async {
             let mut tx = self.pool.begin().await?;
-            sqlx::query(LOCK_TIMEOUT).execute(&mut *tx).await?;
+            sqlx::query(JOB.lock_timeout).execute(&mut *tx).await?;
             if !try_project_lock(&mut tx, project_id).await? {
                 return Ok(false);
             }

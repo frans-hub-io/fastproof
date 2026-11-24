@@ -313,6 +313,27 @@ again before the lock when it is seen in time (a quarter of them,
 `log.chunk` event per stored chunk: the 100-launch bench writes about 204,000 outbox rows instead of
 309,000. The sinks read both formats; see [Upgrading](upgrading.md) before switching.
 
+### Launch explorer
+
+The Suites tree of a finished launch of 100,000 results (`fastproof bench --launches 2 --results 100000
+--log-lines 0`, 20 suites, one of them inlined with its 5000 tests), as the launch page asks for it first;
+release build, 60 requests each, load average 1 to 3:
+
+| First view | p50 | p95 |
+|---|---|---|
+| Built in the background when the launch finished (`explorer.warm`), read from the cache | 36 ms | 53 ms |
+| Built on the request (a running launch, or the cache removed before every request) | 100 to 140 ms | 145 to 160 ms |
+
+At a load average of 3, building on the request took 109 to 143 ms (p50) and 278 to 316 ms (p95) with the
+suite index, 149 to 169 ms and 419 to 599 ms without it. Most of that time is the count over the launch's
+rows (about 75 ms when they are in memory); the index makes reading the inlined tests independent of the
+launch size.
+
+What the suite index costs when results are stored (`fastproof bench --launches 10 --results 2000`, six
+rounds each, alternating): without log lines 5,700 results per second with the index and 5,900 without
+(medians 5,700 and 6,300, rounds ranging from 4,600 to 6,500); with 20 log lines per result 3,900 and
+3,700, within the noise.
+
 ## Benchmark
 
 `fastproof bench` generates launches, results and log lines with realistic failure patterns, pushes them

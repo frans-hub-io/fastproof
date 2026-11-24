@@ -161,6 +161,9 @@ type AttemptRow = (
     serde_json::Value,
 );
 
+/// Launches whose gate waits in the consumer's `pending` list (their rows were held), at most.
+const MAX_PENDING_GATES: i64 = 10_000;
+
 const DELIVERY_COLUMNS: &str = "id, target_id, channel, launch_id, events, status, attempts, max_attempts, \
     last_error, response_status, created_at, next_attempt_at, delivered_at";
 
@@ -467,6 +470,12 @@ impl Store {
     /// `settle`, so that transactions that started earlier have committed) and queues a gate
     /// evaluation for each launch. Only one replica consumes at a time; returns how many
     /// launches were queued, or `None` when another replica holds the cursor.
+    ///
+    /// A gate row references its launch, so queueing it share-locks the launch row. The rows
+    /// are locked with `skip locked`: a launch whose row another transaction holds exclusively
+    /// (a merge or a manual run of its project) is kept in the cursor's `pending` list and
+    /// queued at a later round, instead of being waited for while the rows of other projects'
+    /// launches stay locked and every other project's gates and deliveries wait.
     pub async fn consume_finished_launches(
         &self,
         consumer: &str,
@@ -481,13 +490,13 @@ impl Store {
         .execute(&self.pool)
         .await?;
         let mut tx = self.pool.begin().await?;
-        let cursor: Option<i64> = sqlx::query_scalar(
-            "select last_event_id from integration_cursors where name = $1 for update skip locked",
+        let cursor: Option<(i64, Vec<Uuid>)> = sqlx::query_as(
+            "select last_event_id, pending from integration_cursors where name = $1 for update skip locked",
         )
         .bind(consumer)
         .fetch_optional(&mut *tx)
         .await?;
-        let Some(cursor) = cursor else {
+        let Some((cursor, pending)) = cursor else {
             tx.rollback().await?;
             return Ok(None);
         };
@@ -500,33 +509,75 @@ impl Store {
         .bind(batch)
         .fetch_all(&mut *tx)
         .await?;
-        let Some(last) = rows.last().map(|r| r.0) else {
+        let last = rows.last().map(|r| r.0);
+        if last.is_none() && pending.is_empty() {
             tx.rollback().await?;
             return Ok(Some(0));
-        };
-        let ids: Vec<Uuid> = rows
+        }
+        let mut ids: Vec<Uuid> = rows
             .iter()
             .filter(|r| r.1 == "launch.finished")
             .filter_map(|r| r.2.get("id").and_then(|v| v.as_str()))
             .filter_map(|s| s.parse().ok())
+            .chain(pending)
             .collect();
+        ids.sort();
+        ids.dedup();
         let mut queued = 0;
+        let mut held: Vec<Uuid> = Vec::new();
         if !ids.is_empty() {
-            queued = sqlx::query(
-                "insert into launch_gates (launch_id, project_id) \
-                 select l.id, l.project_id from launches l where l.id = any($1) \
-                 on conflict (launch_id) do nothing",
+            let free: Vec<(Uuid, Uuid)> = sqlx::query_as(
+                "select id, project_id from launches where id = any($1) order by id for key share skip locked",
             )
             .bind(&ids)
+            .fetch_all(&mut *tx)
+            .await?;
+            let (launches, projects): (Vec<Uuid>, Vec<Uuid>) = free.iter().copied().unzip();
+            queued = sqlx::query(
+                "insert into launch_gates (launch_id, project_id) \
+                 select l, p from unnest($1::uuid[], $2::uuid[]) as t(l, p) \
+                 on conflict (launch_id) do nothing",
+            )
+            .bind(&launches)
+            .bind(&projects)
             .execute(&mut *tx)
             .await?
             .rows_affected();
+            let skipped: Vec<Uuid> = ids
+                .iter()
+                .filter(|id| !launches.contains(id))
+                .copied()
+                .collect();
+            if !skipped.is_empty() {
+                // Still there (not deleted meanwhile): held by another transaction.
+                held = sqlx::query_scalar(
+                    "select id from launches where id = any($1) order by id limit $2",
+                )
+                .bind(&skipped)
+                .bind(MAX_PENDING_GATES + 1)
+                .fetch_all(&mut *tx)
+                .await?;
+                if held.len() as i64 > MAX_PENDING_GATES {
+                    held.truncate(MAX_PENDING_GATES as usize);
+                    tracing::warn!(
+                        "more launches held than gates can wait for; some are not evaluated"
+                    );
+                }
+            }
+        }
+        if !held.is_empty() {
+            metrics::counter!("fastproof_gates_deferred_total").increment(held.len() as u64);
+            tracing::debug!(
+                launches = held.len(),
+                "launches held by another transaction; their gates are queued later"
+            );
         }
         sqlx::query(
-            "update integration_cursors set last_event_id = $2, updated_at = now() where name = $1",
+            "update integration_cursors set last_event_id = $2, pending = $3, updated_at = now() where name = $1",
         )
         .bind(consumer)
-        .bind(last)
+        .bind(last.unwrap_or(cursor))
+        .bind(&held)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;

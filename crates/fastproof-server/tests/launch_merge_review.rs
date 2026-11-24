@@ -558,7 +558,11 @@ async fn the_job_isolates_failures_and_skips_deleted_projects() {
     .unwrap();
     let r = store.merge_maintenance().await.unwrap();
     hold.rollback().await.unwrap();
-    assert_eq!(r.errors, 1, "{r:?}");
+    assert_eq!(
+        (r.errors, r.busy),
+        (0, 1),
+        "held rows leave the merge for the next run: {r:?}"
+    );
     assert_eq!(r.analysed, 1, "the second project went on: {r:?}");
     let left: Vec<String> = sqlx::query_scalar(
         "select distinct p.key from launch_merge_work w join projects p on p.id = w.project_id order by 1",

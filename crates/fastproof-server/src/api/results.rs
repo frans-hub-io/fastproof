@@ -4,7 +4,9 @@ use axum::Json;
 use axum::extract::{Request, State};
 use axum::http::{StatusCode, header};
 use bytes::{Bytes, BytesMut};
-use fastproof_ingest::{IngestError, JsonBounds, ReportOptions, report_to_parsed, scan_json};
+use fastproof_ingest::{
+    IngestError, JsonBounds, ReportOptions, name_warnings, report_to_parsed, scan_json,
+};
 use fastproof_model::{AttachmentKind, ReportResult};
 use fastproof_store::ingest::{LaunchRef, NewAttempt};
 use fastproof_store::results::{
@@ -54,6 +56,9 @@ pub struct IngestSummary {
     pub accepted: u64,
     pub duplicates: u64,
     pub rejected: Vec<Rejected>,
+    /// Accepted results that were changed to fit a limit (a name cut to `max_name_bytes`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<Rejected>,
 }
 
 struct ResultBatch<'a> {
@@ -109,6 +114,11 @@ impl ResultBatch<'_> {
         for r in prep.rejected {
             self.reject(r.index, r.message);
         }
+        for w in prep.warnings {
+            if self.summary.warnings.len() < MAX_REJECTED {
+                self.summary.warnings.push(w);
+            }
+        }
         if let Some(originals) = originals {
             let produced = crate::stream::produce_results(
                 self.s,
@@ -156,6 +166,8 @@ pub struct PreparedReports {
     /// Attachment rows the accepted results reference.
     pub used: Vec<Uuid>,
     pub rejected: Vec<Rejected>,
+    /// Accepted results changed to fit a limit.
+    pub warnings: Vec<Rejected>,
 }
 
 /// Validates report results and resolves their attachment references (unknown attachments
@@ -197,9 +209,11 @@ pub async fn prepare_reports(
         accepted: Vec::with_capacity(pending.len()),
         used: Vec::new(),
         rejected: Vec::new(),
+        warnings: Vec::new(),
     };
     for (pos, (index, r)) in pending.into_iter().enumerate() {
         let client = r.id.trim().to_string();
+        let warnings = name_warnings(&r, &s.limits);
         let mut parsed = match report_to_parsed(r, &opts) {
             Ok(p) => p,
             Err(m) => {
@@ -234,6 +248,11 @@ pub async fn prepare_reports(
             continue;
         }
         out.used.extend(used);
+        out.warnings.extend(
+            warnings
+                .into_iter()
+                .map(|message| Rejected { index, message }),
+        );
         out.accepted.push((
             pos,
             index,

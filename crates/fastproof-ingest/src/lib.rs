@@ -36,7 +36,7 @@ pub use error::IngestError;
 pub use json::{JsonBounds, JsonError, parse_json_bounded, scan_json};
 pub use limits::Limits;
 pub use report::{
-    MAX_ATTACHMENTS_PER_RESULT, MAX_CLIENT_ID_BYTES, ReportOptions, report_to_parsed,
+    MAX_ATTACHMENTS_PER_RESULT, MAX_CLIENT_ID_BYTES, ReportOptions, name_warnings, report_to_parsed,
 };
 pub use sink::{AttachmentSink, MemoryAttachment, MemorySink, NullSink};
 pub use source::UploadKind;

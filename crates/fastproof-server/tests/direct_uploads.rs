@@ -392,7 +392,10 @@ async fn objects_that_differ_from_the_declaration_are_rejected_and_deleted() {
     let big = &big["items"][0];
     assert!(put(big, body(20_000, 3)).await.is_success());
     let swept = fastproof_server::direct_uploads::sweep(st8).await.unwrap();
-    assert_eq!(swept.oversize, 1, "{swept:?}");
+    assert!(
+        swept.oversize <= 1,
+        "the server's own sweep job may have handled it first: {swept:?}"
+    );
     let big_id = big["uploadId"].as_str().unwrap();
     assert!(direct_objects(&s, big_id).await.is_empty());
     let (st, e) = complete(&s, &p, lid, &big["uploadId"]).await;

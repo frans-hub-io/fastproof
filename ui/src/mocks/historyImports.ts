@@ -31,12 +31,11 @@ export function historyImportHandlers(error: ErrorFn) {
       }
       return HttpResponse.json({ items: imports });
     }),
-    http.post(`${API}/projects/:key/history-imports`, async ({ request }) => {
+    http.post(`${API}/projects/:key/history-imports`, ({ request }) => {
       const url = new URL(request.url);
       const source = url.searchParams.get('source');
       if (source !== 'allure2' && source !== 'allure3') return error(400, 'bad_request', 'source must be allure2 or allure3');
-      const form = await request.formData();
-      if (!form.has('history')) return error(400, 'bad_request', 'the multipart body has no non-empty `history` field');
+      if (!(request.headers.get('content-type') ?? '').startsWith('multipart/form-data')) return error(400, 'bad_request', 'the multipart body has no non-empty `history` field');
       if (imports.some((i) => i.status === 'queued' || i.status === 'running')) return error(409, 'history_import_busy', 'an import of this project is queued or running');
       const i: HistoryImport = {
         id: `hi-${String(imports.length + 1)}`,

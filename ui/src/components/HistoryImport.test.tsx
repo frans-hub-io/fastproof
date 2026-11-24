@@ -6,7 +6,7 @@ import { renderWith } from '../test/render';
 import { HistoryImport } from './HistoryImport';
 
 function file(name: string, size = 10): File {
-  return new File([new Uint8Array(size)], name, { type: 'application/json' });
+  return new File(['x'.repeat(size)], name, { type: 'application/json' });
 }
 
 function chooser(container: HTMLElement): HTMLInputElement {

@@ -65,7 +65,7 @@ static MIGRATOR: LazyLock<Migrator> = LazyLock::new(|| {
 });
 
 /// Advisory lock key of the FastProof migrations (distinct from the platform's and sqlx's).
-const LOCK_KEY: i64 = 0x6661_7374_7072_6f66;
+pub(crate) const LOCK_KEY: i64 = 0x6661_7374_7072_6f66;
 
 /// The embedded migrations.
 pub fn migrator() -> &'static Migrator {

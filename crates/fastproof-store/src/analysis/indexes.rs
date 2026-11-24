@@ -62,7 +62,9 @@ fn safe_ident(s: &str) -> bool {
 }
 
 /// Builds missing analysis indexes; returns how many partition indexes were built. Another
-/// replica holding the lock makes this a no-op.
+/// replica holding the lock makes this a no-op. Every statement that locks `results` itself
+/// (not only a partition, concurrently) waits at most [`DDL_LOCK_WAIT`] for that lock and is
+/// tried again at the next run otherwise, so writers never queue behind it for long.
 pub async fn ensure_analysis_indexes(pool: &PgPool) -> anyhow::Result<u32> {
     let mut conn = pool.acquire().await?;
     if !sqlx::query_scalar::<_, bool>("select pg_try_advisory_lock($1)")
@@ -81,7 +83,8 @@ pub async fn ensure_analysis_indexes(pool: &PgPool) -> anyhow::Result<u32> {
             retire(&mut conn, old, new).await?;
         }
         let trgm: bool = sqlx::query_scalar(
-            "select exists(select 1 from pg_extension where extname = 'pg_trgm')",
+            "select exists(select 1 from pg_extension where extname = 'pg_trgm') \
+               and to_regclass('failure_fingerprints_message_trgm') is null",
         )
         .fetch_one(&mut *conn)
         .await?;
@@ -93,6 +96,7 @@ pub async fn ensure_analysis_indexes(pool: &PgPool) -> anyhow::Result<u32> {
             .execute(&mut *conn)
             .await?;
         }
+        rebuild_invalid_migration_indexes(&mut conn).await?;
         Ok::<_, anyhow::Error>(built)
     }
     .await;
@@ -103,9 +107,54 @@ pub async fn ensure_analysis_indexes(pool: &PgPool) -> anyhow::Result<u32> {
     r
 }
 
-/// Builds the partitioned index `index` of `results`: the parent `ON ONLY`, then the index of
-/// every partition that has none attached (an invalid one left by an interrupted build is
-/// dropped first). Returns how many partition indexes were built.
+/// Longest wait for the lock of `results` (the parent table) by a statement of this job.
+pub const DDL_LOCK_WAIT: &str = "500ms";
+/// Longest run of such a statement: a drop takes the parent and then each partition in turn,
+/// keeping what it already holds, so the lock wait alone does not bound it.
+pub const DDL_STATEMENT_TIME: &str = "3s";
+
+/// Runs `sql` in its own transaction with [`DDL_LOCK_WAIT`] and [`DDL_STATEMENT_TIME`].
+/// Returns false when it gave up (lock or statement timeout); the caller tries at its next run.
+async fn short_ddl(conn: &mut sqlx::PgConnection, sql: String) -> anyhow::Result<bool> {
+    let r = async {
+        let mut tx = sqlx::Connection::begin(&mut *conn).await?;
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "set local lock_timeout = '{DDL_LOCK_WAIT}'"
+        )))
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "set local statement_timeout = '{DDL_STATEMENT_TIME}'"
+        )))
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(sqlx::AssertSqlSafe(sql))
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    match r {
+        Ok(()) => Ok(true),
+        Err(e) if gave_up(&e) => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+/// A lock timeout (55P03) or a statement timeout (57014).
+fn gave_up(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| {
+        matches!(c.downcast_ref::<sqlx::Error>(),
+            Some(sqlx::Error::Database(d)) if matches!(d.code().as_deref(), Some("55P03" | "57014")))
+    })
+}
+
+/// Builds the partitioned index `index` of `results`: the parent `ON ONLY` (only when it is
+/// missing: the statement locks `results` even when the index exists), then the index of every
+/// partition that has none attached (an invalid one left by an interrupted build is dropped
+/// first), each attached with a short lock wait. Returns how many partition indexes were
+/// built and attached.
 async fn ensure_partitioned(
     conn: &mut sqlx::PgConnection,
     index: &str,
@@ -113,11 +162,23 @@ async fn ensure_partitioned(
     suffix: &str,
 ) -> anyhow::Result<u32> {
     let mut built = 0;
-    sqlx::query(sqlx::AssertSqlSafe(format!(
-        "create index if not exists {index} on only results {def}"
-    )))
-    .execute(&mut *conn)
-    .await?;
+    let exists: bool = sqlx::query_scalar("select to_regclass($1) is not null")
+        .bind(index)
+        .fetch_one(&mut *conn)
+        .await?;
+    if !exists
+        && !short_ddl(
+            conn,
+            format!("create index if not exists {index} on only results {def}"),
+        )
+        .await?
+    {
+        tracing::info!(
+            index,
+            "creating an index of results waits for a quieter moment"
+        );
+        return Ok(0);
+    }
     let parts: Vec<(String, Option<String>)> = sqlx::query_as(
         "select c.relname::text, (select ci.relname::text from pg_inherits ii \
            join pg_class ci on ci.oid = ii.inhrelid join pg_index ix on ix.indexrelid = ci.oid \
@@ -154,19 +215,23 @@ async fn ensure_partitioned(
         )))
         .execute(&mut *conn)
         .await?;
-        sqlx::query(sqlx::AssertSqlSafe(format!(
-            "alter index {index} attach partition {child}"
-        )))
-        .execute(&mut *conn)
-        .await?;
+        if !short_ddl(
+            conn,
+            format!("alter index {index} attach partition {child}"),
+        )
+        .await?
+        {
+            tracing::info!(index, partition = %part, "attaching a partition index waits for a quieter moment");
+            continue;
+        }
         built += 1;
     }
     Ok(built)
 }
 
 /// Drops the partitioned index `old` of `results` once `new` is valid. The drop locks
-/// `results` exclusively for a moment: it waits at most 2 seconds for running statements and
-/// is tried again at the next run otherwise.
+/// `results` exclusively: it waits at most [`DDL_LOCK_WAIT`] for each lock and runs at most
+/// [`DDL_STATEMENT_TIME`] in all, and is tried again at the next run (10 minutes) otherwise.
 async fn retire(conn: &mut sqlx::PgConnection, old: &str, new: &str) -> anyhow::Result<()> {
     let (old_there, new_valid): (bool, bool) = sqlx::query_as(
         "select to_regclass($1) is not null, coalesce((select ix.indisvalid from pg_index ix \
@@ -179,31 +244,95 @@ async fn retire(conn: &mut sqlx::PgConnection, old: &str, new: &str) -> anyhow::
     if !old_there || !new_valid || !safe_ident(old) {
         return Ok(());
     }
+    if short_ddl(conn, format!("drop index if exists {old}")).await? {
+        tracing::info!(index = old, replaced_by = new, "replaced index dropped");
+    } else {
+        metrics::counter!("fastproof_index_swaps_deferred_total").increment(1);
+        tracing::info!(
+            index = old,
+            "dropping a replaced index waits for a quieter moment"
+        );
+    }
+    Ok(())
+}
+
+/// Index names created by the no-transaction (`CREATE INDEX CONCURRENTLY`) migrations.
+pub fn concurrent_migration_indexes() -> Vec<String> {
+    let re = regex::Regex::new(
+        r"(?i)create\s+(?:unique\s+)?index\s+concurrently\s+if\s+not\s+exists\s+([a-z0-9_]+)",
+    )
+    .expect("valid pattern");
+    crate::migrator()
+        .iter()
+        .filter(|m| m.no_tx)
+        .flat_map(|m| {
+            re.captures_iter(m.sql.as_str())
+                .map(|c| c[1].to_string())
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// Rebuilds indexes of the no-transaction migrations that an interrupted
+/// `CREATE INDEX CONCURRENTLY` left invalid: the migration counts as applied on its next try
+/// (`if not exists` finds the invalid index), but PostgreSQL never uses that index. Runs only
+/// while no migration runs (their advisory lock), so a build in progress is not taken for an
+/// interrupted one. Returns the names rebuilt.
+pub async fn rebuild_invalid_migration_indexes(
+    conn: &mut sqlx::PgConnection,
+) -> anyhow::Result<Vec<String>> {
+    let names = concurrent_migration_indexes();
+    let invalid: Vec<(String, String)> = sqlx::query_as(
+        "select c.relname::text, pg_get_indexdef(ix.indexrelid) from pg_index ix \
+         join pg_class c on c.oid = ix.indexrelid \
+         where c.relname = any($1) and not ix.indisvalid and c.relkind = 'i'",
+    )
+    .bind(&names)
+    .fetch_all(&mut *conn)
+    .await?;
+    if invalid.is_empty() {
+        return Ok(Vec::new());
+    }
+    if !sqlx::query_scalar::<_, bool>("select pg_try_advisory_lock($1)")
+        .bind(crate::LOCK_KEY)
+        .fetch_one(&mut *conn)
+        .await?
+    {
+        return Ok(Vec::new());
+    }
     let r = async {
-        let mut tx = sqlx::Connection::begin(&mut *conn).await?;
-        sqlx::query("set local lock_timeout = '2s'")
-            .execute(&mut *tx)
+        let mut done = Vec::new();
+        for (name, def) in invalid {
+            let Some(rest) = def
+                .strip_prefix("CREATE INDEX ")
+                .map(|r| ("CREATE INDEX CONCURRENTLY ", r))
+                .or_else(|| {
+                    def.strip_prefix("CREATE UNIQUE INDEX ")
+                        .map(|r| ("CREATE UNIQUE INDEX CONCURRENTLY ", r))
+                })
+            else {
+                continue;
+            };
+            if !safe_ident(&name) {
+                continue;
+            }
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "drop index concurrently if exists {name}"
+            )))
+            .execute(&mut *conn)
             .await?;
-        sqlx::query(sqlx::AssertSqlSafe(format!("drop index if exists {old}")))
-            .execute(&mut *tx)
-            .await?;
-        tx.commit().await?;
-        Ok::<_, anyhow::Error>(())
+            sqlx::query(sqlx::AssertSqlSafe(format!("{}{}", rest.0, rest.1)))
+                .execute(&mut *conn)
+                .await?;
+            tracing::warn!(index = %name, "rebuilt an index an interrupted migration left invalid");
+            done.push(name);
+        }
+        Ok::<_, anyhow::Error>(done)
     }
     .await;
-    match r {
-        Err(e) if crate::merges::lock_timeout(&e) => {
-            tracing::info!(
-                index = old,
-                "dropping a replaced index waits for a quieter moment"
-            );
-            Ok(())
-        }
-        r => {
-            if r.is_ok() {
-                tracing::info!(index = old, replaced_by = new, "replaced index dropped");
-            }
-            r
-        }
-    }
+    let _ = sqlx::query("select pg_advisory_unlock($1)")
+        .bind(crate::LOCK_KEY)
+        .execute(&mut *conn)
+        .await;
+    r
 }

@@ -291,6 +291,26 @@ impl Store {
         Ok(())
     }
 
+    /// Which of `keys` are client keys of attempts of the launch.
+    pub async fn existing_client_keys(
+        &self,
+        launch_id: Uuid,
+        launch_created_at: chrono::DateTime<chrono::Utc>,
+        keys: &[String],
+    ) -> anyhow::Result<std::collections::HashSet<String>> {
+        let keys: Vec<String> = keys.iter().map(|k| crate::no_nul(k)).collect();
+        let found: Vec<String> = sqlx::query_scalar(
+            "select client_key from attempts where launch_id = $1 and launch_created_at = $2 \
+             and client_key = any($3)",
+        )
+        .bind(launch_id)
+        .bind(launch_created_at)
+        .bind(&keys)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(found.into_iter().collect())
+    }
+
     /// True while the upload exists (it goes with its launch).
     pub async fn upload_exists(&self, upload_id: Uuid) -> anyhow::Result<bool> {
         Ok(

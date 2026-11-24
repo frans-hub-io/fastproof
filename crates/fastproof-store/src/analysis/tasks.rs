@@ -1,7 +1,7 @@
 //! Background analysis work: queued tasks (retroactive rule application), the rule dry run,
 //! the fingerprint backfill of rows stored before fingerprints existed, and mute expiry.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -508,31 +508,59 @@ impl Store {
     }
 
     /// Lifts mutes that ended: their rows go and the results of those series are unmuted.
-    /// Returns how many mutes ended (up to 1000 per project).
+    /// Returns how many mutes ended (up to 1000 per project and call).
     ///
     /// One project per transaction, which waits for rows held elsewhere for a short while
     /// only: a project whose results or launch rows another transaction holds (a merge, a
     /// manual run) is left for the next run, instead of waiting for it while the rows of other
     /// projects already locked here hold up their writers.
     pub async fn expire_mutes(&self) -> anyhow::Result<u64> {
+        Ok(self.expire_mutes_round(&mut HashSet::new()).await?.0)
+    }
+
+    /// The mute expiry job: lifts every ended mute, a project at a time in batches of 1000,
+    /// and leaves a project whose rows are held for the next run without waiting for it again
+    /// in this one. Returns how many mutes ended.
+    pub async fn expire_all_mutes(&self) -> anyhow::Result<u64> {
+        let mut busy = HashSet::new();
+        let mut total = 0;
+        loop {
+            let (n, more) = self.expire_mutes_round(&mut busy).await?;
+            total += n;
+            if !more {
+                return Ok(total);
+            }
+        }
+    }
+
+    /// One batch per project not in `busy` (busy ones are added to it). Returns the mutes that
+    /// ended and whether a project may have more.
+    async fn expire_mutes_round(&self, busy: &mut HashSet<Uuid>) -> anyhow::Result<(u64, bool)> {
+        let skip: Vec<Uuid> = busy.iter().copied().collect();
         let projects: Vec<Uuid> = sqlx::query_scalar(
             "select distinct project_id from series_mutes where until is not null and until <= now() \
-             limit 1000",
+               and project_id <> all($1) limit 1000",
         )
+        .bind(&skip)
         .fetch_all(&self.pool)
         .await?;
         let mut expired = 0;
+        let mut more = false;
         for project_id in projects {
             match self.expire_mutes_of(project_id).await {
-                Ok(n) => expired += n,
+                Ok(n) => {
+                    expired += n;
+                    more |= n >= 1000;
+                }
                 Err(e) if crate::merges::lock_timeout(&e) => {
                     metrics::counter!("fastproof_mute_expiry_busy_total").increment(1);
                     tracing::debug!(project = %project_id, "rows held elsewhere; mutes end at the next run");
+                    busy.insert(project_id);
                 }
                 Err(e) => return Err(e),
             }
         }
-        Ok(expired)
+        Ok((expired, more))
     }
 
     async fn expire_mutes_of(&self, project_id: Uuid) -> anyhow::Result<u64> {

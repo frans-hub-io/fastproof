@@ -1537,10 +1537,25 @@ async fn finished_launches_get_their_first_tree_built() {
             .is_empty()
     );
     assert_eq!(warm().await.unwrap(), 0, "each launch once");
+    let state = || async {
+        sqlx::query_scalar::<_, Value>(
+            "select value from analysis_state where name = 'explorer.warm'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap()
+    };
+    assert_eq!(
+        state().await["id"],
+        small["id"],
+        "the cursor moves past a launch it does not build"
+    );
+    assert_eq!(warmed(&db, lid).await, Some(true));
     let base = format!("/api/v1/projects/warm/launches/{lid}");
     let (_, cached) = s
         .get(&format!("{base}/tree?includeTests=true"), ADMIN_TOKEN)
         .await;
+    assert_eq!(warmed(&db, lid).await, Some(false), "opened, so kept");
     sqlx::query("delete from explorer_cache where launch_id = $1::uuid")
         .bind(lid)
         .execute(&db.pool)
@@ -1551,4 +1566,70 @@ async fn finished_launches_get_their_first_tree_built() {
         .await;
     assert_eq!(cached, built);
     assert_eq!(cached["counts"]["total"], 30);
+
+    // A launch whose upload is still processing waits, and is built once the upload is done.
+    let busy = s.launch("warm", None).await;
+    let busy_id = busy["id"].as_str().unwrap();
+    post_results(&s, "warm", busy_id, &rs).await;
+    sqlx::query(
+        "insert into uploads (id, project_id, launch_id, status) \
+         select gen_random_uuid(), project_id, id, 'processing' from launches where id = $1::uuid",
+    )
+    .bind(busy_id)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    finish(&s, "warm", busy_id).await;
+    assert_eq!(warm().await.unwrap(), 0, "uploads still processing");
+    assert_eq!(state().await["retry"][0][0], busy["id"]);
+    sqlx::query("update uploads set status = 'done' where launch_id = $1::uuid")
+        .bind(busy_id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(warm().await.unwrap(), 1, "built once the upload is done");
+    assert!(state().await["retry"].as_array().unwrap().is_empty());
+
+    // The target of a merge is built too (its finish time is behind the cursor).
+    let (st, m) = s
+        .post(
+            "/api/v1/projects/warm/launches/merge",
+            ADMIN_TOKEN,
+            json!({"launchIds": [lid, busy_id]}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{m}");
+    let target = m["targetId"].as_str().unwrap().to_string();
+    assert_eq!(warm().await.unwrap(), 1, "the merge target");
+    assert_eq!(cache_rows(&db, &target).await.len(), 1);
+
+    // Trees built ahead that nobody opened go after a day; others stay for 7 days.
+    sqlx::query("update explorer_cache set created_at = now() - interval '2 days'")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    sqlx::query("update explorer_cache set warmed = false where launch_id = $1::uuid")
+        .bind(&target)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    store
+        .prune_explorer_cache(Duration::from_secs(7 * 86_400))
+        .await
+        .unwrap();
+    assert_eq!(cache_rows(&db, &target).await.len(), 1, "opened: kept");
+    assert!(
+        cache_rows(&db, busy_id).await.is_empty(),
+        "never opened: pruned"
+    );
+}
+
+async fn warmed(db: &TestDb, launch: &str) -> Option<bool> {
+    sqlx::query_scalar(
+        "select warmed from explorer_cache where launch_id = $1::uuid and key like 'tree2:%'",
+    )
+    .bind(launch)
+    .fetch_optional(&db.pool)
+    .await
+    .unwrap()
 }

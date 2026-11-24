@@ -394,7 +394,7 @@ pub async fn purge_blobs(s: &AppState) -> anyhow::Result<()> {
 
 /// Jobs of the analysis features (stage C).
 pub fn analysis_jobs(sch: &mut Scheduler) -> anyhow::Result<()> {
-    sch.register("analysis.indexes", "6h", |s: AppState| async move {
+    sch.register("analysis.indexes", "10m", |s: AppState| async move {
         let pool = crate::db::unbounded(s.store.pool()).await?;
         let n = fastproof_store::analysis::indexes::ensure_analysis_indexes(&pool).await;
         pool.close().await;
@@ -438,7 +438,7 @@ pub fn analysis_jobs(sch: &mut Scheduler) -> anyhow::Result<()> {
         Ok(())
     })?;
     sch.register("mutes.expire", "1m", |s: AppState| async move {
-        while s.store.expire_mutes().await? >= 1000 {}
+        s.store.expire_all_mutes().await?;
         Ok(())
     })?;
     sch.register("analysis.tasks", "10s", |s: AppState| async move {

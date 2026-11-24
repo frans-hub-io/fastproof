@@ -60,6 +60,22 @@ const JOB_SLICE: std::time::Duration = std::time::Duration::from_secs(10);
 /// Lock wait of a merge transaction: a merge gives up instead of making ingest queue behind it.
 const LOCK_TIMEOUT: &str = "set local lock_timeout = '5s'";
 
+/// A merge the job works on: project and merge.
+type Turn = (Uuid, Uuid);
+
+/// State of the merge job's turns in `analysis_state`.
+const TURN_STATE: &str = "launches.merges.turns";
+/// Runs in a row a merge may be found busy before the job waits for it like a request.
+const ESCALATE_AFTER: u32 = 3;
+
+/// Which project the last run started with, and how many runs in a row each merge was busy.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct TurnState {
+    after: Option<Uuid>,
+    #[serde(default)]
+    busy: HashMap<Uuid, u32>,
+}
+
 /// How a merge transaction waits for rows that another transaction holds.
 #[derive(Clone, Copy, Debug)]
 struct Patience {
@@ -1935,16 +1951,38 @@ impl Store {
             tracing::warn!(merge = %id, step = what, error = %format!("{e:#}"), "merge job step failed");
             r.errors += 1;
         };
-        let mut turns: Vec<(Uuid, Uuid)> = sqlx::query_as(
+        // Turns: the first merge of each project, then the second, ...; the project the last
+        // run started with goes last this time, so the budget rotates over the projects.
+        let mut turn_state: TurnState = sqlx::query_scalar::<_, serde_json::Value>(
+            "select value from analysis_state where name = $1",
+        )
+        .bind(TURN_STATE)
+        .fetch_optional(&self.pool)
+        .await?
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default();
+        let pending: Vec<(Uuid, Uuid)> = sqlx::query_as(
             "select w.project_id, w.merge_id from (select project_id, merge_id, \
                row_number() over (partition by project_id order by merge_id) as turn \
                from (select distinct project_id, merge_id from launch_merge_work) d) w \
              join projects p on p.id = w.project_id and p.deleted_at is null \
-             order by w.turn, w.project_id limit $1",
+             order by w.turn, w.project_id <= coalesce($2, '00000000-0000-0000-0000-000000000000'::uuid), \
+               w.project_id limit $1",
         )
         .bind(JOB_BATCH)
+        .bind(turn_state.after)
         .fetch_all(&self.pool)
         .await?;
+        turn_state.after = pending.first().map(|t| t.0);
+        turn_state
+            .busy
+            .retain(|id, _| pending.iter().any(|t| t.1 == *id));
+        // A merge found busy on several runs in a row waits like a request this time, after
+        // the others, so steady ingest into its target cannot hold it off for good.
+        let (patient, mut turns): (Vec<Turn>, Vec<Turn>) = pending
+            .into_iter()
+            .partition(|t| turn_state.busy.get(&t.1).copied().unwrap_or(0) >= ESCALATE_AFTER);
+        turns.extend(patient);
         let started = std::time::Instant::now();
         let mut analysed = HashSet::new();
         while !turns.is_empty() && started.elapsed() < JOB_BUDGET {
@@ -1953,8 +1991,14 @@ impl Store {
                 if started.elapsed() >= JOB_BUDGET {
                     break;
                 }
-                match self.drain(p, id, JOB_SLICE, JOB).await {
+                let escalated = turn_state.busy.get(&id).copied().unwrap_or(0) >= ESCALATE_AFTER;
+                let patience = if escalated { REQUEST } else { JOB };
+                if escalated {
+                    metrics::counter!("fastproof_merge_job_escalations_total").increment(1);
+                }
+                match self.drain(p, id, JOB_SLICE, patience).await {
                     Ok((n, done)) => {
+                        turn_state.busy.remove(&id);
                         if n > 0 {
                             analysed.insert(id);
                         }
@@ -1962,11 +2006,24 @@ impl Store {
                             left.push((p, id));
                         }
                     }
-                    Err(e) => fail("analyse", id, e, &mut report),
+                    Err(e) => {
+                        if lock_timeout(&e) {
+                            *turn_state.busy.entry(id).or_default() += 1;
+                        }
+                        fail("analyse", id, e, &mut report)
+                    }
                 }
             }
             turns = left;
         }
+        sqlx::query(
+            "insert into analysis_state (name, value) values ($1, $2) \
+             on conflict (name) do update set value = excluded.value, updated_at = now()",
+        )
+        .bind(TURN_STATE)
+        .bind(serde_json::to_value(&turn_state)?)
+        .execute(&self.pool)
+        .await?;
         report.analysed = analysed.len() as u64;
         let late: Vec<(Uuid, Uuid)> = sqlx::query_as(
             "select m.project_id, m.id from launch_merges m join projects p on p.id = m.project_id \

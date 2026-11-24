@@ -240,7 +240,7 @@ async fn upgrade_from_stage_one_keeps_data_and_queries() {
         vec![
             500, 501, 502, 503, 504, 505, 506, 507, 600, 700, 710, 711, 712, 720, 721, 722, 730,
             731, 740, 741, 750, 751, 760, 770, 780, 781, 782, 790, 791, 801, 810, 811, 815, 816,
-            817, 818, 820
+            817, 818, 819, 820
         ]
     );
     fastproof_store::check_schema(&db.pool).await.unwrap();

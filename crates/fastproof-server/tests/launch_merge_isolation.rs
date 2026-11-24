@@ -251,3 +251,183 @@ async fn mutes_of_other_projects_end_around_a_held_launch() {
     assert!(!muted(a.clone()).await);
     assert_eq!(s.launch_get("m1", &a).await["counts"]["muted"], 0);
 }
+
+async fn turns(db: &TestDb) -> Value {
+    sqlx::query_scalar("select value from analysis_state where name = 'launches.merges.turns'")
+        .fetch_one(&db.pool)
+        .await
+        .unwrap()
+}
+
+async fn requeue(db: &TestDb, m: &Value) {
+    sqlx::query(
+        "insert into launch_merge_work (merge_id, project_id, series_id) \
+         select m.id, m.project_id, r.series_id from launch_merges m join results r on r.launch_id = m.target_id \
+         where m.id = $1 on conflict do nothing",
+    )
+    .bind(m["id"].as_str().unwrap().parse::<Uuid>().unwrap())
+    .execute(&db.pool)
+    .await
+    .unwrap();
+}
+
+/// The job starts with another project on each run, and a merge found busy on three runs in
+/// a row is waited for like a request on the next one.
+#[tokio::test]
+async fn the_job_rotates_projects_and_insists_on_a_merge_kept_busy() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = Server::start(&db).await;
+    db.hold_jobs(&["launches.merges"]).await;
+    let first = merged(&s, &db, "t1").await;
+    let second = merged(&s, &db, "t2").await;
+    let store = Store::new(db.pool.clone());
+    let projects: Vec<Uuid> =
+        sqlx::query_scalar("select id from projects where key in ('t1', 't2') order by id")
+            .fetch_all(&db.pool)
+            .await
+            .unwrap();
+    store.merge_maintenance().await.unwrap();
+    assert_eq!(turns(&db).await["after"], json!(projects[0]));
+    requeue(&db, &first).await;
+    requeue(&db, &second).await;
+    store.merge_maintenance().await.unwrap();
+    assert_eq!(
+        turns(&db).await["after"],
+        json!(projects[1]),
+        "the other project starts this run"
+    );
+
+    requeue(&db, &first).await;
+    let id = first["id"].as_str().unwrap().to_string();
+    let hold = held(&db, first["targetId"].as_str().unwrap()).await;
+    for n in 1..=3 {
+        let r = store.merge_maintenance().await.unwrap();
+        assert_eq!(r.busy, 1, "{r:?}");
+        assert_eq!(turns(&db).await["busy"][&id], n);
+    }
+    hold.rollback().await.unwrap();
+    let r = store.merge_maintenance().await.unwrap();
+    assert_eq!((r.analysed, r.busy), (1, 0), "{r:?}");
+    assert!(turns(&db).await["busy"].get(&id).is_none());
+}
+
+/// When more held launches wait than the pending list takes, the rest stay in the outbox (the
+/// cursor stays before their events) and get their gates later: none is dropped.
+#[tokio::test]
+async fn gates_beyond_the_pending_list_stay_in_the_outbox() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = Server::start(&db).await;
+    let store = Store::new(db.pool.clone());
+    let consumer = "overflow-test";
+    store
+        .consume_finished_launches_with(consumer, Duration::ZERO, 500, 1)
+        .await
+        .unwrap();
+    s.project("go").await;
+    let mut launches = Vec::new();
+    for name in ["a", "b", "c"] {
+        launches.push(shard(&s, "go", name, vec![res("1", "x", "passed", T0)]).await);
+    }
+    let mut hold = db.pool.begin().await.unwrap();
+    sqlx::query("select id from launches where id = any($1) for update")
+        .bind(
+            launches
+                .iter()
+                .map(|l| l.parse::<Uuid>().unwrap())
+                .collect::<Vec<_>>(),
+        )
+        .execute(&mut *hold)
+        .await
+        .unwrap();
+    for _ in 0..2 {
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            store.consume_finished_launches_with(consumer, Duration::ZERO, 500, 1),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let pending: Vec<Uuid> =
+            sqlx::query_scalar("select pending from integration_cursors where name = $1")
+                .bind(consumer)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(pending.len(), 1);
+    }
+    hold.rollback().await.unwrap();
+    for _ in 0..5 {
+        store
+            .consume_finished_launches_with(consumer, Duration::ZERO, 500, 1)
+            .await
+            .unwrap();
+    }
+    let gates: i64 =
+        sqlx::query_scalar("select count(*) from launch_gates where launch_id = any($1)")
+            .bind(
+                launches
+                    .iter()
+                    .map(|l| l.parse::<Uuid>().unwrap())
+                    .collect::<Vec<_>>(),
+            )
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(gates, 3, "every held launch got its gate");
+}
+
+/// Mute expiry waits for a busy project once per run, while it works through the batches of
+/// another project.
+#[tokio::test]
+async fn mute_expiry_waits_once_for_a_busy_project() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = Server::start(&db).await;
+    db.hold_jobs(&["mutes.expire"]).await;
+    let store = Store::new(db.pool.clone());
+    s.project("mb").await;
+    s.project("mc").await;
+    let a = shard(&s, "mb", "a", vec![res("1", "x", "failed", T0)]).await;
+    let l = a.parse::<Uuid>().unwrap();
+    sqlx::query(
+        "insert into series_mutes (series_id, project_id, until) \
+         select r.series_id, l.project_id, now() - interval '1 minute' \
+         from results r join launches l on l.id = r.launch_id where r.launch_id = $1",
+    )
+    .bind(l)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    sqlx::query("update results set muted = true where launch_id = $1")
+        .bind(l)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "insert into series_mutes (series_id, project_id, until) \
+         select gen_random_uuid(), p.id, now() - interval '1 minute' \
+         from projects p, generate_series(1, 2500) where p.key = 'mc'",
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let hold = held(&db, &a).await;
+    let started = Instant::now();
+    let n = tokio::time::timeout(Duration::from_secs(30), store.expire_all_mutes())
+        .await
+        .unwrap()
+        .unwrap();
+    let took = started.elapsed();
+    hold.rollback().await.unwrap();
+    assert_eq!(n, 2500);
+    assert!(
+        took < Duration::from_millis(4500),
+        "waited for the busy project more than once: {took:?}"
+    );
+    assert_eq!(store.expire_all_mutes().await.unwrap(), 1);
+}

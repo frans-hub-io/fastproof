@@ -9,21 +9,32 @@ This page lists what needs attention per release.
 
 ## Next release: faster first view of large launches, merge isolation
 
+- **Index job every 10 minutes.** The scheduled job `analysis.indexes` (it built the fingerprint index every
+  6 hours) now runs every 10 minutes and builds the new indexes below. It changes the table `results` itself
+  only for a moment: the parent index is created `ON ONLY` once (skipped when it exists), and each partition
+  index is attached; each of these waits at most half a second for the lock of `results` and runs at most
+  3 seconds, and is tried again at the next run otherwise (`fastproof_index_swaps_deferred_total` counts
+  postponed drops). The partition indexes are built with `CREATE INDEX CONCURRENTLY`, so writes go on. The
+  job also rebuilds an index that an interrupted concurrent migration left invalid (such a migration counts as
+  applied on its next try, but PostgreSQL never uses the invalid index); it does so only while no migration
+  runs, and logs `rebuilt an index an interrupted migration left invalid`.
 - **Suite index.** The Suites tree of a launch reads the tests it shows through a new index of `results`,
-  `results_launch_suite` (the launch and a hash of the stored suite path). The scheduled job `analysis.indexes`
-  builds it soon after the start and then every 6 hours, as it builds the fingerprint index: the parent index
-  first (`ON ONLY`, a short lock of `results`), then each monthly partition with `CREATE INDEX CONCURRENTLY`, so
-  writes go on while it builds. On a large installation the first build takes a while; the index needs about
-  10 bytes of disk per result when many results share a suite (they share an entry), up to about 40 bytes
-  when each result is a suite of its own. Until a partition has it, trees of
-  launches in that partition are built as before. New partitions get the index when they are created. Storing
-  results updates one more index (see [Scaling](scaling.md#launch-explorer) for what it costs).
+  `results_launch_suite` (the launch and a hash of the stored suite path), built by that job. On a large
+  installation the first build takes a while; the index needs about 10 bytes of disk per result when many
+  results share a suite (they share an entry), up to about 40 bytes when each result is a suite of its own.
+  Until a partition has it, trees of launches in that partition are built as before. New partitions get the
+  index when they are created. Storing results updates one more index (see
+  [Scaling](scaling.md#launch-explorer) for what it costs).
 - **Trees of finished launches built ahead.** The scheduled job `explorer.warm` (every 30 seconds) builds the
-  unfiltered Suites tree of each launch of 2000 results or more that finished at least 30 seconds before, up to
-  20 launches and 20 seconds per run, so the first view of a large launch is read from the cache (metric
-  `fastproof_explorer_trees_warmed_total`). It starts with launches that finish after the upgrade; its
-  position is kept in `analysis_state` (`explorer.warm`). Migration `0816_perf_index_launches_finished` builds
-  the index it walks (`launches (finished_at, id)`, concurrently).
+  unfiltered Suites tree of each launch of 2000 results or more that finished at least 30 seconds before, and
+  of the target of each new merge, up to 20 trees and 20 seconds per run, so the first view of a large launch
+  is read from the cache (metric `fastproof_explorer_trees_warmed_total`). A launch whose uploads are still
+  being processed, or whose merge is still being analysed, waits up to an hour in a list and is built when it
+  is done. A tree built ahead that nobody opens is removed after a day (other cached trees stay 7 days;
+  migration `0819_perf_explorer_cache_warmed` adds the flag `explorer_cache.warmed`). The job starts with
+  launches that finish after the upgrade; its position is kept in `analysis_state` (`explorer.warm`).
+  Migration `0816_perf_index_launches_finished` builds the index it walks (`launches (finished_at, id)`,
+  concurrently).
 - **Long names and messages are stored.** A result whose full name was longer than about 2.7 KB of text
   that does not compress, or whose failure message held more words than a full-text vector takes (about
   1 MiB of short words), failed the whole request or upload with `500`: two indexes of `results` refused
@@ -31,31 +42,46 @@ This page lists what needs attention per release.
   launch and the first 600 characters of the full name) and `results_message_tsv` (the full-text vector of
   the first 64 Ki characters of the message). On a new installation they are built at once; on an existing
   one the migration only adds them to the parent table, and the `analysis.indexes` job builds them per
-  partition, concurrently, then drops `results_launch_name` and `results_message_fts` (each drop waits at
-  most 2 seconds for running statements and is tried again at the next run otherwise). Until then long
+  partition, concurrently, then drops `results_launch_name` and `results_message_fts` (each drop gives up
+  after half a second of waiting or 3 seconds in all and is tried again 10 minutes later). Until then long
   names still fail and pages of results by name are sorted in memory. Also:
   - results by name are ordered by their first 600 characters, then by the whole name, so pages of a
-    launch keep using an index; names that differ only after 600 characters can come in another order
-    than before. Message search reads the first 64 Ki characters of a message;
+    launch keep using an index. Names that share, or nearly share, their first 600 characters may come in
+    another order than before (with a linguistic collation, also names whose first 600 characters differ
+    only in accents or case); paging stays complete and without repeats. Message search reads the first
+    64 Ki characters of a message;
   - names sent to `POST .../results` are cut to `max_name_bytes` (4 KiB) like names in uploads, and the
-    answer lists a warning per cut name (`warnings`). A test whose name was longer than that (only short
-    repetitive names could be stored before) gets a new identity, so its history starts again;
-  - a writer-side id longer than 256 bytes (Allure `uuid`) is stored as its SHA-256 in the attempt key;
+    answer lists a warning per cut name (`warnings`). The identity of such a result is still computed from
+    the whole name as sent, as earlier versions did, so two tests whose names differ only after 4 KiB stay
+    two tests and a test keeps its history across the upgrade. Uploaded reports keep computing it from the
+    cut name, as before;
+  - a writer-side id longer than 256 bytes (Allure `uuid`) is stored as its SHA-256 in the attempt key.
+    When an earlier version stored such an id whole (ids up to 64 KiB are looked up), uploading the report
+    again still finds that attempt;
   - the unused index `test_cases_project_name` is dropped (migration `0818_long_names_drop_test_cases_name`,
     concurrently), and the unique index of folder names among siblings now holds a hash of the lowercased
     name, so folder names up to `FASTPROOF_TM_MAX_NAME_BYTES` (at most 4096) fit (it is rebuilt in the
     migration; `case_folders` is locked for writes meanwhile).
+  - **Downgrade.** Once the job has dropped `results_launch_name`, an earlier version has no index for its
+    pages of results by name and sorts them in memory (slower on large launches, still correct); no
+    migration recreates it. Create it by hand if you go back for long
+    (`create index results_launch_name on results (launch_id, full_name, id)`; this locks writes while it
+    builds).
 - **Merges of one project no longer hold up other projects.** A merge holds the rows of its launches for its
   first phase. Three background tasks used to wait for such a row while rows of other projects' launches were
   locked by them, so other projects' merges, manual runs and launch deletions timed out or waited too:
   - the gate queue (one statement over the finished launches of every project) now skips a launch whose row is
-    held and queues its gate at a later round (migration `0815_isolation_gate_retries` adds the nullable list
-    `integration_cursors.pending`; metric `fastproof_gates_deferred_total`);
+    held and queues its gate at a later round (migration `0815_isolation_gate_retries` adds the list
+    `integration_cursors.pending`, `uuid[] not null default '{}'`; metric `fastproof_gates_deferred_total`).
+    When more than 10 000 held launches wait, the rest stay in the outbox (the consumer's position stays
+    before their events) and are queued later (`fastproof_gates_backlogged_total`);
   - the job `launches.merges` waits at most a second for held rows and leaves that merge for its next run
-    (`fastproof_merge_job_busy_total{step}`), instead of five waits of 5 seconds; second phases take turns of
-    10 seconds, one merge per project before a second one of the same project;
+    (`fastproof_merge_job_busy_total{step}`), instead of five waits of 5 seconds. Second phases take turns of
+    10 seconds, one merge per project before a second one of the same project, and each run starts with
+    another project. A merge found busy on three runs in a row is waited for like a request (up to five
+    waits of 5 seconds) on the next run, after the others (`fastproof_merge_job_escalations_total`);
   - mute expiry (`mutes.expire`) runs one project per transaction and leaves a project with held rows for the
-    next minute (`fastproof_mute_expiry_busy_total`).
+    next minute (`fastproof_mute_expiry_busy_total`), without waiting for it again in the same run.
 
 ## 0.2.0-dev1: big launches on every writer
 

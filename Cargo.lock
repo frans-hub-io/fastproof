@@ -777,6 +777,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "fastproof-rp"
+version = "0.2.0-dev2"
+dependencies = [
+ "bytes",
+ "chrono",
+ "fastproof-model",
+ "futures",
+ "hex",
+ "md-5",
+ "memchr",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "tokio",
+]
+
+[[package]]
 name = "fastproof-server"
 version = "0.2.0-dev2"
 dependencies = [
@@ -792,6 +809,7 @@ dependencies = [
  "fastproof-ingest",
  "fastproof-media",
  "fastproof-model",
+ "fastproof-rp",
  "fastproof-store",
  "fastproof-stream",
  "fastproof-tm-import",

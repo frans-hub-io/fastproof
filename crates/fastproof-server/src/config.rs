@@ -205,6 +205,8 @@ pub struct Config {
     pub shutdown_timeout: std::time::Duration,
     /// Attachments uploaded straight to S3 (`FASTPROOF_DIRECT_UPLOAD*`).
     pub direct_uploads: crate::direct_uploads::DirectSettings,
+    /// The ReportPortal endpoint (`FASTPROOF_RP_*`).
+    pub rp: crate::rp::RpConfig,
 }
 
 /// Default of `FASTPROOF_SHUTDOWN_TIMEOUT_SECONDS`: below the 30 s Kubernetes gives by default.
@@ -394,6 +396,7 @@ impl fmt::Debug for Config {
             .field("tm", &self.tm)
             .field("tm_backfill_delay", &self.tm_backfill_delay)
             .field("direct_uploads", &self.direct_uploads)
+            .field("rp", &self.rp)
             .finish_non_exhaustive()
     }
 }
@@ -795,6 +798,7 @@ impl Config {
         };
         let mut direct_uploads = crate::direct_uploads::DirectSettings::from_env(&env)?;
         direct_uploads.clamp(max_upload_bytes, limits.max_entry_bytes);
+        let rp = crate::rp::RpConfig::from_env(&env)?;
         Ok(Self {
             listen,
             ops_listen,
@@ -853,6 +857,7 @@ impl Config {
             )?,
             shutdown_timeout,
             direct_uploads,
+            rp,
         })
     }
 }

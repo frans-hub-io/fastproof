@@ -33,6 +33,15 @@ server:
     maxLinesPerRequest: 5000
     maxRequestBytes: 8388608
     maxBytesPerLaunch: 268435456
+  rp:
+    enabled: true
+    settleMs: 2000
+    finishGraceSeconds: 120
+    launchIdleTimeout: 1h
+    maxRequestBytes: 67108864
+    maxAttachmentBytes: 67108864
+    maxItemsPerLaunch: 1000000
+    maxInflight: 256
   guards:
     sseMaxPerCaller: 16
     sseRecheckSeconds: 300

@@ -56,8 +56,10 @@ internal static class ConsoleCapture
         }
     }
 
-    private sealed class TeeWriter : TextWriter
+    internal sealed class TeeWriter : TextWriter
     {
+        internal const int MaxPartialLine = Client.MaxLogMessage;
+
         private readonly TextWriter _inner;
         private readonly bool _error;
 
@@ -119,26 +121,42 @@ internal static class ConsoleCapture
                 text = text.Replace("\r\n", "\n");
                 var buf = _error ? a.PartialErr : a.PartialOut;
                 string? complete = null;
+                string? forced = null;
                 lock (a.Lock)
                 {
-                    buf.Append(text);
-                    var all = buf.ToString();
-                    var cut = all.LastIndexOf('\n');
+                    var cut = text.LastIndexOf('\n');
                     if (cut >= 0)
                     {
-                        complete = all.Substring(0, cut + 1);
+                        buf.Append(text, 0, cut + 1);
+                        complete = buf.ToString();
                         buf.Clear();
-                        buf.Append(all, cut + 1, all.Length - cut - 1);
+                        buf.Append(text, cut + 1, text.Length - cut - 1);
+                    }
+                    else
+                    {
+                        buf.Append(text);
+                    }
+                    if (buf.Length >= MaxPartialLine)
+                    {
+                        forced = buf.ToString();
+                        buf.Clear();
                     }
                 }
-                if (complete == null)
+                var target = _error ? a.Stderr : a.Stdout;
+                var level = _error ? "warn" : "info";
+                var stream = _error ? "stderr" : "stdout";
+                if (complete != null)
                 {
-                    return;
+                    target.Append(complete);
+                    foreach (var line in complete.TrimEnd('\n').Split('\n'))
+                    {
+                        s.LogLine(a, level, stream, line);
+                    }
                 }
-                (_error ? a.Stderr : a.Stdout).Append(complete);
-                foreach (var line in complete.TrimEnd('\n').Split('\n'))
+                if (forced != null)
                 {
-                    s.LogLine(a, _error ? "warn" : "info", _error ? "stderr" : "stdout", line);
+                    target.Append(forced);
+                    s.LogLine(a, level, stream, forced);
                 }
             }
             catch (Exception)

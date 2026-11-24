@@ -88,6 +88,13 @@ public class UnitTests
     }
 
     [Test]
+    public void MaskerMatchesSecretEnvironmentNamesInAnyCase()
+    {
+        var m = new Masker(null, null, null, Env(("github_token", "lower-case-secret"), ("Db_Password", "mixed-case-secret")));
+        Assert.That(m.Apply("lower-case-secret mixed-case-secret"), Is.EqualTo("**** ****"));
+    }
+
+    [Test]
     public void TraceContextFormatsAndParses()
     {
         var t = TraceContext.Create("launch 1", "Ns.Test", 2);

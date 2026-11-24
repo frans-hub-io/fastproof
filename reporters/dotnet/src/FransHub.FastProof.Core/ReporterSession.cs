@@ -282,11 +282,11 @@ public sealed class ReporterSession
                 var e = new JsonObject();
                 if (outcome.ErrorMessage != null)
                 {
-                    e["message"] = M(Client.Cut(outcome.ErrorMessage, 64 * 1024));
+                    e["message"] = Client.Cut(M(outcome.ErrorMessage)!, 64 * 1024);
                 }
                 if (outcome.ErrorTrace != null)
                 {
-                    e["trace"] = M(Client.Cut(outcome.ErrorTrace, 256 * 1024));
+                    e["trace"] = Client.Cut(M(outcome.ErrorTrace)!, 256 * 1024);
                 }
                 r["error"] = e;
             }

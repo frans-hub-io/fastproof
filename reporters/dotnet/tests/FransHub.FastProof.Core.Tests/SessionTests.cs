@@ -243,6 +243,75 @@ public class SessionTests
     }
 
     [Test]
+    public void AFlushSendsOnlyBlobsInsideTheSessionThatMatchTheirHash()
+    {
+        using var server = new FakeServer();
+        var secret = Path.Combine(_dir, "secret.txt");
+        File.WriteAllText(secret, "outside-the-spool-secret");
+        var root = Path.Combine(_dir, "spool");
+        var session = Path.Combine(root, "20260101T000000-1-planted");
+        var blobs = Path.Combine(session, "blobs");
+        Directory.CreateDirectory(blobs);
+        var good = Encoding.UTF8.GetBytes("legit evidence");
+        var goodSha = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(good)).ToLowerInvariant();
+        File.WriteAllBytes(Path.Combine(blobs, goodSha), good);
+        var wrongSha = new string('a', 64);
+        File.WriteAllText(Path.Combine(blobs, wrongSha), "outside-the-spool-secret");
+        var linkSha = new string('b', 64);
+        File.CreateSymbolicLink(Path.Combine(blobs, linkSha), secret);
+        File.WriteAllText(Path.Combine(session, "meta.json"), new JsonObject
+        {
+            ["v"] = 1, ["project"] = "shop", ["pid"] = 1, ["host"] = "elsewhere", ["ended"] = true,
+            ["launch"] = new JsonObject { ["externalId"] = "planted", ["name"] = "planted" },
+        }.ToJsonString());
+        string Line(string name, string sha) => new JsonObject
+        {
+            ["v"] = 1,
+            ["result"] = new JsonObject
+            {
+                ["id"] = $"dn-000000000000-{name}-0", ["name"] = name, ["status"] = "passed", ["start"] = 1, ["stop"] = 2,
+                ["attachments"] = new JsonArray(new JsonObject { ["id"] = "blob:" + sha, ["name"] = "a.txt", ["contentType"] = "text/plain" }),
+            },
+            ["blobs"] = new JsonArray(new JsonObject { ["sha256"] = sha, ["name"] = "a.txt", ["contentType"] = "text/plain", ["size"] = 10 }),
+        }.ToJsonString();
+        File.WriteAllLines(Path.Combine(session, "results.ndjson"), new[]
+        {
+            Line("absolute", secret), Line("dots", "../../../secret.txt"), Line("wrong", wrongSha), Line("link", linkSha), Line("good", goodSha),
+        });
+
+        var flushed = SpoolFlusher.Flush(new Api(server.Url, "test-token-123456", "shop", TimeSpan.FromSeconds(5)), root, null, null, "shop");
+
+        Assert.That(flushed.Results, Is.EqualTo(5));
+        Assert.That(server.Attachments.Values.Select(v => Encoding.UTF8.GetString(v)), Is.EqualTo(new[] { "legit evidence" }));
+        var finals = server.Final().ToDictionary(r => r["name"]!.GetValue<string>());
+        Assert.That(finals["good"]["attachments"]!.AsArray().Count, Is.EqualTo(1));
+        foreach (var name in new[] { "absolute", "dots", "wrong", "link" })
+        {
+            Assert.That(finals[name]["attachments"]!.AsArray(), Is.Empty, name);
+        }
+    }
+
+    [Test]
+    public void ConsoleOutputWithoutNewlinesIsCapturedInLinearTimeAndBoundedLines()
+    {
+        using var server = new FakeServer();
+        var s = Session(server.Url);
+        var a = s.Begin(Test("Dots"))!;
+        var tee = new ConsoleCapture.TeeWriter(TextWriter.Null, false);
+        var started = DateTime.UtcNow;
+        for (var i = 0; i < 1_000_000; i++)
+        {
+            tee.Write('.');
+        }
+        tee.Write("done\n");
+        Assert.That(DateTime.UtcNow - started, Is.LessThan(TimeSpan.FromSeconds(10)));
+        s.End(a, new AttemptOutcome { Status = AttemptStatus.Passed });
+        s.Close();
+        Assert.That(server.Final().Single()["stdout"]!.GetValue<string>(), Is.EqualTo(new string('.', 1_000_000) + "done\n"));
+        Assert.That(server.Logs.All(l => l["message"]!.GetValue<string>().Length <= Client.MaxLogMessage), Is.True);
+    }
+
+    [Test]
     public void AnUnauthorizedTokenOpensTheBreakerAndSpools()
     {
         using var server = new FakeServer { ExpectToken = "another-token" };

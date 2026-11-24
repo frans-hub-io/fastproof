@@ -153,9 +153,9 @@ internal sealed class Api
     }
 
     public Response Request(HttpMethod method, string path, byte[]? data = null, string? contentType = null,
-        IDictionary<string, string>? headers = null, TimeSpan? timeout = null, string? file = null)
+        IDictionary<string, string>? headers = null, TimeSpan? timeout = null, string? file = null, Func<Stream>? source = null)
     {
-        FileStream? fs = null;
+        Stream? fs = null;
         try
         {
             using var req = new HttpRequestMessage(method, _base + path);
@@ -169,15 +169,15 @@ internal sealed class Api
             {
                 req.Headers.TryAddWithoutValidation(kv.Key, kv.Value);
             }
-            if (file != null)
+            if (file != null || source != null)
             {
                 try
                 {
-                    fs = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                    fs = source != null ? source() : new FileStream(file!, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
                 }
                 catch (Exception e) when (e is IOException or UnauthorizedAccessException)
                 {
-                    return new Response { Status = -1, Error = $"cannot read {file}: {e.Message}" };
+                    return new Response { Status = -1, Error = $"cannot read {file ?? "the attachment"}: {e.Message}" };
                 }
                 req.Content = new StreamContent(fs);
             }
@@ -269,11 +269,12 @@ internal sealed class Api
         }
     }
 
-    public JsonObject UploadAttachment(string launchId, string name, string contentType, string? path = null, byte[]? body = null, int? retries = null)
+    public JsonObject UploadAttachment(string launchId, string name, string contentType, string? path = null, byte[]? body = null, int? retries = null,
+        Func<Stream>? source = null)
     {
         var headers = new Dictionary<string, string> { ["X-FastProof-Attachment-Name"] = EncodeHeader(name) };
-        var r = Call(() => Request(HttpMethod.Post, $"{PathOf(launchId)}/attachments", path == null ? body : null, contentType, headers,
-            TimeSpan.FromSeconds(120), path), retries);
+        var r = Call(() => Request(HttpMethod.Post, $"{PathOf(launchId)}/attachments", path == null && source == null ? body : null, contentType, headers,
+            TimeSpan.FromSeconds(120), path, source), retries);
         if (r.Body is not JsonObject o || o["id"] is not JsonValue)
         {
             throw new ApiException("unexpected attachment response", r.Status, true);

@@ -3,9 +3,11 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 
 namespace FransHub.FastProof;
 
@@ -197,6 +199,32 @@ internal sealed class FlushResult
 
 internal static class SpoolFlusher
 {
+    private static readonly Regex BlobName = new("^[0-9a-f]{64}$", RegexOptions.CultureInvariant);
+
+    internal static bool IsBlobName(string sha) => BlobName.IsMatch(sha);
+
+    /// <summary>Opens a spooled blob for one upload attempt and checks that its content hashes to its name, so a
+    /// planted spool line or a link swapped into <c>blobs/</c> cannot send another file with this run's token.</summary>
+    internal static Stream OpenVerified(string path, string sha)
+    {
+        var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        try
+        {
+            var actual = Convert.ToHexString(SHA256.HashData(fs)).ToLowerInvariant();
+            if (actual != sha)
+            {
+                throw new IOException($"the spooled attachment {sha} does not match its hash; skipped");
+            }
+            fs.Position = 0;
+            return fs;
+        }
+        catch
+        {
+            fs.Dispose();
+            throw;
+        }
+    }
+
     private static bool PidAlive(int pid)
     {
         try
@@ -357,16 +385,26 @@ internal static class SpoolFlusher
                         foreach (var b in (e["blobs"] as JsonArray) ?? new JsonArray())
                         {
                             var sha = b!["sha256"]!.GetValue<string>();
-                            if (blobIds.ContainsKey(sha))
+                            if (blobIds.ContainsKey(sha) || !IsBlobName(sha))
                             {
                                 continue;
                             }
                             var p = Path.Combine(dir, "blobs", sha);
-                            if (!File.Exists(p))
+                            if (!File.Exists(p) || new FileInfo(p).LinkTarget != null)
                             {
                                 continue;
                             }
-                            var r = api.UploadAttachment(launchId, b["name"]!.GetValue<string>(), b["contentType"]!.GetValue<string>(), p, null, 2);
+                            JsonObject r;
+                            try
+                            {
+                                r = api.UploadAttachment(launchId, b["name"]!.GetValue<string>(), b["contentType"]!.GetValue<string>(), null, null, 2,
+                                    () => OpenVerified(p, sha));
+                            }
+                            catch (ApiException x) when (x.Status < 0)
+                            {
+                                outp.Errors.Add(x.Message);
+                                continue;
+                            }
                             blobIds[sha] = r["id"]!.GetValue<string>();
                         }
                         ReplaceBlobIds(result, blobIds);

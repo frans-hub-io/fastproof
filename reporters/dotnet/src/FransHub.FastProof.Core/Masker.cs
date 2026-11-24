@@ -116,6 +116,6 @@ public sealed class Masker
             sb.Append(c switch { '*' => ".*", '?' => ".", _ => Regex.Escape(c.ToString()) });
         }
         sb.Append('$');
-        return new Regex(sb.ToString(), RegexOptions.CultureInvariant);
+        return new Regex(sb.ToString(), RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
     }
 }

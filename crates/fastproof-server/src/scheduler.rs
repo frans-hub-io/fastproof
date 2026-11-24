@@ -541,6 +541,9 @@ pub fn case_jobs(sch: &mut Scheduler) -> anyhow::Result<()> {
     sch.register("launch.exports", "1m", |s: AppState| async move {
         crate::launch_export::tick(&s).await
     })?;
+    sch.register("history.imports", "1m", |s: AppState| async move {
+        crate::history_import::tick(&s).await
+    })?;
     sch.register("cases.backfill", "1m", |s: AppState| async move {
         case_backfill(&s, Duration::from_secs(50)).await?;
         Ok(())

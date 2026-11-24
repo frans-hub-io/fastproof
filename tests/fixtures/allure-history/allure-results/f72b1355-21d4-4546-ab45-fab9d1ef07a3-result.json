@@ -1,0 +1,1 @@
+{"uuid": "f72b1355-21d4-4546-ab45-fab9d1ef07a3", "historyId": "1293f7cccafe975b3b2ed23dec4b6198", "testCaseId": "575addb309a2a5f0526997dd5e7cfaf9", "fullName": "com.example.LoginTest.rejectsBadPassword", "name": "rejectsBadPassword", "status": "passed", "start": 1700259201000, "stop": 1700259201530, "labels": [{"name": "suite", "value": "LoginTest"}], "statusDetails": {}}

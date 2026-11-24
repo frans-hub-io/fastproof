@@ -167,6 +167,19 @@ pub(crate) async fn insert_launch(
     created_by: &str,
     can_sync: bool,
 ) -> anyhow::Result<Option<Uuid>> {
+    insert_launch_with(conn, project, start, created_by, can_sync, true).await
+}
+
+/// [`insert_launch`], with `announce` false for no `launch.created` event and notification
+/// (launches made from imported history).
+pub(crate) async fn insert_launch_with(
+    conn: &mut sqlx::PgConnection,
+    project: &crate::Project,
+    start: &LaunchStart,
+    created_by: &str,
+    can_sync: bool,
+    announce: bool,
+) -> anyhow::Result<Option<Uuid>> {
     let project_id = project.id;
     let number: i64 = sqlx::query_scalar(
         "update projects set launch_seq = launch_seq + 1, launch_count = launch_count + 1, \
@@ -215,6 +228,9 @@ pub(crate) async fn insert_launch(
         .await?;
     if inserted.is_none() {
         return Ok(None);
+    }
+    if !announce {
+        return Ok(Some(id));
     }
     crate::events::emit(
         &mut *conn,

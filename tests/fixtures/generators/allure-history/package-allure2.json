@@ -1,0 +1,7 @@
+{
+  "name": "allure2-generator",
+  "private": true,
+  "dependencies": {
+    "allure-commandline": "2.46.1"
+  }
+}

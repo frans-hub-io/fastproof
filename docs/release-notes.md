@@ -1,5 +1,13 @@
 # Release notes
 
+## Unreleased
+
+- **Allure history import.** Bring the history of Allure 2 reports (`history/history.json` and the trend files) and
+  of Allure 3 (the history file) in as past launches that join the tests your live results use, with
+  `fastproof import allure-history` or in the project settings. Flaky detection, trends, dashboards and new
+  failures see the history from before FastProof. See [Importing Allure history](guide/importing-allure-history.md).
+  The release adds migration `0820`.
+
 ## 0.2.0-dev1
 
 Published as `docker.io/franshub/fastproof:0.2.0-dev1` for `linux/amd64` and `linux/arm64`; Helm chart

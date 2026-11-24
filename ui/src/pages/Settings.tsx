@@ -12,6 +12,7 @@ import { TrackerApiFields } from '../components/TrackerApiFields';
 import { apiSaved, cleanApi, trackerApiErrors } from '../lib/trackers';
 import { DEFECT_GROUPS } from '../api/types-next';
 import { CopyValue } from '../components/CopyButton';
+import { HistoryImport } from '../components/HistoryImport';
 import { DefectChip } from '../components/Defect';
 import { PageHeader } from '../components/PageHeader';
 import { QueryState } from '../components/QueryState';
@@ -707,7 +708,7 @@ export default function SettingsPage() {
             </Badge>
           ) : undefined
         }
-        subtitle="Flaky detection, retention, defect types, integrations and secrets of this project."
+        subtitle="Flaky detection, retention, defect types, integrations, secrets and history import of this project."
         actions={
           canReadCases ? (
             <Button size="xs" variant="default" component={Link} to={`/p/${key}/settings/case-fields`} leftSection={<IconForms size={14} />} data-testid="settings-case-fields">
@@ -722,6 +723,7 @@ export default function SettingsPage() {
           <Tabs.Tab value="defects">Defect types</Tabs.Tab>
           <Tabs.Tab value="integrations">Integrations</Tabs.Tab>
           <Tabs.Tab value="secrets">Secrets</Tabs.Tab>
+          <Tabs.Tab value="history">History import</Tabs.Tab>
         </Tabs.List>
         <Tabs.Panel value="general" pt="md">
           <QueryState query={settings}>{() => settings.data && <GeneralForm key={JSON.stringify(settings.data)} project={key} settings={settings.data} canWrite={canWrite} />}</QueryState>
@@ -734,6 +736,9 @@ export default function SettingsPage() {
         </Tabs.Panel>
         <Tabs.Panel value="secrets" pt="md">
           <Secrets project={key} canWrite={canWrite} />
+        </Tabs.Panel>
+        <Tabs.Panel value="history" pt="md">
+          <HistoryImport project={key} canWrite={canWrite} />
         </Tabs.Panel>
       </Tabs>
     </>

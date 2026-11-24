@@ -736,6 +736,41 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{key}/history-imports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description The newest 20 imports of history of a project. Needs `launches:read`. */
+        get: operations["history_imports_list"];
+        put?: never;
+        /** @description Imports the history of Allure reports as finished launches dated at their reports, joined to the tests live results use (the Allure `historyId` is the FastProof series key). Multipart fields: `history` (required: `history/history.json` of an Allure 2 report, or the Allure 3 history file, a JSON line per report) and, for `allure2`, `historyTrend`, `durationTrend`, `categoriesTrend` and `retryTrend`. Limits: `history.json` 32 MiB, an Allure 3 file 256 MiB (a line 32 MiB, 1000 reports), each trend file 4 MiB, 500 000 results, 200 000 tests in `history.json`. One import per project at a time; 20 per project per day. A second import of the same files adds nothing. Reports older than the project's retention window are left out. Needs `settings:write`. */
+        post: operations["history_imports_create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/history-imports/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Status and counters of an import. Needs `launches:read`. */
+        get: operations["history_imports_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{key}/imports": {
         parameters: {
             query?: never;
@@ -3440,6 +3475,54 @@ export interface components {
             startedAt?: string | null;
             status: string;
         };
+        /** @description An import of Allure history. */
+        HistoryImport: {
+            branch?: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            createdBy: string;
+            environment?: string | null;
+            error?: string | null;
+            /** Format: date-time */
+            finishedAt?: string | null;
+            /** Format: uuid */
+            id: string;
+            /** Format: int64 */
+            launchesCreated: number;
+            /** Format: int64 */
+            pointsDone: number;
+            /**
+             * Format: int64
+             * @description Past reports found (known once the files are read).
+             */
+            pointsTotal: number;
+            /**
+             * Format: int64
+             * @description Results that a former import already stored.
+             */
+            resultsExisting: number;
+            /**
+             * Format: int64
+             * @description Results stored.
+             */
+            resultsImported: number;
+            /**
+             * Format: int64
+             * @description Results or whole reports left out: older than the retention window, in the future, or
+             *     not usable.
+             */
+            resultsSkipped: number;
+            /**
+             * Format: int64
+             * @description Results of tests the project does not know and the file does not name (Allure 2).
+             */
+            resultsUnmatched: number;
+            /** @description `allure2` or `allure3`. */
+            source: string;
+            /** @description `queued`, `running`, `done` or `failed`. */
+            status: string;
+            warnings: string[];
+        };
         /** @description History of a test case, newest first. */
         HistoryList: {
             /**
@@ -3465,6 +3548,10 @@ export interface components {
          * @enum {string}
          */
         ImportFormat: "generic-csv" | "testrail-csv" | "qase-csv" | "qase-json" | "testops-csv" | "fastproof-ndjson";
+        /** @description Imports of a project, newest first. */
+        ImportList: {
+            items: components["schemas"]["HistoryImport"][];
+        };
         /**
          * @description Whether an import only creates cases or also updates matching ones.
          * @enum {string}
@@ -9406,6 +9493,157 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["FlakyList"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    history_imports_list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportList"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    history_imports_create: {
+        parameters: {
+            query: {
+                /** @description `allure2` (history directory of an Allure 2 report) or `allure3` (history file). */
+                source: string;
+                /**
+                 * @description Branch of the launches made (set it to the branch live runs report, so their flaky
+                 *     detection and new-failure baselines read this history).
+                 */
+                branch?: string;
+                /** @description Environment key of the launches made; part of every series key, as for live runs. */
+                environment?: string;
+            };
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        /** @description fields `history`, `historyTrend`, `durationTrend`, `categoriesTrend`, `retryTrend` */
+        requestBody: {
+            content: {
+                "multipart/form-data": number[];
+            };
+        };
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HistoryImport"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    history_imports_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HistoryImport"];
                 };
             };
             403: {

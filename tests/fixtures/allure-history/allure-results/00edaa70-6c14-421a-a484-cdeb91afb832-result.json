@@ -1,0 +1,1 @@
+{"uuid": "00edaa70-6c14-421a-a484-cdeb91afb832", "historyId": "c29f6040b68cdd7425cf770d384f60a6", "testCaseId": "db5e577a4da59562c45cdc88b14bd07c", "fullName": "com.example.LoginTest.logsIn", "name": "logsIn", "status": "passed", "start": 1700259200000, "stop": 1700259200530, "labels": [{"name": "suite", "value": "LoginTest"}], "statusDetails": {}}

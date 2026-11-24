@@ -128,6 +128,7 @@ pub fn api_router() -> (Router<AppState>, utoipa::openapi::OpenApi) {
         .merge(api::imports::router())
         .merge(api::exports::router())
         .merge(api::launch_exports::router())
+        .merge(api::history_imports::router())
         .merge(api::merges::router())
         .merge(api::trackers::router())
         .split_for_parts();
@@ -475,6 +476,7 @@ async fn start_inner(cfg: Config, pool: PgPool, boot: Boot) -> anyhow::Result<Ru
             .with_context(|| format!("FASTPROOF_SPOOL_DIR: creating {}", d.display()))?;
     }
     crate::launch_export::sweep_spool(&cfg.spool_dir);
+    crate::history_import::sweep_spool(&cfg.spool_dir);
     let blobs = BlobStore::open(&cfg.blob).context("opening the blob store")?;
     if let Err(e) = blobs.check().await {
         tracing::error!(error = %format!("{e:#}"), "the blob store is not reachable; readiness will fail until it is");

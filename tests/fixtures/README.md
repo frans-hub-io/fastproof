@@ -13,6 +13,7 @@ fixtures is handwritten.
 | Playwright | Node 22, @playwright/test 1.65.0, allure-playwright 3.14.0, playwright-ctrf-json-reporter 0.2.0 | `playwright/allure-results/`, `results.json`, `junit.xml`, `ctrf/ctrf-report.json`, `test-results/` | two projects (environment dimension), retries (flaky and always failing), steps, attachments by path and inline body, skip/fixme/fail, annotations, tags, stdout/stderr |
 | Vitest | Node 22, vitest 5.1.0, allure-vitest 3.14.0 (with @vitest/runner 4.1.12, see its README) | `vitest/allure-results/`, `vitest/junit.xml` | retries (one `failure` element per attempt in JUnit), TypeError, skip, todo, `test.each`, steps, attachments, labels |
 | gotestsum | Go 1.27.3, gotestsum v1.13.0 | `gotestsum/junit.xml`, `junit-norerun.xml` | `--rerun-fails` duplicates, subtests, skip, panic |
+| Allure history | Allure Report 2.46.1 (JDK 25), Allure 3.33.0 | `allure-history/allure2/history/` (the five history files of the third report), `allure-history/allure3/history.jsonl` (three lines), `allure-history/allure-results/` (the live results of the third run) | History import: `historyId` keys equal the series keys, trend files, one past report per line, a test that fails and recovers over three runs; made by `generators/allure-history/generate.sh` from a small script that writes `allure-results` (no real framework, so these are the report tools' own outputs over synthetic results) |
 
 Identity vectors for `crates/fastproof-model` are computed by the Allure 3 v3.33.0 source itself:
 `crates/fastproof-model/tests/vectors/generate.sh`.

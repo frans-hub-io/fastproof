@@ -6,6 +6,7 @@
 pub mod attachment;
 pub mod fingerprint;
 pub mod flaky;
+pub mod history;
 pub mod identity;
 pub mod launch;
 pub mod normalize;
@@ -17,6 +18,7 @@ pub mod status;
 pub use attachment::{AttachmentId, AttachmentKind, AttachmentRef};
 pub use fingerprint::{Fingerprint, fingerprint};
 pub use flaky::{FlakyOptions, Transition, is_flaky, status_transition, test_flakiness};
+pub use history::{HistoryPoint, HistoryResult, HistoryTotals, HistoryTrend, split_series_key};
 pub use identity::{
     ExplicitId, IdSource, IdentityInput, SourceRef, TestIdentity, UNKNOWN_PARAMETER_VALUE,
 };

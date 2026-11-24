@@ -599,9 +599,16 @@ pub(crate) async fn process_inner(
     let total = batch.results.len();
     let results = std::mem::take(&mut batch.results);
     let mut attempts: Vec<NewAttempt> = Vec::with_capacity(CHUNK);
+    // Hashed keys of this chunk whose raw form an earlier version may have stored.
+    let mut raws: Vec<(usize, String)> = Vec::new();
     for (i, r) in results.into_iter().enumerate() {
         let client_key = match (&r.source_uuid, format) {
-            (Some(u), Some(f)) => upload_client_key(f.as_str(), u),
+            (Some(u), Some(f)) => {
+                if u.len() > MAX_SOURCE_ID_BYTES && u.len() <= MAX_RAW_SOURCE_ID_BYTES {
+                    raws.push((attempts.len(), format!("u:{}:{u}", f.as_str())));
+                }
+                upload_client_key(f.as_str(), u)
+            }
             _ => format!("x:{}:{i}", job.upload_id),
         };
         attempts.push(NewAttempt {
@@ -609,6 +616,7 @@ pub(crate) async fn process_inner(
             result: r,
         });
         if attempts.len() >= CHUNK {
+            keep_raw_keys(s, &launch, &mut attempts, std::mem::take(&mut raws)).await?;
             if lost.load(Ordering::SeqCst) || stop.is_cancelled() {
                 return Err(JobFailure::LeaseLost);
             }
@@ -627,6 +635,7 @@ pub(crate) async fn process_inner(
         }
     }
     if !attempts.is_empty() {
+        keep_raw_keys(s, &launch, &mut attempts, raws).await?;
         let r = emit_chunk(s, kafka, &launch, job.upload_id, attempts).await;
         gone_on_error(s, job, r).await?;
     }
@@ -699,6 +708,37 @@ pub async fn clean_local_spool(dir: &Path, age: Duration) {
 /// Longest writer-side id kept as is in an attempt's client key; longer ids (a report may
 /// carry any string there) are replaced by their SHA-256, so the key fits its index.
 pub const MAX_SOURCE_ID_BYTES: usize = 256;
+
+/// Longest writer-side id an earlier version may have stored as is (a B-tree entry holds 2704
+/// bytes, more when the id compresses well).
+pub const MAX_RAW_SOURCE_ID_BYTES: usize = 64 * 1024;
+
+/// Keeps the raw key of an attempt that an earlier version stored with its whole writer-side
+/// id (before ids over [`MAX_SOURCE_ID_BYTES`] were hashed), so uploading a report again, or
+/// completing a running attempt, finds the same attempt across the upgrade.
+async fn keep_raw_keys(
+    s: &AppState,
+    launch: &LaunchRef,
+    attempts: &mut [NewAttempt],
+    raws: Vec<(usize, String)>,
+) -> anyhow::Result<()> {
+    if raws.is_empty() {
+        return Ok(());
+    }
+    let keys: Vec<String> = raws.iter().map(|r| r.1.clone()).collect();
+    let found = s
+        .store
+        .existing_client_keys(launch.id, launch.created_at, &keys)
+        .await?;
+    for (i, raw) in raws {
+        if found.contains(&raw)
+            && let Some(a) = attempts.get_mut(i)
+        {
+            a.client_key = raw;
+        }
+    }
+    Ok(())
+}
 
 /// The client key of an uploaded result: its format and writer-side id.
 pub fn upload_client_key(format: &str, source_id: &str) -> String {

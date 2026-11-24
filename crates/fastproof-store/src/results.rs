@@ -1246,6 +1246,11 @@ struct Counted {
 const MAX_CACHED_KEYS: usize = 20_000;
 
 /// The cache key of an unfiltered tree (all results or those of one environment).
+/// The cache key of the tree a launch page asks for first (Suites, no filter).
+pub(crate) fn default_tree_cache_key() -> String {
+    tree_cache_key(&GroupBy::Suite, &TreeFilter::default()).unwrap_or_default()
+}
+
 fn tree_cache_key(by: &GroupBy, f: &TreeFilter) -> Option<String> {
     let env = f.env.clone();
     let rest = TreeFilter {
@@ -1620,7 +1625,8 @@ impl Store {
                 .collect();
             // The hashes of the paths, so the rows are found through the suite index.
             let hashes: Vec<i64> = sqlx::query_scalar(
-                "select hash_array_extended(array(select jsonb_array_elements_text(p)), 0::bigint) \
+                "select hash_array_extended(array(select e from jsonb_array_elements_text(p) \
+                   with ordinality as x(e, o) order by o), 0::bigint) \
                  from unnest($1::jsonb[]) as w(p)",
             )
             .bind(&paths)
@@ -1703,6 +1709,9 @@ impl Store {
             }
         }
         tx.commit().await?;
+        if from_cache && let Some(key) = &cache_key {
+            self.cache_read(launch.id, key).await;
+        }
         if let Some(key) = cache_key
             .filter(|_| !from_cache && !partial && !had_entry && counted.len() <= MAX_CACHED_KEYS)
         {

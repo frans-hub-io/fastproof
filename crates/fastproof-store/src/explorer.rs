@@ -137,7 +137,7 @@ impl Store {
             "insert into explorer_cache (launch_id, key, gen, payload) \
              select $1, $2, $3, $4 where exists (select 1 from launches where id = $1) \
              on conflict (launch_id, key) do update set gen = excluded.gen, payload = excluded.payload, \
-               created_at = now() where explorer_cache.gen <= excluded.gen",
+               created_at = now(), warmed = false where explorer_cache.gen <= excluded.gen",
         )
         .bind(launch)
         .bind(key)
@@ -157,17 +157,32 @@ impl Store {
         Ok(())
     }
 
-    /// Removes cache entries older than `age`; returns how many.
+    /// Removes cache entries older than `age`, and entries built ahead by
+    /// [`Store::warm_explorer_trees`] that nobody read within [`WARMED_TTL`]; returns how many.
     pub async fn prune_explorer_cache(&self, age: Duration) -> anyhow::Result<u64> {
         let age = chrono::Duration::from_std(age).unwrap_or(chrono::Duration::days(7));
+        let warmed = chrono::Duration::from_std(WARMED_TTL).unwrap_or(chrono::Duration::days(1));
         Ok(sqlx::query(
             "delete from explorer_cache where ctid = any(array(select ctid from explorer_cache \
-             where created_at < $1 limit 10000))",
+             where created_at < $1 or (warmed and created_at < $2) limit 10000))",
         )
         .bind(Utc::now() - age)
+        .bind(Utc::now() - warmed)
         .execute(&self.pool)
         .await?
         .rows_affected())
+    }
+
+    /// Marks a cache entry as read (a tree built ahead that someone opened is kept like any
+    /// other). Best effort, and a no-op for entries not built ahead.
+    pub(crate) async fn cache_read(&self, launch: Uuid, key: &str) {
+        let _ = sqlx::query(
+            "update explorer_cache set warmed = false where launch_id = $1 and key = $2 and warmed",
+        )
+        .bind(launch)
+        .bind(key)
+        .execute(&self.pool)
+        .await;
     }
 }
 
@@ -228,21 +243,62 @@ fn attempt_kinds(attachments: &[AttachmentRef], steps: &[Step]) -> i32 {
 
 /// Cursor of [`Store::warm_explorer_trees`] in `analysis_state`.
 pub const WARM_STATE: &str = "explorer.warm";
+/// How long a tree built ahead is kept when nobody opens it.
+pub const WARMED_TTL: Duration = Duration::from_secs(24 * 3600);
+/// Launches looked at per run of [`Store::warm_explorer_trees`], at most (the cursor moves
+/// over every one, built or not).
+const WARM_SCAN: i64 = 1000;
+/// Launches waiting to be built (uploads still processing, a merge still analysing), at most.
+const WARM_RETRY: usize = 500;
+/// How long a launch waits in that list before it is given up.
+const WARM_RETRY_FOR: chrono::Duration = chrono::Duration::hours(1);
 
-/// Where the warming of finished launches is: the finish time and id of the last launch seen.
+/// Where the warming of finished launches is: the finish time and id of the last launch
+/// looked at, the creation time of the last merge looked at, and launches to look at again.
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 struct WarmState {
     at: Option<DateTime<Utc>>,
     id: Option<Uuid>,
+    #[serde(default)]
+    merges_at: Option<DateTime<Utc>>,
+    /// Launch, project, when it was first put here.
+    #[serde(default)]
+    retry: Vec<(Uuid, Uuid, DateTime<Utc>)>,
 }
+
+/// A launch as [`Store::warm_explorer_trees`] judges it.
+#[derive(sqlx::FromRow)]
+struct WarmRow {
+    id: Uuid,
+    project_id: Uuid,
+    at: Option<DateTime<Utc>>,
+    total: i32,
+    /// Finished, not merged into another launch, of a live project.
+    eligible: bool,
+    /// Uploads still processing, or a merge into it still analysing.
+    busy: bool,
+}
+
+const WARM_COLUMNS: &str = "l.id, l.project_id, l.finished_at as at, l.count_total as total, \
+    (l.status <> 'running' and l.merged_into is null and p.deleted_at is null) as eligible, \
+    (exists (select 1 from uploads u where u.launch_id = l.id and u.status in ('queued', 'processing')) \
+     or exists (select 1 from launch_merges m join launch_merge_work w on w.merge_id = m.id \
+       where m.target_id = l.id)) as busy \
+    from launches l join projects p on p.id = l.project_id";
 
 impl Store {
     /// Builds the unfiltered Suites tree (what a launch page shows first) of launches with at
-    /// least `min_results` results that finished at least `settle` ago, so the first person to
-    /// open a large launch reads it from the cache. Walks launches by finish time from a cursor
-    /// in `analysis_state` ([`WARM_STATE`]; the first run starts at the present, so launches of
-    /// earlier versions are left alone), at most `limit` launches or `budget` per call; a tree
-    /// that fails is logged and skipped. Returns how many trees were built.
+    /// least `min_results` results, so the first person to open a large launch reads it from
+    /// the cache.
+    ///
+    /// Walks launches that finished at least `settle` ago by finish time, and new merges by
+    /// creation time (their target), from cursors in `analysis_state` ([`WARM_STATE`]; the
+    /// first run starts at the present). The cursors move over every launch looked at, built
+    /// or not, so the walk never repeats. A launch whose uploads are still processing, or
+    /// whose merge is still analysing, waits in a list and is looked at again on later runs
+    /// (up to an hour). At most `limit` trees or `budget` per call; a tree that fails is
+    /// logged and skipped. Trees nobody opens go after [`WARMED_TTL`]. Returns how many trees
+    /// were built.
     pub async fn warm_explorer_trees(
         &self,
         settle: Duration,
@@ -251,17 +307,25 @@ impl Store {
         budget: Duration,
     ) -> anyhow::Result<u64> {
         let started = Instant::now();
-        let state: Option<Value> =
+        let raw: Option<Value> =
             sqlx::query_scalar("select value from analysis_state where name = $1")
                 .bind(WARM_STATE)
                 .fetch_optional(&self.pool)
                 .await?;
-        let Some(mut state) = state.and_then(|v| serde_json::from_value::<WarmState>(v).ok())
-        else {
+        let parsed = raw
+            .as_ref()
+            .and_then(|v| serde_json::from_value::<WarmState>(v.clone()).ok());
+        let Some(mut state) = parsed else {
+            if raw.is_some() {
+                tracing::warn!(
+                    "the state of explorer.warm was unreadable; it starts again from now"
+                );
+            }
             sqlx::query(
                 "insert into analysis_state (name, value) \
-                 values ($1, jsonb_build_object('at', now() - make_interval(secs => $2))) \
-                 on conflict (name) do nothing",
+                 values ($1, jsonb_build_object('at', now() - make_interval(secs => $2), \
+                   'merges_at', now() - make_interval(secs => $2))) \
+                 on conflict (name) do update set value = excluded.value, updated_at = now()",
             )
             .bind(WARM_STATE)
             .bind(settle.as_secs_f64())
@@ -269,31 +333,81 @@ impl Store {
             .await?;
             return Ok(0);
         };
-        let due: Vec<(Uuid, Uuid, DateTime<Utc>)> = sqlx::query_as(
-            "select l.id, l.project_id, l.finished_at from launches l \
-             join projects p on p.id = l.project_id and p.deleted_at is null \
-             where l.finished_at is not null and l.finished_at <= now() - make_interval(secs => $1) \
+        let settle_s = settle.as_secs_f64();
+        let now: DateTime<Utc> = sqlx::query_scalar("select now()")
+            .fetch_one(&self.pool)
+            .await?;
+        // Finished launches after the cursor.
+        let scanned: Vec<WarmRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select {WARM_COLUMNS} where l.finished_at is not null \
+               and l.finished_at <= now() - make_interval(secs => $1) \
                and (l.finished_at, l.id) > (coalesce($2, '-infinity'::timestamptz), \
                  coalesce($3, '00000000-0000-0000-0000-000000000000'::uuid)) \
-               and l.count_total >= $4 and l.status <> 'running' and l.merged_into is null \
-             order by l.finished_at, l.id limit $5",
-        )
-        .bind(settle.as_secs_f64())
+             order by l.finished_at, l.id limit $4"
+        )))
+        .bind(settle_s)
         .bind(state.at)
         .bind(state.id)
-        .bind(min_results)
-        .bind(limit)
+        .bind(WARM_SCAN)
         .fetch_all(&self.pool)
         .await?;
+        if let Some(last) = scanned.last() {
+            state.at = last.at;
+            state.id = Some(last.id);
+        }
+        // Targets of merges made since the last run join the list (their finish time is the
+        // sources', usually behind the cursor).
+        let merges: Vec<(Uuid, Uuid, DateTime<Utc>)> = sqlx::query_as(
+            "select target_id, project_id, created_at from launch_merges \
+             where created_at > coalesce($1, '-infinity'::timestamptz) \
+               and created_at <= now() - make_interval(secs => $2) \
+             order by created_at limit $3",
+        )
+        .bind(state.merges_at)
+        .bind(settle_s)
+        .bind(WARM_SCAN)
+        .fetch_all(&self.pool)
+        .await?;
+        if let Some(last) = merges.last() {
+            state.merges_at = Some(last.2);
+        }
+        let mut retry: Vec<(Uuid, Uuid, DateTime<Utc>)> = std::mem::take(&mut state.retry)
+            .into_iter()
+            .filter(|r| now - r.2 < WARM_RETRY_FOR)
+            .collect();
+        retry.extend(merges.iter().map(|m| (m.0, m.1, now)));
+        let again: Vec<WarmRow> = if retry.is_empty() {
+            Vec::new()
+        } else {
+            let ids: Vec<Uuid> = retry.iter().map(|r| r.0).collect();
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "select {WARM_COLUMNS} where l.id = any($1)"
+            )))
+            .bind(&ids)
+            .fetch_all(&self.pool)
+            .await?
+        };
+        let since: HashMap<Uuid, DateTime<Utc>> = retry.iter().map(|r| (r.0, r.2)).collect();
+        let mut waiting: Vec<(Uuid, Uuid, DateTime<Utc>)> = Vec::new();
+        let mut due: Vec<(Uuid, Uuid, DateTime<Utc>)> = Vec::new();
+        let mut seen = HashSet::new();
+        for r in again.iter().chain(scanned.iter()) {
+            if !r.eligible || !seen.insert(r.id) {
+                continue;
+            }
+            let first = since.get(&r.id).copied().unwrap_or(now);
+            if r.busy {
+                waiting.push((r.id, r.project_id, first));
+            } else if r.total as i64 >= min_results {
+                due.push((r.id, r.project_id, first));
+            }
+        }
         let mut built = 0;
-        for (id, project_id, at) in due {
-            if started.elapsed() > budget {
+        for (i, (id, project_id, _)) in due.iter().copied().enumerate() {
+            if started.elapsed() > budget || built >= limit as u64 {
+                waiting.extend(due[i..].iter().copied());
                 break;
             }
-            state = WarmState {
-                at: Some(at),
-                id: Some(id),
-            };
             let Some(launch) = self.launch(project_id, id).await? else {
                 continue;
             };
@@ -301,13 +415,30 @@ impl Store {
                 include_tests: true,
                 ..crate::results::TreeOptions::groups(crate::results::GroupBy::Suite)
             };
+            let t0: DateTime<Utc> = sqlx::query_scalar("select now()")
+                .fetch_one(&self.pool)
+                .await?;
             match self.tree_with(&launch, &o).await {
-                Ok(_) => built += 1,
+                Ok(_) => {
+                    built += 1;
+                    let _ = sqlx::query(
+                        "update explorer_cache set warmed = true \
+                         where launch_id = $1 and key = $2 and created_at >= $3",
+                    )
+                    .bind(id)
+                    .bind(crate::results::default_tree_cache_key())
+                    .bind(t0)
+                    .execute(&self.pool)
+                    .await;
+                }
                 Err(e) => {
                     tracing::warn!(launch = %id, error = %format!("{e:#}"), "building the tree of a finished launch failed")
                 }
             }
         }
+        waiting.sort_by_key(|w| std::cmp::Reverse(w.2));
+        waiting.truncate(WARM_RETRY);
+        state.retry = waiting;
         sqlx::query("update analysis_state set value = $2, updated_at = now() where name = $1")
             .bind(WARM_STATE)
             .bind(serde_json::to_value(&state)?)

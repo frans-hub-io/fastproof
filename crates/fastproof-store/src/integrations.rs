@@ -2,6 +2,7 @@
 //! queues gate evaluations for finished launches, and outbound deliveries (notifications, VCS
 //! comments and statuses) with retries.
 
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -162,7 +163,7 @@ type AttemptRow = (
 );
 
 /// Launches whose gate waits in the consumer's `pending` list (their rows were held), at most.
-const MAX_PENDING_GATES: i64 = 10_000;
+pub const MAX_PENDING_GATES: usize = 10_000;
 
 const DELIVERY_COLUMNS: &str = "id, target_id, channel, launch_id, events, status, attempts, max_attempts, \
     last_error, response_status, created_at, next_attempt_at, delivered_at";
@@ -482,6 +483,18 @@ impl Store {
         settle: Duration,
         batch: i64,
     ) -> anyhow::Result<Option<u64>> {
+        self.consume_finished_launches_with(consumer, settle, batch, MAX_PENDING_GATES)
+            .await
+    }
+
+    /// [`Self::consume_finished_launches`] with a given size of the `pending` list.
+    pub async fn consume_finished_launches_with(
+        &self,
+        consumer: &str,
+        settle: Duration,
+        batch: i64,
+        max_pending: usize,
+    ) -> anyhow::Result<Option<u64>> {
         sqlx::query(
             "insert into integration_cursors (name, last_event_id) \
              select $1, coalesce(max(id), 0) from events on conflict (name) do nothing",
@@ -514,13 +527,20 @@ impl Store {
             tx.rollback().await?;
             return Ok(Some(0));
         }
-        let mut ids: Vec<Uuid> = rows
-            .iter()
-            .filter(|r| r.1 == "launch.finished")
-            .filter_map(|r| r.2.get("id").and_then(|v| v.as_str()))
-            .filter_map(|s| s.parse().ok())
-            .chain(pending)
-            .collect();
+        // The first event of each launch, so a launch that cannot wait in `pending` is read
+        // again from its event.
+        let mut event_of: HashMap<Uuid, i64> = HashMap::new();
+        for (event, _, payload) in rows.iter().filter(|r| r.1 == "launch.finished") {
+            if let Some(id) = payload
+                .get("id")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<Uuid>().ok())
+            {
+                event_of.entry(id).or_insert(*event);
+            }
+        }
+        let was_pending: HashSet<Uuid> = pending.iter().copied().collect();
+        let mut ids: Vec<Uuid> = event_of.keys().copied().chain(pending).collect();
         ids.sort();
         ids.dedup();
         let mut queued = 0;
@@ -543,27 +563,40 @@ impl Store {
             .execute(&mut *tx)
             .await?
             .rows_affected();
+            let free_set: HashSet<Uuid> = launches.iter().copied().collect();
             let skipped: Vec<Uuid> = ids
                 .iter()
-                .filter(|id| !launches.contains(id))
+                .filter(|id| !free_set.contains(id))
                 .copied()
                 .collect();
             if !skipped.is_empty() {
                 // Still there (not deleted meanwhile): held by another transaction.
-                held = sqlx::query_scalar(
-                    "select id from launches where id = any($1) order by id limit $2",
-                )
-                .bind(&skipped)
-                .bind(MAX_PENDING_GATES + 1)
-                .fetch_all(&mut *tx)
-                .await?;
-                if held.len() as i64 > MAX_PENDING_GATES {
-                    held.truncate(MAX_PENDING_GATES as usize);
-                    tracing::warn!(
-                        "more launches held than gates can wait for; some are not evaluated"
-                    );
-                }
+                held = sqlx::query_scalar("select id from launches where id = any($1)")
+                    .bind(&skipped)
+                    .fetch_all(&mut *tx)
+                    .await?;
             }
+        }
+        // Launches that waited already keep their place; those of this round's events fill
+        // what is left in event order, and when one does not fit, the cursor stays before its
+        // event, so the outbox keeps it (nothing is dropped).
+        let mut last = last;
+        if held.len() > max_pending {
+            let (mut keep, mut fresh): (Vec<Uuid>, Vec<Uuid>) =
+                held.iter().partition(|id| was_pending.contains(id));
+            fresh.sort_by_key(|id| event_of.get(id).copied().unwrap_or(i64::MAX));
+            keep.truncate(max_pending);
+            let room = max_pending - keep.len();
+            if let Some(e) = fresh.get(room).and_then(|id| event_of.get(id)) {
+                last = Some(e - 1);
+            }
+            keep.extend(fresh.into_iter().take(room));
+            metrics::counter!("fastproof_gates_backlogged_total").increment(1);
+            tracing::warn!(
+                held = held.len(),
+                "more launches held than gates can wait for; the rest stay in the outbox"
+            );
+            held = keep;
         }
         if !held.is_empty() {
             metrics::counter!("fastproof_gates_deferred_total").increment(held.len() as u64);

@@ -422,3 +422,143 @@ async fn old_indexes_are_replaced_by_the_job() {
     let out = post(&s, "lo", lid, &long).await;
     assert_eq!(out["accepted"], 1, "{out}");
 }
+
+async fn ensure_quickly(db: &TestDb) {
+    let started = Instant::now();
+    tokio::time::timeout(
+        Duration::from_secs(20),
+        fastproof_store::analysis::indexes::ensure_analysis_indexes(&db.pool),
+    )
+    .await
+    .expect("the index job waited for the held table")
+    .unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+async fn exists(db: &TestDb, index: &str) -> Option<bool> {
+    sqlx::query_scalar(
+        "select ix.indisvalid from pg_index ix where ix.indexrelid = to_regclass($1)",
+    )
+    .bind(index)
+    .fetch_optional(&db.pool)
+    .await
+    .unwrap()
+}
+
+/// While writers hold `results` (here a held `row exclusive` lock, as every insert takes), the
+/// index job neither waits to create a parent index that exists, nor long to create a missing
+/// one or to drop a replaced one: it leaves them for its next run. It also rebuilds an index
+/// an interrupted concurrent migration left invalid.
+#[tokio::test]
+async fn the_index_job_does_not_queue_writers() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let _s = Server::start(&db).await;
+    db.hold_jobs(&["analysis.indexes"]).await;
+    let hold = || async {
+        let mut tx = db.pool.begin().await.unwrap();
+        sqlx::query("lock table results in row exclusive mode")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        tx
+    };
+    let tx = hold().await;
+    ensure_quickly(&db).await;
+    tx.rollback().await.unwrap();
+
+    sqlx::query("drop index results_launch_suite")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    sqlx::query("create index results_launch_name on results (launch_id, full_name, id)")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let tx = hold().await;
+    ensure_quickly(&db).await;
+    assert_eq!(
+        exists(&db, "results_launch_suite").await,
+        None,
+        "left for later"
+    );
+    assert_eq!(
+        exists(&db, "results_launch_name").await,
+        Some(true),
+        "left for later"
+    );
+    tx.rollback().await.unwrap();
+    ensure_quickly(&db).await;
+    assert_eq!(exists(&db, "results_launch_suite").await, Some(true));
+    assert_eq!(exists(&db, "results_launch_name").await, None);
+
+    let superuser: bool =
+        sqlx::query_scalar("select rolsuper from pg_roles where rolname = current_user")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    if superuser {
+        sqlx::query(
+            "update pg_index set indisvalid = false where indexrelid = 'launches_finished'::regclass",
+        )
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        ensure_quickly(&db).await;
+        assert_eq!(exists(&db, "launches_finished").await, Some(true));
+    }
+    assert!(
+        fastproof_store::analysis::indexes::concurrent_migration_indexes()
+            .iter()
+            .any(|n| n == "launches_finished")
+    );
+}
+
+/// A report uploaded before the upgrade stored a long writer-side id as is; uploading it again
+/// after the upgrade finds that attempt instead of adding a second one.
+#[tokio::test]
+async fn ids_stored_whole_by_earlier_versions_are_found() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = Server::start(&db).await;
+    s.project("lk").await;
+    let launch = s.launch("lk", None).await;
+    let lid = launch["id"].as_str().unwrap();
+    let uuid = "u".repeat(300);
+    let d = tempfile::tempdir().unwrap();
+    std::fs::write(
+        d.path().join("a-result.json"),
+        json!({"uuid": uuid, "name": "pays", "fullName": "shop.Cart#pays",
+            "status": "passed", "stage": "finished", "start": 1000, "stop": 1100})
+        .to_string(),
+    )
+    .unwrap();
+    let bytes = tar_gz(d.path(), &|_| true);
+    let u = s.ingest("lk", lid, bytes.clone(), "").await;
+    assert_eq!(u["status"], "done", "{u}");
+    // As an earlier version stored it.
+    let raw: String = sqlx::query_scalar(
+        "update attempts set client_key = 'u:' || split_part(client_key, ':', 2) || ':' || $2 \
+         where launch_id = $1::uuid returning client_key",
+    )
+    .bind(lid)
+    .bind(&uuid)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    let u = s.ingest("lk", lid, bytes, "").await;
+    assert_eq!(u["status"], "done", "{u}");
+    let keys: Vec<String> =
+        sqlx::query_scalar("select client_key from attempts where launch_id = $1::uuid")
+            .bind(lid)
+            .fetch_all(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(keys, vec![raw], "one attempt, under its old key");
+}

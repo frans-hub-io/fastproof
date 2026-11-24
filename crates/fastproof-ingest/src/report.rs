@@ -148,10 +148,6 @@ pub fn report_to_parsed(
         .filter(|f| !f.trim().is_empty())
         .unwrap_or_else(|| r.name.clone());
     w.text("fullName", &full_name)?;
-    // Names are kept up to `max_name_bytes`, as in uploaded reports (see [`name_warnings`]).
-    let max_name = o.limits.max_name_bytes as usize;
-    crate::ctx::truncate_with_ellipsis(&mut r.name, max_name);
-    crate::ctx::truncate_with_ellipsis(&mut full_name, max_name);
     for p in &r.parameters {
         w.text("parameter", &p.name)?;
         if let Some(v) = &p.value {
@@ -160,7 +156,10 @@ pub fn report_to_parsed(
     }
     let source = r.source.clone().unwrap_or_default();
     let env_key = o.environment_key.map(str::trim).filter(|e| !e.is_empty());
-    let identity = TestIdentity::build(IdentityInput {
+    // The identity hashes the names as sent; only the stored names are cut to
+    // `max_name_bytes` (see [`name_warnings`]). Two tests whose names differ only after the cut
+    // stay apart, and a name keeps the identity earlier versions (which did not cut) gave it.
+    let mut identity = TestIdentity::build(IdentityInput {
         format: Some(SourceFormat::FastproofJson),
         allure_test_case_id: r.test_case_id.as_deref(),
         full_name: &full_name,
@@ -174,6 +173,11 @@ pub fn report_to_parsed(
         },
         ..Default::default()
     });
+    let max_name = o.limits.max_name_bytes as usize;
+    crate::ctx::truncate_with_ellipsis(&mut r.name, max_name);
+    crate::ctx::truncate_with_ellipsis(&mut full_name, max_name);
+    crate::ctx::truncate_with_ellipsis(&mut identity.full_name, max_name);
+    crate::ctx::truncate_with_ellipsis(&mut identity.display_name, max_name);
     let mut attachments = Vec::with_capacity(r.attachments.len());
     for a in r.attachments {
         attachments.push(w.attachment(a)?);
@@ -262,6 +266,43 @@ mod tests {
         .unwrap();
         assert!(p.name.len() <= 4096 && p.name.ends_with('\u{2026}'));
         assert_eq!(p.full_name.len(), 4096, "a name at the limit is kept");
+    }
+
+    #[test]
+    fn names_that_differ_after_the_cut_keep_their_identities() {
+        let limits = Limits::default();
+        let o = ReportOptions {
+            limits: &limits,
+            environment_key: None,
+        };
+        let shared = "s".repeat(5000);
+        let parsed: Vec<ParsedResult> = ["a", "b"]
+            .iter()
+            .map(|end| {
+                let mut r = base();
+                r.full_name = Some(format!("{shared}{end}"));
+                report_to_parsed(r, &o).unwrap()
+            })
+            .collect();
+        assert_eq!(
+            parsed[0].full_name, parsed[1].full_name,
+            "both are cut alike"
+        );
+        assert_ne!(
+            parsed[0].identity.series_key, parsed[1].identity.series_key,
+            "but stay two tests"
+        );
+        let whole = TestIdentity::build(IdentityInput {
+            format: Some(SourceFormat::FastproofJson),
+            full_name: &format!("{shared}a"),
+            display_name: "pays",
+            ..Default::default()
+        });
+        assert_eq!(
+            parsed[0].identity.series_key, whole.series_key,
+            "the identity earlier versions gave the uncut name"
+        );
+        assert!(parsed[0].identity.full_name.len() <= 4096);
     }
 
     #[test]

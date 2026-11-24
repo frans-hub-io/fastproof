@@ -85,7 +85,8 @@ Deleting the target of a merge deletes its hidden launches too (within a minute)
 - Merges of different projects do not wait for each other. The analysis that a merge leaves to the
   scheduled job runs in turns (one merge per project, then the next), and a merge whose launches are busy
   (another merge or a manual run of the same project holds them) is left for the job's next run, a minute
-  later.
+  later. Each run starts with another project, and after three busy runs in a row the job waits for that
+  merge's launches.
 - The launches to merge must be finished and have no upload in progress (`409 launch_running`,
   `409 launch_busy`). The target may still run: ingest into it and the merge wait for each other, and
   results that arrive after the merge become further attempts.

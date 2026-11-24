@@ -51,7 +51,7 @@ with the number of results of the launch (in the chosen environment) that have i
 | Defect type | Results triaged with any of the checked types; **No defect** keeps the others |
 | Attachments | Results with a trace, a video or a screenshot (an image or an image diff), in any attempt, step or fixture |
 | Duration | Results that took at least and at most the given seconds |
-| Error message | Results whose error message contains all the words of the text (whole words, not parts of words) |
+| Error message | Results whose error message contains all the words of the text (whole words, not parts of words; the first 64 Ki characters of a message are searched) |
 
 Values of one filter are alternatives; different filters must all match. The filters that are set show as
 chips under the toolbar, each with a remove button, and **Clear** removes them all. They are in the page

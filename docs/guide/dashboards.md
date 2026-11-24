@@ -44,18 +44,41 @@ its public documentation as remembered; check it against the current docs when c
 | Most popular pattern table | `popular-patterns` | `failure_fingerprints` |
 | Launch execution and issue statistic | `launch-execution` | one launch: counters and defect groups |
 | Component health check, and its table view | `component-health` (`view`: `chart` or `table`) | one launch, grouped by a label |
+| Cumulative trend chart | `cumulative-trend` | launch attributes (index kept by a job) and launch counters |
+| Unique bugs table | `unique-bugs` | tracker issues and their links ([Issue trackers](issue-trackers.md)) |
+| Activity stream | `activity-stream` | the audit log (needs `audit:read`) |
 | (FastProof) | `pass-rate-trend`, `durations`, `defect-trend`, `launches-per-day` | `series_daily`, `launch_daily` |
+
+### Cumulative trend
+
+Pick a launch attribute (`attribute`, for example `build` or `release`). The widget groups the launches of the range
+by the value of that attribute and adds up their results by status, one bar per value, oldest value first (the
+newest `limit` values, at most 50). It reads an index of launch attributes kept by the `launch.attributes.index`
+job, which indexes new launches and launches whose attributes were changed within a minute or so, in rounds that give
+every project the same share (50 launches each, newest first), up to 500 a run (an upgraded installation fills the index over a few runs). Only launches of the last 730 days are
+indexed, at most 20 attributes per launch (keys up to 64 characters, values up to 200). The counters come from the
+launches themselves, so triage and late results show without a second copy. The widget reads at most the 5000 most
+recent indexed launches that match `branch` and `environment` in the range.
+
+### Unique bugs
+
+Lists the issues the project follows in its tracker ([Issue trackers](issue-trackers.md)): all open ones, and closed
+ones that changed within the range, with the state the tracker reported and the number of tests that point to them
+(results linked to the issue, plus the series of a linked failure cluster). Open issues come first, then by the number
+of tests, among the 500 newest issues (open first) of the project. Issue keys link to the tracker only when the stored address is an `http` or `https` one. It needs no tracker
+call: the data is what the tracker sync already stored.
+
+### Activity stream
+
+Shows the latest records of the project in the audit log (action, who, when; never the details of a record). The
+audit log has its own permission, so this widget is answered per request and never goes into the data shared between
+viewers: people with `audit:read` in the project see the records, everybody else sees a notice in its place. At most
+two different activity streams (range and item count) per dashboard.
 
 Not built, and why:
 
-- **Cumulative trend chart**: it groups launches by an arbitrary launch attribute and accumulates over a
-  build sequence. FastProof keeps no aggregate per attribute, and computing it from raw results would be an
-  unbounded query. It needs a rollup job per configured attribute.
-- **Unique bugs table**: needs an index of defect links per result (distinct issues with the tests that point to
-  them). The issue links live on results; an aggregate with a job comes with the tracker integration work.
-- **Activity stream**: the audit log needs `audit:read`, a separate permission from reading launches, so it does
-  not belong in a widget that every reader can see.
-- **Test case search / bug-related tables** that depend on external tracker status: wait for the tracker sync.
+- **Test case search / bug-related tables** that depend on external tracker status beyond what the sync reads:
+  use the Issues page.
 
 ## Widget settings
 
@@ -71,6 +94,7 @@ All optional; unknown fields are rejected.
 | `view` | `chart` or `table` (component health) | |
 | `groupBy` | label name for component health, default `suite` | 64 characters |
 | `launchId` | launch for the per-launch widgets, default the latest | |
+| `attribute` | launch attribute the cumulative trend groups by | 64 characters |
 
 ## Cost and limits
 
@@ -83,19 +107,21 @@ All optional; unknown fields are rejected.
   list widgets, and at most 3 different per-launch widgets (launch execution and component health); widgets that
   differ only in how they draw share one query.
 
+- A dashboard has at most 3 different cumulative trends (attribute, range, filters) and 2 different activity streams.
 - A dashboard has at most 24 widgets; titles 120 characters, names 120, descriptions 2000; a project 50 dashboards.
 - Launch widgets read at most 50 launches. Trend widgets with the same filters share one computation per request.
 - `launch-execution` and `component-health` read the results of a single launch (grouped in the database, at most
   20 components returned).
 - Data requests count as heavy reads (the same per-caller and global caps as the project dashboard) and a statement
   timeout turns one widget into an error entry; the others still render.
-- Written data is small: the layout is stored as JSON on the dashboard row. Nothing is computed in the background.
+- Written data is small: the layout is stored as JSON on the dashboard row. The only background work is the attribute index for the cumulative trend (500 launches a run at most, a minute apart).
 
 ## Permissions
 
 | Permission | Allows | Roles |
 | --- | --- | --- |
 | `launches:read` | list, open, read widget data, clone from | `viewer` and up |
+| `audit:read` | see the records of an activity stream widget | `admin` |
 | `dashboards:write` | create, change, delete, lock, unlock, clone into, preview unsaved widgets | `editor`, `admin` |
 | `settings:write` | change, unlock or delete a dashboard that someone else locked; see who owns dashboards and who changed one last | `admin` |
 

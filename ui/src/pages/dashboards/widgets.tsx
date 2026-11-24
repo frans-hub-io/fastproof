@@ -3,11 +3,12 @@ import { Anchor, Group, Progress, Stack, Table, Text, VisuallyHidden } from '@ma
 import { useMemo, type ReactNode } from 'react';
 import { Link } from 'react-router';
 import type { ComponentPoint, DashboardWidget, LaunchPoint, WidgetData } from '../../api/dashboards';
+import { TRACKER_LABEL } from '../../api/trackers';
 import type { DefectGroup } from '../../api/types-next';
 import { DEFECT_GROUPS } from '../../api/types-next';
 import { SameName } from '../../components/SameName';
 import { GROUP_COLOR, GROUP_LABEL } from '../../lib/defects';
-import { formatDuration } from '../../lib/format';
+import { formatDateTime, formatDuration, isHttpUrl } from '../../lib/format';
 import { sameNameHints } from '../../lib/names';
 
 const STATUS_SERIES = [
@@ -424,6 +425,76 @@ function Trend({ project, w, d }: { project: string; w: DashboardWidget; d: Extr
   }
 }
 
+function Cumulative({ w, d }: { w: DashboardWidget; d: Extract<WidgetData, { kind: 'cumulative' }> }) {
+  if (!d.attribute) return <Empty text="Choose a launch attribute in the widget settings." />;
+  if (d.values.length === 0) return <Empty text={`No launches with the attribute ${d.attribute} in this range.`} />;
+  const series = STATUS_SERIES.map((s) => ({ ...s }));
+  const data = d.values.map((v) => ({ t: v.value, passed: v.passed, failed: v.failed, broken: v.broken, skipped: v.skipped, unknown: v.unknown }));
+  return (
+    <Figure label={`Results by status per value of ${d.attribute}`} legend={STATUS_SERIES}>
+      <BarChart h={chartHeight(w)} data={data} dataKey="t" type="stacked" series={series} gridAxis="x" tickLine="none" yAxisProps={{ width: 44, allowDecimals: false }} maxBarWidth={36} />
+      <Alt caption={`Results by status per value of ${d.attribute}`} head={[d.attribute, 'Launches', ...STATUS_SERIES.map((s) => s.label)]} rows={d.values.map((v) => [v.value, v.launches, v.passed, v.failed, v.broken, v.skipped, v.unknown])} />
+    </Figure>
+  );
+}
+
+function Bugs({ items }: { items: Extract<WidgetData, { kind: 'bugs' }>['items'] }) {
+  return (
+    <Table.ScrollContainer minWidth={520}>
+      <Table verticalSpacing={4} fz="sm" data-testid="bugs-table">
+        <Table.Thead>
+          <Table.Tr>
+            <Table.Th>Issue</Table.Th>
+            <Table.Th>State</Table.Th>
+            <Table.Th ta="right">Tests</Table.Th>
+          </Table.Tr>
+        </Table.Thead>
+        <Table.Tbody>
+          {items.map((b) => (
+            <Table.Tr key={b.id}>
+              <Table.Td style={{ maxWidth: 520, overflowWrap: 'anywhere' }}>
+                {isHttpUrl(b.url) ? (
+                  <Anchor href={b.url} target="_blank" rel="noopener noreferrer nofollow" size="sm">
+                    {b.key}
+                  </Anchor>
+                ) : (
+                  <Text span size="sm" fw={600}>
+                    {b.key}
+                  </Text>
+                )}{' '}
+                <Text span size="xs" c="dimmed">
+                  {TRACKER_LABEL[b.trackerType] ?? b.trackerType}
+                </Text>
+                <br />
+                {b.title || '(no title)'}
+              </Table.Td>
+              <Table.Td>{b.state || (b.closed ? 'closed' : 'open')}</Table.Td>
+              <Table.Td ta="right">{b.tests.toLocaleString()}</Table.Td>
+            </Table.Tr>
+          ))}
+        </Table.Tbody>
+      </Table>
+    </Table.ScrollContainer>
+  );
+}
+
+function Activity({ items }: { items: Extract<WidgetData, { kind: 'activity' }>['items'] }) {
+  return (
+    <Stack gap={6} data-testid="activity-list" component="ul" m={0} p={0} style={{ listStyle: 'none' }}>
+      {items.map((a) => (
+        <li key={a.id}>
+          <Text size="sm" style={{ overflowWrap: 'anywhere' }}>
+            <b>{a.action}</b> by {a.principal}
+          </Text>
+          <Text size="xs" c="dimmed">
+            {formatDateTime(a.at)}
+          </Text>
+        </li>
+      ))}
+    </Stack>
+  );
+}
+
 /** The body of a widget for its data; a type and data that do not belong together show a notice. */
 export function WidgetBody({ project, widget, data }: { project: string; widget: DashboardWidget; data: WidgetData }) {
   if (data.kind === 'launches') {
@@ -452,6 +523,9 @@ export function WidgetBody({ project, widget, data }: { project: string; widget:
         return <Empty text="This widget shows no data of this kind." />;
     }
   }
+  if (data.kind === 'cumulative') return <Cumulative w={widget} d={data} />;
+  if (data.kind === 'bugs') return data.items.length === 0 ? <Empty text="No tracked issues in this range." /> : <Bugs items={data.items} />;
+  if (data.kind === 'activity') return data.items.length === 0 ? <Empty text="No recorded activity in this range." /> : <Activity items={data.items} />;
   if (data.kind === 'trend') return <Trend project={project} w={widget} d={data.trend} />;
   if (data.kind === 'growth') {
     if (data.points.length === 0) return <Empty />;

@@ -29,6 +29,7 @@ const HOOK_SECRET: &str = "hook-secret-0123456789";
 struct Rec {
     method: String,
     path: String,
+    query: String,
     headers: HashMap<String, String>,
     body: Vec<u8>,
 }
@@ -93,6 +94,14 @@ impl Fake {
         i.closed = closed;
     }
 
+    fn remove(&self, flavor: &str, n: u64) {
+        self.st
+            .lock()
+            .unwrap()
+            .issues
+            .remove(&(flavor.to_string(), n));
+    }
+
     fn throttle(&self, flavor: &str, times: u32) {
         self.st
             .lock()
@@ -120,6 +129,41 @@ fn new_issue(m: &mut Mock, flavor: &str, title: &str, state: &str) -> u64 {
     n
 }
 
+fn jira_search(m: &Mock, flavor: &str, base: &str, body: &Value) -> Response {
+    let jql = body["jql"].as_str().unwrap_or_default();
+    let Some(list) = jql
+        .strip_prefix("key in (")
+        .and_then(|r| r.strip_suffix(')'))
+    else {
+        return reply(400, json!({"errorMessages": ["bad jql"], "errors": {}}));
+    };
+    let warn = body["validateQuery"] == "warn";
+    let wanted: Vec<u64> = list
+        .split(',')
+        .filter_map(|k| k.trim().strip_prefix("SHOP-")?.parse::<u64>().ok())
+        .collect();
+    if !warn
+        && wanted
+            .iter()
+            .any(|n| !m.issues.contains_key(&(flavor.to_string(), *n)))
+    {
+        return reply(
+            400,
+            json!({"errorMessages": ["An issue with key 'SHOP-0' does not exist for field 'key'."], "errors": {}}),
+        );
+    }
+    let issues: Vec<Value> = list
+        .split(',')
+        .filter_map(|k| k.trim().strip_prefix("SHOP-")?.parse::<u64>().ok())
+        .filter_map(|n| {
+            m.issues
+                .get(&(flavor.to_string(), n))
+                .map(|i| jira_issue(base, n, i))
+        })
+        .collect();
+    reply(200, json!({"issues": issues}))
+}
+
 fn jira_issue(base: &str, n: u64, i: &Issue) -> Value {
     let (key, name) = if i.closed {
         ("done", "Done")
@@ -128,7 +172,8 @@ fn jira_issue(base: &str, n: u64, i: &Issue) -> Value {
     };
     json!({"expand": "renderedFields", "id": (10000 + n).to_string(), "self": format!("{base}/issue/{}", 10000 + n),
         "key": format!("SHOP-{n}"),
-        "fields": {"project": {"id": "10000", "key": "SHOP", "name": "Shop"}, "summary": i.title, "resolution": if i.closed { json!({"name": "Fixed"}) } else { Value::Null },
+        "fields": {"project": {"id": "10000", "key": "SHOP", "name": "Shop"}, "summary": i.title,
+            "updated": format!("2026-11-24T10:00:00.000+0000/{}/{}", i.state, i.closed), "resolution": if i.closed { json!({"name": "Fixed"}) } else { Value::Null },
             "status": {"self": format!("{base}/status/1"), "description": "", "name": if i.closed { "Done".to_string() } else { i.state.clone() },
                 "id": "1", "statusCategory": {"self": format!("{base}/statuscategory/2"), "id": 2, "key": key, "colorName": "blue-gray", "name": name}}}})
 }
@@ -149,6 +194,7 @@ async fn handle(
     m.log.push(Rec {
         method: method.to_string(),
         path: path.clone(),
+        query: uri.query().unwrap_or_default().to_string(),
         headers: hs.clone(),
         body: body.to_vec(),
     });
@@ -227,6 +273,12 @@ async fn handle(
                         "size": body.len(), "mimeType": "image/png", "content": format!("{base}/attachment/content/1")}]),
                     )
                 }
+                ("POST", ["rest", "api", vv, "search"]) if *vv == "2" && flavor == "js" => {
+                    jira_search(&m, &flavor, &base, &json_body())
+                }
+                ("POST", ["rest", "api", vv, "search", "jql"]) if *vv == "3" && flavor == "jc" => {
+                    jira_search(&m, &flavor, &base, &json_body())
+                }
                 ("GET", ["rest", "api", vv, "issue", key]) if *vv == v => {
                     let n: u64 = key.trim_start_matches("SHOP-").parse().unwrap_or(0);
                     match m.issues.get(&(flavor.clone(), n)) {
@@ -287,6 +339,16 @@ async fn handle(
                         None => reply(404, json!({"message": "404 Not found"})),
                     }
                 }
+                ("GET", ["issues"]) => {
+                    let list: Vec<Value> = uri
+                        .query()
+                        .unwrap_or_default()
+                        .split('&')
+                        .filter_map(|p| p.strip_prefix("iids[]=")?.parse::<u64>().ok())
+                        .filter_map(|n| m.issues.get(&("gl".to_string(), n)).map(|i| issue(n, i)))
+                        .collect();
+                    reply(200, json!(list))
+                }
                 ("GET", ["issues", iid]) => {
                     let n: u64 = iid.parse().unwrap_or(0);
                     match m.issues.get(&("gl".to_string(), n)) {
@@ -318,6 +380,50 @@ async fn handle(
             match (method.as_str(), &seg[1..]) {
                 ("GET", ["repos", "octo", "app"]) => {
                     reply(200, json!({"id": 1, "full_name": "octo/app"}))
+                }
+                ("POST", ["graphql"]) => {
+                    let b = json_body();
+                    let q = b["query"].as_str().unwrap_or_default();
+                    if b["variables"]["owner"] != "octo" || b["variables"]["name"] != "app" {
+                        return reply(
+                            200,
+                            json!({"data": {"repository": null}, "errors": [{"type": "NOT_FOUND"}]}),
+                        );
+                    }
+                    let mut repo = serde_json::Map::new();
+                    for part in q.split("issueOrPullRequest(number:").skip(1) {
+                        let n: u64 = part
+                            .split(')')
+                            .next()
+                            .and_then(|x| x.parse().ok())
+                            .unwrap_or(0);
+                        let v = match m.issues.get(&("gh".to_string(), n)) {
+                            Some(i) => {
+                                let pr = i.title.starts_with("PR:");
+                                let nwo = if i.title.starts_with("FOREIGN:") {
+                                    "other/repo"
+                                } else {
+                                    "octo/app"
+                                };
+                                let state = match (i.closed, pr) {
+                                    (false, _) => "OPEN",
+                                    (true, true) => "MERGED",
+                                    (true, false) => "CLOSED",
+                                };
+                                let mut v = json!({"__typename": if pr { "PullRequest" } else { "Issue" },
+                                    "databaseId": 5000 + n, "number": n, "title": i.title, "state": state,
+                                    "repository": {"nameWithOwner": nwo},
+                                    "url": format!("https://github.example.com/octo/app/issues/{n}")});
+                                if !pr && i.closed {
+                                    v["stateReason"] = json!("COMPLETED");
+                                }
+                                v
+                            }
+                            None => Value::Null,
+                        };
+                        repo.insert(format!("i{n}"), v);
+                    }
+                    reply(200, json!({"data": {"repository": repo}}))
                 }
                 ("POST", ["repos", "octo", "app", "issues"]) => {
                     let b = json_body();
@@ -403,6 +509,21 @@ async fn handle(
                     let n = new_issue(&mut m, "az", &title, "New");
                     let i = m.issues[&("az".to_string(), n)].clone();
                     reply(200, item(n, &i, true))
+                }
+                ("POST", ["example", _, "_apis", "wit", "workitemsbatch"]) => {
+                    let b = json_body();
+                    let list: Vec<Value> = b["ids"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .filter_map(Value::as_u64)
+                        .filter_map(|n| {
+                            m.issues
+                                .get(&("az".to_string(), n))
+                                .map(|i| item(n, i, false))
+                        })
+                        .collect();
+                    reply(200, json!({"count": list.len(), "value": list}))
                 }
                 ("GET", ["example", _, "_apis", "wit", "workitems", id]) => {
                     let n: u64 = id.parse().unwrap_or(0);
@@ -866,6 +987,220 @@ async fn issues_are_created_in_every_tracker_and_synced_back() {
     assert!(
         audit.iter().any(|a| a == "tracker.issue.unmute"),
         "{audit:?}"
+    );
+}
+
+#[tokio::test]
+async fn due_issues_of_a_tracker_are_read_with_one_batch_call() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let fake = Fake::start().await;
+    let (s, _dir) = start(&db).await;
+    let (_lid, results) = setup(&s, &fake).await;
+    let mut list = trackers(&fake);
+    for t in list.as_array_mut().unwrap() {
+        if t["id"] == "gh" {
+            t["api"].as_object_mut().unwrap().remove("sync");
+            t["api"].as_object_mut().unwrap().remove("webhookSecretRef");
+        }
+    }
+    let (st, b) = s
+        .call(
+            Method::PUT,
+            "/api/v1/projects/ti/settings",
+            Some(ADMIN_TOKEN),
+            Some(json!({"issueTrackers": list})),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{b}");
+
+    let names = ["pays", "refunds", "voids"];
+    let mut made: HashMap<&str, Vec<Value>> = HashMap::new();
+    for t in ["jc", "js", "gl", "gh", "az"] {
+        for name in names {
+            let mut body = json!({"tracker": t, "requestId": uuid::Uuid::now_v7(), "resultIds": [rid(&results, name)]});
+            if t == "gh" && name == "refunds" {
+                body["title"] = json!("PR: refunds");
+            }
+            if t == "gh" && name == "voids" {
+                body["title"] = json!("FOREIGN: voids");
+            }
+            let (st, b) = create(&s, ADMIN_TOKEN, body).await;
+            assert_eq!(st, StatusCode::OK, "{t} {name}: {b}");
+            made.entry(t).or_default().push(b["issue"].clone());
+        }
+    }
+    sqlx::query("update tracker_issues set next_sync_at = now() + interval '2 seconds' where lease_until is null")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let number = |issue: &Value| -> u64 {
+        issue["key"]
+            .as_str()
+            .unwrap()
+            .trim_start_matches(|c: char| !c.is_ascii_digit())
+            .parse()
+            .unwrap()
+    };
+    let flavor_of = |t: &str| t.to_string();
+    for t in ["jc", "js", "gl", "gh", "az"] {
+        let n = number(&made[t][1]);
+        fake.set(
+            &flavor_of(t),
+            n,
+            if t == "az" { "Closed" } else { "Done" },
+            true,
+        );
+    }
+    fake.remove("gl", number(&made["gl"][2]));
+    fake.remove("jc", number(&made["jc"][2]));
+
+    for t in ["jc", "js", "gl", "gh", "az"] {
+        let id = made[t][1]["id"].as_str().unwrap().to_string();
+        wait_for(&format!("{t}: the closed issue is read back"), || async {
+            let (_, b) = s
+                .get(
+                    &format!("/api/v1/projects/ti/tracker-issues/{id}"),
+                    ADMIN_TOKEN,
+                )
+                .await;
+            b["category"] == "closed"
+        })
+        .await;
+        let untouched = made[t][0]["id"].as_str().unwrap();
+        let (_, b) = s
+            .get(
+                &format!("/api/v1/projects/ti/tracker-issues/{untouched}"),
+                ADMIN_TOKEN,
+            )
+            .await;
+        assert_eq!(b["category"], "open", "{t}: {b}");
+        assert!(b["syncError"].is_null(), "{t}: {b}");
+    }
+
+    let missing = made["gl"][2]["id"].as_str().unwrap().to_string();
+    wait_for("the issue the batch answer lacks is reported", || async {
+        let (_, b) = s
+            .get(
+                &format!("/api/v1/projects/ti/tracker-issues/{missing}"),
+                ADMIN_TOKEN,
+            )
+            .await;
+        !b["syncError"].is_null()
+    })
+    .await;
+
+    let widest =
+        |calls: &[Rec], count: &dyn Fn(&Rec) -> usize| calls.iter().map(count).max().unwrap_or(0);
+    for (t, why) in [
+        ("jc", "Jira refused the batch: single reads"),
+        ("gh", "another repository's answer"),
+    ] {
+        let id = made[t][2]["id"].as_str().unwrap().to_string();
+        wait_for(why, || async {
+            let (_, b) = s
+                .get(
+                    &format!("/api/v1/projects/ti/tracker-issues/{id}"),
+                    ADMIN_TOKEN,
+                )
+                .await;
+            !b["syncError"].is_null()
+        })
+        .await;
+    }
+    let (_, pr) = s
+        .get(
+            &format!(
+                "/api/v1/projects/ti/tracker-issues/{}",
+                made["gh"][1]["id"].as_str().unwrap()
+            ),
+            ADMIN_TOKEN,
+        )
+        .await;
+    assert_eq!(
+        pr["category"], "closed",
+        "a merged pull request is read: {pr}"
+    );
+    assert_eq!(pr["state"], "merged");
+    assert_eq!(pr["key"], made["gh"][1]["key"]);
+    for t in ["jc", "gl", "az", "js"] {
+        let id = made[t][0]["id"].as_str().unwrap();
+        let (_, b) = s
+            .get(
+                &format!("/api/v1/projects/ti/tracker-issues/{id}"),
+                ADMIN_TOKEN,
+            )
+            .await;
+        assert!(
+            b["syncError"].is_null(),
+            "{t}: one missing issue does not fail the others: {b}"
+        );
+    }
+    assert!(
+        !fake.requests("GET", "/jc/rest/api/3/issue/").is_empty(),
+        "Jira Cloud fell back to single reads after a 400"
+    );
+    let js_first: Value =
+        serde_json::from_slice(&fake.requests("POST", "/js/rest/api/2/search")[0].body).unwrap();
+    assert_eq!(js_first["validateQuery"], "warn");
+
+    let jc = fake.requests("POST", "/jc/rest/api/3/search/jql");
+    let js = fake.requests("POST", "/js/rest/api/2/search");
+    let gl: Vec<Rec> = fake
+        .requests("GET", "/gl/api/v4/projects/group%2Fapp/issues")
+        .into_iter()
+        .filter(|r| r.query.contains("iids[]="))
+        .collect();
+    let gh = fake.requests("POST", "/gh/graphql");
+    let az = fake.requests("POST", "/az/example/Shop%20Web/_apis/wit/workitemsbatch");
+    let jql = |r: &Rec| {
+        let b: Value = serde_json::from_slice(&r.body).unwrap();
+        let q = b["jql"].as_str().unwrap();
+        assert!(q.starts_with("key in (SHOP-"), "{q}");
+        q.matches("SHOP-").count()
+    };
+    assert!(
+        widest(&jc, &jql) >= 2,
+        "Jira Cloud: one search for several issues"
+    );
+    assert!(
+        widest(&js, &jql) >= 2,
+        "Jira Server: one search for several issues"
+    );
+    assert!(
+        widest(&gl, &|r| r.query.matches("iids[]=").count()) >= 2,
+        "GitLab"
+    );
+    assert!(
+        widest(&gh, &|r| String::from_utf8_lossy(&r.body)
+            .matches("issueOrPullRequest(number:")
+            .count())
+            >= 2,
+        "GitHub: one GraphQL query for several issues"
+    );
+    assert!(
+        widest(&az, &|r| {
+            let b: Value = serde_json::from_slice(&r.body).unwrap();
+            assert_eq!(b["errorPolicy"], "Omit");
+            b["ids"].as_array().unwrap().len()
+        }) >= 2,
+        "Azure DevOps: one workitemsbatch call for several work items"
+    );
+    assert_eq!(gh[0].headers["authorization"], "Bearer ghp-token");
+
+    let etags: Vec<Option<String>> = sqlx::query_scalar(
+        "select etag from tracker_issues where tracker_id = 'jc' order by created_at",
+    )
+    .fetch_all(&db.pool)
+    .await
+    .unwrap();
+    assert!(
+        etags
+            .iter()
+            .take(2)
+            .all(|e| e.as_deref().is_some_and(|e| e.starts_with("2026-11-24"))),
+        "Jira keeps its updated time as the etag: {etags:?}"
     );
 }
 

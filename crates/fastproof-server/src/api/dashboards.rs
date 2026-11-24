@@ -9,9 +9,11 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use fastproof_store::Project;
 use fastproof_store::analysis::boards::{
-    Actor, Board, BoardData, BoardError, BoardSummary, BoardWidget, BoardWrite, MAX_WIDGETS,
-    validate,
+    ActivityPoint, Actor, Board, BoardData, BoardError, BoardSummary, BoardWidget, BoardWrite,
+    DEFAULT_DAYS, DEFAULT_LIMIT, MAX_DAYS, MAX_LIMIT, MAX_WIDGETS, WidgetData, WidgetResult,
+    WidgetType, validate,
 };
+use franshub_access::AuditFilter;
 use franshub_auth::Auth;
 use franshub_http::{ApiError, ApiJson, ApiResult};
 use serde::{Deserialize, Serialize};
@@ -436,16 +438,115 @@ pub async fn board_data(
 ) -> ApiResult<Json<BoardData>> {
     let p = s.project_for(&auth, &key, &s.perms.launches_read).await?;
     let b = find(&s, &p, id).await?;
-    if let Some(d) = s.store.cached_board_data(b.id, b.revision) {
-        return Ok(Json((*d).clone()));
+    let streams = has_activity(&b.widgets);
+    let shared = s.store.cached_board_data(b.id, b.revision);
+    if let (Some(d), false) = (&shared, streams) {
+        return Ok(Json((**d).clone()));
     }
     let _permit = s.guards.heavy(&auth).await?;
-    let settings = s.store.project_settings(p.id).await?;
-    let d = s
-        .store
-        .board_data_cached(p.id, b.id, b.revision, &settings, &b.widgets)
-        .await;
-    Ok(Json((*d).clone()))
+    let d = match shared {
+        Some(d) => d,
+        None => {
+            let settings = s.store.project_settings(p.id).await?;
+            s.store
+                .board_data_cached(p.id, b.id, b.revision, &settings, &b.widgets)
+                .await
+        }
+    };
+    let mut out = (*d).clone();
+    fill_activity(&s, &auth, &p, &b.widgets, &mut out).await;
+    Ok(Json(out))
+}
+
+fn has_activity(widgets: &[BoardWidget]) -> bool {
+    widgets.iter().any(|w| w.kind == WidgetType::ActivityStream)
+}
+
+const ACTIVITY_NEEDS_AUDIT: &str =
+    "The activity stream is shown to people who may read the audit log (audit:read).";
+
+/// Activity streams are never part of the data shared between viewers: the audit log has its
+/// own permission, so each request answers them for its caller only.
+async fn fill_activity(
+    s: &AppState,
+    auth: &Auth,
+    p: &Project,
+    widgets: &[BoardWidget],
+    out: &mut BoardData,
+) {
+    let holder = auth.allowed(&s.perms.audit_read, Some(&p.key));
+    let mut done: std::collections::HashMap<(Option<u32>, Option<u32>), WidgetResult> =
+        std::collections::HashMap::new();
+    for w in widgets
+        .iter()
+        .filter(|w| w.kind == WidgetType::ActivityStream)
+        .take(MAX_WIDGETS)
+    {
+        let r = if !holder {
+            WidgetResult::Error {
+                message: ACTIVITY_NEEDS_AUDIT.into(),
+            }
+        } else {
+            let k = (w.settings.days, w.settings.limit);
+            match done.get(&k) {
+                Some(r) => r.clone(),
+                None => {
+                    let r = activity_of(s, p, w.settings.days, w.settings.limit).await;
+                    done.insert(k, r.clone());
+                    r
+                }
+            }
+        };
+        out.widgets.insert(w.id.clone(), r);
+    }
+}
+
+async fn activity_of(
+    s: &AppState,
+    p: &Project,
+    days: Option<u32>,
+    limit: Option<u32>,
+) -> WidgetResult {
+    let Some(store) = s.platform.audit_store() else {
+        return WidgetResult::Ok {
+            data: WidgetData::Activity { items: Vec::new() },
+        };
+    };
+    let days = days.unwrap_or(DEFAULT_DAYS).clamp(1, MAX_DAYS);
+    let limit = limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
+    let since = (chrono::Utc::now() - chrono::Duration::days(i64::from(days))).max(p.created_at);
+    let f = AuditFilter {
+        scope: Some(p.key.clone()),
+        since: Some(since),
+        limit: Some(limit),
+        ..AuditFilter::default()
+    };
+    match tokio::time::timeout(std::time::Duration::from_secs(10), store.query(&f)).await {
+        Ok(Ok(page)) => WidgetResult::Ok {
+            data: WidgetData::Activity {
+                items: page
+                    .events
+                    .into_iter()
+                    .take(limit as usize)
+                    .map(|e| ActivityPoint {
+                        id: e.id,
+                        at: e.at,
+                        principal: e.principal.chars().take(200).collect(),
+                        action: e.action.chars().take(100).collect(),
+                    })
+                    .collect(),
+            },
+        },
+        Ok(Err(e)) => {
+            tracing::warn!(error = %e, "activity widget failed");
+            WidgetResult::Error {
+                message: "the widget could not be computed".into(),
+            }
+        }
+        Err(_) => WidgetResult::Error {
+            message: "the widget took too long; narrow its range".into(),
+        },
+    }
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -482,7 +583,7 @@ pub async fn preview(
     .map_err(ApiError::bad_request)?;
     let _permit = s.guards.heavy(&auth).await?;
     let settings = s.store.project_settings(p.id).await?;
-    Ok(Json(
-        s.store.board_data(p.id, &settings, &body.widgets).await,
-    ))
+    let mut out = s.store.board_data(p.id, &settings, &body.widgets).await;
+    fill_activity(&s, &auth, &p, &body.widgets, &mut out).await;
+    Ok(Json(out))
 }

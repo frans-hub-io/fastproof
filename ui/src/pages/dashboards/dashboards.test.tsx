@@ -47,6 +47,39 @@ describe('widget bodies', () => {
     }
   });
 
+  it('draws the cumulative trend, unique bugs and activity widgets, with only http links', () => {
+    const cum = { ...newWidget('cumulative-trend', []), id: 'c', settings: { attribute: 'build' } };
+    const bugs = { ...newWidget('unique-bugs', []), id: 'b' };
+    const act = { ...newWidget('activity-stream', []), id: 'a' };
+    const data = dashboardData('web-shop', [cum, bugs, act]);
+    const body = (w: DashboardWidget) => {
+      const r = data.widgets[w.id];
+      if (r?.status !== 'ok') throw new Error('no data');
+      return <WidgetBody project="web-shop" widget={w} data={r.data} />;
+    };
+    const first = renderWith(body(cum));
+    expect(screen.getByRole('group', { name: /per value of build/ })).toBeInTheDocument();
+    expect(screen.getByRole('table', { name: /per value of build/ })).toHaveTextContent('1.5.0');
+    first.unmount();
+    const second = renderWith(body(bugs));
+    const table = screen.getByTestId('bugs-table');
+    expect(within(table).getByRole('link', { name: 'SHOP-1234' })).toHaveAttribute('href', 'https://issues.example.com/browse/SHOP-1234');
+    expect(within(table).queryByRole('link', { name: 'SHOP-1180' })).toBeNull();
+    expect(within(table).getByText(/not bold/)).toBeInTheDocument();
+    expect(table.querySelector('b')).toBeNull();
+    second.unmount();
+    renderWith(body(act));
+    expect(within(screen.getByTestId('activity-list')).getAllByRole('listitem').length).toBeGreaterThan(1);
+  });
+
+  it('asks for an attribute before the cumulative trend has data', () => {
+    const w = newWidget('cumulative-trend', []);
+    const r = dashboardData('web-shop', [w]).widgets[w.id];
+    if (r?.status !== 'ok') throw new Error('no data');
+    renderWith(<WidgetBody project="web-shop" widget={w} data={r.data} />);
+    expect(screen.getByTestId('widget-empty')).toHaveTextContent(/launch attribute/);
+  });
+
   it('shows the pass rate summary', () => {
     const w = newWidget('passing-rate-summary', []);
     const r = dashboardData('web-shop', [w]).widgets[w.id];

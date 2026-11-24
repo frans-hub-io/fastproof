@@ -33,7 +33,8 @@ impl Store {
             .map(json_no_nul);
         let updated: Option<Uuid> = sqlx::query_scalar(
             "update launches set important = coalesce($3, important), name = coalesce($4, name), \
-             attributes = coalesce($5, attributes), updated_at = now() \
+             attributes = coalesce($5, attributes), updated_at = now(), \
+             attrs_indexed_at = case when $5::jsonb is not null then null else attrs_indexed_at end \
              where project_id = $1 and id = $2 returning id",
         )
         .bind(project_id)

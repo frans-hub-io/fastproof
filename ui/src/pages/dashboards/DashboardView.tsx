@@ -112,6 +112,7 @@ function SettingsModal({ widget, onClose, onSave }: { widget: DashboardWidget; o
         {has('chart') && <Select label="Chart" data={[{ value: 'bar', label: 'Stacked bars' }, { value: 'line', label: 'Lines' }, { value: 'area', label: 'Stacked areas' }]} value={s.chart ?? 'bar'} allowDeselect={false} onChange={(v) => set({ chart: v === 'line' || v === 'area' ? v : 'bar' })} />}
         {has('view') && <Select label="View" data={[{ value: 'chart', label: 'Chart' }, { value: 'table', label: 'Table' }]} value={s.view ?? 'chart'} allowDeselect={false} onChange={(v) => set({ view: v === 'table' ? 'table' : 'chart' })} />}
         {has('groupBy') && <TextInput label="Label to group by" description="A label name such as suite, feature or owner" maxLength={64} value={s.groupBy ?? ''} placeholder="suite" onChange={(e) => set({ groupBy: e.currentTarget.value || undefined })} />}
+        {has('attribute') && <TextInput label="Launch attribute" description="The attribute name to group launches by, such as build or release" maxLength={64} value={s.attribute ?? ''} placeholder="build" onChange={(e) => set({ attribute: e.currentTarget.value.trim() || undefined })} />}
         {has('branch') && <TextInput label="Branch" maxLength={200} value={s.branch ?? ''} placeholder="All branches" onChange={(e) => set({ branch: e.currentTarget.value || undefined })} />}
         {has('environment') && <TextInput label="Environment" maxLength={200} value={s.environment ?? ''} placeholder="All environments" onChange={(e) => set({ environment: e.currentTarget.value || undefined })} />}
         {has('launchId') && <TextInput label="Launch id" description="Empty means the latest launch" maxLength={36} value={s.launchId ?? ''} onChange={(e) => set({ launchId: e.currentTarget.value.trim() || undefined })} />}
@@ -253,7 +254,7 @@ function View({ project, doc, etag }: { project: string; doc: DashboardDoc; etag
                     </Button>
                   </Menu.Target>
                   <Menu.Dropdown mah={360} style={{ overflowY: 'auto' }}>
-                    {(['Launches', 'Trends', 'Tests', 'Failures'] as const).map((g) => (
+                    {(['Launches', 'Trends', 'Tests', 'Failures', 'Project'] as const).map((g) => (
                       <div key={g}>
                         <Menu.Label>{g}</Menu.Label>
                         {WIDGET_TYPES.filter((t) => WIDGET_CATALOG[t].group === g).map((t) => (

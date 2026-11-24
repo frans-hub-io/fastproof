@@ -2175,6 +2175,15 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @description One audit record of the project, without its detail. */
+        ActivityPoint: {
+            action: string;
+            /** Format: date-time */
+            at: string;
+            /** Format: int64 */
+            id: number;
+            principal: string;
+        };
         /** @description A stored attachment. */
         AttachmentCreated: {
             /** Format: uuid */
@@ -2315,6 +2324,24 @@ export interface components {
             description?: string;
             name: string;
             widgets: components["schemas"]["BoardWidget"][];
+        };
+        /** @description A tracked issue and the tests that point to it. */
+        BugPoint: {
+            closed: boolean;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: uuid */
+            id: string;
+            key: string;
+            /** Format: int64 */
+            links: number;
+            state: string;
+            /** Format: int64 */
+            tests: number;
+            title: string;
+            trackerId: string;
+            trackerType: string;
+            url?: string | null;
         };
         /** @description A case. */
         Case: {
@@ -2961,6 +2988,28 @@ export interface components {
         CreatedToken: components["schemas"]["Token"] & {
             /** @description The value (`fp_…`): store it now. */
             token: string;
+        };
+        /** @description The launches of one value of a launch attribute, added up. */
+        CumulativePoint: {
+            /** Format: int64 */
+            broken: number;
+            /** Format: int64 */
+            failed: number;
+            /** Format: date-time */
+            firstAt: string;
+            /** Format: date-time */
+            lastAt: string;
+            /** Format: int64 */
+            launches: number;
+            /** Format: int64 */
+            passed: number;
+            /** Format: int64 */
+            skipped: number;
+            /** Format: int64 */
+            total: number;
+            /** Format: int64 */
+            unknown: number;
+            value: string;
         };
         /** @description Daily aggregates of a test case (launches that were rolled up). */
         DailyEntry: {
@@ -6110,6 +6159,19 @@ export interface components {
         /** @enum {string} */
         WidgetChart: "bar" | "line" | "area";
         WidgetData: {
+            attribute: string;
+            /** @enum {string} */
+            kind: "cumulative";
+            values: components["schemas"]["CumulativePoint"][];
+        } | {
+            items: components["schemas"]["BugPoint"][];
+            /** @enum {string} */
+            kind: "bugs";
+        } | {
+            items: components["schemas"]["ActivityPoint"][];
+            /** @enum {string} */
+            kind: "activity";
+        } | {
             /** @enum {string} */
             kind: "launches";
             launches: components["schemas"]["LaunchPoint"][];
@@ -6147,6 +6209,8 @@ export interface components {
          *     stays current and can be cloned into another project as it is.
          */
         WidgetSettings: {
+            /** @description Launch attribute the cumulative trend groups by (for example `build`). */
+            attribute?: string | null;
             branch?: string | null;
             bucket?: components["schemas"]["WidgetBucket"] | null;
             chart?: components["schemas"]["WidgetChart"] | null;
@@ -6171,7 +6235,7 @@ export interface components {
             view?: components["schemas"]["WidgetView"] | null;
         };
         /** @enum {string} */
-        WidgetType: "launch-statistics" | "overall-statistics" | "investigated-percentage" | "launches-comparison" | "launches-duration" | "launches-table" | "failed-trend" | "non-passed-trend" | "test-cases-growth" | "passing-rate-per-launch" | "passing-rate-summary" | "flaky-tests" | "most-failing-tests" | "popular-patterns" | "launch-execution" | "component-health" | "pass-rate-trend" | "durations" | "defect-trend" | "launches-per-day";
+        WidgetType: "launch-statistics" | "overall-statistics" | "investigated-percentage" | "launches-comparison" | "launches-duration" | "launches-table" | "failed-trend" | "non-passed-trend" | "test-cases-growth" | "passing-rate-per-launch" | "passing-rate-summary" | "flaky-tests" | "most-failing-tests" | "popular-patterns" | "launch-execution" | "component-health" | "cumulative-trend" | "unique-bugs" | "activity-stream" | "pass-rate-trend" | "durations" | "defect-trend" | "launches-per-day";
         /** @enum {string} */
         WidgetView: "chart" | "table";
     };

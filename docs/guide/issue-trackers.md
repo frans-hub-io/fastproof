@@ -133,8 +133,13 @@ Every followed issue has a state as the tracker names it (`In Progress`, `opened
 Azure DevOps `closedStates`.
 
 - `sync: poll` reads open issues every `FASTPROOF_TRACKER_POLL_SECONDS` (default 10 minutes) and closed ones
-  daily for 30 days (they can be reopened), then no more. GitHub and GitLab reads are conditional
-  (`If-None-Match`). Issues of a tracker removed from the settings are not read any more.
+  daily for 30 days (they can be reopened), then no more. Due issues of one tracker are read together: one Jira
+  search (`key in (...)`), one GitLab `iids[]` request, one GitHub GraphQL query (an `issueOrPullRequest(number:)` alias for each, checked against the repository and number) or
+  one Azure DevOps `workitemsbatch` call, up to 25 issues; a single due issue is read on its own. A single GitHub and
+  GitLab read is conditional (`If-None-Match`); a batch read is not. Jira has no conditional reads: FastProof keeps the
+  `updated` time of an issue and treats an unchanged one like a `304`. An issue the batch answer lacks (deleted, no
+  access, another project) is reported like a `404`. When Jira refuses the whole search with a `400` (a key it
+  cannot see), the group is read issue by issue. Issues of a tracker removed from the settings are not read any more.
 - `sync: webhook` reads an issue when the tracker's webhook names it, and daily. Point the webhook at
   `https://fastproof.example.com/api/v1/hooks/trackers/{project}/{trackerId}` with the secret of
   `webhookSecretRef` (purpose `tracker-webhook`): as the GitHub webhook secret (`X-Hub-Signature-256`), the Jira webhook secret
@@ -149,8 +154,8 @@ A failed read is tried again after a minute, doubled up to six hours. A `429`, o
 `Retry-After`, or GitHub's exhausted rate limit pauses every call to that tracker from the replica for as
 long as the tracker asked (at most an hour); three network failures or `5xx` answers in a row pause it for two
 minutes, doubled for each further failure. A create during a pause answers `429` with `Retry-After`. One
-replica reads a given issue at a time (reads hold a lease), a round takes at most five issues of one project's
-tracker and reads eight at a time, so one slow tracker cannot hold up the others.
+replica reads a given issue at a time (reads hold a lease), a round takes at most 25 issues of one project's
+tracker (100 in all) and reads eight trackers at a time, so one slow tracker cannot hold up the others.
 
 The state shows next to the issue link of a defect (result page, triage) and on the **Issues** page of the
 project (`GET /api/v1/projects/{key}/tracker-issues`, `launches:read`; filters `state`, `unmuteSuggested`,

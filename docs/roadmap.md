@@ -8,7 +8,7 @@ in order of the stages, without dates:
 - **Allure history import:** bring the history of existing Allure 2 reports and Allure 3 history files into
   FastProof, joined to the same test identities.
 - **Launch tools:** debug launches, merging launches, reruns, and HTML and PDF export of a launch.
-- **More own reporters:** the [Playwright, pytest, Vitest, Jest and Cypress reporters](guide/reporters.md) come
+- **More own reporters:** the [Playwright, pytest, Vitest, Jest, Cypress, JUnit 5 and TestNG reporters](guide/reporters.md) come
   first, with live results and logs, a `traceparent` on every attempt, correct retries, and an offline spool.
   Reporters for more frameworks follow, chosen by how much today's writers lose.
 

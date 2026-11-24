@@ -9,8 +9,12 @@ Thin, dependency-free reporters that send test runs to FastProof while they happ
 | `@franshub/fastproof-vitest` | Vitest ≥ 4.1 (tested with 5.1.0 and 4.1.12), Node ≥ 20 | [`vitest/`](vitest) |
 | `@franshub/fastproof-jest` | Jest ≥ 29 (tested with 30.5.2), Node ≥ 20 | [`jest/`](jest) |
 | `@franshub/fastproof-cypress` | Cypress ≥ 13 (typed against 16.2.1; `cypress run`), Node ≥ 20 | [`cypress/`](cypress) |
+| `io.franshub:fastproof-junit5` | JUnit 5.10 and newer (tested with 5.14.4, 5.11.4, 5.10.5 and 6.1.0), Java ≥ 17 (tested on 17 and 25) | [`java/`](java) |
+| `io.franshub:fastproof-testng` | TestNG ≥ 7.11 (tested with 7.12.0 and 7.11.0), Java ≥ 17 (tested on 17 and 25) | [`java/`](java) |
 
-The Vitest, Jest and Cypress packages are thin: they map the framework's events to the same core
+The JUnit 5 and TestNG modules share `fastproof-core` (config, client, spool, masking, CI, attempts, log capture),
+which has no dependencies beyond the JDK; they register themselves through the frameworks' `ServiceLoader`
+(see [`java/README.md`](java/README.md)). The Vitest, Jest and Cypress packages are thin: they map the framework's events to the same core
 (`@franshub/fastproof-playwright` exports it: client, spool, masking, trace, test plans, `ReporterSession`).
 
 Allure adapter enhancers keep the Allure adapter and add live streaming, `traceparent`, retries as attempts and
@@ -52,6 +56,8 @@ The packages are not published on npm and PyPI yet. Install them from this folde
 
 ```bash
 pip install ./reporters/pytest
+
+cd reporters/java && mvn -DskipTests install
 
 cd reporters/playwright && npm ci && npm run build && npm pack
 # then, in the test project:
@@ -172,6 +178,7 @@ optional peers that npm 10 resolves badly) after `reporters/playwright` is built
 ```bash
 cd playwright && npm ci && npm run build && npm run typecheck && npm test
 cd pytest && pip install -e . pytest-rerunfailures pytest-xdist && pytest
+cd java && mvn install
 ```
 
 Integration tests run both reporters against a real `fastproof` binary and PostgreSQL:
@@ -182,6 +189,9 @@ FASTPROOF_TEST_SERVER_BIN=target/debug/fastproof \
 FASTPROOF_TEST_DATABASE_URL=postgres://user@127.0.0.1:5432/postgres \
 FASTPROOF_TEST_BROWSER=1 pytest -p no:fastproof reporters/integration
 ```
+
+`FASTPROOF_TEST_MVN=/path/to/mvn` (with `JAVA_HOME` set) enables the JVM tests `test_java.py` and `test_allure_java.py`;
+`FASTPROOF_TEST_JUNIT_VERSION` and `FASTPROOF_TEST_TESTNG_VERSION` run the samples against another framework version.
 
 `FASTPROOF_TEST_BROWSER=1` also runs a Chromium test with a screenshot, a video and a trace (needs
 `npx playwright install chromium-headless-shell`). The database user needs trust authentication and the right

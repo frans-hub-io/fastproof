@@ -1,0 +1,2 @@
+io.franshub.fastproof.testng.FastProofTestNgListener
+io.franshub.fastproof.testng.RetryTransformer

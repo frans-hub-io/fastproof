@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>io.franshub</groupId>
+    <artifactId>fastproof-java-parent</artifactId>
+    <version>0.1.0</version>
+  </parent>
+  <artifactId>fastproof-junit5</artifactId>
+  <name>fastproof-junit5</name>
+  <description>Streams JUnit 5 (Jupiter) results to FastProof live; registered through the JUnit Platform ServiceLoader, no test changes.</description>
+  <dependencies>
+    <dependency>
+      <groupId>io.franshub</groupId>
+      <artifactId>fastproof-core</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.platform</groupId>
+      <artifactId>junit-platform-launcher</artifactId>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-api</artifactId>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.franshub</groupId>
+      <artifactId>fastproof-core</artifactId>
+      <type>test-jar</type>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+</project>

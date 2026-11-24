@@ -11,6 +11,8 @@ never fail your test run when the server is unreachable.
 | Vitest | `@franshub/fastproof-vitest` (npm) | In preparation |
 | Jest | `@franshub/fastproof-jest` (npm) | In preparation |
 | Cypress | `@franshub/fastproof-cypress` (npm) | In preparation |
+| JUnit 5 | `io.franshub:fastproof-junit5` (Maven) | In preparation |
+| TestNG | `io.franshub:fastproof-testng` (Maven) | In preparation |
 
 More frameworks follow; until then, upload the files of the framework's own reporter with `fastproof upload`.
 
@@ -28,6 +30,9 @@ More frameworks follow; until then, upload the files of the framework's own repo
     # Vitest, Jest, Cypress: same steps in their folders; they need the Playwright package above as well,
     # because they share its core
     cd reporters/vitest && npm install --legacy-peer-deps && npm run build && npm pack
+
+    # JUnit 5 and TestNG: install the modules into your local Maven repository
+    cd reporters/java && mvn -DskipTests install
     ```
 
     The commands below (`npm install @franshub/fastproof-playwright`, `pip install pytest-fastproof`) work once
@@ -70,6 +75,7 @@ off.
 | `FASTPROOF_SPOOL_DIR`, `FASTPROOF_SPOOL_MAX_BYTES` | Spool location and size limit |
 | `FASTPROOF_FLUSH_TIMEOUT_MS` | How long the end of the run waits for the last uploads (default 30 s) |
 | `FASTPROOF_LIVE_LOGS` | `false` sends logs with the result instead of live |
+| `FASTPROOF_LOG_LEVEL` | Lowest log level the JVM reporters copy from `java.util.logging` (`INFO` by default) |
 | `FASTPROOF_SECRET_ENV`, `FASTPROOF_SECRET_PATTERNS` | Extra environment variable names (globs) and regular expressions to mask |
 | `FASTPROOF_TESTPLAN` | Path of an Allure-format `testplan.json` (`ALLURE_TESTPLAN_PATH` is read too) |
 | `FASTPROOF_QUIET` | `true` prints nothing but errors |
@@ -262,6 +268,71 @@ and the spec video goes to failed attempts (`video: 'always'` or `'off'` change 
     a fake server and a FastProof server built from this repository. The Cypress plugin was driven with the
     event sequence Cypress produces, in the same two ways; the Cypress application itself could not be started
     in the build environment, so a first run in your project is the real check.
+
+## JUnit 5 and TestNG
+
+```xml
+<dependency>
+  <groupId>io.franshub</groupId>
+  <artifactId>fastproof-junit5</artifactId>
+  <version>0.1.0</version>
+  <scope>test</scope>
+</dependency>
+```
+
+Use `fastproof-testng` for TestNG. Nothing else changes in the project: the jar registers itself through the
+`ServiceLoader` of the JUnit Platform (a `TestExecutionListener`, a `LauncherSessionListener` and a
+`PostDiscoveryFilter`) or of TestNG (`ITestListener`, `IConfigurationListener`, `IMethodInterceptor`), so
+Maven Surefire picks it up (Gradle and the IDEs use the same mechanism, but only Surefire was run). Java 17 or newer (built for 17, tested on 17 and 25); JUnit 5.10 to
+5.14 and 6.1 (Platform 1.10 and newer), TestNG 7.11 and 7.12. The jars have no runtime dependencies.
+
+```sh
+FASTPROOF_URL=https://fastproof.example.com FASTPROOF_PROJECT=shop FASTPROOF_TOKEN=... mvn test
+```
+
+Settings come from the environment (the table above) or from `fastproof.*` system properties
+(`-Dfastproof.url=...`), which win. Every test is `running` when it starts and gets its result when it ends.
+Standard output and error, `java.util.logging` and `System.Logger` records, and steps reach the launch page
+while the test runs, parallel execution included (output belongs to the test whose thread wrote it, or a thread
+that test started). The summary line is printed when the test session ends; a JVM shutdown hook ends the run.
+
+```java
+import io.franshub.fastproof.FastProof;
+
+FastProof.step("call the payment API", () -> {
+    http.post(url, FastProof.trace().orElseThrow().headers(false));
+});
+FastProof.attach("response.json", "application/json", body);
+FastProof.attachFile(Path.of("target/screenshot.png"));
+```
+
+- **Retries are attempts.** A Surefire rerun of a failed JUnit test (`rerunFailingTestsCount`), and a TestNG
+  `IRetryAnalyzer` retry, are attempts of one result, each with its own status, error, output and trace id. For TestNG, `Retry`
+  (`@Test(retryAnalyzer = Retry.class)`) retries up to `fastproof.testng.retries` times (2 by default), and
+  setting `-Dfastproof.testng.retries=N` retries every test that has no analyzer of its own. JUnit has no retry
+  of its own; extensions that run a test again as new invocations (JUnit Pioneer `@RetryingTest`) show as
+  separate results.
+- **Separate results.** `@ParameterizedTest`, `@RepeatedTest`, `@TestFactory`, TestNG data provider rows and
+  `invocationCount` runs are results of their own. A parameter named `invocation` carries the display name
+  (JUnit) or the invocation number (TestNG); with `@ExtendWith(FastProofExtension.class)`, or Jupiter extension
+  autodetection (`junit.jupiter.extensions.autodetection.enabled=true`), the argument values are reported as
+  parameters instead (with `javac -parameters` under their real names).
+- **Names and labels.** `@DisplayName` is the name, `pkg.Class#method(types)` the stable full name. Labels:
+  `framework`, `language`, `package`, `testClass`, `suite` (top-level class), `subSuite` (nested classes),
+  `testMethod`, `thread`, and for TestNG `parentSuite` and `testng.test`. Tags (JUnit) and groups (TestNG)
+  become `tag` labels; `fastproof.id:ID` sets the test case id and `fastproof.label.name:value` adds a label.
+- **Skips and setup failures.** `@Disabled`, failed assumptions and `SkipException` are `skipped` with the
+  reason; a failing `@BeforeAll` or TestNG configuration method is reported as a broken result, so a class that
+  never ran does not disappear. Assertion errors are `failed`, every other exception `broken`.
+- **Test plans.** `FASTPROOF_TESTPLAN` (an Allure `testplan.json`) selects tests by `pkg.Class#method`,
+  `pkg.Class.method` (with or without parameter types) or by `fastproof.id:` tags and groups; unreadable plans
+  are ignored with a warning.
+- **Spool.** `java -jar fastproof-core-0.1.0.jar flush [--spool DIR]` sends what an earlier run left;
+  `list` shows it. The next run sends it too, and so does any other FastProof reporter's `flush`.
+
+The reporters were run for real (Surefire reruns, TestNG retries, parallel methods, plans, masking, a server
+that is down, a server that is stage-B only) against a fake server and a FastProof server built from this
+repository.
 
 ## Allure adapter enhancers
 

@@ -1,0 +1,1 @@
+{"uuid": "83bf2a9a-4e2a-481f-ab50-2c42160b8d0a", "historyId": "8aebfc4d33cb8c9ce9ab9b452e9fff8d", "testCaseId": "cc500de0678684743c31e35f9d3f529f", "fullName": "com.example.PayTest.charges", "name": "charges", "status": "passed", "start": 1700259204000, "stop": 1700259204530, "labels": [{"name": "suite", "value": "PayTest"}], "statusDetails": {}}

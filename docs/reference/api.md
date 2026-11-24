@@ -36,7 +36,7 @@ Everything the UI and the CLI do goes through the HTTP API at `/api/v1`. It is d
 | Dashboards | `/dashboards`, widget data, preview, clone, lock (see [Dashboards](../guide/dashboards.md)) |
 | Triage and analysis | defect types, `POST .../triage`, clusters, rules, flaky tests, compare, dashboard, test plans (see [Rules and triage](../guide/rules-and-triage.md)) |
 | Integrations | `GET .../launches/{id}/gate`, project secrets, deliveries (see [Quality gates](../guide/quality-gates.md), [Notifications](../guide/notifications.md)) |
-| History | `GET /api/v1/projects/{key}/test-cases/{testCaseId}/history?branch=&environment=` |
+| History | `GET /api/v1/projects/{key}/test-cases/{testCaseId}/history?branch=&environment=`; `POST .../history-imports?source=allure2\|allure3&branch=&environment=` (multipart fields `history`, `historyTrend`, `durationTrend`, `categoriesTrend`, `retryTrend`, answers `202`), `GET .../history-imports`, `GET .../history-imports/{id}` (see [Importing Allure history](../guide/importing-allure-history.md)) |
 | Test cases | `GET/POST .../cases` (`POST` needs `name` and `body`), `GET/PUT/PATCH/DELETE .../cases/{n}`, `POST .../cases/{n}/review`, `.../cases/{n}/versions`, `.../history`, `.../identities`, `.../attachments`, `POST .../cases/bulk`, `GET .../cases/tree`, `.../case-folders`, `.../case-fields`, `GET .../test-identities`, `POST .../markdown/preview`, `POST .../cases/backfill` (see [Test cases](../guide/test-management.md)) |
 | Test plans and manual runs | `GET/POST .../test-plans`, `GET/PATCH/DELETE .../test-plans/{id}`, `.../items`, `.../sync`, `GET/POST .../test-plans/{id}/launches` (`GET` lists the launches started from the plan), `.../testplan.json`; `GET/POST .../launches/{id}/run-items`, `GET .../run-items`, `GET/PATCH .../run-items/{itemId}`, `GET .../run-items/{itemId}/executions`, `PUT .../run-items/{itemId}/steps/{path}`, `POST .../run-items/{itemId}/rerun` (needs `If-Match`), `POST .../manual/close`, `.../manual/reopen`, `GET .../manual-report` (see [Test plans and manual runs](../guide/manual-runs.md)) |
 | People | `GET /api/v1/projects/{key}/people?q=` (`projects:read`): up to 100 principals known to the project (users bound to it in the access file, active managed tokens whose role can execute runs there, and names used as assignees or executors in its runs and plans) as `{items: [{principal, display?}]}`, for assignee pickers |
@@ -174,7 +174,7 @@ actions:
 | Triage and rules | `results.triage`, `triage.apply` (through MCP), `defectType.create`, `defectType.update`, `defectType.delete`, `rule.create`, `rule.update`, `rule.delete`, `rule.apply`, `testPlan.create` |
 | Test cases | `case.create`, `case.update`, `case.move`, `case.archive`, `case.restore`, `case.purge`, `case.bulk`, `case.linkIdentity`, `case.unlinkIdentity`, `case.review`, `case.backfill`, `caseFolder.create`, `caseFolder.update`, `caseFolder.delete`, `caseField.create`, `caseField.update`, `caseField.delete`, `caseSuggestion.accept`, `caseSuggestion.reject`, `caseSync.settings` |
 | Plans and manual runs | `testPlan.create`, `testPlan.update`, `testPlan.items`, `testPlan.sync`, `testPlan.archive`, `run.start`, `runItem.update` (final status, defect, assignee), `runItem.rerun`, `manualRun.close`, `manualRun.reopen` |
-| Imports and exports | `import.start`, `import.apply`, `import.cancel`, `export.create`, `export.download` (TestOps tokens are never recorded) |
+| Imports and exports | `import.start`, `import.apply`, `import.cancel`, `export.create`, `export.download` (TestOps tokens are never recorded), `history.import` (Allure history) |
 | Secrets | `secret.create`, `secret.update`, `secret.delete` (names only, never values) |
 | Access | `token.create`, `token.revoke`, `auth.login`, `auth.login_failed`, `auth.logout` |
 
@@ -212,6 +212,7 @@ management routes answer:
 | 403 | `ai_self_review` | The creator of an unreviewed AI case reviews or activates it, or the author of a suggestion accepts it |
 | 409 | `launch_finished` | Uploads, results or a second finish into a finished launch by a caller that neither created it nor has `cases:sync` |
 | 409 | `import_busy` | Another import of the project is running |
+| 409 | `history_import_busy`, `history_import_quota` | An import of Allure history is queued or running in the project (or two on the server), or the project started 20 in 24 hours |
 | 409 | `export_busy` | Too many zip exports of the caller (2) or the project (4) are queued or running; `details {limit, max}` |
 | 412 | `precondition_failed` | `If-Match` names an older revision; `details` `{currentRevision, changedBy, source}` |
 | 413 | `payload_too_large` | An attachment or import file over its limit |

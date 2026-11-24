@@ -105,7 +105,7 @@ impl Client {
         Ok(Self::check(resp).await?.json().await?)
     }
 
-    fn enc(s: &str) -> String {
+    pub fn enc(s: &str) -> String {
         s.bytes()
             .map(|b| {
                 if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.') {

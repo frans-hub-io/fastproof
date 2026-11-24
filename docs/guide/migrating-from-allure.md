@@ -19,7 +19,7 @@ flaky detection and triage live in one place for every branch and every job.
 | Allure Report | FastProof |
 |---|---|
 | `allure generate` / `allure serve` in CI | `fastproof upload allure-results` (or `fastproof watch`) |
-| Copy `allure-report/history` into the next run | Not needed: history is kept per series on the server |
+| Copy `allure-report/history` into the next run | Not needed: history is kept per series on the server; bring the history you have with [`fastproof import allure-history`](importing-allure-history.md) |
 | One report per job; shards merged by copying directories | One launch per pipeline; every shard uploads into it |
 | Report published as static files (Pages, S3, artefacts) | One URL per launch, with access control per project |
 | Retries shown per report | Retries become attempts of one result; flaky in run and across launches |
@@ -48,6 +48,6 @@ same `allure-results`.
 
 ## History import
 
-Importing existing Allure history (the `history` directory of Allure 2 reports and the Allure 3 `historyPath`
-JSONL file) comes in FastProof 1.1, right after the first release. Until then, history starts with the first
-upload. Because identities match, imported history will join the series that FastProof already has.
+The `history` directory of Allure 2 reports and the Allure 3 history file can be imported as past launches that
+join the tests your live results use, with `fastproof import allure-history` or in the project settings. See
+[Importing Allure history](importing-allure-history.md).

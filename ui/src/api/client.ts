@@ -89,6 +89,8 @@ export async function requestRaw(path: string, init?: RequestInit & { json?: unk
 const CODE_MESSAGES: Record<string, string> = {
   ai_self_review: 'An AI draft or suggestion needs a second person: whoever created it cannot review it, make it active or accept it. Ask a colleague to do it.',
   export_busy: 'Too many zip exports are being built (at most 2 per person and 4 per project). Wait for one to finish or download it first.',
+  history_import_busy: 'An import of history is queued or running (one per project at a time, two on the server). Wait for it to end.',
+  history_import_quota: 'This project started its 20 history imports of the last 24 hours. Try again later.',
   launch_finished: 'The launch is finished: only the one who created it, or a caller allowed to sync cases, can add results to it.',
   launch_merged: 'One of the launches was merged into another launch already. Open that launch instead, or undo the earlier merge.',
   launch_running: 'Finish the launches first: only the launch you merge into may still be running.',

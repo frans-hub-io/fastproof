@@ -107,6 +107,7 @@ nav:
       - guide/launch-export.md
       - guide/merging-launches.md
       - guide/migrating-from-allure.md
+      - guide/importing-allure-history.md
   - Test management:
       - guide/test-management.md
       - guide/manual-runs.md

@@ -16,6 +16,7 @@ pub mod direct_uploads;
 pub mod events;
 pub mod explorer;
 pub mod history;
+pub mod history_import;
 pub mod ingest;
 pub mod integrations;
 pub mod launch_exports;

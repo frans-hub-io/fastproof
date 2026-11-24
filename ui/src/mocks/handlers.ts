@@ -28,6 +28,7 @@ import { resetDashboards } from './dashboards';
 import { stageCHandlers } from './handlersC';
 import { resetTrackers, trackerHandlers } from './trackers';
 import { mediaHandlers } from './media';
+import { historyImportHandlers, resetHistoryImports } from './historyImports';
 import { mergeHandlers, resetMerges } from './merges';
 import { analyze, analyzeDetail, isImportant, resetStageC } from './stageC';
 import { resetTm, subscribeTmEvents, tmHandlers, tmLaunchList } from './tm';
@@ -71,6 +72,7 @@ export function resetMockState(): void {
   resetDashboards();
   resetTm();
   resetMerges();
+  resetHistoryImports();
   resetTrackers();
 }
 
@@ -553,6 +555,7 @@ export const handlers = [
   ...dashboardHandlers({ role: currentRole, error, audit }),
   ...mediaHandlers(error),
   ...mergeHandlers(error),
+  ...historyImportHandlers(error),
 
   http.all(`${API}/*`, () => error(404, 'not_found', 'no such endpoint')),
 ];

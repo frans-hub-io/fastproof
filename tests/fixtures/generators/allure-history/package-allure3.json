@@ -1,0 +1,7 @@
+{
+  "name": "allure3-generator",
+  "private": true,
+  "dependencies": {
+    "allure": "3.33.0"
+  }
+}

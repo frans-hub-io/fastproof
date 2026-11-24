@@ -1,0 +1,1 @@
+{"uuid": "23d38ca3-8ab3-47ec-9376-8329d5e225a7", "historyId": "d55f76351a9f15618ce346c09da2fc74", "testCaseId": "a5e7e5ffe40022a609f5aaad57d48c29", "fullName": "com.example.CartTest.removesItem", "name": "removesItem", "status": "passed", "start": 1700259203000, "stop": 1700259203530, "labels": [{"name": "suite", "value": "CartTest"}], "statusDetails": {}}

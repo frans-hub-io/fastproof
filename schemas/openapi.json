@@ -4619,6 +4619,227 @@
         }
       }
     },
+    "/api/v1/projects/{key}/history-imports": {
+      "get": {
+        "tags": [
+          "history-imports"
+        ],
+        "description": "The newest 20 imports of history of a project. Needs `launches:read`.",
+        "operationId": "history_imports_list",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportList"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "history-imports"
+        ],
+        "description": "Imports the history of Allure reports as finished launches dated at their reports, joined to the tests live results use (the Allure `historyId` is the FastProof series key). Multipart fields: `history` (required: `history/history.json` of an Allure 2 report, or the Allure 3 history file, a JSON line per report) and, for `allure2`, `historyTrend`, `durationTrend`, `categoriesTrend` and `retryTrend`. Limits: `history.json` 32 MiB, an Allure 3 file 256 MiB (a line 32 MiB, 1000 reports), each trend file 4 MiB, 500 000 results, 200 000 tests in `history.json`. One import per project at a time; 20 per project per day. A second import of the same files adds nothing. Reports older than the project's retention window are left out. Needs `launches:write`.",
+        "operationId": "history_imports_create",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "description": "`allure2` (history directory of an Allure 2 report) or `allure3` (history file).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "branch",
+            "in": "query",
+            "description": "Branch of the launches made (set it to the branch live runs report, so their flaky\ndetection and new-failure baselines read this history).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "environment",
+            "in": "query",
+            "description": "Environment key of the launches made; part of every series key, as for live runs.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "fields `history`, `historyTrend`, `durationTrend`, `categoriesTrend`, `retryTrend`",
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "int32",
+                  "minimum": 0
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HistoryImport"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/history-imports/{id}": {
+      "get": {
+        "tags": [
+          "history-imports"
+        ],
+        "description": "Status and counters of an import. Needs `launches:read`.",
+        "operationId": "history_imports_get",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HistoryImport"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{key}/imports": {
       "post": {
         "tags": [
@@ -17209,6 +17430,110 @@
           }
         }
       },
+      "HistoryImport": {
+        "type": "object",
+        "description": "An import of Allure history.",
+        "required": [
+          "id",
+          "source",
+          "status",
+          "pointsTotal",
+          "pointsDone",
+          "launchesCreated",
+          "resultsImported",
+          "resultsExisting",
+          "resultsUnmatched",
+          "resultsSkipped",
+          "warnings",
+          "createdBy",
+          "createdAt"
+        ],
+        "properties": {
+          "branch": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "createdBy": {
+            "type": "string"
+          },
+          "environment": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "finishedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "launchesCreated": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "pointsDone": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "pointsTotal": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Past reports found (known once the files are read)."
+          },
+          "resultsExisting": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Results that a former import already stored."
+          },
+          "resultsImported": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Results stored."
+          },
+          "resultsSkipped": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Results or whole reports left out: older than the retention window, in the future, or\nnot usable."
+          },
+          "resultsUnmatched": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Results of tests the project does not know and the file does not name (Allure 2)."
+          },
+          "source": {
+            "type": "string",
+            "description": "`allure2` or `allure3`."
+          },
+          "status": {
+            "type": "string",
+            "description": "`queued`, `running`, `done` or `failed`."
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
       "HistoryList": {
         "type": "object",
         "description": "History of a test case, newest first.",
@@ -17262,6 +17587,21 @@
           "testops-csv",
           "fastproof-ndjson"
         ]
+      },
+      "ImportList": {
+        "type": "object",
+        "description": "Imports of a project, newest first.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HistoryImport"
+            }
+          }
+        }
       },
       "ImportMode": {
         "type": "string",

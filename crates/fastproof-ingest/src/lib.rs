@@ -7,6 +7,7 @@
 //! bounded by [`Limits`]. The API is synchronous; call it from a blocking thread.
 
 mod allure;
+pub mod allure_history;
 mod ctrf;
 mod ctx;
 mod error;

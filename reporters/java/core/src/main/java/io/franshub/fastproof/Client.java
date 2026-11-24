@@ -668,7 +668,10 @@ final class Client {
                     before = queue.size() + logs.size();
                 }
                 if (before == 0) {
-                    return;
+                    if (senderIdle()) {
+                        return;
+                    }
+                    continue;
                 }
                 pump();
                 final int after;
@@ -683,6 +686,18 @@ final class Client {
             Thread.currentThread().interrupt();
         } catch (RuntimeException e) {
             warnOnce("drain", "reporting error (ignored): " + e);
+        }
+    }
+
+    /**
+     * A batch taken from the queue is neither queued nor sent until its request ends; waiting for the send lock waits
+     * for it, and a failed send puts the batch back.
+     */
+    private boolean senderIdle() {
+        synchronized (sendLock) {
+            synchronized (lock) {
+                return queue.isEmpty() && logs.isEmpty();
+            }
         }
     }
 
@@ -715,7 +730,10 @@ final class Client {
                     before = queue.size() + logs.size();
                 }
                 if (before == 0) {
-                    break;
+                    if (senderIdle()) {
+                        break;
+                    }
+                    continue;
                 }
                 pump();
                 final int after;

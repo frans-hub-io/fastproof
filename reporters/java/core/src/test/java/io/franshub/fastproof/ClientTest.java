@@ -144,4 +144,23 @@ class ClientTest {
             assertTrue(srv.results.isEmpty());
         }
     }
+
+    @Test
+    void drainWaitsForABatchThatIsAlreadyOnTheWire() throws Exception {
+        try (FakeServer srv = new FakeServer(TOKEN, true, true)) {
+            srv.resultsDelayMs = 600;
+            final Client c = client(srv.url(), Map.of("FASTPROOF_LAUNCH", "ci-drain"));
+            c.start();
+            c.finish(result("r1", "failed"), List.of(), false);
+            final long until = System.currentTimeMillis() + 5000;
+            while (srv.resultRequests == 0 && System.currentTimeMillis() < until) {
+                Thread.sleep(5);
+            }
+            assertEquals(1, srv.resultRequests);
+            c.drain(5000);
+            assertEquals(1, c.progress().sent());
+            assertEquals(1, srv.results.size());
+            c.close("finished");
+        }
+    }
 }

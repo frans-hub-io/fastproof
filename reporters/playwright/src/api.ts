@@ -94,7 +94,7 @@ export class Api {
 
   async uploadAttachment(
     launchId: string,
-    a: { path?: string; body?: Buffer; name: string; contentType: string },
+    a: { path?: string; fd?: number; body?: Buffer; name: string; contentType: string },
     retries?: number,
   ): Promise<{ id: string; sha256: string; size: number }> {
     const headers = { 'x-fastproof-attachment-name': encodeHeader(a.name) };
@@ -103,7 +103,11 @@ export class Api {
         this.http.request(
           'POST',
           `${this.base(launchId)}/attachments`,
-          a.path ? { file: a.path, contentType: a.contentType } : { raw: a.body ?? Buffer.alloc(0), contentType: a.contentType },
+          a.fd !== undefined
+            ? { fd: a.fd, contentType: a.contentType }
+            : a.path
+              ? { file: a.path, contentType: a.contentType }
+              : { raw: a.body ?? Buffer.alloc(0), contentType: a.contentType },
           headers,
           120_000,
         ),

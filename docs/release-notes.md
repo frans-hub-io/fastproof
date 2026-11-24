@@ -2,17 +2,16 @@
 
 ## Unreleased
 
-- **Allure history import.** Bring the history of Allure 2 reports (`history/history.json` and the trend files) and
-  of Allure 3 (the history file) in as past launches that join the tests your live results use, with
-  `fastproof import allure-history` or in the project settings. Flaky detection, trends, dashboards and new
-  failures see the history from before FastProof. See [Importing Allure history](guide/importing-allure-history.md).
-  The release adds migration `0820`.
 - **Fixes from the lab smoke.** The exported HTML report stacks each result as a card on a phone (it was a
   table with one character per line in the Suite column; the print layout is unchanged). `fastproof upload --wait`
   prints the launch counts only after the results are stored (it waits up to `--timeout` and says so when the
   counts are not final). `fastproof export --format pdf` names the browser it ran, its exit status and the last
   lines of its error output, and says how to pass a working one. Dashboard widgets no longer leave an empty gap
   below short cards on a phone.
+- **Security: reporters verify the offline spool before sending it.** The `flush` of the Playwright, Vitest, Jest,
+  Cypress and pytest reporters (and of the new JUnit 5, TestNG, NUnit and xUnit reporters) sends only attachments
+  whose content matches their recorded hash, never follows links in the spool directory and skips sessions with
+  an invalid project key. Update the reporters; no server change is needed.
 
 ## 0.2.0-dev2
 

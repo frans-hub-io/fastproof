@@ -1,11 +1,15 @@
 import {
   closeSync,
+  constants,
   copyFileSync,
   existsSync,
+  fstatSync,
   fsyncSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
+  readSync,
   readdirSync,
   renameSync,
   rmSync,
@@ -13,6 +17,7 @@ import {
   writeFileSync,
   writeSync,
 } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 
@@ -25,6 +30,11 @@ import type { LaunchStart, ReportResult } from './types';
  */
 export const SPOOL_VERSION = 1;
 export const BLOB_PREFIX = 'blob:';
+
+/** A blob file name: exactly the lowercase hex SHA-256 of its content. */
+export const BLOB_NAME = /^[0-9a-f]{64}$/;
+/** The project key a session may name; anything else is never put into a request path. */
+export const PROJECT_KEY = /^[a-z0-9][a-z0-9-]{1,62}$/;
 
 export interface SpoolMeta {
   v: number;
@@ -255,6 +265,43 @@ function replaceBlobIds(r: ReportResult, ids: Map<string, string>): boolean {
 }
 
 /**
+ * Opens `blobs/<name>` for sending: the name must be 64 lowercase hex characters, the entry must be a regular
+ * file that is not a link, and the content of the opened descriptor must hash to the name. The caller sends that
+ * same descriptor and closes it. Returns undefined (nothing left open) for anything else.
+ */
+export function openVerifiedBlob(dir: string, name: string): number | undefined {
+  if (typeof name !== 'string' || !BLOB_NAME.test(name)) return undefined;
+  const path = join(dir, 'blobs', name);
+  let fd: number | undefined;
+  try {
+    const before = lstatSync(path);
+    if (!before.isFile()) return undefined;
+    fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+    const st = fstatSync(fd);
+    if (!st.isFile() || st.ino !== before.ino || st.dev !== before.dev) throw new Error('not the checked file');
+    const h = createHash('sha256');
+    const buf = Buffer.allocUnsafe(1 << 20);
+    for (let pos = 0; ; ) {
+      const n = readSync(fd, buf, 0, buf.length, pos);
+      if (n === 0) break;
+      h.update(buf.subarray(0, n));
+      pos += n;
+    }
+    if (h.digest('hex') !== name) throw new Error('hash mismatch');
+    return fd;
+  } catch {
+    if (fd !== undefined) {
+      try {
+        closeSync(fd);
+      } catch {
+        /* already closed */
+      }
+    }
+    return undefined;
+  }
+}
+
+/**
  * Sends spooled sessions: resolves each launch by its external id, uploads blobs once per hash, posts
  * results in batches (idempotent by client id), finishes the launch when the run asked for it, and
  * deletes the session. Stops at `deadline` and resumes from `progress.json` next time.
@@ -269,6 +316,10 @@ export async function flushSpool(
   const late = () => o.deadline !== undefined && Date.now() > o.deadline;
   for (const s of listSessions(root, o.exclude)) {
     if (o.project && s.meta.project !== o.project) continue;
+    if (typeof s.meta.project !== 'string' || !PROJECT_KEY.test(s.meta.project)) {
+      out.errors.push(`session ${s.id} skipped: invalid project key`);
+      continue;
+    }
     let lines: string[];
     try {
       lines = readFileSync(join(s.dir, 'results.ndjson'), 'utf8').split('\n').filter(Boolean);
@@ -283,6 +334,7 @@ export async function flushSpool(
     try {
       const launch = await api.startLaunch(s.meta.launch, 2);
       const blobIds = new Map<string, string>();
+      const bad = new Set<string>();
       while (done < lines.length && !late()) {
         const chunk = lines.slice(done, done + batchSize);
         const results: ReportResult[] = [];
@@ -295,11 +347,24 @@ export async function flushSpool(
             continue;
           }
           for (const b of e.blobs ?? []) {
-            if (blobIds.has(b.sha256)) continue;
-            const path = join(s.dir, 'blobs', b.sha256);
-            if (!existsSync(path)) continue;
-            const r = await api.uploadAttachment(launch.id, { path, name: b.name, contentType: b.contentType }, 2);
-            blobIds.set(b.sha256, r.id);
+            if (blobIds.has(b.sha256) || bad.has(String(b.sha256))) continue;
+            const fd = openVerifiedBlob(s.dir, b.sha256);
+            if (fd === undefined) {
+              if (typeof b.sha256 === 'string' && BLOB_NAME.test(b.sha256) && !bad.has(b.sha256)) {
+                bad.add(b.sha256);
+                out.errors.push(`attachment ${b.sha256.slice(0, 12)} in ${s.id} skipped: missing, not a regular file or content differs`);
+              } else if (!bad.has(String(b.sha256))) {
+                bad.add(String(b.sha256));
+                out.errors.push(`attachment in ${s.id} skipped: invalid name`);
+              }
+              continue;
+            }
+            try {
+              const r = await api.uploadAttachment(launch.id, { fd, name: b.name, contentType: b.contentType }, 2);
+              blobIds.set(b.sha256, r.id);
+            } finally {
+              closeSync(fd);
+            }
           }
           replaceBlobIds(e.result, blobIds);
           results.push(e.result);

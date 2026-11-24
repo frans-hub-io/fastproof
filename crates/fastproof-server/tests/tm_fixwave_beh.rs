@@ -1158,7 +1158,16 @@ async fn rerun_needs_if_match_and_keeps_earlier_executions_after_a_partition_dro
     .unwrap();
     let projects = store.all_project_settings().await.unwrap();
     let dropped = store.drop_rolled_partitions(&projects).await.unwrap();
-    assert!(dropped.contains(&month), "{dropped:?}");
+    let still_there: bool =
+        sqlx::query_scalar("select exists (select 1 from pg_class where relname = $1)")
+            .bind(&month)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert!(
+        dropped.contains(&month) || !still_there,
+        "the partition is dropped by this call or by the server's own retention job first: {dropped:?}"
+    );
     let attempts: i64 =
         sqlx::query_scalar("select count(*) from attempts where launch_id = $1::uuid")
             .bind(&lid)

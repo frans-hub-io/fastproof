@@ -1,0 +1,116 @@
+{
+  "launch": {
+    "status": "finished",
+    "counts": {
+      "total": 2,
+      "passed": 1,
+      "failed": 1,
+      "broken": 0,
+      "skipped": 0,
+      "unknown": 0,
+      "flaky": 0,
+      "muted": 0
+    },
+    "logLines": 7
+  },
+  "results": [
+    {
+      "name": "fails with assertion",
+      "fullName": "second.spec.js/profile/fails with assertion",
+      "status": "failed",
+      "message": "Error: expect(received).toBe(expected) // Object.is equality",
+      "flakyInRun": false,
+      "suitePath": [
+        "second.spec.js",
+        "profile"
+      ],
+      "labels": [
+        "parentSuite=second.spec.js",
+        "suite=profile"
+      ],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "failed",
+          "error": "Error: expect(received).toBe(expected) // Object.is equality",
+          "steps": [
+            "Before Hooks [passed] step",
+            "Expect \"toBe\" [failed] step",
+            "After Hooks [passed] step",
+            "Worker Cleanup [passed] step",
+            "  Fixture \"browser\" [passed] step"
+          ],
+          "attachments": [
+            "fails-with-assertion_trace other 1310"
+          ]
+        },
+        {
+          "no": 2,
+          "status": "failed",
+          "error": "Error: expect(received).toBe(expected) // Object.is equality",
+          "steps": [
+            "Before Hooks [passed] step",
+            "Expect \"toBe\" [failed] step",
+            "After Hooks [passed] step",
+            "Worker Cleanup [passed] step"
+          ],
+          "attachments": [
+            "fails-with-assertion_trace other 1279"
+          ]
+        }
+      ],
+      "logLevels": {
+        "error": 2,
+        "info": 2
+      }
+    },
+    {
+      "name": "renders name",
+      "fullName": "second.spec.js/profile/renders name",
+      "status": "passed",
+      "message": null,
+      "flakyInRun": false,
+      "suitePath": [
+        "second.spec.js",
+        "profile"
+      ],
+      "labels": [
+        "parentSuite=second.spec.js",
+        "suite=profile"
+      ],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "passed",
+          "error": null,
+          "steps": [
+            "Before Hooks [passed] step",
+            "  Fixture \"browser\" [passed] step",
+            "    Launch browser [passed] step",
+            "  Fixture \"context\" [passed] step",
+            "    Create context [passed] step",
+            "  Fixture \"page\" [passed] step",
+            "    Create page [passed] step",
+            "Set content [passed] step",
+            "Expect \"toHaveText\" [passed] step",
+            "After Hooks [passed] step files=1",
+            "  Fixture \"page\" [passed] step",
+            "  Fixture \"context\" [passed] step",
+            "    Close context [passed] step"
+          ],
+          "attachments": [
+            "renders-name_screenshot image 5105",
+            "renders-name_trace other 5739"
+          ]
+        }
+      ],
+      "logLevels": {
+        "info": 3
+      }
+    }
+  ]
+}

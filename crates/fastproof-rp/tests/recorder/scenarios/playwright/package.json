@@ -1,0 +1,10 @@
+{
+  "name": "rp-recording-playwright",
+  "version": "1.0.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@playwright/test": "1.56.1",
+    "@reportportal/agent-js-playwright": "5.5.0"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "info": {"build": {"version": "5.14.0", "name": "FastProof RP compatibility"}},
+  "launchStart": {"id": "00000000-0000-4000-8000-000000000001", "number": 1},
+  "launchFinishV1": {"id": "00000000-0000-4000-8000-000000000001", "number": 1, "link": "https://fastproof.example.com/rp/ui/#example-project/launches/all/1"},
+  "itemStartV1": {"id": "00000000-0000-4000-8000-000000000002", "uniqueId": "auto:0123456789abcdef0123456789abcdef"},
+  "itemStartV2": {"id": "00000000-0000-4000-8000-000000000002"},
+  "itemFinish": {"message": "TestItem with ID = '00000000-0000-4000-8000-000000000002' successfully finished."},
+  "logEntry": {"id": "00000000-0000-4000-8000-000000000003"},
+  "logBatch": {"responses": [{"id": "00000000-0000-4000-8000-000000000003"}]},
+  "launchPage": {"content": [{"id": 1, "uuid": "00000000-0000-4000-8000-000000000001", "name": "recorded", "number": 1, "status": "IN_PROGRESS"}], "page": {"number": 1, "size": 1, "totalElements": 1, "totalPages": 1}},
+  "settings": {"project": 1, "subTypes": {"PRODUCT_BUG": [{"id": 1, "locator": "pb001", "typeRef": "PRODUCT_BUG", "longName": "Product Bug", "shortName": "PB", "color": "#f7d63e"}]}},
+  "notSupported": {"errorCode": 5000, "message": "not supported by FastProof"}
+}

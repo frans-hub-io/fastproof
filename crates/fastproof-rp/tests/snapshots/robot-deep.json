@@ -1,0 +1,206 @@
+{
+  "launch": {
+    "status": "finished",
+    "counts": {
+      "total": 5,
+      "passed": 3,
+      "failed": 1,
+      "broken": 0,
+      "skipped": 1,
+      "unknown": 0,
+      "flaky": 0,
+      "muted": 0
+    },
+    "logLines": 16
+  },
+  "results": [
+    {
+      "name": "Passing Test",
+      "fullName": "suite/shop.robot:10",
+      "status": "passed",
+      "message": null,
+      "flakyInRun": false,
+      "suitePath": [
+        "Suite",
+        "Shop"
+      ],
+      "labels": [
+        "parentSuite=Suite",
+        "suite=Shop",
+        "tag=regression",
+        "tag=smoke"
+      ],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "passed",
+          "error": null,
+          "steps": [
+            "KEYWORD BuiltIn.Log (starting, INFO) [passed] step",
+            "KEYWORD Nested Keyword (2) [passed] step",
+            "  KEYWORD BuiltIn.Log (depth ${depth}) [passed] step",
+            "  IF ${depth} > 0 () [passed] step",
+            "    KEYWORD ${next} = BuiltIn.Evaluate (${depth} - 1) [passed] step",
+            "    KEYWORD Nested Keyword (${next}) [passed] step",
+            "      KEYWORD BuiltIn.Log (depth ${depth}) [passed] step",
+            "      IF ${depth} > 0 () [passed] step",
+            "        KEYWORD ${next} = BuiltIn.Evaluate (${depth} - 1) [passed] step",
+            "        KEYWORD Nested Keyword (${next}) [passed] step",
+            "          KEYWORD BuiltIn.Log (depth ${depth}) [passed] step",
+            "          IF ${depth} > 0 () [skipped] step",
+            "            KEYWORD ${next} = BuiltIn.Evaluate (${depth} - 1) [skipped] step",
+            "            KEYWORD Nested Keyword (${next}) [skipped] step",
+            "KEYWORD BuiltIn.Should Be Equal (${COUNT}, 3) [passed] step"
+          ],
+          "attachments": []
+        }
+      ],
+      "logLevels": {
+        "info": 6
+      }
+    },
+    {
+      "name": "Failing Test",
+      "fullName": "suite/shop.robot:16",
+      "status": "failed",
+      "message": "expected failure",
+      "flakyInRun": false,
+      "suitePath": [
+        "Suite",
+        "Shop"
+      ],
+      "labels": [
+        "parentSuite=Suite",
+        "suite=Shop",
+        "tag=regression"
+      ],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "failed",
+          "error": "expected failure",
+          "steps": [
+            "KEYWORD BuiltIn.Log (about to fail, WARN) [passed] step",
+            "KEYWORD Level One () [passed] step",
+            "  KEYWORD Level Two () [passed] step",
+            "    KEYWORD BuiltIn.Log (deep, INFO) [passed] step",
+            "KEYWORD BuiltIn.Fail (expected failure) [failed] step"
+          ],
+          "attachments": []
+        }
+      ],
+      "logLevels": {
+        "error": 1,
+        "info": 1,
+        "warn": 1
+      }
+    },
+    {
+      "name": "Skipped Test",
+      "fullName": "suite/shop.robot:21",
+      "status": "skipped",
+      "message": null,
+      "flakyInRun": false,
+      "suitePath": [
+        "Suite",
+        "Shop"
+      ],
+      "labels": [
+        "parentSuite=Suite",
+        "suite=Shop",
+        "tag=regression"
+      ],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "skipped",
+          "error": null,
+          "steps": [
+            "KEYWORD BuiltIn.Skip (not now) [skipped] step"
+          ],
+          "attachments": []
+        }
+      ],
+      "logLevels": {
+        "info": 1
+      }
+    },
+    {
+      "name": "Loop Test",
+      "fullName": "suite/shop.robot:24",
+      "status": "passed",
+      "message": null,
+      "flakyInRun": false,
+      "suitePath": [
+        "Suite",
+        "Shop"
+      ],
+      "labels": [
+        "parentSuite=Suite",
+        "suite=Shop",
+        "tag=regression"
+      ],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "passed",
+          "error": null,
+          "steps": [
+            "FOR ${i}    IN RANGE    3 () [passed] step",
+            "  ITERATION ${i} = 0 () [passed] step",
+            "    KEYWORD BuiltIn.Log (iteration ${i}) [passed] step",
+            "  ITERATION ${i} = 1 () [passed] step",
+            "    KEYWORD BuiltIn.Log (iteration ${i}) [passed] step",
+            "  ITERATION ${i} = 2 () [passed] step",
+            "    KEYWORD BuiltIn.Log (iteration ${i}) [passed] step"
+          ],
+          "attachments": []
+        }
+      ],
+      "logLevels": {
+        "info": 3
+      }
+    },
+    {
+      "name": "Log With Html",
+      "fullName": "suite/shop.robot:29",
+      "status": "passed",
+      "message": null,
+      "flakyInRun": false,
+      "suitePath": [
+        "Suite",
+        "Shop"
+      ],
+      "labels": [
+        "parentSuite=Suite",
+        "suite=Shop",
+        "tag=regression"
+      ],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "passed",
+          "error": null,
+          "steps": [
+            "KEYWORD BuiltIn.Log (<b>bold</b>, HTML) [passed] step",
+            "KEYWORD BuiltIn.Log (debug line, DEBUG) [passed] step"
+          ],
+          "attachments": []
+        }
+      ],
+      "logLevels": {
+        "info": 1
+      }
+    }
+  ]
+}

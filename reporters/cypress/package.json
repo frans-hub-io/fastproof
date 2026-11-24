@@ -1,0 +1,43 @@
+{
+  "name": "@franshub/fastproof-cypress",
+  "version": "0.1.0",
+  "description": "Cypress plugin for FastProof: live results, retries as attempts, traceparent, secret masking, offline spool, test plans, screenshots and video.",
+  "license": "Apache-2.0",
+  "type": "commonjs",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./support": {
+      "types": "./dist/support.d.ts",
+      "default": "./dist/support.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "test": "tsc -p tsconfig.test.json && node --test build-test/test/*.test.js",
+    "prepack": "npm run build"
+  },
+  "peerDependencies": {
+    "@franshub/fastproof-playwright": ">=0.1.0 <0.2.0",
+    "cypress": ">=13.0.0"
+  },
+  "devDependencies": {
+    "@franshub/fastproof-playwright": "file:../playwright",
+    "@types/node": "22.20.5",
+    "typescript": "6.0.3",
+    "cypress": "16.2.1"
+  }
+}

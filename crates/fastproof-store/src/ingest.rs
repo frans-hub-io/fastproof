@@ -932,6 +932,17 @@ async fn apply_result_changes(
     Ok(())
 }
 
+/// [`persist_attempts_mode`] for results of a live upload.
+pub async fn persist_attempts_in(
+    conn: &mut sqlx::PgConnection,
+    launch: &LaunchRef,
+    upload_id: Option<Uuid>,
+    attempts: Vec<NewAttempt>,
+    seq0: i64,
+) -> anyhow::Result<PersistOutcome> {
+    persist_attempts_mode(conn, launch, upload_id, attempts, seq0, false).await
+}
+
 /// As [`Store::persist_attempts`], inside the caller's transaction (the Kafka writer commits its
 /// consumer offset in the same transaction), with attempt sequence numbers after `seq0`
 /// reserved by [`reserve_attempt_seq`] (at least as many as `attempts`). Nothing is written
@@ -947,12 +958,18 @@ async fn apply_result_changes(
 /// Results of the launch that exist are locked first (id order), so two writers of the
 /// same test take turns; a writer that finds a result or a running attempt another writer
 /// created after it looked fails with [`Contended`] and runs again.
-pub async fn persist_attempts_in(
+///
+/// With `history` (results of an imported past report) the writer behaves as if it ran at the
+/// launch's creation time: new tests and series are first seen then, and rows seen later are
+/// not touched. It runs no analysis hook (no rules, defects, mutes, fingerprints or
+/// statistics: the caller maintains the statistics) and emits no outbox events.
+pub async fn persist_attempts_mode(
     conn: &mut sqlx::PgConnection,
     launch: &LaunchRef,
     upload_id: Option<Uuid>,
     attempts: Vec<NewAttempt>,
     seq0: i64,
+    history: bool,
 ) -> anyhow::Result<PersistOutcome> {
     let mut out = PersistOutcome::default();
     if attempts.is_empty() {
@@ -1000,7 +1017,11 @@ pub async fn persist_attempts_in(
     for (i, p) in prepared.iter().enumerate() {
         tc_index.insert(p.tc_hash.as_str(), i);
     }
-    let now = Utc::now();
+    let now = if history {
+        launch.created_at
+    } else {
+        Utc::now()
+    };
     let mut tc_ids = Vec::new();
     let mut tc_hashes = Vec::new();
     let mut tc_full = Vec::new();
@@ -1632,8 +1653,11 @@ pub async fn persist_attempts_in(
             trace: p.r.status_details.trace.as_deref(),
         })
         .collect();
-    let hits =
-        crate::analysis::after_persist_deferred(&mut *conn, launch, &analyzed, &affected_v).await?;
+    let hits = if history {
+        HashMap::new()
+    } else {
+        crate::analysis::after_persist_deferred(&mut *conn, launch, &analyzed, &affected_v).await?
+    };
     drop(analyzed);
     out.accepted_keys = accepted;
 
@@ -1647,6 +1671,9 @@ pub async fn persist_attempts_in(
         .collect();
     apply_result_changes(&mut *conn, launch, &before, &after).await?;
     crate::analysis::rules::add_hits(&mut *conn, &hits).await?;
+    if history {
+        return Ok(out);
+    }
     // The outbox rows last: their ids are taken at insert, and the outbox reader waits at the
     // first id whose transaction is still open, so they go in right before the commit.
     crate::events::emit_many(

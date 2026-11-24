@@ -18,6 +18,43 @@ use uuid::Uuid;
 
 use crate::state::AppState;
 
+/// How long one import may run in all; a stuck one (a lock wait) is failed then.
+const JOB_DEADLINE: std::time::Duration = std::time::Duration::from_secs(3 * 3600);
+
+#[derive(Debug)]
+struct JobTimeout;
+
+impl std::fmt::Display for JobTimeout {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the import took too long")
+    }
+}
+
+impl std::error::Error for JobTimeout {}
+
+/// Audits how an import ended (`history.import.done` or `history.import.failed`).
+async fn audit_end(s: &AppState, id: Uuid) {
+    let Ok(Some((i, project))) = s.store.history_import_with_project(id).await else {
+        return;
+    };
+    let action = match i.status.as_str() {
+        "done" => "history.import.done",
+        "failed" => "history.import.failed",
+        _ => return,
+    };
+    let mut e = franshub_access::AuditEvent::anonymous(
+        &i.created_by,
+        Some("system"),
+        action,
+        serde_json::json!({"importId": id, "pointsDone": i.points_done,
+            "launchesCreated": i.launches_created, "resultsImported": i.results_imported,
+            "resultsUnmatched": i.results_unmatched, "resultsSkipped": i.results_skipped,
+            "error": i.error}),
+    );
+    e.scope = Some(project);
+    s.platform.audit(e).await;
+}
+
 /// Imports a replica runs at once.
 const WORKERS: usize = 1;
 /// Seconds between heartbeats of a running job.
@@ -74,14 +111,20 @@ pub fn spawn_job(s: &AppState, id: Uuid) {
         let Ok(_permit) = workers(&s.instance).acquire_owned().await else {
             return;
         };
-        if let Err(e) = run_job(&s, id).await {
+        let ran = match tokio::time::timeout(JOB_DEADLINE, run_job(&s, id)).await {
+            Ok(r) => r,
+            Err(_) => Err(anyhow::anyhow!(JobTimeout)),
+        };
+        if let Err(e) = ran {
             tracing::warn!(job = %id, error = %format!("{e:#}"), "history import failed");
             let msg = match e.downcast_ref::<fastproof_ingest::IngestError>() {
                 Some(ie) => ie.to_string(),
+                None if e.is::<JobTimeout>() => "the import took too long".to_string(),
                 None => "the import failed".to_string(),
             };
             let _ = s.store.fail_history_import(id, &msg).await;
         }
+        audit_end(&s, id).await;
     });
 }
 
@@ -161,7 +204,11 @@ async fn run_job(s: &AppState, id: Uuid) -> anyhow::Result<()> {
         branch: job.import.branch.clone(),
         environment: job.import.environment.clone(),
         created_by: job.import.created_by.clone(),
-        not_before: Utc::now() - Duration::days(settings.retention.raw_days.min(36_500) as i64),
+        not_before: Utc::now()
+            - Duration::days(
+                i64::from(settings.retention.raw_days)
+                    .min(fastproof_store::history_import::MAX_IMPORT_AGE_DAYS),
+            ),
     };
     let dir = TempDir(s.cfg.spool_dir.join("history-imports").join(id.to_string()));
     std::fs::create_dir_all(&dir.0)?;

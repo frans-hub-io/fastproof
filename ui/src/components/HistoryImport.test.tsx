@@ -66,6 +66,6 @@ describe('HistoryImport', () => {
   it('is read-only without the permission', () => {
     renderWith(<HistoryImport project="web-shop" canWrite={false} />);
     expect(screen.getByTestId('history-submit')).toBeDisabled();
-    expect(screen.getByText('Importing needs the permission to write launches.')).toBeVisible();
+    expect(screen.getByText('Importing history needs the permission to change project settings.')).toBeVisible();
   });
 });

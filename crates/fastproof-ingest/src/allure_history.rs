@@ -59,6 +59,8 @@ pub struct HistoryLimits {
     pub max_results_per_point: u64,
     /// Earlier attempts kept per result.
     pub max_retries: u64,
+    /// Attempts (every result and its earlier attempts) of one import.
+    pub max_attempts: u64,
     /// Kept length of a test name.
     pub max_name_bytes: u64,
     /// Kept length of a failure message.
@@ -84,7 +86,8 @@ impl Default for HistoryLimits {
             max_items_per_series: 1000,
             max_results: 500_000,
             max_results_per_point: 100_000,
-            max_retries: 20,
+            max_retries: 5,
+            max_attempts: 1_000_000,
             max_name_bytes: 4 * KIB,
             max_message_bytes: KIB,
             max_trend_entries: 50,
@@ -371,11 +374,146 @@ pub struct Parsed {
     pub report: HistoryReport,
 }
 
+/// Members kept of the `data` object of a trend entry (the known numbers and the categories).
+const TREND_DATA_MEMBERS: usize = 64;
+
 #[derive(Default)]
 struct TrendEntry {
-    data: Value,
+    data: Vec<(String, f64)>,
     name: Option<String>,
     url: Option<String>,
+}
+
+impl TrendEntry {
+    fn get(&self, key: &str) -> Option<i64> {
+        self.data
+            .iter()
+            .find(|(k, _)| k == key)
+            .and_then(|(_, v)| number(&Value::from(*v)))
+    }
+}
+
+/// A JSON number, or nothing for any other value (which is read and dropped).
+struct Num(Option<f64>);
+
+impl<'de> de::Deserialize<'de> for Num {
+    fn deserialize<D: de::Deserializer<'de>>(d: D) -> Result<Num, D::Error> {
+        struct V;
+        impl<'de> Visitor<'de> for V {
+            type Value = Num;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("any value")
+            }
+            fn visit_i64<E>(self, v: i64) -> Result<Num, E> {
+                Ok(Num(Some(v as f64)))
+            }
+            fn visit_u64<E>(self, v: u64) -> Result<Num, E> {
+                Ok(Num(Some(v as f64)))
+            }
+            fn visit_f64<E>(self, v: f64) -> Result<Num, E> {
+                Ok(Num(v.is_finite().then_some(v)))
+            }
+            fn visit_bool<E>(self, _: bool) -> Result<Num, E> {
+                Ok(Num(None))
+            }
+            fn visit_str<E>(self, _: &str) -> Result<Num, E> {
+                Ok(Num(None))
+            }
+            fn visit_unit<E>(self) -> Result<Num, E> {
+                Ok(Num(None))
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, mut a: A) -> Result<Num, A::Error> {
+                while a.next_element::<IgnoredAny>()?.is_some() {}
+                Ok(Num(None))
+            }
+            fn visit_map<A: MapAccess<'de>>(self, mut a: A) -> Result<Num, A::Error> {
+                while a.next_entry::<IgnoredAny, IgnoredAny>()?.is_some() {}
+                Ok(Num(None))
+            }
+        }
+        d.deserialize_any(V)
+    }
+}
+
+/// The `data` object of a trend entry: at most [`TREND_DATA_MEMBERS`] numeric members are kept.
+struct DataMembers(Vec<(String, f64)>);
+
+impl<'de> de::Deserialize<'de> for DataMembers {
+    fn deserialize<D: de::Deserializer<'de>>(d: D) -> Result<DataMembers, D::Error> {
+        struct V;
+        impl<'de> Visitor<'de> for V {
+            type Value = DataMembers;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("an object")
+            }
+            fn visit_unit<E>(self) -> Result<DataMembers, E> {
+                Ok(DataMembers(Vec::new()))
+            }
+            fn visit_map<A: MapAccess<'de>>(self, mut m: A) -> Result<DataMembers, A::Error> {
+                let mut out = Vec::new();
+                while let Some(k) = m.next_key::<String>()? {
+                    if out.len() < TREND_DATA_MEMBERS {
+                        if let Num(Some(v)) = m.next_value()? {
+                            out.push((k, v));
+                        }
+                    } else {
+                        m.next_value::<IgnoredAny>()?;
+                    }
+                }
+                Ok(DataMembers(out))
+            }
+        }
+        d.deserialize_any(V)
+    }
+}
+
+#[derive(serde::Deserialize, Default)]
+#[serde(default)]
+struct RawTrendEntry {
+    data: Option<DataMembers>,
+    #[serde(rename = "reportName")]
+    report_name: Option<String>,
+    #[serde(rename = "reportUrl")]
+    report_url: Option<String>,
+}
+
+/// The entries of a trend file, at most `max` of them; a longer list sets `tripped`.
+struct EntriesSeed<'a> {
+    max: u64,
+    tripped: &'a Cell<bool>,
+    limits: &'a HistoryLimits,
+}
+
+impl<'de> DeserializeSeed<'de> for EntriesSeed<'_> {
+    type Value = Vec<TrendEntry>;
+    fn deserialize<D: de::Deserializer<'de>>(self, d: D) -> Result<Self::Value, D::Error> {
+        d.deserialize_seq(self)
+    }
+}
+
+impl<'de> Visitor<'de> for EntriesSeed<'_> {
+    type Value = Vec<TrendEntry>;
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("a list")
+    }
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+        let mut out = Vec::new();
+        while let Some(e) = seq.next_element::<RawTrendEntry>()? {
+            if out.len() as u64 >= self.max {
+                self.tripped.set(true);
+                return Err(de::Error::custom("too many entries"));
+            }
+            out.push(TrendEntry {
+                data: e.data.map(|d| d.0).unwrap_or_default(),
+                name: text(
+                    e.report_name.map(Value::String).as_ref(),
+                    self.limits.max_name_bytes,
+                ),
+                url: text(e.report_url.map(Value::String).as_ref(), 512),
+            });
+        }
+        Ok(out)
+    }
 }
 
 fn parse_trend(
@@ -391,29 +529,24 @@ fn parse_trend(
         return Err(limit("max_trend_bytes", limits.max_trend_bytes, file));
     }
     scan(bytes, limits, file)?;
-    let v: Value =
-        match serde_json::from_slice(bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes)) {
-            Ok(v) => v,
-            Err(e) => {
-                report.warn(format!("{file}: not valid JSON ({e}); ignored"));
-                return Ok(Vec::new());
-            }
-        };
-    let Value::Array(items) = v else {
-        report.warn(format!("{file}: not a list; ignored"));
-        return Ok(Vec::new());
-    };
-    if items.len() as u64 > limits.max_points {
-        return Err(limit("max_points", limits.max_points, file));
+    let tripped = Cell::new(false);
+    let mut de =
+        serde_json::Deserializer::from_slice(bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes));
+    let parsed = EntriesSeed {
+        max: limits.max_points,
+        tripped: &tripped,
+        limits,
     }
-    Ok(items
-        .into_iter()
-        .map(|e| TrendEntry {
-            name: text(e.get("reportName"), limits.max_name_bytes),
-            url: text(e.get("reportUrl"), 512),
-            data: e.get("data").cloned().unwrap_or(Value::Null),
-        })
-        .collect())
+    .deserialize(&mut de)
+    .and_then(|v| de.end().map(|_| v));
+    match parsed {
+        Ok(v) => Ok(v),
+        Err(_) if tripped.get() => Err(limit("max_points", limits.max_points, file)),
+        Err(e) => {
+            report.warn(format!("{file}: not a valid list ({e}); ignored"));
+            Ok(Vec::new())
+        }
+    }
 }
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone)]
@@ -527,6 +660,13 @@ pub fn parse_allure2(
 
     let mut points = Vec::with_capacity(groups.len());
     for (g, members) in &groups {
+        if members.len() as u64 > limits.max_results_per_point {
+            return Err(limit(
+                "max_results_per_point",
+                limits.max_results_per_point,
+                "history.json",
+            ));
+        }
         let min_start = members
             .iter()
             .filter_map(|(_, i)| i.span().map(|s| s.0))
@@ -563,8 +703,8 @@ pub fn parse_allure2(
         let mut trend = HistoryTrend::default();
         let mut name = None;
         if let Some(i) = trend_for(&totals, g) {
-            let d = &totals[i].data;
-            let n = |k: &str| d.get(k).and_then(number).unwrap_or(0).max(0);
+            let d = &totals[i];
+            let n = |k: &str| d.get(k).unwrap_or(0).max(0);
             trend.totals = Some(HistoryTotals {
                 passed: n("passed"),
                 failed: n("failed"),
@@ -577,24 +717,21 @@ pub fn parse_allure2(
         }
         if let Some(i) = trend_for(&durations, g) {
             trend.duration_ms = durations[i]
-                .data
                 .get("duration")
-                .and_then(number)
                 .filter(|d| (0..=MAX_DURATION_MS).contains(d));
             name = name.or_else(|| durations[i].name.clone());
         }
         if let Some(i) = trend_for(&retries, g) {
-            let d = &retries[i].data;
-            trend.retries = d.get("retry").and_then(number).filter(|v| *v >= 0);
-            trend.runs = d.get("run").and_then(number).filter(|v| *v >= 0);
+            let d = &retries[i];
+            trend.retries = d.get("retry").filter(|v| *v >= 0);
+            trend.runs = d.get("run").filter(|v| *v >= 0);
         }
-        if let Some(i) = trend_for(&categories, g)
-            && let Value::Object(m) = &categories[i].data
-        {
-            trend.categories = m
+        if let Some(i) = trend_for(&categories, g) {
+            trend.categories = categories[i]
+                .data
                 .iter()
                 .filter_map(|(k, v)| {
-                    number(v)
+                    number(&Value::from(*v))
                         .filter(|n| *n >= 0)
                         .map(|n| (clip(k, limits.max_name_bytes.min(100)), n))
                 })
@@ -626,6 +763,16 @@ pub fn parse_allure2(
             false
         }
     });
+    if points
+        .iter()
+        .any(|p| p.results.len() as u64 > limits.max_results_per_point)
+    {
+        return Err(limit(
+            "max_results_per_point",
+            limits.max_results_per_point,
+            "history.json",
+        ));
+    }
     if report.misaligned_points > 0 {
         report.warn(format!(
             "{} past reports group runs that started more than 3 days apart: tests that did not run in every report shift the alignment (use report URLs or import the history of one pipeline only)",
@@ -642,6 +789,7 @@ pub struct Allure3Reader<R> {
     limits: HistoryLimits,
     bytes: u64,
     results: Cell<u64>,
+    attempts: Cell<u64>,
     pub report: HistoryReport,
 }
 
@@ -652,6 +800,7 @@ impl<R: BufRead> Allure3Reader<R> {
             limits,
             bytes: 0,
             results: Cell::new(0),
+            attempts: Cell::new(0),
             report: HistoryReport::default(),
         }
     }
@@ -722,6 +871,7 @@ impl<R: BufRead> Allure3Reader<R> {
         let state = RefCell::new(PointState {
             limits: self.limits.clone(),
             results_total: &self.results,
+            attempts_total: &self.attempts,
             results: Vec::new(),
             skipped: 0,
             uuid: None,
@@ -780,6 +930,7 @@ enum PointError {
 struct PointState<'a> {
     limits: HistoryLimits,
     results_total: &'a Cell<u64>,
+    attempts_total: &'a Cell<u64>,
     results: Vec<HistoryResult>,
     skipped: u64,
     uuid: Option<String>,
@@ -875,7 +1026,16 @@ impl<'de> Visitor<'de> for ResultsSeed<'_, '_> {
             }
             st.results_total.set(total);
             match result_of(&key, &v, &st.limits) {
-                Some(r) => st.results.push(r),
+                Some(r) => {
+                    let attempts = st.attempts_total.get() + 1 + r.retries.len() as u64;
+                    let max = st.limits.max_attempts;
+                    if attempts > max {
+                        st.tripped = Some(("max_attempts", max));
+                        return Err(de::Error::custom("limit max_attempts exceeded"));
+                    }
+                    st.attempts_total.set(attempts);
+                    st.results.push(r)
+                }
                 None => st.skipped += 1,
             }
         }
@@ -1043,6 +1203,77 @@ mod tests {
         );
         assert_eq!(tight(|l| l.max_points = 2), Some("max_points"));
         assert_eq!(tight(|l| l.max_json_depth = 2), Some("max_json_depth"));
+    }
+
+    #[test]
+    fn allure2_caps_results_of_one_report_and_trend_entries() {
+        let h = history(5, 1);
+        let l = HistoryLimits {
+            max_results_per_point: 4,
+            ..Default::default()
+        };
+        let e = parse_allure2(
+            &Allure2Files {
+                history: h.as_bytes(),
+                ..Default::default()
+            },
+            &l,
+        )
+        .unwrap_err();
+        assert_eq!(e.limit_name(), Some("max_results_per_point"));
+        let h = history(1, 1);
+        let many = format!("[{}]", vec![r#"{"data":{}}"#; 20].join(","));
+        let l = HistoryLimits {
+            max_points: 10,
+            ..Default::default()
+        };
+        let e = parse_allure2(
+            &Allure2Files {
+                history: h.as_bytes(),
+                history_trend: Some(many.as_bytes()),
+                ..Default::default()
+            },
+            &l,
+        )
+        .unwrap_err();
+        assert_eq!(e.limit_name(), Some("max_points"));
+    }
+
+    #[test]
+    fn trend_data_keeps_a_bounded_number_of_numeric_members() {
+        let members: Vec<String> = (0..500).map(|i| format!("\"c{i}\":{i}")).collect();
+        let t = format!(
+            r#"[{{"data":{{{},"junk":[1,{{"a":2}}],"s":"x"}}}}]"#,
+            members.join(",")
+        );
+        let h = history(1, 1);
+        let p = parse_allure2(
+            &Allure2Files {
+                history: h.as_bytes(),
+                categories_trend: Some(t.as_bytes()),
+                ..Default::default()
+            },
+            &HistoryLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(p.points[0].trend.categories.len(), 50);
+    }
+
+    #[test]
+    fn allure3_caps_attempts_of_an_import() {
+        let t = format!(
+            "{}\n{}\n",
+            line("a", 1_700_000_000_000, 3),
+            line("b", 1_700_000_100_000, 3)
+        );
+        let l = HistoryLimits {
+            max_attempts: 10,
+            ..Default::default()
+        };
+        assert_eq!(
+            read(&t, l).2.and_then(|e| e.limit_name()),
+            Some("max_attempts")
+        );
     }
 
     #[test]

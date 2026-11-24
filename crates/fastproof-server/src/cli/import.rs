@@ -198,7 +198,9 @@ async fn allure_history(a: AllureHistoryArgs) -> anyhow::Result<i32> {
         .header(reqwest::header::CONTENT_LENGTH, len)
         .body(payload);
     let job: Value = client.send(rb).await?;
-    let id = job["id"].as_str().unwrap_or_default().to_string();
+    let id = Uuid::parse_str(job["id"].as_str().unwrap_or_default())
+        .context("the server answered without an import id")?
+        .to_string();
     eprintln!("import {id} queued");
     if a.no_wait {
         println!("{id}");

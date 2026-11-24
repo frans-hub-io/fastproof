@@ -216,6 +216,14 @@ impl Store {
         .bind(id)
         .execute(&mut *tx)
         .await?;
+        sqlx::query(
+            "insert into blob_deletions (prefix, project_id) \
+             select f ->> 'blobKey', null from history_imports h, jsonb_array_elements(h.files) f \
+             where h.project_id = $1 and f ->> 'blobKey' like 'tm-jobs/%'",
+        )
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
         sqlx::query("update ingest_jobs set status = 'failed', last_error = 'project deleted', updated_at = now() \
              where status in ('queued', 'running') and upload_id in (select id from uploads where project_id = $1)")
             .bind(id)

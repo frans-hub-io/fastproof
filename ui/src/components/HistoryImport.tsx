@@ -143,7 +143,7 @@ export function HistoryImport({ project, canWrite }: { project: string; canWrite
           </SimpleGrid>
           {!canWrite && (
             <Alert color="gray" variant="light">
-              Importing needs the permission to write launches.
+              Importing history needs the permission to change project settings.
             </Alert>
           )}
           <Group>

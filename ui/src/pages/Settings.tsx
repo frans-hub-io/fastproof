@@ -683,7 +683,6 @@ export default function SettingsPage() {
   const project = useProject(key);
   const canWrite = useCan('settings:write', key);
   const canReadCases = useCan('cases:read', key);
-  const canImport = useCan('launches:write', key);
   const settings = useSettings(key);
   const [sp, setSp] = useSearchParams();
   const tab = sp.get('tab') ?? 'general';
@@ -739,7 +738,7 @@ export default function SettingsPage() {
           <Secrets project={key} canWrite={canWrite} />
         </Tabs.Panel>
         <Tabs.Panel value="history" pt="md">
-          <HistoryImport project={key} canWrite={canImport} />
+          <HistoryImport project={key} canWrite={canWrite} />
         </Tabs.Panel>
       </Tabs>
     </>

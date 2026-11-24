@@ -58,7 +58,7 @@ See [Live logs](../guide/live-logs.md) for the log fields.
 
 `POST .../history-imports` and `fastproof import allure-history` have their own fixed limits: `history.json` 32 MiB,
 each trend file 4 MiB, an Allure 3 history file 256 MiB (a line 32 MiB, 1000 reports), 200 000 tests in
-`history.json`, 500 000 results per import, one running import per project. See
+`history.json`, 500 000 results and 1 000 000 attempts per import, reports at most 10 years old, one running import per project and per caller, four on the server. Each file also respects `max_upload_bytes`. See
 [Importing Allure history](../guide/importing-allure-history.md#limits).
 
 ## API limits

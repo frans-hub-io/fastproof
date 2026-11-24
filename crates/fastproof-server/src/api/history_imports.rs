@@ -1,7 +1,7 @@
 //! Import of the history of Allure reports: `POST /projects/{key}/history-imports` takes the
 //! history files of an Allure 2 report (`history.json` and the four trend files) or an Allure 3
 //! history file, spools them with per-file size limits and queues a background job that
-//! turns every past report into a launch. Permission: `launches:write` to import,
+//! turns every past report into a launch. Permission: `settings:write` to import,
 //! `launches:read` to read the status.
 
 use axum::Json;
@@ -59,6 +59,21 @@ pub struct ImportList {
     pub items: Vec<HistoryImport>,
 }
 
+fn denied(d: CreateDenied) -> ApiError {
+    match d {
+        CreateDenied::Busy => ApiError::new(
+            StatusCode::CONFLICT,
+            "history_import_busy",
+            "an import of this project or by you is queued or running, or the server is busy; retry when it is done",
+        ),
+        CreateDenied::Quota => ApiError::new(
+            StatusCode::CONFLICT,
+            "history_import_quota",
+            "the imports of the last 24 hours are used up; retry later",
+        ),
+    }
+}
+
 fn label(name: &str, v: Option<&str>) -> ApiResult<Option<String>> {
     let Some(v) = v.map(str::trim).filter(|v| !v.is_empty()) else {
         return Ok(None);
@@ -78,7 +93,7 @@ fn label(name: &str, v: Option<&str>) -> ApiResult<Option<String>> {
         `allure2`, `historyTrend`, `durationTrend`, `categoriesTrend` and `retryTrend`. Limits: `history.json` 32 MiB, \
         an Allure 3 file 256 MiB (a line 32 MiB, 1000 reports), each trend file 4 MiB, 500 000 results, 200 000 tests \
         in `history.json`. One import per project at a time; 20 per project per day. A second import of the same files \
-        adds nothing. Reports older than the project's retention window are left out. Needs `launches:write`.",
+        adds nothing. Reports older than the project's retention window are left out. Needs `settings:write`.",
     params(("key" = String, Path), ImportQuery),
     request_body(content = Vec<u8>, content_type = "multipart/form-data", description = "fields `history`, `historyTrend`, `durationTrend`, `categoriesTrend`, `retryTrend`"),
     responses((status = 202, body = HistoryImport), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),
@@ -90,7 +105,7 @@ pub async fn create_import(
     Q(q): Q<ImportQuery>,
     req: Request,
 ) -> ApiResult<(StatusCode, Json<HistoryImport>)> {
-    let project = s.project_for(&auth, &key, &s.perms.launches_write).await?;
+    let project = s.project_for(&auth, &key, &s.perms.settings_write).await?;
     let source = match q.source.as_str() {
         "allure2" | "allure3" => q.source.clone(),
         _ => return Err(ApiError::bad_request("source must be allure2 or allure3")),
@@ -98,6 +113,11 @@ pub async fn create_import(
     let branch = label("branch", q.branch.as_deref())?;
     let environment = label("environment", q.environment.as_deref())?;
     identity_encoding(&req)?;
+    let owner = caller_key(&auth);
+    s.store
+        .history_import_precheck(project.id, &owner)
+        .await?
+        .map_err(denied)?;
     let _spool = s.guards.spool().await?;
     let id = Uuid::now_v7();
     let dir = s.cfg.spool_dir.join("history-imports-incoming");
@@ -146,7 +166,7 @@ pub async fn create_import(
                 )));
             }
             let path = dir.join(format!("{id}-{blob}"));
-            let max = max_file_bytes(&source, blob, &limits);
+            let max = max_file_bytes(&source, blob, &limits).min(s.cfg.max_upload_bytes);
             let f = fastproof_blob::spool_stream(&path, Box::pin(field), max)
                 .await
                 .map_err(|e| spool_error(e, &format!("max_{}_bytes", blob.replace('-', "_"))))?;
@@ -165,35 +185,12 @@ pub async fn create_import(
         return Err(e);
     }
     let mut files: Vec<ImportFile> = Vec::new();
-    let mut put: ApiResult<()> = Ok(());
     for (name, f) in &spooled {
-        let k = BlobKey::tm_job(&id.to_string(), name)?;
-        match s.blobs.put_file(&k, &f.path).await {
-            Ok(_) => files.push(ImportFile {
-                name: name.clone(),
-                blob_key: k.to_string(),
-                size: f.size as i64,
-            }),
-            Err(e) => {
-                put = Err(e.into());
-                break;
-            }
-        }
-    }
-    cleanup(&spooled);
-    let delete_all = |files: Vec<ImportFile>| {
-        let s = s.clone();
-        async move {
-            for f in files {
-                if let Ok(k) = BlobKey::parse(&f.blob_key) {
-                    let _ = s.blobs.delete(&k).await;
-                }
-            }
-        }
-    };
-    if let Err(e) = put {
-        delete_all(files).await;
-        return Err(e);
+        files.push(ImportFile {
+            name: name.clone(),
+            blob_key: BlobKey::tm_job(&id.to_string(), name)?.to_string(),
+            size: f.size as i64,
+        });
     }
     let created = s
         .store
@@ -205,27 +202,39 @@ pub async fn create_import(
             environment.as_deref(),
             &files,
             &auth.principal.name,
-            &caller_key(&auth),
+            &owner,
         )
-        .await?;
+        .await;
     let job = match created {
-        Ok(j) => j,
-        Err(d) => {
-            delete_all(files).await;
-            return Err(match d {
-                CreateDenied::Busy => ApiError::new(
-                    StatusCode::CONFLICT,
-                    "history_import_busy",
-                    "an import of this project is queued or running, or the server is busy; retry when it is done",
-                ),
-                CreateDenied::Quota => ApiError::new(
-                    StatusCode::CONFLICT,
-                    "history_import_quota",
-                    "the imports of the last 24 hours are used up; retry later",
-                ),
-            });
+        Ok(Ok(j)) => j,
+        Ok(Err(d)) => {
+            cleanup(&spooled);
+            return Err(denied(d));
+        }
+        Err(e) => {
+            cleanup(&spooled);
+            return Err(e.into());
         }
     };
+    let mut put: ApiResult<()> = Ok(());
+    for ((_, f), file) in spooled.iter().zip(&files) {
+        let stored = match BlobKey::parse(&file.blob_key) {
+            Ok(k) => s.blobs.put_file(&k, &f.path).await,
+            Err(e) => Err(e),
+        };
+        if let Err(e) = stored {
+            put = Err(e.into());
+            break;
+        }
+    }
+    cleanup(&spooled);
+    if let Err(e) = put {
+        let _ = s
+            .store
+            .fail_history_import(id, "the files could not be stored")
+            .await;
+        return Err(e);
+    }
     s.audit(
         &auth,
         "history.import",

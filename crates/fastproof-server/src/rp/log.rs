@@ -210,6 +210,14 @@ async fn write(s: &AppState, jobs: &[LogJob]) -> anyhow::Result<HashMap<usize, i
         if !late.is_empty() {
             metrics::counter!("fastproof_rp_late_total", "kind" => "log")
                 .increment(late.len() as u64);
+            let errors = notes
+                .iter()
+                .filter(|(u, e)| e.is_some() && late.contains(u))
+                .count();
+            if errors > 0 {
+                metrics::counter!("fastproof_rp_late_total", "kind" => "error")
+                    .increment(errors as u64);
+            }
             s.store.rp_hold(project_id, &late).await?;
         }
         for l in lines {

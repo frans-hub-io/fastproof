@@ -53,7 +53,7 @@
           "attachments": [
             "always-fails_error-context text 57",
             "always-fails_screenshot image 5396",
-            "always-fails_trace other 7249"
+            "always-fails_trace trace 7249"
           ]
         },
         {
@@ -80,7 +80,7 @@
           "attachments": [
             "always-fails_error-context text 57",
             "always-fails_screenshot image 5396",
-            "always-fails_trace other 7837"
+            "always-fails_trace trace 7837"
           ]
         }
       ],
@@ -115,7 +115,7 @@
             "After Hooks [passed] step"
           ],
           "attachments": [
-            "annotated-smoke_trace other 411"
+            "annotated-smoke_trace trace 411"
           ]
         }
       ],
@@ -162,7 +162,7 @@
           "attachments": [
             "fails-on-first-attempt-then-passes_error-context text 56",
             "fails-on-first-attempt-then-passes_screenshot image 5022",
-            "fails-on-first-attempt-then-passes_trace other 6586"
+            "fails-on-first-attempt-then-passes_trace trace 6586"
           ]
         },
         {
@@ -186,7 +186,7 @@
           ],
           "attachments": [
             "fails-on-first-attempt-then-passes_screenshot image 5022",
-            "fails-on-first-attempt-then-passes_trace other 5669"
+            "fails-on-first-attempt-then-passes_trace trace 5669"
           ]
         }
       ],
@@ -223,7 +223,7 @@
             "After Hooks [passed] step"
           ],
           "attachments": [
-            "nested-pass_trace other 411"
+            "nested-pass_trace trace 411"
           ]
         }
       ],
@@ -301,7 +301,7 @@
           ],
           "attachments": [
             "passes-with-steps_screenshot image 5732",
-            "passes-with-steps_trace other 7846"
+            "passes-with-steps_trace trace 7846"
           ]
         }
       ],
@@ -349,7 +349,7 @@
             "with-attachment-and-logs_data.json json 7",
             "with-attachment-and-logs_note.txt text 16",
             "with-attachment-and-logs_screenshot image 4253",
-            "with-attachment-and-logs_trace other 4575"
+            "with-attachment-and-logs_trace trace 4575"
           ]
         }
       ],
@@ -383,7 +383,7 @@
             "After Hooks [passed] step"
           ],
           "attachments": [
-            "parametrized-1_trace other 1378"
+            "parametrized-1_trace trace 1378"
           ]
         }
       ],
@@ -416,7 +416,7 @@
             "After Hooks [passed] step"
           ],
           "attachments": [
-            "parametrized-2_trace other 1380"
+            "parametrized-2_trace trace 1380"
           ]
         }
       ],
@@ -453,7 +453,7 @@
             "  Fixture \"browser\" [passed] step"
           ],
           "attachments": [
-            "fails-with-assertion_trace other 1315"
+            "fails-with-assertion_trace trace 1315"
           ]
         },
         {
@@ -467,7 +467,7 @@
             "Worker Cleanup [passed] step"
           ],
           "attachments": [
-            "fails-with-assertion_trace other 1282"
+            "fails-with-assertion_trace trace 1282"
           ]
         }
       ],
@@ -514,7 +514,7 @@
           ],
           "attachments": [
             "renders-name_screenshot image 5105",
-            "renders-name_trace other 5751"
+            "renders-name_trace trace 5751"
           ]
         }
       ],

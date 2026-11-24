@@ -351,7 +351,11 @@ pub async fn finish(
         .rp_request_finish(p.id, &info.uuid, Some(status), false)
         .await?;
     s.store
-        .rp_settle_by(current.id, s.cfg.rp.settle.as_millis() as i64)
+        .rp_settle_by(
+            current.id,
+            s.cfg.rp.settle.as_millis() as i64,
+            s.cfg.rp.error_wait.as_millis() as i64,
+        )
         .await?;
     s.rp.launches.remove(&(p.id, info.uuid.clone()));
     s.rp.wake.notify_one();

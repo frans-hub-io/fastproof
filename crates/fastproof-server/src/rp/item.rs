@@ -400,6 +400,7 @@ pub async fn finish(
         triage_by,
         state: state.to_string(),
         settle_ms: s.cfg.rp.settle.as_millis() as i64,
+        error_wait_ms: s.cfg.rp.error_wait.as_millis() as i64,
     };
     if let Some(u) = s.store.rp_item_finish(p.id, &iid, &f).await? {
         if u.role == "container" && u.running_sent {

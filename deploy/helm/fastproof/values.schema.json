@@ -524,6 +524,11 @@
               "minimum": 0,
               "maximum": 60000
             },
+            "errorWaitMs": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 600000
+            },
             "finishGraceSeconds": {
               "type": "integer",
               "minimum": 0,

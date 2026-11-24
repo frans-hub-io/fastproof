@@ -36,6 +36,7 @@ server:
   rp:
     enabled: true
     settleMs: 2000
+    errorWaitMs: 30000
     finishGraceSeconds: 120
     launchIdleTimeout: 1h
     maxRequestBytes: 67108864

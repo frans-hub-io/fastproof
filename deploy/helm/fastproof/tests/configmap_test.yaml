@@ -110,6 +110,9 @@ tests:
           path: data.FASTPROOF_RP_SETTLE_MS
           value: "500"
       - equal:
+          path: data.FASTPROOF_RP_ERROR_WAIT_MS
+          value: "30000"
+      - equal:
           path: data.FASTPROOF_RP_LAUNCH_IDLE_TIMEOUT
           value: 30m
       - equal:

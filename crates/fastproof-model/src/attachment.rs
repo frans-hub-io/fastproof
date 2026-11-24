@@ -63,6 +63,11 @@ impl AttachmentKind {
         if lower.ends_with("trace.zip") || (ext == "zip" && lower.contains("trace")) {
             return AttachmentKind::Trace;
         }
+        // Playwright attaches its trace as `trace` (application/zip); the ReportPortal agent
+        // sends it as `<test title>_trace`, without an extension.
+        if ct == "application/zip" && (lower == "trace" || lower.ends_with("_trace")) {
+            return AttachmentKind::Trace;
+        }
         if ext == "httpexchange" || ext == "imagediff" {
             return if ext == "imagediff" {
                 AttachmentKind::ImageDiff
@@ -169,5 +174,35 @@ mod tests {
             AttachmentKind::HttpExchange
         );
         assert_eq!(AttachmentKind::infer(None, "bin"), AttachmentKind::Other);
+    }
+
+    #[test]
+    fn playwright_traces_without_an_extension() {
+        for name in [
+            "checkout-passes-with-steps_trace",
+            "Renders-Name_TRACE",
+            "trace",
+        ] {
+            assert_eq!(
+                AttachmentKind::infer(Some("application/zip"), name),
+                AttachmentKind::Trace,
+                "{name}"
+            );
+        }
+        for (ct, name) in [
+            (Some("application/zip"), "artifacts"),
+            (Some("application/zip"), "backup.zip"),
+            (Some("application/zip"), "stacktrace"),
+            (Some("application/zip"), "trace_dump"),
+            (Some("application/octet-stream"), "checkout_trace"),
+            (Some("text/plain"), "checkout_trace"),
+            (None, "checkout_trace"),
+        ] {
+            assert_ne!(
+                AttachmentKind::infer(ct, name),
+                AttachmentKind::Trace,
+                "{ct:?} {name}"
+            );
+        }
     }
 }

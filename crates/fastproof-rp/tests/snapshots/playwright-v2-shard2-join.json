@@ -43,7 +43,7 @@
             "  Fixture \"browser\" [passed] step"
           ],
           "attachments": [
-            "fails-with-assertion_trace other 1310"
+            "fails-with-assertion_trace trace 1310"
           ]
         },
         {
@@ -57,7 +57,7 @@
             "Worker Cleanup [passed] step"
           ],
           "attachments": [
-            "fails-with-assertion_trace other 1279"
+            "fails-with-assertion_trace trace 1279"
           ]
         }
       ],
@@ -104,7 +104,7 @@
           ],
           "attachments": [
             "renders-name_screenshot image 5105",
-            "renders-name_trace other 5739"
+            "renders-name_trace trace 5739"
           ]
         }
       ],

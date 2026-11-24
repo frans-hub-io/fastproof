@@ -80,6 +80,19 @@ pub struct RpItem {
     pub created_by: String,
 }
 
+/// Whether the item `a` (a result or failed fixture), finishing with `status`, waits for its
+/// failure text: it failed (or, without a status, a step of it failed) and no ERROR line has
+/// given it an error yet. Agents send ERROR lines in batches, some only after the launch
+/// finish.
+fn awaits_error(a: &str, status: &str) -> String {
+    format!(
+        "({a}.error is null and (upper(coalesce({status}, '')) = 'FAILED' \
+         or (upper(coalesce({status}, '')) not in ('PASSED', 'INFO', 'WARN', 'SKIPPED', 'STOPPED', 'INTERRUPTED', 'CANCELLED') \
+           and exists (select 1 from rp_items s where s.project_id = {a}.project_id and s.owner_uuid = {a}.uuid \
+             and s.role = 'step' and upper(coalesce(s.status, '')) = 'FAILED'))))"
+    )
+}
+
 const ITEM_COLUMNS: &str = "project_id, uuid, launch_id, rp_launch, num_id, parent_uuid, role, depth, \
     owner_uuid, log_key, log_step, seq_uuid, error_uuid, suite_path, item_type, has_stats, name, code_ref, \
     test_case_id, description, params, attrs, start_ms, stop_ms, status, issue, attachments, error, retry, \
@@ -158,6 +171,8 @@ pub struct ItemFinish {
     pub state: String,
     /// Settle delay of results, in milliseconds.
     pub settle_ms: i64,
+    /// How long a failed result without an error waits for its ERROR line, in milliseconds.
+    pub error_wait_ms: i64,
 }
 
 /// What became of attachments added to an item.
@@ -486,11 +501,14 @@ impl Store {
                triage_by = $11, state = $12, \
                settle_at = case when $12 = 'finished' and role in ('result', 'fixture') then \
                  case when exists (select 1 from rp_launches l where l.project_id = $1 and l.uuid = rp_items.rp_launch and l.hold) \
-                   then 'infinity'::timestamptz else now() + make_interval(secs => $13::double precision / 1000) end \
+                   then 'infinity'::timestamptz \
+                   when {} then now() + make_interval(secs => $14::double precision / 1000) \
+                   else now() + make_interval(secs => $13::double precision / 1000) end \
                  else null end, \
                emitted_at = case when $12 = 'emitted' then now() else null end \
              where project_id = $1 and uuid = $2 and (state = 'started' or (state = 'pending' and stop_ms is null)) \
-             returning {ITEM_COLUMNS}"
+             returning {ITEM_COLUMNS}",
+            awaits_error("rp_items", "$4::text")
         )))
         .bind(project_id)
         .bind(no_nul(uuid))
@@ -505,6 +523,7 @@ impl Store {
         .bind(opt(&f.triage_by))
         .bind(&f.state)
         .bind(f.settle_ms)
+        .bind(f.error_wait_ms.max(f.settle_ms))
         .fetch_optional(&self.pool)
         .await?;
         Ok(r.as_ref().map(item_row).transpose()?)
@@ -627,8 +646,9 @@ impl Store {
     }
 
     /// Lines of items: sets the error text of their result or fixture (for ERROR lines) and
-    /// moves the settle time of finished ones `settle_ms` from now. Returns the items that
-    /// were emitted already (the lines came late).
+    /// moves the settle time of finished ones `settle_ms` from now (a failed one that was
+    /// waiting for its error settles `settle_ms` after it came). Returns the items that were
+    /// emitted already (the lines came late).
     pub async fn rp_note_lines(
         &self,
         project_id: Uuid,
@@ -646,9 +666,11 @@ impl Store {
             "with locked as (select uuid from rp_items where project_id = $1 and uuid = any($2) \
                and state not in ('emitting', 'emitted') order by uuid for update) \
              update rp_items r set error = coalesce(v.e, r.error), \
-               settle_at = case when r.state = 'finished' and r.settle_at is not null \
-                 then greatest(r.settle_at, now() + make_interval(secs => $4::double precision / 1000)) \
-                 else r.settle_at end \
+               settle_at = case when r.state <> 'finished' or r.settle_at is null or r.settle_at = 'infinity' \
+                   then r.settle_at \
+                 when v.e is not null and r.error is null \
+                   then now() + make_interval(secs => $4::double precision / 1000) \
+                 else greatest(r.settle_at, now() + make_interval(secs => $4::double precision / 1000)) end \
              from unnest($2::text[], $3::jsonb[]) v(u, e), locked l \
              where r.project_id = $1 and r.uuid = v.u and l.uuid = v.u returning r.uuid",
         )
@@ -924,14 +946,23 @@ impl Store {
     }
 
     /// Results and failed fixtures of a launch asked to finish settle within `settle_ms`
-    /// (held ones included).
-    pub async fn rp_settle_by(&self, launch_id: Uuid, settle_ms: i64) -> anyhow::Result<()> {
-        sqlx::query(
-            "update rp_items set settle_at = least(settle_at, now() + make_interval(secs => $2::double precision / 1000)) \
+    /// (held ones included); failed ones still without an error within `error_wait_ms`, as
+    /// some agents send their last log lines after the launch finish.
+    pub async fn rp_settle_by(
+        &self,
+        launch_id: Uuid,
+        settle_ms: i64,
+        error_wait_ms: i64,
+    ) -> anyhow::Result<()> {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "update rp_items set settle_at = least(settle_at, now() + make_interval(secs => \
+               (case when {} then $3 else $2 end)::double precision / 1000)) \
              where launch_id = $1 and state = 'finished' and role in ('result', 'fixture')",
-        )
+            awaits_error("rp_items", "rp_items.status")
+        )))
         .bind(launch_id)
         .bind(settle_ms)
+        .bind(error_wait_ms.max(settle_ms))
         .execute(&self.pool)
         .await?;
         Ok(())

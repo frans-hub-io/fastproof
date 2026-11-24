@@ -66,6 +66,10 @@ pub struct RpConfig {
     /// Quiet time after a test's finish or last log line before its result is emitted
     /// (`FASTPROOF_RP_SETTLE_MS`, 0 to 60000, default 2000).
     pub settle: Duration,
+    /// How long a failed test without an error message waits for its ERROR log line, after
+    /// its finish and again after the launch finish (`FASTPROOF_RP_ERROR_WAIT_MS`, 0 to
+    /// 600000, default 30000; never less than the settle time).
+    pub error_wait: Duration,
     /// How long a finishing launch waits for unfinished items, which then become broken
     /// `interrupted` (`FASTPROOF_RP_FINISH_GRACE_SECONDS`, 0 to 86400, default 120).
     pub finish_grace: Duration,
@@ -88,6 +92,7 @@ impl Default for RpConfig {
         Self {
             enabled: true,
             settle: Duration::from_millis(2000),
+            error_wait: Duration::from_millis(30_000),
             finish_grace: Duration::from_secs(120),
             idle_timeout: Duration::from_secs(3600),
             max_request_bytes: 64 * 1024 * 1024,
@@ -167,6 +172,13 @@ impl RpConfig {
                 d.settle.as_millis() as u64,
                 0,
                 60_000,
+            )?),
+            error_wait: Duration::from_millis(number(
+                env,
+                "FASTPROOF_RP_ERROR_WAIT_MS",
+                d.error_wait.as_millis() as u64,
+                0,
+                600_000,
             )?),
             finish_grace: Duration::from_secs(number(
                 env,
@@ -938,6 +950,7 @@ mod tests {
             ("FASTPROOF_RP_SETTLE_MS", "500"),
             ("FASTPROOF_RP_LAUNCH_IDLE_TIMEOUT", "30m"),
             ("FASTPROOF_RP_MAX_INFLIGHT", "8"),
+            ("FASTPROOF_RP_ERROR_WAIT_MS", "5000"),
         ]
         .into_iter()
         .collect();
@@ -946,11 +959,19 @@ mod tests {
         assert_eq!(c.settle, Duration::from_millis(500));
         assert_eq!(c.idle_timeout, Duration::from_secs(1800));
         assert_eq!(c.max_inflight, 8);
+        assert_eq!(c.error_wait, Duration::from_millis(5000));
+        assert_eq!(
+            RpConfig::from_env(&Env::new(&|_: &str| None))
+                .unwrap()
+                .error_wait,
+            Duration::from_secs(30)
+        );
         assert_eq!(c.max_request_bytes, 64 * 1024 * 1024);
         for (k, v) in [
             ("FASTPROOF_RP_SETTLE_MS", "70000"),
             ("FASTPROOF_RP_LAUNCH_IDLE_TIMEOUT", "5s"),
             ("FASTPROOF_RP_MAX_INFLIGHT", "0"),
+            ("FASTPROOF_RP_ERROR_WAIT_MS", "600001"),
             ("FASTPROOF_RP_ENABLED", "maybe"),
         ] {
             let get = |x: &str| (x == k).then(|| v.to_string());

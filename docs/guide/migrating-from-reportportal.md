@@ -134,6 +134,13 @@ batches, often long after the test finished; for their launches (and for any lau
 its result was written) the results are written when the launch finishes, so that error texts and files land
 in them. Their tests show as running until then.
 
+The error message of a failed test comes from its ERROR log lines, and some agents (the Java ones in particular)
+send their last batch of lines only after the launch finish. So a failed test without an error message waits
+for one up to `FASTPROOF_RP_ERROR_WAIT_MS` (30 s) after its finish, and up to the same time after the launch
+finish; it shows as running meanwhile, and it is written without a message if none comes. Passed and skipped
+tests do not wait. Log lines that come after a result was written are kept in the logs; neither they nor files
+that come that late change the result.
+
 When the agent finishes the launch, tests that are still open get `FASTPROOF_RP_FINISH_GRACE_SECONDS` (120 s)
 to finish; then they become broken `interrupted` and the launch finishes. A launch without any call for
 `FASTPROOF_RP_LAUNCH_IDLE_TIMEOUT` (1 h), for example after the agent crashed, finishes as interrupted.

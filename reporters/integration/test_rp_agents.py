@@ -154,10 +154,6 @@ def test_playwright_shards_join_one_native_launch(server, project, tmp_path):
     assert len(server.launches(project)) == 1
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="the agent names the file <test>_trace with content type application/zip; the kind inference needs an extension",
-)
 def test_playwright_trace_is_recognized_as_a_trace(server, project, tmp_path):
     token = uploader(server, project)
     run_playwright(server, project, tmp_path, token, "--grep", "always fails")

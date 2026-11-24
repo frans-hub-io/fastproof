@@ -79,6 +79,7 @@ Limits of `/rp/api/{v1,v2}` (see [Migrating from ReportPortal](../guide/migratin
 | Times | 1970 to 5 minutes from now | Clamped |
 | Requests at once per replica | 256 | `FASTPROOF_RP_MAX_INFLIGHT`; `503` with `Retry-After: 1` after a 2 s wait |
 | A child whose parent did not arrive | 2 minutes | Then it becomes a root item |
+| A failed test waiting for its error message | 30 s after its finish and after the launch finish | `FASTPROOF_RP_ERROR_WAIT_MS`; then it is written without one. The message is the first line of the last ERROR or FATAL line (4 KiB), the trace its whole text (1 MiB) |
 | Working set of a launch | a day after it finished | Item rows are deleted; the results stay |
 
 Log lines follow the [live log limits](#results-api-and-live-logs). `Content-Encoding` other than `identity`

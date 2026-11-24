@@ -247,6 +247,7 @@ Settings of `/rp/api/{v1,v2}`, the endpoint for unchanged ReportPortal agents (s
 |---|---|---|
 | `FASTPROOF_RP_ENABLED` | `true` | Serve the endpoint; `false` answers `501` to every `/rp` request |
 | `FASTPROOF_RP_SETTLE_MS` | `2000` | Quiet time after a test's finish or last log line before its result is written, 0 to 60000 |
+| `FASTPROOF_RP_ERROR_WAIT_MS` | `30000` | How long a failed test without an error message waits for its ERROR log line, after its finish and again after the launch finish, 0 to 600000 (never less than the settle time) |
 | `FASTPROOF_RP_FINISH_GRACE_SECONDS` | `120` | How long a finishing launch waits for open tests, which then become broken `interrupted`, 0 to 86400 |
 | `FASTPROOF_RP_LAUNCH_IDLE_TIMEOUT` | `1h` | A launch without calls for this long finishes as interrupted (`3600`, `30m`, `1h`, `1d`; 60 s to 7 days) |
 | `FASTPROOF_RP_MAX_REQUEST_BYTES` | `67108864` (64 MiB) | Body of one multipart log request |

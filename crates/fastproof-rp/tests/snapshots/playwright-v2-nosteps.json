@@ -39,7 +39,7 @@
           "attachments": [
             "always-fails_error-context text 57",
             "always-fails_screenshot image 5396",
-            "always-fails_trace other 7658"
+            "always-fails_trace trace 7658"
           ]
         },
         {
@@ -50,7 +50,7 @@
           "attachments": [
             "always-fails_error-context text 57",
             "always-fails_screenshot image 5396",
-            "always-fails_trace other 7831"
+            "always-fails_trace trace 7831"
           ]
         }
       ],
@@ -82,7 +82,7 @@
           "error": null,
           "steps": [],
           "attachments": [
-            "annotated-smoke_trace other 410"
+            "annotated-smoke_trace trace 410"
           ]
         }
       ],
@@ -115,7 +115,7 @@
           "attachments": [
             "fails-on-first-attempt-then-passes_error-context text 56",
             "fails-on-first-attempt-then-passes_screenshot image 5022",
-            "fails-on-first-attempt-then-passes_trace other 6190"
+            "fails-on-first-attempt-then-passes_trace trace 6190"
           ]
         },
         {
@@ -125,7 +125,7 @@
           "steps": [],
           "attachments": [
             "fails-on-first-attempt-then-passes_screenshot image 5022",
-            "fails-on-first-attempt-then-passes_trace other 5681"
+            "fails-on-first-attempt-then-passes_trace trace 5681"
           ]
         }
       ],
@@ -159,7 +159,7 @@
           "error": null,
           "steps": [],
           "attachments": [
-            "nested-pass_trace other 412"
+            "nested-pass_trace trace 412"
           ]
         }
       ],
@@ -220,7 +220,7 @@
           "steps": [],
           "attachments": [
             "passes-with-steps_screenshot image 5732",
-            "passes-with-steps_trace other 7419"
+            "passes-with-steps_trace trace 7419"
           ]
         }
       ],
@@ -254,7 +254,7 @@
             "with-attachment-and-logs_data.json json 7",
             "with-attachment-and-logs_note.txt text 16",
             "with-attachment-and-logs_screenshot image 4253",
-            "with-attachment-and-logs_trace other 4572"
+            "with-attachment-and-logs_trace trace 4572"
           ]
         }
       ],
@@ -284,7 +284,7 @@
           "error": null,
           "steps": [],
           "attachments": [
-            "parametrized-1_trace other 1376"
+            "parametrized-1_trace trace 1376"
           ]
         }
       ],
@@ -313,7 +313,7 @@
           "error": null,
           "steps": [],
           "attachments": [
-            "parametrized-2_trace other 1375"
+            "parametrized-2_trace trace 1375"
           ]
         }
       ],
@@ -344,7 +344,7 @@
           "error": "Error: expect(received).toBe(expected) // Object.is equality",
           "steps": [],
           "attachments": [
-            "fails-with-assertion_trace other 1316"
+            "fails-with-assertion_trace trace 1316"
           ]
         },
         {
@@ -353,7 +353,7 @@
           "error": "Error: expect(received).toBe(expected) // Object.is equality",
           "steps": [],
           "attachments": [
-            "fails-with-assertion_trace other 1278"
+            "fails-with-assertion_trace trace 1278"
           ]
         }
       ],
@@ -386,7 +386,7 @@
           "steps": [],
           "attachments": [
             "renders-name_screenshot image 5105",
-            "renders-name_trace other 5754"
+            "renders-name_trace trace 5754"
           ]
         }
       ],

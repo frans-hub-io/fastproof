@@ -457,6 +457,7 @@ async fn snapshot(s: &Server, launch: &str, results: &[Value]) -> Value {
             v["fullName"].as_str().unwrap_or("").to_string(),
             v["name"].as_str().unwrap_or("").to_string(),
             v["status"].as_str().unwrap_or("").to_string(),
+            v["parameters"].to_string(),
             v["attempts"].to_string(),
         )
     });
@@ -641,10 +642,10 @@ async fn duplicated_requests_change_nothing() {
     );
 }
 
-/// Logs and files that arrive after the launch finish. Defect found in phase 4: results already
-/// emitted keep no late log lines or files, so error messages of failures are lost.
+/// Every log request arrives after the launch finish (TestNG async sends its last batch so):
+/// all lines are kept and every failure still gets its message, because a failed result
+/// without an error waits `FASTPROOF_RP_ERROR_WAIT_MS` for its ERROR line.
 #[tokio::test]
-#[ignore = "defect: logs sent after the launch finish are dropped for emitted results"]
 async fn logs_after_the_launch_finish_are_kept() {
     let Some((_db, s, token)) = setup(&[]).await else {
         return;

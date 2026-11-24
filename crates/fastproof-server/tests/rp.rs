@@ -14,6 +14,7 @@ use serde_json::{Value, json};
 
 const FAST: &[(&str, &str)] = &[
     ("FASTPROOF_RP_SETTLE_MS", "200"),
+    ("FASTPROOF_RP_ERROR_WAIT_MS", "300"),
     ("FASTPROOF_RP_FINISH_GRACE_SECONDS", "3"),
 ];
 
@@ -1283,6 +1284,184 @@ async fn security_review_regressions() {
     assert_eq!(st, StatusCode::CREATED, "{b}");
     assert!(started.elapsed() < Duration::from_millis(1500));
     drop(slow);
+}
+
+/// A failed test whose ERROR line has not come waits for it (bounded by
+/// `FASTPROOF_RP_ERROR_WAIT_MS` after its finish and after the launch finish); other tests do
+/// not wait. Lines that come after the result was written change nothing.
+#[tokio::test]
+async fn failed_results_wait_for_their_late_error_text() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = Server::start_with(
+        &db,
+        &[
+            ("FASTPROOF_RP_SETTLE_MS", "200"),
+            ("FASTPROOF_RP_ERROR_WAIT_MS", "5000"),
+            ("FASTPROOF_RP_FINISH_GRACE_SECONDS", "60"),
+        ],
+    )
+    .await;
+    s.project("ci").await;
+    let token = s.token("ci", "uploader", &["ci"]).await;
+    let (_, l) = rp(
+        &s,
+        Method::POST,
+        "v2/ci/launch",
+        &token,
+        Some(json!({"name": "late errors"})),
+    )
+    .await;
+    let lu = l["id"].as_str().unwrap().to_string();
+    let fp = launch_id_of(&s, "ci", l["number"].as_i64().unwrap()).await;
+    let suite = item(
+        &s,
+        "v2/ci/item",
+        &token,
+        json!({"name": "Suite", "type": "SUITE", "launchUuid": lu}),
+    )
+    .await;
+    let test = |name: &str| json!({"name": name, "type": "STEP", "launchUuid": lu, "codeRef": format!("Suite.{name}")});
+    let passes = item(&s, &format!("v2/ci/item/{suite}"), &token, test("passes")).await;
+    finish(
+        &s,
+        "ci",
+        &passes,
+        &token,
+        json!({"status": "PASSED", "launchUuid": lu}),
+    )
+    .await;
+    let fails = item(&s, &format!("v2/ci/item/{suite}"), &token, test("fails")).await;
+    finish(
+        &s,
+        "ci",
+        &fails,
+        &token,
+        json!({"status": "FAILED", "launchUuid": lu}),
+    )
+    .await;
+    let by_step = item(&s, &format!("v2/ci/item/{suite}"), &token, test("by_step")).await;
+    let step = item(
+        &s,
+        &format!("v2/ci/item/{by_step}"),
+        &token,
+        json!({"name": "click", "type": "STEP", "hasStats": false, "launchUuid": lu}),
+    )
+    .await;
+    finish(
+        &s,
+        "ci",
+        &step,
+        &token,
+        json!({"status": "FAILED", "launchUuid": lu}),
+    )
+    .await;
+    finish(&s, "ci", &by_step, &token, json!({"launchUuid": lu})).await;
+    let silent = item(&s, &format!("v2/ci/item/{suite}"), &token, test("silent")).await;
+    finish(
+        &s,
+        "ci",
+        &silent,
+        &token,
+        json!({"status": "FAILED", "launchUuid": lu}),
+    )
+    .await;
+    finish(&s, "ci", &suite, &token, json!({"launchUuid": lu})).await;
+    let finished_items = std::time::Instant::now();
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(4);
+    loop {
+        let r = s.results("ci", &fp, "").await;
+        let status = |n: &str| {
+            r.iter()
+                .find(|x| x["name"] == n)
+                .map(|x| x["status"].clone())
+                .unwrap_or(Value::Null)
+        };
+        if status("passes") == "passed" {
+            for n in ["fails", "by_step", "silent"] {
+                assert_eq!(status(n), "running", "{n} waits for its error text");
+            }
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "a passed test does not wait: {r:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    let (st, _) = rp(
+        &s,
+        Method::PUT,
+        &format!("v2/ci/launch/{lu}/finish"),
+        &token,
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let lines = json!([
+        {"itemUuid": fails, "launchUuid": lu, "level": "ERROR",
+         "message": "java.lang.AssertionError: expected 1 but was 2\n\tat example.Suite.fails(Suite.java:12)"},
+        {"itemUuid": step, "launchUuid": lu, "level": "FATAL", "message": "element not found: #buy"},
+    ]);
+    for _ in 0..2 {
+        let (ct, body) = multipart(&lines, &[]);
+        let (st, b) = post_multipart(&s, "v2/ci/log", &token, &ct, body).await;
+        assert_eq!(st, StatusCode::CREATED, "{b}");
+    }
+    let done = wait_launch(&s, "ci", &fp).await;
+    assert_eq!(done["status"], "finished");
+    assert!(
+        finished_items.elapsed() < Duration::from_secs(20),
+        "the wait is bounded"
+    );
+    assert_eq!(done["counts"]["total"], 4, "{done}");
+    let results = s.results("ci", &fp, "").await;
+    let get = |n: &str| results.iter().find(|x| x["name"] == n).unwrap().clone();
+    assert_eq!(get("passes")["status"], "passed");
+    let f = get("fails");
+    assert_eq!(f["status"], "failed");
+    assert_eq!(
+        f["message"],
+        "java.lang.AssertionError: expected 1 but was 2"
+    );
+    let (_, d) = s
+        .get(
+            &format!("/api/v1/projects/ci/results/{}", f["id"].as_str().unwrap()),
+            ADMIN_TOKEN,
+        )
+        .await;
+    assert_eq!(d["attempts"].as_array().unwrap().len(), 1, "{d}");
+    assert!(
+        d["attempts"][0]["error"]["trace"]
+            .as_str()
+            .unwrap()
+            .contains("Suite.java:12"),
+        "{d}"
+    );
+    let b = get("by_step");
+    assert_eq!(b["status"], "failed");
+    assert_eq!(b["message"], "element not found: #buy");
+    let silent_result = get("silent");
+    assert_eq!(silent_result["status"], "failed");
+    assert!(silent_result["message"].is_null());
+
+    let (ct, body) = multipart(
+        &json!([{"itemUuid": silent, "launchUuid": lu, "level": "ERROR", "message": "too late"}]),
+        &[],
+    );
+    let (st, _) = post_multipart(&s, "v2/ci/log", &token, &ct, body).await;
+    assert_eq!(st, StatusCode::CREATED, "the line itself is kept");
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let results = s.results("ci", &fp, "").await;
+    assert_eq!(results.len(), 4);
+    let silent_result = results.iter().find(|x| x["name"] == "silent").unwrap();
+    assert!(
+        silent_result["message"].is_null(),
+        "a written result does not change"
+    );
 }
 
 fn recordings_dir() -> Option<std::path::PathBuf> {

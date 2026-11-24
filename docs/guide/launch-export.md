@@ -34,6 +34,14 @@ none): `--chromium /path/to/chrome`, or `FASTPROOF_CHROMIUM`, or the first of `c
 running as root in a container. Without a browser the command stops with a message; the HTML report prints
 from any browser.
 
+Use a full Chromium or Chrome: some `chrome-headless-shell` builds exit with status 0 without writing the PDF.
+When the browser fails, the command prints the browser it ran, its exit status and the last lines of its error
+output (D-Bus messages are left out), then how to pass a working one: `--chromium /path/to/chrome` or
+`FASTPROOF_CHROMIUM`. The HTML report is always available as a fallback (`--format html`, then print it).
+
+On a phone-sized screen the HTML report shows each result as a card (status, test, suite, duration, attempts,
+triage, message) instead of a wide table; the print layout keeps the table.
+
 ## API
 
 | Request | Purpose |

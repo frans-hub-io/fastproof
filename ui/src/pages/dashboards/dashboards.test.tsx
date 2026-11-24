@@ -106,6 +106,17 @@ describe('dashboard pages', () => {
     expect(await screen.findByTestId('rate-summary')).toBeInTheDocument();
   });
 
+  it('stacks widgets on a phone with their own height, not a reserved grid row height', async () => {
+    renderApp(`/p/web-shop/dashboards/${SEEDED}`);
+    const grid = await screen.findByTestId('dashboard-grid');
+    await waitFor(() => expect(grid.style.display).toBe('flex'));
+    expect(grid.style.gridAutoRows).toBe('');
+    for (const cell of Array.from(grid.children) as HTMLElement[]) {
+      expect(cell.style.minHeight).toBe('');
+      expect(cell.style.gridRow).toBe('');
+    }
+  });
+
   it('creates a dashboard from the template, edits it and saves', async () => {
     const user = userEvent.setup();
     renderApp('/p/web-shop/dashboards');

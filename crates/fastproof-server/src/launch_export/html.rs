@@ -77,6 +77,7 @@ table{border-collapse:collapse;width:100%}
 th,td{border-bottom:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top;overflow-wrap:anywhere}
 th{font-size:12px;color:var(--muted);position:sticky;top:0;background:var(--bg)}
 td.name{overflow-wrap:anywhere;min-width:220px}
+td.suite{min-width:140px}
 td.msg{white-space:pre-wrap;overflow-wrap:anywhere;min-width:200px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px}
 td.st{font-weight:600;white-space:nowrap}
 td.num{white-space:nowrap;text-align:right}
@@ -93,6 +94,17 @@ tr{break-inside:avoid}
 .bar,.bar span{print-color-adjust:exact;-webkit-print-color-adjust:exact}
 }
 @media (max-width:600px){body{padding:12px 8px}}
+@media screen and (max-width:700px){
+.scroll{overflow-x:visible}
+table,tbody{display:block}
+thead{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+tr{display:block;border:1px solid var(--line);border-radius:6px;background:var(--card);margin:0 0 8px;padding:4px 0}
+td{display:grid;grid-template-columns:84px minmax(0,1fr);gap:8px;border-bottom:0;padding:3px 10px}
+td::before{content:attr(data-label);font-size:12px;color:var(--muted)}
+td.name,td.msg,td.suite{min-width:0}
+td.num{text-align:left}
+td.empty{display:none}
+}
 "#;
 
 pub fn head(l: &Launch, project: &str, filter_text: &str) -> String {
@@ -236,8 +248,19 @@ pub fn row(r: &ResultSummary) -> String {
             esc(&clip(&d.name, 60))
         ));
     }
+    let suite_empty = if r.suite_path.is_empty() {
+        " empty"
+    } else {
+        ""
+    };
+    let tags_empty = if tags.is_empty() { "empty" } else { "" };
+    let msg_empty = if r.message.as_deref().unwrap_or("").is_empty() {
+        " empty"
+    } else {
+        ""
+    };
     format!(
-        "<tr><td class=\"st {status}\">{status}</td><td class=\"name\">{}</td><td>{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td>{tags}</td><td class=\"msg\">{}</td></tr>\n",
+        "<tr><td class=\"st {status}\" data-label=\"Status\">{status}</td><td class=\"name\" data-label=\"Test\">{}</td><td class=\"suite{suite_empty}\" data-label=\"Suite\">{}</td><td class=\"num\" data-label=\"Duration\">{}</td><td class=\"num\" data-label=\"Attempts\">{}</td><td class=\"{tags_empty}\" data-label=\"Triage\">{tags}</td><td class=\"msg{msg_empty}\" data-label=\"Message\">{}</td></tr>\n",
         esc(&clip(&r.full_name, MAX_NAME_CHARS)),
         esc(&clip(&r.suite_path.join(" / "), MAX_NAME_CHARS)),
         esc(&duration(r.duration_ms)),
@@ -278,5 +301,58 @@ mod tests {
     fn clips_on_characters() {
         assert_eq!(clip("abcdef", 3), "abc\u{2026}");
         assert_eq!(clip("\u{e9}\u{e9}", 2), "\u{e9}\u{e9}");
+    }
+
+    fn summary(suite: &[&str], message: Option<&str>) -> ResultSummary {
+        serde_json::from_value(serde_json::json!({
+            "id": "00000000-0000-0000-0000-000000000001",
+            "launchId": "00000000-0000-0000-0000-000000000002",
+            "testCaseId": "00000000-0000-0000-0000-000000000003",
+            "seriesKey": "k", "name": "pays", "fullName": "checkout pays",
+            "suitePath": suite, "status": "failed", "flakyInRun": false,
+            "attemptCount": 2, "durationMs": 1200, "labels": [], "muted": false,
+            "fingerprint": null, "flaky": false, "message": message,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn every_cell_has_a_label_for_the_stacked_layout() {
+        let row = row(&summary(&["web", "checkout"], Some("boom")));
+        for label in [
+            "Status", "Test", "Suite", "Duration", "Attempts", "Triage", "Message",
+        ] {
+            assert!(row.contains(&format!("data-label=\"{label}\"")), "{label}");
+        }
+        assert_eq!(row.matches("<td").count(), 7);
+    }
+
+    #[test]
+    fn empty_cells_are_marked_so_the_stack_can_hide_them() {
+        let r = row(&summary(&[], None));
+        assert!(r.contains("class=\"suite empty\""));
+        assert!(r.contains("class=\"msg empty\""));
+        assert!(r.contains("class=\"empty\" data-label=\"Triage\""));
+        let r = row(&summary(&["web"], Some("x")));
+        assert!(r.contains("class=\"suite\""));
+        assert!(r.contains("class=\"msg\""));
+    }
+
+    #[test]
+    fn phone_width_stacks_rows_and_print_keeps_the_table() {
+        let phone = STYLE
+            .split("@media screen and (max-width:700px){")
+            .nth(1)
+            .expect("a screen-only phone block");
+        assert!(phone.contains("tr{display:block"));
+        assert!(phone.contains("attr(data-label)"));
+        let print = STYLE
+            .split("@media print{")
+            .nth(1)
+            .and_then(|p| p.split("\n}\n").next())
+            .expect("a print block");
+        assert!(!print.contains("display:block"));
+        assert!(print.contains("thead{display:table-header-group}"));
+        assert!(!STYLE.contains("@media (max-width:700px)"));
     }
 }

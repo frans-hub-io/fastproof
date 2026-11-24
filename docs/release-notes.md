@@ -7,6 +7,12 @@
   `fastproof import allure-history` or in the project settings. Flaky detection, trends, dashboards and new
   failures see the history from before FastProof. See [Importing Allure history](guide/importing-allure-history.md).
   The release adds migration `0820`.
+- **Fixes from the lab smoke.** The exported HTML report stacks each result as a card on a phone (it was a
+  table with one character per line in the Suite column; the print layout is unchanged). `fastproof upload --wait`
+  prints the launch counts only after the results are stored (it waits up to `--timeout` and says so when the
+  counts are not final). `fastproof export --format pdf` names the browser it ran, its exit status and the last
+  lines of its error output, and says how to pass a working one. Dashboard widgets no longer leave an empty gap
+  below short cards on a phone.
 
 ## 0.2.0-dev2
 

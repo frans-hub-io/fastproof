@@ -352,7 +352,7 @@ jobs:
           python-version: "3.13"
       - name: install Maven
         run: |
-          curl -fsSL -o "$RUNNER_TEMP/maven.tar.gz" "https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/${MAVEN_VERSION}/apache-maven-${MAVEN_VERSION}-bin.tar.gz"
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o "$RUNNER_TEMP/maven.tar.gz" "https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/${MAVEN_VERSION}/apache-maven-${MAVEN_VERSION}-bin.tar.gz"
           echo "${MAVEN_SHA512}  $RUNNER_TEMP/maven.tar.gz" | sha512sum -c -
           tar -xzf "$RUNNER_TEMP/maven.tar.gz" -C "$RUNNER_TEMP"
           echo "FASTPROOF_TEST_MVN=$RUNNER_TEMP/apache-maven-${MAVEN_VERSION}/bin/mvn" >> "$GITHUB_ENV"

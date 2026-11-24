@@ -10,8 +10,12 @@ use uuid::Uuid;
 
 use super::client::Client;
 
-/// How long the counts may stay unchanged below the expected total before the wait ends.
+/// How long the counts may stay at the baseline (nothing stored yet) before the wait ends.
 pub const QUIET: Duration = Duration::from_secs(15);
+/// How long the counts may stay unchanged once some results are stored. Attempts of one test are
+/// one result, so the total often stays below the parsed count: a short stable window ends the
+/// wait instead of the long one.
+pub const SETTLED: Duration = Duration::from_secs(3);
 
 /// How a wait for the stored results ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -27,19 +31,23 @@ pub enum Settled {
 /// Decides from successive observations of the launch's result total.
 #[derive(Debug)]
 pub struct Tracker {
+    baseline: i64,
     expected: i64,
     last: i64,
     changed_at: Instant,
     quiet: Duration,
+    settled: Duration,
 }
 
 impl Tracker {
     pub fn new(baseline: i64, parsed: i64, quiet: Duration, now: Instant) -> Self {
         Self {
+            baseline,
             expected: baseline.max(0).saturating_add(parsed.max(0)),
             last: baseline,
             changed_at: now,
             quiet,
+            settled: SETTLED.min(quiet),
         }
     }
 
@@ -51,7 +59,12 @@ impl Tracker {
             self.last = total;
             self.changed_at = now;
         }
-        if now.duration_since(self.changed_at) >= self.quiet {
+        let window = if total > self.baseline {
+            self.settled
+        } else {
+            self.quiet
+        };
+        if now.duration_since(self.changed_at) >= window {
             return Some(Settled::Quiet);
         }
         None
@@ -112,26 +125,37 @@ mod tests {
     }
 
     #[test]
-    fn quiet_below_the_expected_total_ends_the_wait() {
+    fn nothing_stored_waits_the_long_window() {
         let t0 = Instant::now();
         let mut t = Tracker::new(0, 10, QUIET, t0);
-        assert_eq!(t.observe(4, t0 + Duration::from_secs(5)), None);
-        assert_eq!(t.observe(4, t0 + Duration::from_secs(19)), None);
+        assert_eq!(t.observe(0, t0 + Duration::from_secs(14)), None);
         assert_eq!(
-            t.observe(4, t0 + Duration::from_secs(20)),
+            t.observe(0, t0 + Duration::from_secs(15)),
             Some(Settled::Quiet)
         );
     }
 
     #[test]
-    fn growth_restarts_the_quiet_window() {
+    fn stored_results_below_the_parsed_count_settle_quickly() {
+        let t0 = Instant::now();
+        let mut t = Tracker::new(0, 16, QUIET, t0);
+        assert_eq!(t.observe(13, t0 + Duration::from_millis(200)), None);
+        assert_eq!(t.observe(13, t0 + Duration::from_secs(3)), None);
+        assert_eq!(
+            t.observe(13, t0 + Duration::from_millis(3200)),
+            Some(Settled::Quiet)
+        );
+    }
+
+    #[test]
+    fn growth_restarts_the_settle_window() {
         let t0 = Instant::now();
         let mut t = Tracker::new(0, 10, QUIET, t0);
         assert_eq!(t.observe(3, t0 + Duration::from_secs(10)), None);
-        assert_eq!(t.observe(5, t0 + Duration::from_secs(20)), None);
-        assert_eq!(t.observe(5, t0 + Duration::from_secs(34)), None);
+        assert_eq!(t.observe(5, t0 + Duration::from_secs(12)), None);
+        assert_eq!(t.observe(5, t0 + Duration::from_secs(14)), None);
         assert_eq!(
-            t.observe(5, t0 + Duration::from_secs(35)),
+            t.observe(5, t0 + Duration::from_secs(15)),
             Some(Settled::Quiet)
         );
     }

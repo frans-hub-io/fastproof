@@ -430,6 +430,16 @@ pub fn analysis_jobs(sch: &mut Scheduler) -> anyhow::Result<()> {
         s.store.run_tasks(&owner, Duration::from_secs(90)).await?;
         Ok(())
     })?;
+    sch.register("launch.attributes.index", "1m", |s: AppState| async move {
+        let n = s
+            .store
+            .index_launch_attributes(Duration::from_secs(30))
+            .await?;
+        if n > 0 {
+            tracing::debug!(launches = n, "launch attributes indexed");
+        }
+        Ok(())
+    })?;
     sch.register("history.rollup", "1h", |s: AppState| async move {
         let r = s.store.rollup_due(Duration::from_secs(600)).await?;
         if r.launches > 0 || !r.partitions_dropped.is_empty() {

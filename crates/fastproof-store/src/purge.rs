@@ -59,7 +59,7 @@ const ATTEMPTS: Leaf = Leaf {
 };
 
 /// Leaves under a launch, by `launch_id`, except results and attempts.
-const LAUNCH_LEAVES: [Leaf; 7] = [
+const LAUNCH_LEAVES: [Leaf; 8] = [
     leaf("attempt_log_chunks"),
     leaf("explorer_cache"),
     leaf("launch_containers"),
@@ -67,6 +67,7 @@ const LAUNCH_LEAVES: [Leaf; 7] = [
     leaf("attachment_refs"),
     leaf("launch_gates"),
     leaf("case_sync_queue"),
+    leaf("launch_attr_index"),
 ];
 
 /// Leaves under a case, by `case_id` (run items are not leaves and go separately).

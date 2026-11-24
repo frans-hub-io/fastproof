@@ -29,6 +29,10 @@ use fastproof_store::trackers::IssueState;
 pub const MAX_IMAGES: usize = 3;
 /// Bytes of one screenshot, at most.
 pub const MAX_IMAGE_BYTES: u64 = 5 * 1024 * 1024;
+/// Issues one batch read asks for, at most.
+pub const MAX_BATCH: usize = 25;
+/// Jira fields every read asks for.
+const JIRA_FIELDS: &str = "summary,status,resolution,project,updated";
 /// The longest pause after a throttled answer.
 const MAX_PAUSE: Duration = Duration::from_secs(3600);
 /// Pause after a `429` without `Retry-After`.
@@ -216,6 +220,13 @@ fn error_message(body: &[u8]) -> String {
         .map(|c| if c.is_control() { ' ' } else { c })
         .take(300)
         .collect()
+}
+
+fn jira_updated(v: &Value) -> Option<String> {
+    v.pointer("/fields/updated")
+        .and_then(Value::as_str)
+        .filter(|e| e.len() <= 200 && e.is_ascii())
+        .map(str::to_string)
 }
 
 fn enc(s: &str) -> String {
@@ -793,7 +804,9 @@ impl<'a> Client<'a> {
         Ok((self.azure_state(&v)?, attached, notes))
     }
 
-    /// Reads an issue; `Ok(None)` when it did not change since `etag`.
+    /// Reads an issue; `Ok(None)` when it did not change since `etag` (a `304` for GitLab and
+    /// GitHub; for Jira the `updated` time stored as the etag is compared, because Jira has
+    /// no conditional reads).
     pub async fn get(
         &self,
         key: &str,
@@ -802,10 +815,7 @@ impl<'a> Client<'a> {
     ) -> Result<Option<(IssueState, Option<String>)>, TrackerError> {
         let number = key.trim_start_matches('#');
         let url = match self.tracker.tracker.as_str() {
-            "jira" => self.jira(&format!(
-                "/issue/{}?fields=summary,status,resolution,project",
-                enc(key)
-            )),
+            "jira" => self.jira(&format!("/issue/{}?fields={JIRA_FIELDS}", enc(key))),
             "gitlab" => self.gitlab(&format!("/issues/{}", enc(number))),
             "github" => self.github(&format!("/issues/{}", enc(number))),
             _ => self.azure(&format!(
@@ -813,25 +823,209 @@ impl<'a> Client<'a> {
                 enc(remote_id.unwrap_or(number))
             )),
         };
-        let etag = etag.filter(|_| matches!(self.tracker.tracker.as_str(), "gitlab" | "github"));
-        let r = self.call(Method::GET, &url, Payload::Empty, etag).await?;
+        let sent = etag.filter(|_| matches!(self.tracker.tracker.as_str(), "gitlab" | "github"));
+        let r = self.call(Method::GET, &url, Payload::Empty, sent).await?;
         if r.status == 304 {
             return Ok(None);
         }
-        let new_etag = r
+        let header_etag = r
             .headers
             .get(ETAG)
             .and_then(|v| v.to_str().ok())
             .filter(|e| e.len() <= 200 && e.is_ascii())
             .map(str::to_string);
         let v = Self::json(&r)?;
-        let s = match self.tracker.tracker.as_str() {
-            "jira" => self.jira_state(&v)?,
-            "gitlab" => self.gitlab_state(&v)?,
-            "github" => self.github_state(&v)?,
-            _ => self.azure_state(&v)?,
+        let (s, new_etag) = match self.tracker.tracker.as_str() {
+            "jira" => {
+                let state = self.jira_state(&v)?;
+                let updated = jira_updated(&v);
+                if updated.is_some() && updated.as_deref() == etag {
+                    return Ok(None);
+                }
+                (state, updated)
+            }
+            "gitlab" => (self.gitlab_state(&v)?, header_etag),
+            "github" => (self.github_state(&v)?, header_etag),
+            _ => (self.azure_state(&v)?, header_etag),
         };
         Ok(Some((s, new_etag)))
+    }
+
+    /// Reads several issues of this tracker's project with one call: Jira `key in (...)`
+    /// search, GitLab `iids[]`, GitHub GraphQL (one `issue(number:)` alias per issue) and
+    /// Azure DevOps `workitemsbatch`. Answers the states by issue key; an issue the tracker
+    /// did not return (deleted, no access, another project) is missing. At most
+    /// [`MAX_BATCH`] issues are asked for; the rest are ignored. The second part of an
+    /// answer is Jira's `updated` time (the etag of its next read).
+    pub async fn get_many(
+        &self,
+        items: &[(String, Option<String>)],
+    ) -> Result<HashMap<String, (IssueState, Option<String>)>, TrackerError> {
+        let kind = self.tracker.tracker.as_str();
+        let items: Vec<&(String, Option<String>)> = items
+            .iter()
+            .filter(|(k, _)| parse_key(kind, k).is_some())
+            .take(MAX_BATCH)
+            .collect();
+        let mut out = HashMap::new();
+        if items.is_empty() {
+            return Ok(out);
+        }
+        let number = |k: &str| k.trim_start_matches('#').to_string();
+        match kind {
+            "jira" => {
+                let keys: Vec<&str> = items.iter().map(|(k, _)| k.as_str()).collect();
+                let url = if self.api.jira_server() {
+                    self.jira("/search")
+                } else {
+                    self.jira("/search/jql")
+                };
+                let body = json!({"jql": format!("key in ({})", keys.join(",")),
+                    "fields": JIRA_FIELDS.split(',').collect::<Vec<_>>(), "maxResults": keys.len()});
+                let r = self
+                    .call(Method::POST, &url, Payload::Json(body), None)
+                    .await?;
+                let v = Self::json(&r)?;
+                for i in v
+                    .get("issues")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .take(items.len())
+                {
+                    if let Ok(s) = self.jira_state(i) {
+                        out.insert(s.key.clone(), (s, jira_updated(i)));
+                    }
+                }
+            }
+            "gitlab" => {
+                let iids: Vec<String> = items
+                    .iter()
+                    .map(|(k, _)| format!("iids[]={}", number(k)))
+                    .collect();
+                let url = self.gitlab(&format!(
+                    "/issues?scope=all&per_page={}&{}",
+                    items.len(),
+                    iids.join("&")
+                ));
+                let r = self.call(Method::GET, &url, Payload::Empty, None).await?;
+                let v = Self::json(&r)?;
+                for i in v.as_array().into_iter().flatten().take(items.len()) {
+                    if let Ok(s) = self.gitlab_state(i) {
+                        out.insert(s.key.clone(), (s, None));
+                    }
+                }
+            }
+            "github" => {
+                let (owner, name) = self.api.project.split_once('/').ok_or_else(|| {
+                    TrackerError::Config("the GitHub project must be owner/repository".into())
+                })?;
+                let aliases: String = items
+                    .iter()
+                    .map(|(k, _)| {
+                        let n = number(k);
+                        format!("i{n}:issue(number:{n}){{...F}}")
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let query = format!(
+                    "query($owner:String!,$name:String!){{repository(owner:$owner,name:$name){{{aliases}}}}} \
+                     fragment F on Issue{{databaseId number title state stateReason url}}"
+                );
+                let r = self
+                    .call(
+                        Method::POST,
+                        &self.github_graphql(),
+                        Payload::Json(
+                            json!({"query": query, "variables": {"owner": owner, "name": name}}),
+                        ),
+                        None,
+                    )
+                    .await?;
+                let v = Self::json(&r)?;
+                let limited = v
+                    .get("errors")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .any(|e| e.get("type").and_then(Value::as_str) == Some("RATE_LIMITED"));
+                if limited {
+                    pause(self.project_id, self.id(), DEFAULT_PAUSE);
+                    return Err(TrackerError::Throttled(DEFAULT_PAUSE));
+                }
+                let Some(repo) = v.pointer("/data/repository").filter(|r| r.is_object()) else {
+                    return Ok(out);
+                };
+                for (k, _) in &items {
+                    let n = number(k);
+                    if let Some(i) = repo.get(format!("i{n}")).filter(|i| i.is_object())
+                        && let Some(s) = self.github_graphql_state(i)
+                    {
+                        out.insert(s.key.clone(), (s, None));
+                    }
+                }
+            }
+            _ => {
+                let ids: Vec<u64> = items
+                    .iter()
+                    .filter_map(|(k, remote)| remote.as_deref().unwrap_or(k).parse().ok())
+                    .collect();
+                let url = self.azure("/wit/workitemsbatch");
+                let body = json!({"ids": ids, "errorPolicy": "Omit",
+                    "fields": ["System.State", "System.Title", "System.TeamProject"]});
+                let r = self
+                    .call(Method::POST, &url, Payload::Json(body), None)
+                    .await?;
+                let v = Self::json(&r)?;
+                for i in v
+                    .get("value")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .take(items.len())
+                {
+                    if let Ok(s) = self.azure_state(i) {
+                        out.insert(s.key.clone(), (s, None));
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    fn github_graphql(&self) -> String {
+        let base = self.base();
+        match base.strip_suffix("/api/v3") {
+            Some(root) => format!("{root}/api/graphql"),
+            None => format!("{base}/graphql"),
+        }
+    }
+
+    fn github_graphql_state(&self, v: &Value) -> Option<IssueState> {
+        let n = v.get("number").and_then(Value::as_u64)?;
+        let key = format!("#{n}");
+        let state = v.get("state").and_then(Value::as_str)?.to_ascii_lowercase();
+        let shown = match v.get("stateReason").and_then(Value::as_str) {
+            Some(r) if state == "closed" && !r.is_empty() => {
+                format!("closed ({})", r.to_ascii_lowercase())
+            }
+            _ => state.clone(),
+        };
+        Some(IssueState {
+            url: self.web_url(v, "url", &key),
+            remote_id: v
+                .get("databaseId")
+                .map(|x| x.to_string())
+                .unwrap_or_default(),
+            title: v
+                .get("title")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            closed: state == "closed",
+            state: shown,
+            key,
+        })
     }
 
     fn jira_state(&self, v: &Value) -> Result<IssueState, TrackerError> {

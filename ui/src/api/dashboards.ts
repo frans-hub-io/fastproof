@@ -27,6 +27,9 @@ export const WIDGET_TYPES = [
   'durations',
   'defect-trend',
   'launches-per-day',
+  'cumulative-trend',
+  'unique-bugs',
+  'activity-stream',
 ] as const;
 export type WidgetType = (typeof WIDGET_TYPES)[number];
 
@@ -43,6 +46,7 @@ export interface WidgetSettings {
   chart?: WidgetChart;
   groupBy?: string;
   launchId?: string;
+  attribute?: string;
 }
 
 export interface DashboardWidget {
@@ -116,7 +120,44 @@ export interface ComponentPoint {
   skipped: number;
 }
 
+export interface CumulativePoint {
+  value: string;
+  launches: number;
+  firstAt: string;
+  lastAt: string;
+  total: number;
+  passed: number;
+  failed: number;
+  broken: number;
+  skipped: number;
+  unknown: number;
+}
+
+export interface BugPoint {
+  id: string;
+  trackerId: string;
+  trackerType: string;
+  key: string;
+  url?: string | null;
+  title: string;
+  state: string;
+  closed: boolean;
+  links: number;
+  tests: number;
+  createdAt: string;
+}
+
+export interface ActivityPoint {
+  id: number;
+  at: string;
+  principal: string;
+  action: string;
+}
+
 export type WidgetData =
+  | { kind: 'cumulative'; attribute: string; values: CumulativePoint[] }
+  | { kind: 'bugs'; items: BugPoint[] }
+  | { kind: 'activity'; items: ActivityPoint[] }
   | { kind: 'launches'; launches: LaunchPoint[] }
   | { kind: 'trend'; trend: TrendData }
   | { kind: 'growth'; points: { t: string; added: number }[] }
@@ -137,7 +178,7 @@ export interface WidgetInfo {
   w: number;
   h: number;
   settings: ReadonlyArray<keyof WidgetSettings>;
-  group: 'Launches' | 'Trends' | 'Tests' | 'Failures';
+  group: 'Launches' | 'Trends' | 'Tests' | 'Failures' | 'Project';
 }
 
 const LAUNCH_SETTINGS = ['limit', 'branch', 'environment', 'days'] as const;
@@ -164,6 +205,9 @@ export const WIDGET_CATALOG: Record<WidgetType, WidgetInfo> = {
   durations: { type: 'durations', title: 'Test durations', description: 'p50 and p95 of result durations per bucket.', w: 6, h: 4, settings: [...TREND_SETTINGS], group: 'Trends' },
   'defect-trend': { type: 'defect-trend', title: 'Failures by defect group', description: 'Failed and broken results by triage group per bucket.', w: 6, h: 4, settings: [...TREND_SETTINGS], group: 'Failures' },
   'launches-per-day': { type: 'launches-per-day', title: 'Launches per bucket', description: 'How many launches started per bucket.', w: 6, h: 3, settings: [...TREND_SETTINGS], group: 'Trends' },
+  'cumulative-trend': { type: 'cumulative-trend', title: 'Cumulative trend', description: 'Results of all launches that share a value of a launch attribute (such as build), one bar per value, oldest first.', w: 6, h: 4, settings: ['attribute', 'days', 'limit', 'branch', 'environment'], group: 'Trends' },
+  'unique-bugs': { type: 'unique-bugs', title: 'Unique bugs', description: 'Issues of the project tracker with the tests that point to them: open ones, and closed ones changed in the range.', w: 12, h: 5, settings: ['days', 'limit'], group: 'Failures' },
+  'activity-stream': { type: 'activity-stream', title: 'Activity stream', description: 'The latest changes recorded in the audit log of the project. Shown only to people who may read the audit log.', w: 6, h: 5, settings: ['days', 'limit'], group: 'Project' },
 };
 
 export const PREVIEW_DEBOUNCE_MS = 500;

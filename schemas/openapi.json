@@ -13484,6 +13484,32 @@
   },
   "components": {
     "schemas": {
+      "ActivityPoint": {
+        "type": "object",
+        "description": "One audit record of the project, without its detail.",
+        "required": [
+          "id",
+          "at",
+          "principal",
+          "action"
+        ],
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "principal": {
+            "type": "string"
+          }
+        }
+      },
       "AttachmentCreated": {
         "type": "object",
         "description": "A stored attachment.",
@@ -13947,6 +13973,64 @@
             "items": {
               "$ref": "#/components/schemas/BoardWidget"
             }
+          }
+        }
+      },
+      "BugPoint": {
+        "type": "object",
+        "description": "A tracked issue and the tests that point to it.",
+        "required": [
+          "id",
+          "trackerId",
+          "trackerType",
+          "key",
+          "title",
+          "state",
+          "closed",
+          "links",
+          "tests",
+          "createdAt"
+        ],
+        "properties": {
+          "closed": {
+            "type": "boolean"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "key": {
+            "type": "string"
+          },
+          "links": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "state": {
+            "type": "string"
+          },
+          "tests": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "title": {
+            "type": "string"
+          },
+          "trackerId": {
+            "type": "string"
+          },
+          "trackerType": {
+            "type": "string"
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -15976,6 +16060,63 @@
           }
         ],
         "description": "Answer of `POST /api/v1/tokens`: the token metadata and its value, shown only here."
+      },
+      "CumulativePoint": {
+        "type": "object",
+        "description": "The launches of one value of a launch attribute, added up.",
+        "required": [
+          "value",
+          "launches",
+          "firstAt",
+          "lastAt",
+          "total",
+          "passed",
+          "failed",
+          "broken",
+          "skipped",
+          "unknown"
+        ],
+        "properties": {
+          "broken": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "failed": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "firstAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lastAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "launches": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "passed": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "skipped": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "unknown": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "value": {
+            "type": "string"
+          }
+        }
       },
       "DailyEntry": {
         "type": "object",
@@ -24946,6 +25087,73 @@
           {
             "type": "object",
             "required": [
+              "attribute",
+              "values",
+              "kind"
+            ],
+            "properties": {
+              "attribute": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "cumulative"
+                ]
+              },
+              "values": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/CumulativePoint"
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "items",
+              "kind"
+            ],
+            "properties": {
+              "items": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/BugPoint"
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "bugs"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "items",
+              "kind"
+            ],
+            "properties": {
+              "items": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ActivityPoint"
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "activity"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
               "launches",
               "kind"
             ],
@@ -25109,6 +25317,13 @@
         "type": "object",
         "description": "What a widget shows; every field is optional. Windows are relative to now, so a dashboard\nstays current and can be cloned into another project as it is.",
         "properties": {
+          "attribute": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Launch attribute the cumulative trend groups by (for example `build`)."
+          },
           "branch": {
             "type": [
               "string",
@@ -25206,6 +25421,9 @@
           "popular-patterns",
           "launch-execution",
           "component-health",
+          "cumulative-trend",
+          "unique-bugs",
+          "activity-stream",
           "pass-rate-trend",
           "durations",
           "defect-trend",

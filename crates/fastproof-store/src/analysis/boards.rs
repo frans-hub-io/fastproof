@@ -36,6 +36,37 @@ pub const DEFAULT_DAYS: u32 = 30;
 pub const DEFAULT_LIMIT: u32 = 10;
 /// Components listed by the component health widget.
 const COMPONENTS: i64 = 20;
+/// Most recent attribute rows the cumulative trend reads.
+const ATTRIBUTE_LAUNCHES: i64 = 5000;
+
+#[derive(sqlx::FromRow)]
+struct CumulativeRow {
+    value: String,
+    launches: i64,
+    first_at: DateTime<Utc>,
+    last_at: DateTime<Utc>,
+    total: i64,
+    passed: i64,
+    failed: i64,
+    broken: i64,
+    skipped: i64,
+    unknown: i64,
+}
+
+#[derive(sqlx::FromRow)]
+struct BugRow {
+    id: Uuid,
+    tracker_id: String,
+    tracker_type: String,
+    issue_key: String,
+    url: Option<String>,
+    title: String,
+    state: String,
+    closed: bool,
+    created_at: DateTime<Utc>,
+    links: i64,
+    tests: i64,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "kebab-case")]
@@ -56,6 +87,9 @@ pub enum WidgetType {
     PopularPatterns,
     LaunchExecution,
     ComponentHealth,
+    CumulativeTrend,
+    UniqueBugs,
+    ActivityStream,
     PassRateTrend,
     Durations,
     DefectTrend,
@@ -69,6 +103,9 @@ enum Source {
     Growth,
     Patterns,
     Launch,
+    Attribute,
+    Bugs,
+    Activity,
 }
 
 impl WidgetType {
@@ -88,6 +125,9 @@ impl WidgetType {
             TestCasesGrowth => Source::Growth,
             PopularPatterns => Source::Patterns,
             LaunchExecution | ComponentHealth => Source::Launch,
+            CumulativeTrend => Source::Attribute,
+            UniqueBugs => Source::Bugs,
+            ActivityStream => Source::Activity,
         }
     }
 }
@@ -141,6 +181,9 @@ pub struct WidgetSettings {
     /// The launch of the per-launch widgets; the latest when empty.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub launch_id: Option<Uuid>,
+    /// Launch attribute the cumulative trend groups by (for example `build`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attribute: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ToSchema)]
@@ -281,6 +324,7 @@ pub fn validate(b: &BoardWrite) -> Result<(), String> {
             (&s.branch, 200, "branch"),
             (&s.environment, 200, "environment"),
             (&s.group_by, 64, "groupBy"),
+            (&s.attribute, 64, "attribute"),
         ] {
             if v.as_ref()
                 .is_some_and(|v| v.chars().count() > max || !no_nul_in(v))
@@ -296,11 +340,16 @@ pub fn validate(b: &BoardWrite) -> Result<(), String> {
 pub const MAX_TREND_KEYS: usize = 4;
 /// Distinct scans of one launch's results a request may run.
 pub const MAX_LAUNCH_SCANS: usize = 3;
+/// Distinct attribute groupings and activity streams a dashboard may hold.
+pub const MAX_ATTRIBUTE_SCANS: usize = 3;
+pub const MAX_ACTIVITY_STREAMS: usize = 2;
 
 /// Widgets that differ only in how they draw share one query, so only distinct queries count.
 fn check_computations(widgets: &[BoardWidget]) -> Result<(), String> {
     let mut trends = HashSet::new();
     let mut scans = HashSet::new();
+    let mut attrs = HashSet::new();
+    let mut streams = HashSet::new();
     for w in widgets {
         let s = &w.settings;
         match w.kind.source() {
@@ -316,8 +365,28 @@ fn check_computations(widgets: &[BoardWidget]) -> Result<(), String> {
                     s.group_by.clone().filter(|g| !g.is_empty()),
                 ));
             }
+            Source::Attribute => {
+                attrs.insert((
+                    trend_key(s),
+                    s.limit,
+                    s.attribute.clone().filter(|a| !a.is_empty()),
+                ));
+            }
+            Source::Activity => {
+                streams.insert((s.days, s.limit));
+            }
             _ => {}
         }
+    }
+    if attrs.len() > MAX_ATTRIBUTE_SCANS {
+        return Err(format!(
+            "a dashboard has at most {MAX_ATTRIBUTE_SCANS} different cumulative trends"
+        ));
+    }
+    if streams.len() > MAX_ACTIVITY_STREAMS {
+        return Err(format!(
+            "a dashboard has at most {MAX_ACTIVITY_STREAMS} different activity streams"
+        ));
     }
     if trends.len() > MAX_TREND_KEYS {
         return Err(format!(
@@ -669,10 +738,63 @@ pub struct DefectCounts {
     pub to_investigate: i64,
 }
 
+/// The launches of one value of a launch attribute, added up.
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CumulativePoint {
+    pub value: String,
+    pub launches: i64,
+    pub first_at: DateTime<Utc>,
+    pub last_at: DateTime<Utc>,
+    pub total: i64,
+    pub passed: i64,
+    pub failed: i64,
+    pub broken: i64,
+    pub skipped: i64,
+    pub unknown: i64,
+}
+
+/// A tracked issue and the tests that point to it.
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct BugPoint {
+    pub id: Uuid,
+    pub tracker_id: String,
+    pub tracker_type: String,
+    pub key: String,
+    pub url: Option<String>,
+    pub title: String,
+    pub state: String,
+    pub closed: bool,
+    pub links: i64,
+    pub tests: i64,
+    pub created_at: DateTime<Utc>,
+}
+
+/// One audit record of the project, without its detail.
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivityPoint {
+    pub id: i64,
+    pub at: DateTime<Utc>,
+    pub principal: String,
+    pub action: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 #[allow(clippy::large_enum_variant)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum WidgetData {
+    Cumulative {
+        attribute: String,
+        values: Vec<CumulativePoint>,
+    },
+    Bugs {
+        items: Vec<BugPoint>,
+    },
+    Activity {
+        items: Vec<ActivityPoint>,
+    },
     Launches {
         launches: Vec<LaunchPoint>,
     },
@@ -901,6 +1023,9 @@ impl Store {
         let mut trends: HashMap<TrendKey, Dashboard> = HashMap::new();
         let mut out = HashMap::new();
         for w in widgets.iter().take(MAX_WIDGETS) {
+            if w.kind.source() == Source::Activity {
+                continue;
+            }
             let too_long = || WidgetResult::Error {
                 message: "the widget took too long; narrow its range".into(),
             };
@@ -1037,6 +1162,92 @@ impl Store {
                             occurrences: r.2,
                             first_seen_at: r.3,
                             last_seen_at: r.4,
+                        })
+                        .collect(),
+                })
+            }
+            Source::Activity => anyhow::bail!("activity streams are read by the API"),
+            Source::Attribute => {
+                let attribute = s.attribute.clone().filter(|a| !a.is_empty());
+                let Some(attribute) = attribute else {
+                    return Ok(WidgetData::Cumulative {
+                        attribute: String::new(),
+                        values: Vec::new(),
+                    });
+                };
+                let rows: Vec<CumulativeRow> = sqlx::query_as(
+                    "with idx as (select launch_id, value from launch_attr_index \
+                       where project_id = $1 and key = $2 and launch_created_at >= $3 \
+                       order by launch_created_at desc limit $6) \
+                     select idx.value, count(*)::bigint as launches, min(l.started_at) as first_at, \
+                       max(l.started_at) as last_at, sum(l.count_total)::bigint as total, \
+                       sum(l.count_passed)::bigint as passed, sum(l.count_failed)::bigint as failed, \
+                       sum(l.count_broken)::bigint as broken, sum(l.count_skipped)::bigint as skipped, \
+                       sum(l.count_unknown)::bigint as unknown \
+                     from idx join launches l on l.id = idx.launch_id and not l.debug \
+                       and ($4::text is null or l.branch = $4) and ($5::text is null or l.env_key = $5) \
+                     group by idx.value order by min(l.started_at) desc, idx.value limit $7",
+                )
+                .bind(project_id)
+                .bind(no_nul(&attribute))
+                .bind(since)
+                .bind(branch.as_deref().map(no_nul))
+                .bind(env.as_deref().map(no_nul))
+                .bind(ATTRIBUTE_LAUNCHES)
+                .bind(limit)
+                .fetch_all(&self.pool)
+                .await?;
+                let mut values: Vec<CumulativePoint> = rows
+                    .into_iter()
+                    .map(|r| CumulativePoint {
+                        value: r.value.chars().take(200).collect(),
+                        launches: r.launches,
+                        first_at: r.first_at,
+                        last_at: r.last_at,
+                        total: r.total,
+                        passed: r.passed,
+                        failed: r.failed,
+                        broken: r.broken,
+                        skipped: r.skipped,
+                        unknown: r.unknown,
+                    })
+                    .collect();
+                values.reverse();
+                Ok(WidgetData::Cumulative { attribute, values })
+            }
+            Source::Bugs => {
+                let rows: Vec<BugRow> = sqlx::query_as(
+                    "select i.id, i.tracker_id, i.tracker_type, i.issue_key, i.url, left(i.title, 300) as title, \
+                       left(i.state, 100) as state, i.category = 'closed' as closed, i.created_at, \
+                       coalesce(c.links, 0)::bigint as links, coalesce(c.tests, 0)::bigint as tests \
+                     from tracker_issues i left join lateral ( \
+                       select count(*) as links, sum(case when x.result_id is not null then 1 else 0 end \
+                         + cardinality(x.series_ids)) as tests \
+                       from (select result_id, series_ids from tracker_issue_links where issue_id = i.id limit 100) x) c on true \
+                     where i.project_id = $1 and i.category in ('open', 'closed') and i.issue_key is not null \
+                       and (i.category = 'open' or i.updated_at >= $2) \
+                     order by (i.category = 'open') desc, coalesce(c.tests, 0) desc, i.created_at desc, i.id limit $3",
+                )
+                .bind(project_id)
+                .bind(since)
+                .bind(limit)
+                .fetch_all(&self.pool)
+                .await?;
+                Ok(WidgetData::Bugs {
+                    items: rows
+                        .into_iter()
+                        .map(|r| BugPoint {
+                            id: r.id,
+                            tracker_id: r.tracker_id,
+                            tracker_type: r.tracker_type,
+                            key: r.issue_key,
+                            url: r.url.filter(|u| !u.is_empty()),
+                            title: r.title,
+                            state: r.state,
+                            closed: r.closed,
+                            links: r.links,
+                            tests: r.tests,
+                            created_at: r.created_at,
                         })
                         .collect(),
                 })

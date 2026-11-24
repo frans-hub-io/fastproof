@@ -43,7 +43,7 @@ export function dashboardHandlers({ role, error, audit }: Helpers) {
       if (role() !== 'admin') return forbid('dashboards:write');
       const b = (await request.json()) as { widgets?: DashboardWidget[] };
       if (!Array.isArray(b.widgets) || b.widgets.length > 24) return error(400, 'invalid_body', 'at most 24 widgets');
-      return HttpResponse.json(dashboardData(String(params.key), b.widgets));
+      return HttpResponse.json(dashboardData(String(params.key), b.widgets, role() === 'admin'));
     }),
 
     http.get(`${API}/projects/:key/dashboards/:id`, ({ params }) => {
@@ -53,7 +53,7 @@ export function dashboardHandlers({ role, error, audit }: Helpers) {
 
     http.get(`${API}/projects/:key/dashboards/:id/data`, ({ params }) => {
       const d = getDashboard(String(params.key), String(params.id));
-      return d ? HttpResponse.json(dashboardData(String(params.key), d.widgets)) : error(404, 'not_found', 'dashboard not found');
+      return d ? HttpResponse.json(dashboardData(String(params.key), d.widgets, role() === 'admin')) : error(404, 'not_found', 'dashboard not found');
     }),
 
     http.put(`${API}/projects/:key/dashboards/:id`, async ({ params, request }) => {

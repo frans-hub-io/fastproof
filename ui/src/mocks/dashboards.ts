@@ -189,6 +189,25 @@ function dataOf(project: string, w: DashboardWidget): WidgetData {
           lastSeenAt: new Date(NOW - i * DAY).toISOString(),
         })),
       };
+    case 'cumulative-trend': {
+      if (!s.attribute) return { kind: 'cumulative', attribute: '', values: [] };
+      const values = ['1.4.0', '1.4.1', '1.5.0'].map((value, i) => ({ value, launches: 3 + i, firstAt: new Date(NOW - (9 - 3 * i) * DAY).toISOString(), lastAt: new Date(NOW - (7 - 3 * i) * DAY).toISOString(), total: 120 + 10 * i, passed: 100 + 8 * i, failed: 12 - i, broken: 4, skipped: 3, unknown: 1 }));
+      return { kind: 'cumulative', attribute: s.attribute, values: values.slice(-(s.limit ?? 10)) };
+    }
+    case 'unique-bugs':
+      return {
+        kind: 'bugs',
+        items: [
+          { id: 'b1', trackerId: 'jira', trackerType: 'jira', key: 'SHOP-1234', url: 'https://issues.example.com/browse/SHOP-1234', title: 'Checkout returns 500 for empty carts', state: 'In Progress', closed: false, links: 2, tests: 7, createdAt: new Date(NOW - 5 * DAY).toISOString() },
+          { id: 'b2', trackerId: 'jira', trackerType: 'jira', key: 'SHOP-1180', url: 'javascript:alert(1)', title: 'Payment timeout under load <b>not bold</b>', state: 'Open', closed: false, links: 1, tests: 3, createdAt: new Date(NOW - 12 * DAY).toISOString() },
+          { id: 'b3', trackerId: 'jira', trackerType: 'jira', key: 'OPS-77', url: 'https://issues.example.com/browse/OPS-77', title: 'Flaky runner clock', state: 'Done', closed: true, links: 1, tests: 1, createdAt: new Date(NOW - 20 * DAY).toISOString() },
+        ].slice(0, s.limit ?? 10),
+      };
+    case 'activity-stream':
+      return {
+        kind: 'activity',
+        items: ['launch.merge', 'dashboard.update', 'tracker.issue.create', 'project.settings.urls', 'dashboard.create'].map((action, i) => ({ id: 100 - i, at: new Date(NOW - i * 3_600_000).toISOString(), principal: i % 2 ? 'alex@example.com' : 'ci-bot', action })).slice(0, s.limit ?? 10),
+      };
     case 'launch-execution':
     case 'component-health': {
       const all = points(project, { ...s, limit: 50 }, 50);
@@ -213,10 +232,11 @@ function dataOf(project: string, w: DashboardWidget): WidgetData {
   }
 }
 
-export function dashboardData(project: string, widgets: DashboardWidget[]): DashboardData {
+export function dashboardData(project: string, widgets: DashboardWidget[], canReadAudit = true): DashboardData {
   const out: Record<string, WidgetResult> = {};
   for (const w of widgets) {
-    if (w.settings.branch === 'broken-branch') out[w.id] = { status: 'error', message: 'the widget could not be computed' };
+    if (w.type === 'activity-stream' && !canReadAudit) out[w.id] = { status: 'error', message: 'The activity stream is shown to people who may read the audit log (audit:read).' };
+    else if (w.settings.branch === 'broken-branch') out[w.id] = { status: 'error', message: 'the widget could not be computed' };
     else out[w.id] = { status: 'ok', data: dataOf(project, w) };
   }
   return { generatedAt: new Date().toISOString(), widgets: out };

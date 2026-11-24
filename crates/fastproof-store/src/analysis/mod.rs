@@ -1,6 +1,7 @@
 //! Analysis (stage C): fingerprints, defect types, triage, clusters and similar failures,
 //! rules, flakiness and transitions, comparison, dashboard, rollup and retention, test plans.
 
+pub mod attr_index;
 pub mod boards;
 pub mod clusters;
 pub mod compare;

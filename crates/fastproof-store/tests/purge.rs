@@ -122,6 +122,7 @@ begin
         insert into explorer_cache (launch_id, key, gen, payload) values (l, 'k1', 1, '{}'), (l, 'k2', 1, '{}');
         insert into launch_gates (launch_id, project_id) values (l, p);
         insert into case_sync_queue (launch_id) values (l);
+        insert into launch_attr_index (project_id, launch_id, key, value, launch_created_at) values (p, l, 'build', '1', t0);
         insert into launch_reruns (id, project_id, source_launch_id, external_id, provider, mode, requested_by)
             values (gen_random_uuid(), p, l, 'rerun-' || l::text, 'webhook', 'failed', 'seed');
     end loop;

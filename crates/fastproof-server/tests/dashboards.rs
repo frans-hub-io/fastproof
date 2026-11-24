@@ -12,7 +12,7 @@ use fastproof_store::analysis::boards::BoardLimits;
 use reqwest::{Method, StatusCode};
 use serde_json::{Value, json};
 
-const TYPES: [&str; 20] = [
+const TYPES: [&str; 23] = [
     "launch-statistics",
     "overall-statistics",
     "investigated-percentage",
@@ -33,6 +33,9 @@ const TYPES: [&str; 20] = [
     "durations",
     "defect-trend",
     "launches-per-day",
+    "cumulative-trend",
+    "unique-bugs",
+    "activity-stream",
 ];
 
 fn widget(id: &str, kind: &str) -> Value {
@@ -1069,4 +1072,372 @@ async fn delete_and_lock_need_if_match_and_clones_are_audited_in_both_projects()
         delete(&s, ADMIN_TOKEN, &p, None).await,
         StatusCode::NO_CONTENT
     );
+}
+
+async fn preview(s: &Server, project: &str, widgets: Vec<Value>) -> (StatusCode, Value) {
+    s.post(
+        &format!("/api/v1/projects/{project}/dashboard-preview"),
+        ADMIN_TOKEN,
+        json!({"widgets": widgets}),
+    )
+    .await
+}
+
+async fn launch_with(s: &Server, project: &str, name: &str, build: &str, branch: &str) -> String {
+    let (st, l) = s
+        .post(
+            &format!("/api/v1/projects/{project}/launches"),
+            ADMIN_TOKEN,
+            json!({"name": name, "vcs": {"branch": branch}, "attributes": [{"key": "build", "value": build}]}),
+        )
+        .await;
+    assert!(st.is_success(), "{l}");
+    let lid = l["id"].as_str().unwrap().to_string();
+    results(
+        s,
+        project,
+        &lid,
+        vec![
+            result("a", "passed", "Cart", None),
+            result("b", "failed", "Cart", Some("boom")),
+        ],
+    )
+    .await;
+    wait_total(s, project, &lid, 2).await;
+    lid
+}
+
+#[tokio::test]
+async fn the_cumulative_trend_sums_launches_by_attribute_value() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = Server::start(&db).await;
+    s.project("cum").await;
+    db.hold_jobs(&["launch.attributes.index"]).await;
+    let l1 = launch_with(&s, "cum", "one", "1.0", "main").await;
+    launch_with(&s, "cum", "two", "1.0", "main").await;
+    launch_with(&s, "cum", "three", "1.1", "dev").await;
+
+    let by_build = |extra: Value| {
+        let mut settings = json!({"attribute": "build"});
+        for (k, v) in extra.as_object().unwrap() {
+            settings[k] = v.clone();
+        }
+        widget_with("c1", "cumulative-trend", settings)
+    };
+    let (st, before) = preview(&s, "cum", vec![by_build(json!({}))]).await;
+    assert_eq!(st, StatusCode::OK, "{before}");
+    assert_eq!(
+        before["widgets"]["c1"]["data"]["values"],
+        json!([]),
+        "nothing is indexed before the job ran"
+    );
+
+    let store = Store::new(db.pool.clone());
+    assert_eq!(
+        store
+            .index_launch_attributes(Duration::from_secs(30))
+            .await
+            .unwrap(),
+        3
+    );
+    assert_eq!(
+        store
+            .index_launch_attributes(Duration::from_secs(30))
+            .await
+            .unwrap(),
+        0,
+        "launches are indexed once"
+    );
+    let (_, d) = preview(&s, "cum", vec![by_build(json!({}))]).await;
+    let data = &d["widgets"]["c1"]["data"];
+    assert_eq!(data["kind"], "cumulative");
+    assert_eq!(data["attribute"], "build");
+    let values = data["values"].as_array().unwrap();
+    assert_eq!(values.len(), 2, "{data}");
+    assert_eq!(values[0]["value"], "1.0", "oldest value first");
+    assert_eq!(values[0]["launches"], 2);
+    assert_eq!(values[0]["total"], 4);
+    assert_eq!(values[0]["passed"], 2);
+    assert_eq!(values[0]["failed"], 2);
+    assert_eq!(values[1]["value"], "1.1");
+    assert_eq!(values[1]["launches"], 1);
+
+    let (_, d) = preview(&s, "cum", vec![by_build(json!({"branch": "dev"}))]).await;
+    let values = d["widgets"]["c1"]["data"]["values"].as_array().unwrap();
+    assert_eq!(values.len(), 1, "the branch filter applies: {d}");
+    assert_eq!(values[0]["value"], "1.1");
+    let (_, d) = preview(&s, "cum", vec![by_build(json!({"limit": 1}))]).await;
+    assert_eq!(
+        d["widgets"]["c1"]["data"]["values"][0]["value"], "1.1",
+        "the most recent values are kept"
+    );
+    let (_, d) = preview(
+        &s,
+        "cum",
+        vec![widget_with("c1", "cumulative-trend", json!({}))],
+    )
+    .await;
+    assert_eq!(d["widgets"]["c1"]["data"]["values"], json!([]));
+
+    let (st, p) = s
+        .call(
+            Method::PATCH,
+            &format!("/api/v1/projects/cum/launches/{l1}"),
+            Some(ADMIN_TOKEN),
+            Some(json!({"attributes": [{"key": "build", "value": "1.1"}]})),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{p}");
+    assert_eq!(
+        store
+            .index_launch_attributes(Duration::from_secs(30))
+            .await
+            .unwrap(),
+        1,
+        "a patched launch is indexed again"
+    );
+    let (_, d) = preview(&s, "cum", vec![by_build(json!({}))]).await;
+    let values = d["widgets"]["c1"]["data"]["values"].as_array().unwrap();
+    assert_eq!(values.len(), 2);
+    assert_eq!(
+        values.iter().find(|v| v["value"] == "1.0").unwrap()["launches"],
+        1
+    );
+    assert_eq!(
+        values.iter().find(|v| v["value"] == "1.1").unwrap()["launches"],
+        2
+    );
+
+    let (st, b) = preview(
+        &s,
+        "cum",
+        vec![widget_with(
+            "c1",
+            "cumulative-trend",
+            json!({"attribute": "x".repeat(65)}),
+        )],
+    )
+    .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "{b}");
+    let many: Vec<Value> = (0..4)
+        .map(|i| {
+            widget_with(
+                &format!("c{i}"),
+                "cumulative-trend",
+                json!({"attribute": format!("a{i}")}),
+            )
+        })
+        .collect();
+    let (st, b) = preview(&s, "cum", many).await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "at most three groupings: {b}");
+
+    let indexed: i64 = sqlx::query_scalar("select count(*) from launch_attr_index")
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(indexed, 3);
+    sqlx::query("delete from launches")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let left: i64 = sqlx::query_scalar("select count(*) from launch_attr_index")
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(left, 0, "the index goes with its launches");
+}
+
+#[tokio::test]
+async fn unique_bugs_come_from_tracker_issue_links() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = Server::start(&db).await;
+    s.project("bug").await;
+    s.project("other").await;
+    let pid = |k: &'static str| {
+        let pool = db.pool.clone();
+        async move {
+            sqlx::query_scalar::<_, uuid::Uuid>("select id from projects where key = $1")
+                .bind(k)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+        }
+    };
+    let (bug, other) = (pid("bug").await, pid("other").await);
+    let add = |project: uuid::Uuid,
+               key: &'static str,
+               category: &'static str,
+               age: i32,
+               results: i32,
+               series: i32| {
+        let pool = db.pool.clone();
+        async move {
+            let id = uuid::Uuid::now_v7();
+            sqlx::query(
+                "insert into tracker_issues (id, project_id, tracker_id, tracker_type, issue_key, url, title, state, \
+                   category, created_by, created_at, updated_at) \
+                 values ($1, $2, 'gl', 'gitlab', $3, $4, $5, $6, $7, 'user:x', now() - make_interval(days => $8), \
+                   now() - make_interval(days => $8))",
+            )
+            .bind(id)
+            .bind(project)
+            .bind(key)
+            .bind(format!("https://git.example.com/g/a/-/issues/{}", key.trim_start_matches('#')))
+            .bind(format!("Bug {key} <script>alert(1)</script>"))
+            .bind(if category == "closed" { "closed" } else { "opened" })
+            .bind(category)
+            .bind(age)
+            .execute(&pool)
+            .await
+            .unwrap();
+            for _ in 0..results {
+                sqlx::query("insert into tracker_issue_links (id, issue_id, project_id, result_id, created_by) values ($1, $2, $3, $4, 'user:x')")
+                    .bind(uuid::Uuid::now_v7())
+                    .bind(id)
+                    .bind(project)
+                    .bind(uuid::Uuid::now_v7())
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+            if series > 0 {
+                let ids: Vec<uuid::Uuid> = (0..series).map(|_| uuid::Uuid::now_v7()).collect();
+                sqlx::query("insert into tracker_issue_links (id, issue_id, project_id, fingerprint, series_ids, created_by) values ($1, $2, $3, 'fp', $4, 'user:x')")
+                    .bind(uuid::Uuid::now_v7())
+                    .bind(id)
+                    .bind(project)
+                    .bind(&ids)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+        }
+    };
+    add(bug, "#1", "open", 90, 2, 0).await;
+    add(bug, "#2", "open", 1, 0, 5).await;
+    add(bug, "#3", "closed", 2, 1, 0).await;
+    add(bug, "#4", "closed", 90, 9, 0).await;
+    add(bug, "#5", "creating", 0, 0, 0).await;
+    add(other, "#9", "open", 0, 3, 0).await;
+
+    let (st, d) = preview(&s, "bug", vec![widget("u1", "unique-bugs")]).await;
+    assert_eq!(st, StatusCode::OK, "{d}");
+    let data = &d["widgets"]["u1"]["data"];
+    assert_eq!(data["kind"], "bugs");
+    let keys: Vec<&str> = data["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["key"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        keys,
+        ["#2", "#1", "#3"],
+        "open bugs first by the tests that point to them; a closed one only inside the window; no other project, no unfinished create: {data}"
+    );
+    let first = &data["items"][0];
+    assert_eq!(first["tests"], 5);
+    assert_eq!(first["links"], 1);
+    assert_eq!(first["closed"], false);
+    assert_eq!(first["trackerType"], "gitlab");
+    assert_eq!(data["items"][2]["closed"], true);
+    assert!(
+        first["title"].as_str().unwrap().contains("<script>"),
+        "text is data, the UI escapes it"
+    );
+
+    let (_, d) = preview(
+        &s,
+        "bug",
+        vec![widget_with(
+            "u1",
+            "unique-bugs",
+            json!({"days": 365, "limit": 2}),
+        )],
+    )
+    .await;
+    assert_eq!(
+        d["widgets"]["u1"]["data"]["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn the_activity_stream_is_shown_only_to_audit_readers_and_never_shared() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = Server::start(&db).await;
+    s.project("act").await;
+    s.project("quiet").await;
+    let viewer = s.token("viewer-x", "viewer", &["act"]).await;
+    let b = create(
+        &s,
+        ADMIN_TOKEN,
+        "act",
+        "Activity",
+        vec![
+            widget("w1", "launches-table"),
+            widget_with("w2", "activity-stream", json!({"limit": 5})),
+        ],
+    )
+    .await;
+    let data = path("act", &format!("/{}/data", b["id"].as_str().unwrap()));
+
+    let (st, d) = s.get(&data, ADMIN_TOKEN).await;
+    assert_eq!(st, StatusCode::OK, "{d}");
+    assert_eq!(d["widgets"]["w2"]["status"], "ok", "{d}");
+    let items = d["widgets"]["w2"]["data"]["items"].as_array().unwrap();
+    assert!(items.len() <= 5);
+    assert!(
+        items.iter().any(|i| i["action"] == "dashboard.create"),
+        "{items:?}"
+    );
+    for i in items {
+        assert!(
+            i.get("detail").is_none(),
+            "no audit detail in a widget: {i}"
+        );
+    }
+
+    let (st, v) = s.get(&data, &viewer).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert_eq!(v["widgets"]["w1"]["status"], "ok");
+    assert_eq!(v["widgets"]["w2"]["status"], "error", "{v}");
+    assert!(
+        v["widgets"]["w2"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("audit:read")
+    );
+    assert!(
+        !v.to_string().contains("dashboard.create"),
+        "nothing of the stream leaks through the shared data: {v}"
+    );
+    let (_, again) = s.get(&data, ADMIN_TOKEN).await;
+    assert_eq!(again["widgets"]["w2"]["status"], "ok");
+    assert_eq!(
+        again["generatedAt"], v["generatedAt"],
+        "the rest is still shared"
+    );
+
+    let (_, q) = preview(&s, "quiet", vec![widget("w2", "activity-stream")]).await;
+    assert_eq!(q["widgets"]["w2"]["status"], "ok");
+    assert!(
+        !q["widgets"]["w2"].to_string().contains("dashboard.create"),
+        "another project's records are not shown: {q}"
+    );
+
+    let many: Vec<Value> = (0..3)
+        .map(|i| widget_with(&format!("a{i}"), "activity-stream", json!({"limit": i + 1})))
+        .collect();
+    let (st, b) = preview(&s, "act", many).await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "{b}");
 }

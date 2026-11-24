@@ -601,7 +601,7 @@ pub(crate) async fn process_inner(
     let mut attempts: Vec<NewAttempt> = Vec::with_capacity(CHUNK);
     for (i, r) in results.into_iter().enumerate() {
         let client_key = match (&r.source_uuid, format) {
-            (Some(u), Some(f)) => format!("u:{}:{u}", f.as_str()),
+            (Some(u), Some(f)) => upload_client_key(f.as_str(), u),
             _ => format!("x:{}:{i}", job.upload_id),
         };
         attempts.push(NewAttempt {
@@ -693,5 +693,22 @@ pub async fn clean_local_spool(dir: &Path, age: Duration) {
                 }
             }
         }
+    }
+}
+
+/// Longest writer-side id kept as is in an attempt's client key; longer ids (a report may
+/// carry any string there) are replaced by their SHA-256, so the key fits its index.
+pub const MAX_SOURCE_ID_BYTES: usize = 256;
+
+/// The client key of an uploaded result: its format and writer-side id.
+pub fn upload_client_key(format: &str, source_id: &str) -> String {
+    if source_id.len() <= MAX_SOURCE_ID_BYTES {
+        format!("u:{format}:{source_id}")
+    } else {
+        use sha2::{Digest, Sha256};
+        format!(
+            "u:{format}:#{}",
+            hex::encode(Sha256::digest(source_id.as_bytes()))
+        )
     }
 }

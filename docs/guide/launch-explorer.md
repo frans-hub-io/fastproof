@@ -84,6 +84,9 @@ with 100 000 results is no slower than the full one.
 
 For a launch that has finished, the server keeps the counts of the unfiltered tree (per grouping and
 environment), the label names, the filter counts and the environments, so opening the launch again is fast.
+When a launch of 2000 results or more finishes, the server builds its unfiltered Suites tree in the
+background within a minute, so the first person to open it does not wait for the count either. The tests of
+the Suites groups the tree shows are found through an index, without reading the whole launch.
 Any change to the launch's results (late results, triage, mutes, deletion) makes them count again. The label
 names and the filter counts read at most 200 000 results; `partial` is true when a launch has more.
 

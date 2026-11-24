@@ -171,7 +171,7 @@ impl Store {
              left join lateral (select case when $4 then left(a.trace, $5) end as trace from attempts a \
                where a.result_id = r.id and a.launch_created_at = r.launch_created_at \
                order by (a.started_at is not null) desc, a.started_at desc nulls last, a.seq desc limit 1) la on true \
-             where r.launch_id = $1 and r.launch_created_at = $2 and r.status = any($3) order by r.full_name, r.id \
+             where r.launch_id = $1 and r.launch_created_at = $2 and r.status = any($3) order by left(r.full_name, 600), r.full_name, r.id \
              limit $6",
         )
         .bind(launch_id)
@@ -508,12 +508,43 @@ impl Store {
     }
 
     /// Lifts mutes that ended: their rows go and the results of those series are unmuted.
+    /// Returns how many mutes ended (up to 1000 per project).
+    ///
+    /// One project per transaction, which waits for rows held elsewhere for a short while
+    /// only: a project whose results or launch rows another transaction holds (a merge, a
+    /// manual run) is left for the next run, instead of waiting for it while the rows of other
+    /// projects already locked here hold up their writers.
     pub async fn expire_mutes(&self) -> anyhow::Result<u64> {
-        let mut tx = self.pool.begin().await?;
-        let ending: Vec<Uuid> = sqlx::query_scalar(
-            "select series_id from series_mutes where until is not null and until <= now() \
-             order by series_id limit 1000",
+        let projects: Vec<Uuid> = sqlx::query_scalar(
+            "select distinct project_id from series_mutes where until is not null and until <= now() \
+             limit 1000",
         )
+        .fetch_all(&self.pool)
+        .await?;
+        let mut expired = 0;
+        for project_id in projects {
+            match self.expire_mutes_of(project_id).await {
+                Ok(n) => expired += n,
+                Err(e) if crate::merges::lock_timeout(&e) => {
+                    metrics::counter!("fastproof_mute_expiry_busy_total").increment(1);
+                    tracing::debug!(project = %project_id, "rows held elsewhere; mutes end at the next run");
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(expired)
+    }
+
+    async fn expire_mutes_of(&self, project_id: Uuid) -> anyhow::Result<u64> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("set local lock_timeout = '2s'")
+            .execute(&mut *tx)
+            .await?;
+        let ending: Vec<Uuid> = sqlx::query_scalar(
+            "select series_id from series_mutes where project_id = $1 and until is not null \
+             and until <= now() order by series_id limit 1000",
+        )
+        .bind(project_id)
         .fetch_all(&mut *tx)
         .await?;
         if ending.is_empty() {

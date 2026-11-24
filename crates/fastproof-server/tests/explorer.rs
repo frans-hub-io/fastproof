@@ -672,7 +672,7 @@ async fn message_filter_matches_words_and_uses_the_index() {
         .unwrap();
     let plan: Vec<String> = sqlx::query_scalar(
         "explain select id from results where launch_id = $1 \
-         and to_tsvector('simple', coalesce(message, '')) @@ plainto_tsquery('simple', 'refused')",
+         and to_tsvector('simple', left(coalesce(message, ''), 65536)) @@ plainto_tsquery('simple', 'refused')",
     )
     .bind(uuid::Uuid::parse_str(&lid).unwrap())
     .fetch_all(&db.pool)

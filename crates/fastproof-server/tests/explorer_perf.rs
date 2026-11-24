@@ -1373,3 +1373,182 @@ async fn rollup_invalidates_the_cache_of_kept_launches() {
         "no cached counts of dropped results: {f}"
     );
 }
+
+/// The Suites tree reads the tests of its groups through the suite index of `results`, which
+/// is built on every partition and holds a hash of the path, so a path longer than a B-tree
+/// entry is stored and found too.
+#[tokio::test]
+async fn suite_groups_are_read_through_the_suite_index() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = Server::start(&db).await;
+    s.project("si").await;
+    let launch = s.launch("si", None).await;
+    let lid = launch["id"].as_str().unwrap();
+    let mut seed: u64 = 7;
+    let long: String = (0..3000)
+        .map(|_| {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            char::from(b'a' + ((seed >> 33) % 26) as u8)
+        })
+        .collect();
+    // Playwright titles, and Allure suite labels that make a path of 3000 bytes (a full name
+    // that long cannot be stored: the name index of results refuses it).
+    let mut rs = Vec::new();
+    for (file, describe) in [("a.spec.ts", "A"), ("b.spec.ts", "Оплата")] {
+        for i in 0..10 {
+            rs.push(result(
+                &format!("{file}{i}"),
+                &format!("{file} › {describe} › t{i}"),
+                if i == 3 { "failed" } else { "passed" },
+                json!([]),
+            ));
+        }
+    }
+    let long_path: Vec<String> = long
+        .as_bytes()
+        .chunks(1000)
+        .map(|c| String::from_utf8(c.to_vec()).unwrap())
+        .collect();
+    for i in 0..10 {
+        rs.push(result(
+            &format!("c{i}"),
+            &format!("c.Long#t{i}"),
+            "passed",
+            json!([
+                l("parentSuite", &long_path[0]),
+                l("suite", &long_path[1]),
+                l("subSuite", &long_path[2])
+            ]),
+        ));
+    }
+    post_results(&s, "si", lid, &rs).await;
+    finish(&s, "si", lid).await;
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        fastproof_store::analysis::indexes::ensure_analysis_indexes(&db.pool)
+            .await
+            .unwrap();
+        let (valid, missing): (bool, i64) = sqlx::query_as(
+            "select coalesce((select ix.indisvalid from pg_index ix join pg_class c on c.oid = ix.indexrelid \
+               where c.relname = 'results_launch_suite'), false), \
+             (select count(*) from pg_inherits i join pg_class p on p.oid = i.inhparent \
+               where p.relname = 'results' and not exists (select 1 from pg_inherits ii \
+                 join pg_index ix on ix.indexrelid = ii.inhrelid \
+                 where ii.inhparent = 'results_launch_suite'::regclass and ix.indrelid = i.inhrelid and ix.indisvalid))",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        if valid && missing == 0 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "suite index valid {valid}, partitions without it {missing}"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+
+    let base = format!("/api/v1/projects/si/launches/{lid}");
+    let (_, t) = s
+        .get(&format!("{base}/tree?includeTests=true"), ADMIN_TOKEN)
+        .await;
+    for path in [
+        vec!["a.spec.ts".to_string(), "A".to_string()],
+        vec!["b.spec.ts".to_string(), "Оплата".to_string()],
+        long_path.clone(),
+    ] {
+        let n = counted_node(&t, &path);
+        assert_eq!(n["counts"]["total"], 10, "{path:?}");
+        assert_eq!(n["tests"].as_array().unwrap().len(), 10, "{path:?}");
+    }
+
+    let mut tx = db.pool.begin().await.unwrap();
+    sqlx::query("set local enable_seqscan = off")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let plan: Vec<String> = sqlx::query_scalar(
+        "explain select r.id from results r where r.launch_id = $1::uuid and r.launch_created_at = $2 \
+         and hash_array_extended(r.suite_tree, 0::bigint) = any($3::bigint[])",
+    )
+    .bind(lid)
+    .bind(
+        sqlx::query_scalar::<_, chrono::DateTime<chrono::Utc>>(
+            "select created_at from launches where id = $1::uuid",
+        )
+        .bind(lid)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap(),
+    )
+    .bind(vec![1i64, 2])
+    .fetch_all(&mut *tx)
+    .await
+    .unwrap();
+    let plan = plan.join("\n");
+    assert!(plan.contains("_suite"), "{plan}");
+}
+
+/// A launch that finished gets its unfiltered Suites tree built in the background, so its first
+/// view is read from the cache; each finished launch is built once, and the cached tree equals
+/// one built on the request.
+#[tokio::test]
+async fn finished_launches_get_their_first_tree_built() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = Server::start(&db).await;
+    db.hold_jobs(&["explorer.warm"]).await;
+    let store = fastproof_store::Store::new(db.pool.clone());
+    s.project("warm").await;
+    let launch = s.launch("warm", None).await;
+    let lid = launch["id"].as_str().unwrap();
+    let rs: Vec<Value> = (0..30)
+        .map(|i| {
+            result(
+                &format!("t{i}"),
+                &format!("w.C{}#t{i}", i % 3),
+                if i % 7 == 0 { "failed" } else { "passed" },
+                json!([]),
+            )
+        })
+        .collect();
+    post_results(&s, "warm", lid, &rs).await;
+    let small = s.launch("warm", None).await;
+    post_results(&s, "warm", small["id"].as_str().unwrap(), &rs[..2]).await;
+    finish(&s, "warm", lid).await;
+    finish(&s, "warm", small["id"].as_str().unwrap()).await;
+    let warm = || store.warm_explorer_trees(Duration::ZERO, 10, 20, Duration::from_secs(30));
+    assert_eq!(
+        warm().await.unwrap(),
+        1,
+        "only the launch with enough results"
+    );
+    assert_eq!(cache_rows(&db, lid).await.len(), 1);
+    assert!(
+        cache_rows(&db, small["id"].as_str().unwrap())
+            .await
+            .is_empty()
+    );
+    assert_eq!(warm().await.unwrap(), 0, "each launch once");
+    let base = format!("/api/v1/projects/warm/launches/{lid}");
+    let (_, cached) = s
+        .get(&format!("{base}/tree?includeTests=true"), ADMIN_TOKEN)
+        .await;
+    sqlx::query("delete from explorer_cache where launch_id = $1::uuid")
+        .bind(lid)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let (_, built) = s
+        .get(&format!("{base}/tree?includeTests=true"), ADMIN_TOKEN)
+        .await;
+    assert_eq!(cached, built);
+    assert_eq!(cached["counts"]["total"], 30);
+}

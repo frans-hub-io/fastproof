@@ -3624,6 +3624,8 @@ export interface components {
             /** Format: int64 */
             duplicates: number;
             rejected: components["schemas"]["Rejected"][];
+            /** @description Accepted results that were changed to fit a limit (a name cut to `max_name_bytes`). */
+            warnings?: components["schemas"]["Rejected"][];
         };
         /**
          * @description What an issue is created or linked for: results, or a failure cluster (`launchId` and

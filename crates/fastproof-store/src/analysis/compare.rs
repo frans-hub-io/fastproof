@@ -83,7 +83,7 @@ impl Store {
     async fn compare_rows(&self, l: &Launch) -> anyhow::Result<Vec<Row>> {
         Ok(sqlx::query_as(
             "select id, series_id, status, duration_ms, name from results \
-             where launch_id = $1 and launch_created_at = $2 order by full_name, id limit $3",
+             where launch_id = $1 and launch_created_at = $2 order by left(full_name, 600), full_name, id limit $3",
         )
         .bind(l.id)
         .bind(l.created_at)
@@ -98,7 +98,7 @@ impl Store {
         }
         let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
             "{SUMMARY_SELECT} where r.launch_id = $1 and r.launch_created_at = $2 and r.id = any($3) \
-             order by r.full_name, r.id"
+             order by left(r.full_name, 600), r.full_name, r.id"
         )))
         .bind(l.id)
         .bind(l.created_at)

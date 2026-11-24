@@ -159,6 +159,9 @@ pub struct Scheduler {
 pub const LEASE: Duration = Duration::from_secs(120);
 /// How often due jobs are looked for.
 pub const TICK: Duration = Duration::from_secs(5);
+/// Launches from this many results get their Suites tree built when they finish
+/// (`explorer.warm`); smaller trees are fast to build on the first view.
+pub const WARM_MIN_RESULTS: i64 = 2000;
 
 impl Scheduler {
     pub fn new() -> Self {
@@ -397,7 +400,7 @@ pub fn analysis_jobs(sch: &mut Scheduler) -> anyhow::Result<()> {
         pool.close().await;
         let n = n?;
         if n > 0 {
-            tracing::info!(partitions = n, "fingerprint indexes built");
+            tracing::info!(partitions = n, "partition indexes of results built");
         }
         Ok(())
     })?;
@@ -419,6 +422,19 @@ pub fn analysis_jobs(sch: &mut Scheduler) -> anyhow::Result<()> {
         s.store
             .prune_explorer_cache(Duration::from_secs(7 * 86_400))
             .await?;
+        Ok(())
+    })?;
+    sch.register("explorer.warm", "30s", |s: AppState| async move {
+        let n = s
+            .store
+            .warm_explorer_trees(
+                Duration::from_secs(30),
+                WARM_MIN_RESULTS,
+                20,
+                Duration::from_secs(20),
+            )
+            .await?;
+        metrics::counter!("fastproof_explorer_trees_warmed_total").increment(n);
         Ok(())
     })?;
     sch.register("mutes.expire", "1m", |s: AppState| async move {

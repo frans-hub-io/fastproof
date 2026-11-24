@@ -86,7 +86,8 @@ JSON Schema:
 - Endpoint: `POST /api/v1/projects/{key}/launches/{id}/results` with one result or a JSON array
   (`application/json`), or one result per line (`application/x-ndjson`) for long-running streams.
 - Every result carries a client `id`; sending the same id twice is idempotent (the response counts
-  `accepted`, `duplicates` and `rejected` with the index and reason of each rejected entry).
+  `accepted`, `duplicates` and `rejected` with the index and reason of each rejected entry). Names and
+  full names longer than `max_name_bytes` (4 KiB) are cut and listed in `warnings` (index and message).
 - Attachments are uploaded first (`POST .../launches/{id}/attachments`, raw body with `Content-Type` and
   `X-FastProof-Attachment-Name`) and referenced by the returned attachment id.
 - `traceId` links an attempt to the matching FastMock interactions.

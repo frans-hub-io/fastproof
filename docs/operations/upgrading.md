@@ -7,6 +7,56 @@ version has migrated the schema.
 
 This page lists what needs attention per release.
 
+## Next release: faster first view of large launches, merge isolation
+
+- **Suite index.** The Suites tree of a launch reads the tests it shows through a new index of `results`,
+  `results_launch_suite` (the launch and a hash of the stored suite path). The scheduled job `analysis.indexes`
+  builds it soon after the start and then every 6 hours, as it builds the fingerprint index: the parent index
+  first (`ON ONLY`, a short lock of `results`), then each monthly partition with `CREATE INDEX CONCURRENTLY`, so
+  writes go on while it builds. On a large installation the first build takes a while; the index needs about
+  10 bytes of disk per result when many results share a suite (they share an entry), up to about 40 bytes
+  when each result is a suite of its own. Until a partition has it, trees of
+  launches in that partition are built as before. New partitions get the index when they are created. Storing
+  results updates one more index (see [Scaling](scaling.md#launch-explorer) for what it costs).
+- **Trees of finished launches built ahead.** The scheduled job `explorer.warm` (every 30 seconds) builds the
+  unfiltered Suites tree of each launch of 2000 results or more that finished at least 30 seconds before, up to
+  20 launches and 20 seconds per run, so the first view of a large launch is read from the cache (metric
+  `fastproof_explorer_trees_warmed_total`). It starts with launches that finish after the upgrade; its
+  position is kept in `analysis_state` (`explorer.warm`). Migration `0816_perf_index_launches_finished` builds
+  the index it walks (`launches (finished_at, id)`, concurrently).
+- **Long names and messages are stored.** A result whose full name was longer than about 2.7 KB of text
+  that does not compress, or whose failure message held more words than a full-text vector takes (about
+  1 MiB of short words), failed the whole request or upload with `500`: two indexes of `results` refused
+  the row. Migration `0817_long_names_indexes` adds their replacements, `results_launch_name_key` (the
+  launch and the first 600 characters of the full name) and `results_message_tsv` (the full-text vector of
+  the first 64 Ki characters of the message). On a new installation they are built at once; on an existing
+  one the migration only adds them to the parent table, and the `analysis.indexes` job builds them per
+  partition, concurrently, then drops `results_launch_name` and `results_message_fts` (each drop waits at
+  most 2 seconds for running statements and is tried again at the next run otherwise). Until then long
+  names still fail and pages of results by name are sorted in memory. Also:
+  - results by name are ordered by their first 600 characters, then by the whole name, so pages of a
+    launch keep using an index; names that differ only after 600 characters can come in another order
+    than before. Message search reads the first 64 Ki characters of a message;
+  - names sent to `POST .../results` are cut to `max_name_bytes` (4 KiB) like names in uploads, and the
+    answer lists a warning per cut name (`warnings`). A test whose name was longer than that (only short
+    repetitive names could be stored before) gets a new identity, so its history starts again;
+  - a writer-side id longer than 256 bytes (Allure `uuid`) is stored as its SHA-256 in the attempt key;
+  - the unused index `test_cases_project_name` is dropped (migration `0818_long_names_drop_test_cases_name`,
+    concurrently), and the unique index of folder names among siblings now holds a hash of the lowercased
+    name, so folder names up to `FASTPROOF_TM_MAX_NAME_BYTES` (at most 4096) fit (it is rebuilt in the
+    migration; `case_folders` is locked for writes meanwhile).
+- **Merges of one project no longer hold up other projects.** A merge holds the rows of its launches for its
+  first phase. Three background tasks used to wait for such a row while rows of other projects' launches were
+  locked by them, so other projects' merges, manual runs and launch deletions timed out or waited too:
+  - the gate queue (one statement over the finished launches of every project) now skips a launch whose row is
+    held and queues its gate at a later round (migration `0815_isolation_gate_retries` adds the nullable list
+    `integration_cursors.pending`; metric `fastproof_gates_deferred_total`);
+  - the job `launches.merges` waits at most a second for held rows and leaves that merge for its next run
+    (`fastproof_merge_job_busy_total{step}`), instead of five waits of 5 seconds; second phases take turns of
+    10 seconds, one merge per project before a second one of the same project;
+  - mute expiry (`mutes.expire`) runs one project per transaction and leaves a project with held rows for the
+    next minute (`fastproof_mute_expiry_busy_total`).
+
 ## 0.2.0-dev1: big launches on every writer
 
 A launch with many results used to go through one Kafka partition and one writer, and every

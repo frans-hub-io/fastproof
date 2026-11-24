@@ -23,7 +23,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use super::settings::{IntegrationSettings, IssueTracker, TrackerApi};
-use super::trackers::{Client, TrackerError};
+use super::trackers::{Client, TrackerError, parse_key};
 use crate::state::AppState;
 
 /// Issues read per round, at most.
@@ -148,7 +148,9 @@ pub async fn sync_one(st: &AppState, tracker: Option<&IssueTracker>, job: &SyncJ
 
 /// Reads the due issues of one project's tracker: one call for the group when it holds more
 /// than one issue, one call each otherwise. An issue the batch answer lacks counts as not
-/// found, like a `404` on a single read. Batch reads are not conditional (no etag), except
+/// found, like a `404` on a single read; an issue left out of the batch (more due than one call
+/// takes) stays leased and is read in a later round. A `400` for the whole batch (Jira refuses a
+/// query with a key it cannot see) falls back to single reads. Batch reads are not conditional (no etag), except
 /// Jira's `updated` comparison.
 pub async fn sync_group(st: &AppState, tracker: Option<&IssueTracker>, jobs: &[&SyncJob]) -> usize {
     let [first, ..] = jobs else { return 0 };
@@ -176,14 +178,29 @@ pub async fn sync_group(st: &AppState, tracker: Option<&IssueTracker>, jobs: &[&
         .map(|j| (j.key.clone(), j.remote_id.clone()))
         .collect();
     match client.get_many(&asked).await {
+        Err(TrackerError::Refused(400, _)) => {
+            for job in jobs {
+                let read = client
+                    .get(&job.key, job.remote_id.as_deref(), job.etag.as_deref())
+                    .await;
+                settle(st, api, job, read).await;
+            }
+        }
         Err(e) => {
             for job in jobs {
                 settle(st, api, job, Err(e.clone())).await;
             }
         }
-        Ok(mut answers) => {
+        Ok(mut batch) => {
             for job in jobs {
-                let read = match answers.remove(&job.key) {
+                let Some(key) = parse_key(&t.tracker, &job.key) else {
+                    settle(st, api, job, Err(TrackerError::NotFound)).await;
+                    continue;
+                };
+                if !batch.asked.contains(&key) {
+                    continue;
+                }
+                let read = match batch.found.remove(&key) {
                     Some((_, etag)) if etag.is_some() && etag == job.etag => Ok(None),
                     Some(found) => Ok(Some(found)),
                     None => Err(TrackerError::NotFound),

@@ -38,6 +38,8 @@ pub const DEFAULT_LIMIT: u32 = 10;
 const COMPONENTS: i64 = 20;
 /// Most recent attribute rows the cumulative trend reads.
 const ATTRIBUTE_LAUNCHES: i64 = 5000;
+/// Newest tracked issues (open first) the unique bugs widget counts links for.
+pub const BUG_CANDIDATES: i64 = 500;
 
 #[derive(sqlx::FromRow)]
 struct CumulativeRow {
@@ -1176,16 +1178,17 @@ impl Store {
                     });
                 };
                 let rows: Vec<CumulativeRow> = sqlx::query_as(
-                    "with idx as (select launch_id, value from launch_attr_index \
-                       where project_id = $1 and key = $2 and launch_created_at >= $3 \
-                       order by launch_created_at desc limit $6) \
+                    "with idx as (select a.launch_id, a.value from launch_attr_index a \
+                       join launches l on l.id = a.launch_id and not l.debug \
+                         and ($4::text is null or l.branch = $4) and ($5::text is null or l.env_key = $5) \
+                       where a.project_id = $1 and a.key = $2 and a.launch_created_at >= $3 \
+                       order by a.launch_created_at desc limit $6) \
                      select idx.value, count(*)::bigint as launches, min(l.started_at) as first_at, \
                        max(l.started_at) as last_at, sum(l.count_total)::bigint as total, \
                        sum(l.count_passed)::bigint as passed, sum(l.count_failed)::bigint as failed, \
                        sum(l.count_broken)::bigint as broken, sum(l.count_skipped)::bigint as skipped, \
                        sum(l.count_unknown)::bigint as unknown \
-                     from idx join launches l on l.id = idx.launch_id and not l.debug \
-                       and ($4::text is null or l.branch = $4) and ($5::text is null or l.env_key = $5) \
+                     from idx join launches l on l.id = idx.launch_id \
                      group by idx.value order by min(l.started_at) desc, idx.value limit $7",
                 )
                 .bind(project_id)
@@ -1220,17 +1223,19 @@ impl Store {
                     "select i.id, i.tracker_id, i.tracker_type, i.issue_key, i.url, left(i.title, 300) as title, \
                        left(i.state, 100) as state, i.category = 'closed' as closed, i.created_at, \
                        coalesce(c.links, 0)::bigint as links, coalesce(c.tests, 0)::bigint as tests \
-                     from tracker_issues i left join lateral ( \
+                     from (select * from tracker_issues where project_id = $1 and category in ('open', 'closed') \
+                         and issue_key is not null and (category = 'open' or updated_at >= $2) \
+                       order by (category = 'open') desc, created_at desc, id limit $4) i \
+                     left join lateral ( \
                        select count(*) as links, sum(case when x.result_id is not null then 1 else 0 end \
                          + cardinality(x.series_ids)) as tests \
                        from (select result_id, series_ids from tracker_issue_links where issue_id = i.id limit 100) x) c on true \
-                     where i.project_id = $1 and i.category in ('open', 'closed') and i.issue_key is not null \
-                       and (i.category = 'open' or i.updated_at >= $2) \
                      order by (i.category = 'open') desc, coalesce(c.tests, 0) desc, i.created_at desc, i.id limit $3",
                 )
                 .bind(project_id)
                 .bind(since)
                 .bind(limit)
+                .bind(BUG_CANDIDATES)
                 .fetch_all(&self.pool)
                 .await?;
                 Ok(WidgetData::Bugs {

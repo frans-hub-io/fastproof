@@ -1441,3 +1441,157 @@ async fn the_activity_stream_is_shown_only_to_audit_readers_and_never_shared() {
     let (st, b) = preview(&s, "act", many).await;
     assert_eq!(st, StatusCode::BAD_REQUEST, "{b}");
 }
+
+async fn bulk_launches(db: &TestDb, project: uuid::Uuid, count: i32, age_secs: i32, pending: bool) {
+    sqlx::query(
+        "insert into launches (id, project_id, number, name, branch, created_at, started_at, attributes, attrs_indexed_at) \
+         select gen_random_uuid(), $1, g + $4, 'bulk', 'main', now() - make_interval(secs => g + $2), now(), \
+           '[{\"key\":\"build\",\"value\":\"1\"}]', case when $5 then null else now() end \
+         from generate_series(1, $3) g",
+    )
+    .bind(project)
+    .bind(age_secs)
+    .bind(count)
+    .bind(age_secs)
+    .bind(pending)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+}
+
+async fn project_id(db: &TestDb, key: &str) -> uuid::Uuid {
+    sqlx::query_scalar("select id from projects where key = $1")
+        .bind(key)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn the_attribute_index_is_fair_between_projects_and_drops_old_launches() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = Server::start(&db).await;
+    s.project("fa").await;
+    s.project("fb").await;
+    db.hold_jobs(&["launch.attributes.index"]).await;
+    let (a, b) = (project_id(&db, "fa").await, project_id(&db, "fb").await);
+    bulk_launches(&db, a, 1200, 0, true).await;
+    bulk_launches(&db, b, 3, 86_400 * 5, true).await;
+    bulk_launches(&db, b, 4, 86_400 * 800, true).await;
+
+    let store = Store::new(db.pool.clone());
+    let n = store
+        .index_launch_attributes(Duration::from_secs(120))
+        .await
+        .unwrap();
+    assert_eq!(n, 500, "one run indexes at most 500 launches");
+    let pending = |p: uuid::Uuid, old: bool| {
+        let pool = db.pool.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>(
+                "select count(*) from launches where project_id = $1 and attrs_indexed_at is null \
+                 and (created_at < now() - interval '730 days') = $2",
+            )
+            .bind(p)
+            .bind(old)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    assert_eq!(
+        pending(b, false).await,
+        0,
+        "the small project is served in the first run although its launches are older"
+    );
+    assert_eq!(pending(a, false).await, 1200 - 497);
+    assert_eq!(
+        pending(b, true).await,
+        0,
+        "launches beyond the window leave the pending set"
+    );
+    let indexed_old: i64 = sqlx::query_scalar(
+        "select count(*) from launch_attr_index where project_id = $1 and launch_created_at < now() - interval '730 days'",
+    )
+    .bind(b)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(indexed_old, 0, "they are not indexed either");
+}
+
+#[tokio::test]
+async fn the_cumulative_trend_filters_before_its_row_limit() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = Server::start(&db).await;
+    s.project("flt").await;
+    db.hold_jobs(&["launch.attributes.index"]).await;
+    let pid = project_id(&db, "flt").await;
+    launch_with(&s, "flt", "dev run", "old-build", "dev").await;
+    bulk_launches(&db, pid, 5001, -86_400, false).await;
+    sqlx::query(
+        "insert into launch_attr_index (project_id, launch_id, key, value, launch_created_at) \
+         select project_id, id, 'build', 'bulk', created_at from launches where name = 'bulk' and project_id = $1",
+    )
+    .bind(pid)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    Store::new(db.pool.clone())
+        .index_launch_attributes(Duration::from_secs(30))
+        .await
+        .unwrap();
+    let w = |extra: Value| {
+        let mut s = json!({"attribute": "build", "limit": 50});
+        for (k, v) in extra.as_object().unwrap() {
+            s[k] = v.clone();
+        }
+        widget_with("c1", "cumulative-trend", s)
+    };
+    let (_, d) = preview(&s, "flt", vec![w(json!({"branch": "dev"}))]).await;
+    let values = d["widgets"]["c1"]["data"]["values"].as_array().unwrap();
+    assert_eq!(
+        values
+            .iter()
+            .map(|v| v["value"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["old-build"],
+        "5001 newer launches of another branch do not push the dev launch out: {d}"
+    );
+}
+
+#[tokio::test]
+async fn unique_bugs_count_links_only_for_the_newest_candidates() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = Server::start(&db).await;
+    s.project("cand").await;
+    let pid = project_id(&db, "cand").await;
+    sqlx::query(
+        "insert into tracker_issues (id, project_id, tracker_id, tracker_type, issue_key, url, title, state, category, created_by, created_at, updated_at) \
+         select gen_random_uuid(), $1, 'gl', 'gitlab', '#' || g, 'https://git.example.com/i/' || g, 'bug ' || g, 'opened', 'open', 'user:x', \
+           now() - make_interval(secs => g), now() \
+         from generate_series(1, 501) g",
+    )
+    .bind(pid)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let (_, d) = preview(
+        &s,
+        "cand",
+        vec![widget_with("u1", "unique-bugs", json!({"limit": 50}))],
+    )
+    .await;
+    let items = d["widgets"]["u1"]["data"]["items"].as_array().unwrap();
+    assert_eq!(items.len(), 50, "{d}");
+    assert!(
+        items.iter().all(|i| i["key"] != "#501"),
+        "the oldest issue is beyond the 500 candidates"
+    );
+}

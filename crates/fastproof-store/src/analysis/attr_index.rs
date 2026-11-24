@@ -53,63 +53,111 @@ pub fn indexable(attributes: &serde_json::Value) -> Vec<(String, String)> {
     out
 }
 
+/// Launches of one project one round takes, at most: a round gives every project the same
+/// share, so one project that makes many launches cannot starve the others.
+pub const PER_PROJECT: i64 = 50;
+/// Rounds one run makes, at most.
+const ROUNDS: usize = 10;
+/// Launches older than the widget window that one run marks as not to be indexed.
+const SWEEP: i64 = 2000;
+
 impl Store {
-    /// Indexes launches whose attributes are not indexed yet, newest first, at most
-    /// [`INDEX_BATCH`] and until `budget` is spent. Returns how many were indexed.
-    pub async fn index_launch_attributes(&self, budget: Duration) -> anyhow::Result<u64> {
-        let started = Instant::now();
-        let pending: Vec<Pending> = sqlx::query_as(
-            "select id, project_id, created_at from launches \
-             where attrs_indexed_at is null and not debug \
-               and created_at >= now() - make_interval(days => $1) \
-             order by created_at desc limit $2",
+    /// Marks launches older than the widget window as indexed without indexing them (they
+    /// are never read), so the pending index drains.
+    async fn sweep_old_attribute_launches(&self) -> anyhow::Result<u64> {
+        Ok(sqlx::query(
+            "update launches set attrs_indexed_at = now() where id in ( \
+               select l.id from projects p cross join lateral ( \
+                 select id from launches where project_id = p.id and attrs_indexed_at is null and not debug \
+                   and created_at < now() - make_interval(days => $1) order by created_at limit 200) l \
+               where p.deleted_at is null limit $2)",
         )
         .bind(MAX_DAYS as i32)
-        .bind(INDEX_BATCH)
-        .fetch_all(&self.pool)
-        .await?;
-        let mut done = 0;
-        for (id, project_id, created) in pending {
-            if started.elapsed() > budget {
+        .bind(SWEEP)
+        .execute(&self.pool)
+        .await?
+        .rows_affected())
+    }
+
+    /// Indexes launches whose attributes are not indexed yet in rounds of [`PER_PROJECT`] per
+    /// project (newest first within a project), at most [`INDEX_BATCH`] in all and until
+    /// `budget` is spent. Returns how many were indexed.
+    pub async fn index_launch_attributes(&self, budget: Duration) -> anyhow::Result<u64> {
+        let started = Instant::now();
+        self.sweep_old_attribute_launches().await?;
+        let mut done = 0u64;
+        for _ in 0..ROUNDS {
+            let pending: Vec<Pending> = sqlx::query_as(
+                "select l.id, l.project_id, l.created_at from projects p cross join lateral ( \
+                   select id, project_id, created_at from launches \
+                   where project_id = p.id and attrs_indexed_at is null and not debug \
+                     and created_at >= now() - make_interval(days => $1) \
+                   order by created_at desc limit $2) l \
+                 where p.deleted_at is null limit $3",
+            )
+            .bind(MAX_DAYS as i32)
+            .bind(PER_PROJECT)
+            .bind(INDEX_BATCH)
+            .fetch_all(&self.pool)
+            .await?;
+            let mut round = 0;
+            for (id, project_id, created) in pending {
+                if started.elapsed() > budget || done >= INDEX_BATCH as u64 {
+                    return Ok(done);
+                }
+                if self.index_one(id, project_id, created).await? {
+                    round += 1;
+                    done += 1;
+                }
+            }
+            if round == 0 {
                 break;
             }
-            let mut tx = self.pool.begin().await?;
-            let row: Option<serde_json::Value> = sqlx::query_scalar(
-                "select attributes from launches where id = $1 and attrs_indexed_at is null for update skip locked",
-            )
-            .bind(id)
-            .fetch_optional(&mut *tx)
-            .await?;
-            let Some(attrs) = row else { continue };
-            sqlx::query("delete from launch_attr_index where launch_id = $1")
-                .bind(id)
-                .execute(&mut *tx)
-                .await?;
-            let pairs = indexable(&attrs);
-            if !pairs.is_empty() {
-                let keys: Vec<String> = pairs.iter().map(|p| no_nul(&p.0)).collect();
-                let values: Vec<String> = pairs.iter().map(|p| no_nul(&p.1)).collect();
-                sqlx::query(
-                    "insert into launch_attr_index (project_id, launch_id, key, value, launch_created_at) \
-                     select $1, $2, k, v, $3 from unnest($4::text[], $5::text[]) as t(k, v) \
-                     on conflict do nothing",
-                )
-                .bind(project_id)
-                .bind(id)
-                .bind(created)
-                .bind(&keys)
-                .bind(&values)
-                .execute(&mut *tx)
-                .await?;
-            }
-            sqlx::query("update launches set attrs_indexed_at = now() where id = $1")
-                .bind(id)
-                .execute(&mut *tx)
-                .await?;
-            tx.commit().await?;
-            done += 1;
         }
         Ok(done)
+    }
+
+    async fn index_one(
+        &self,
+        id: Uuid,
+        project_id: Uuid,
+        created: DateTime<Utc>,
+    ) -> anyhow::Result<bool> {
+        let mut tx = self.pool.begin().await?;
+        let row: Option<serde_json::Value> = sqlx::query_scalar(
+            "select attributes from launches where id = $1 and attrs_indexed_at is null for update skip locked",
+        )
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(attrs) = row else { return Ok(false) };
+        sqlx::query("delete from launch_attr_index where launch_id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        let pairs = indexable(&attrs);
+        if !pairs.is_empty() {
+            let keys: Vec<String> = pairs.iter().map(|p| no_nul(&p.0)).collect();
+            let values: Vec<String> = pairs.iter().map(|p| no_nul(&p.1)).collect();
+            sqlx::query(
+                "insert into launch_attr_index (project_id, launch_id, key, value, launch_created_at) \
+                 select $1, $2, k, v, $3 from unnest($4::text[], $5::text[]) as t(k, v) \
+                 on conflict do nothing",
+            )
+            .bind(project_id)
+            .bind(id)
+            .bind(created)
+            .bind(&keys)
+            .bind(&values)
+            .execute(&mut *tx)
+            .await?;
+        }
+        sqlx::query("update launches set attrs_indexed_at = now() where id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(true)
     }
 }
 

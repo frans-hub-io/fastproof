@@ -137,6 +137,21 @@ fn jira_search(m: &Mock, flavor: &str, base: &str, body: &Value) -> Response {
     else {
         return reply(400, json!({"errorMessages": ["bad jql"], "errors": {}}));
     };
+    let warn = body["validateQuery"] == "warn";
+    let wanted: Vec<u64> = list
+        .split(',')
+        .filter_map(|k| k.trim().strip_prefix("SHOP-")?.parse::<u64>().ok())
+        .collect();
+    if !warn
+        && wanted
+            .iter()
+            .any(|n| !m.issues.contains_key(&(flavor.to_string(), *n)))
+    {
+        return reply(
+            400,
+            json!({"errorMessages": ["An issue with key 'SHOP-0' does not exist for field 'key'."], "errors": {}}),
+        );
+    }
     let issues: Vec<Value> = list
         .split(',')
         .filter_map(|k| k.trim().strip_prefix("SHOP-")?.parse::<u64>().ok())
@@ -376,7 +391,7 @@ async fn handle(
                         );
                     }
                     let mut repo = serde_json::Map::new();
-                    for part in q.split("issue(number:").skip(1) {
+                    for part in q.split("issueOrPullRequest(number:").skip(1) {
                         let n: u64 = part
                             .split(')')
                             .next()
@@ -384,10 +399,25 @@ async fn handle(
                             .unwrap_or(0);
                         let v = match m.issues.get(&("gh".to_string(), n)) {
                             Some(i) => {
-                                json!({"databaseId": 5000 + n, "number": n, "title": i.title,
-                                "state": if i.closed { "CLOSED" } else { "OPEN" },
-                                "stateReason": if i.closed { json!("COMPLETED") } else { Value::Null },
-                                "url": format!("https://github.example.com/octo/app/issues/{n}")})
+                                let pr = i.title.starts_with("PR:");
+                                let nwo = if i.title.starts_with("FOREIGN:") {
+                                    "other/repo"
+                                } else {
+                                    "octo/app"
+                                };
+                                let state = match (i.closed, pr) {
+                                    (false, _) => "OPEN",
+                                    (true, true) => "MERGED",
+                                    (true, false) => "CLOSED",
+                                };
+                                let mut v = json!({"__typename": if pr { "PullRequest" } else { "Issue" },
+                                    "databaseId": 5000 + n, "number": n, "title": i.title, "state": state,
+                                    "repository": {"nameWithOwner": nwo},
+                                    "url": format!("https://github.example.com/octo/app/issues/{n}")});
+                                if !pr && i.closed {
+                                    v["stateReason"] = json!("COMPLETED");
+                                }
+                                v
                             }
                             None => Value::Null,
                         };
@@ -989,12 +1019,14 @@ async fn due_issues_of_a_tracker_are_read_with_one_batch_call() {
     let mut made: HashMap<&str, Vec<Value>> = HashMap::new();
     for t in ["jc", "js", "gl", "gh", "az"] {
         for name in names {
-            let (st, b) = create(
-                &s,
-                ADMIN_TOKEN,
-                json!({"tracker": t, "requestId": uuid::Uuid::now_v7(), "resultIds": [rid(&results, name)]}),
-            )
-            .await;
+            let mut body = json!({"tracker": t, "requestId": uuid::Uuid::now_v7(), "resultIds": [rid(&results, name)]});
+            if t == "gh" && name == "refunds" {
+                body["title"] = json!("PR: refunds");
+            }
+            if t == "gh" && name == "voids" {
+                body["title"] = json!("FOREIGN: voids");
+            }
+            let (st, b) = create(&s, ADMIN_TOKEN, body).await;
             assert_eq!(st, StatusCode::OK, "{t} {name}: {b}");
             made.entry(t).or_default().push(b["issue"].clone());
         }
@@ -1022,6 +1054,7 @@ async fn due_issues_of_a_tracker_are_read_with_one_batch_call() {
         );
     }
     fake.remove("gl", number(&made["gl"][2]));
+    fake.remove("jc", number(&made["jc"][2]));
 
     for t in ["jc", "js", "gl", "gh", "az"] {
         let id = made[t][1]["id"].as_str().unwrap().to_string();
@@ -1060,6 +1093,58 @@ async fn due_issues_of_a_tracker_are_read_with_one_batch_call() {
 
     let widest =
         |calls: &[Rec], count: &dyn Fn(&Rec) -> usize| calls.iter().map(count).max().unwrap_or(0);
+    for (t, why) in [
+        ("jc", "Jira refused the batch: single reads"),
+        ("gh", "another repository's answer"),
+    ] {
+        let id = made[t][2]["id"].as_str().unwrap().to_string();
+        wait_for(why, || async {
+            let (_, b) = s
+                .get(
+                    &format!("/api/v1/projects/ti/tracker-issues/{id}"),
+                    ADMIN_TOKEN,
+                )
+                .await;
+            !b["syncError"].is_null()
+        })
+        .await;
+    }
+    let (_, pr) = s
+        .get(
+            &format!(
+                "/api/v1/projects/ti/tracker-issues/{}",
+                made["gh"][1]["id"].as_str().unwrap()
+            ),
+            ADMIN_TOKEN,
+        )
+        .await;
+    assert_eq!(
+        pr["category"], "closed",
+        "a merged pull request is read: {pr}"
+    );
+    assert_eq!(pr["state"], "merged");
+    assert_eq!(pr["key"], made["gh"][1]["key"]);
+    for t in ["jc", "gl", "az", "js"] {
+        let id = made[t][0]["id"].as_str().unwrap();
+        let (_, b) = s
+            .get(
+                &format!("/api/v1/projects/ti/tracker-issues/{id}"),
+                ADMIN_TOKEN,
+            )
+            .await;
+        assert!(
+            b["syncError"].is_null(),
+            "{t}: one missing issue does not fail the others: {b}"
+        );
+    }
+    assert!(
+        !fake.requests("GET", "/jc/rest/api/3/issue/").is_empty(),
+        "Jira Cloud fell back to single reads after a 400"
+    );
+    let js_first: Value =
+        serde_json::from_slice(&fake.requests("POST", "/js/rest/api/2/search")[0].body).unwrap();
+    assert_eq!(js_first["validateQuery"], "warn");
+
     let jc = fake.requests("POST", "/jc/rest/api/3/search/jql");
     let js = fake.requests("POST", "/js/rest/api/2/search");
     let gl: Vec<Rec> = fake
@@ -1089,7 +1174,7 @@ async fn due_issues_of_a_tracker_are_read_with_one_batch_call() {
     );
     assert!(
         widest(&gh, &|r| String::from_utf8_lossy(&r.body)
-            .matches("issue(number:")
+            .matches("issueOrPullRequest(number:")
             .count())
             >= 2,
         "GitHub: one GraphQL query for several issues"
@@ -1113,6 +1198,7 @@ async fn due_issues_of_a_tracker_are_read_with_one_batch_call() {
     assert!(
         etags
             .iter()
+            .take(2)
             .all(|e| e.as_deref().is_some_and(|e| e.starts_with("2026-11-24"))),
         "Jira keeps its updated time as the etag: {etags:?}"
     );

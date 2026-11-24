@@ -54,18 +54,18 @@ its public documentation as remembered; check it against the current docs when c
 Pick a launch attribute (`attribute`, for example `build` or `release`). The widget groups the launches of the range
 by the value of that attribute and adds up their results by status, one bar per value, oldest value first (the
 newest `limit` values, at most 50). It reads an index of launch attributes kept by the `launch.attributes.index`
-job, which indexes new launches and launches whose attributes were changed within a minute or so, newest first, up
-to 500 a run (an upgraded installation fills the index over a few runs). Only launches of the last 730 days are
+job, which indexes new launches and launches whose attributes were changed within a minute or so, in rounds that give
+every project the same share (50 launches each, newest first), up to 500 a run (an upgraded installation fills the index over a few runs). Only launches of the last 730 days are
 indexed, at most 20 attributes per launch (keys up to 64 characters, values up to 200). The counters come from the
 launches themselves, so triage and late results show without a second copy. The widget reads at most the 5000 most
-recent indexed launches of the range, and `branch` and `environment` filter them.
+recent indexed launches that match `branch` and `environment` in the range.
 
 ### Unique bugs
 
 Lists the issues the project follows in its tracker ([Issue trackers](issue-trackers.md)): all open ones, and closed
 ones that changed within the range, with the state the tracker reported and the number of tests that point to them
 (results linked to the issue, plus the series of a linked failure cluster). Open issues come first, then by the number
-of tests. Issue keys link to the tracker only when the stored address is an `http` or `https` one. It needs no tracker
+of tests, among the 500 newest issues (open first) of the project. Issue keys link to the tracker only when the stored address is an `http` or `https` one. It needs no tracker
 call: the data is what the tracker sync already stored.
 
 ### Activity stream

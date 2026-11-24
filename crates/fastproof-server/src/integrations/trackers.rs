@@ -29,6 +29,14 @@ use fastproof_store::trackers::IssueState;
 pub const MAX_IMAGES: usize = 3;
 /// Bytes of one screenshot, at most.
 pub const MAX_IMAGE_BYTES: u64 = 5 * 1024 * 1024;
+/// What a batch read answered.
+pub struct Batch {
+    /// States by normalised issue key.
+    pub found: HashMap<String, (IssueState, Option<String>)>,
+    /// The normalised keys that were asked for.
+    pub asked: Vec<String>,
+}
+
 /// Issues one batch read asks for, at most.
 pub const MAX_BATCH: usize = 25;
 /// Jira fields every read asks for.
@@ -852,22 +860,27 @@ impl<'a> Client<'a> {
     }
 
     /// Reads several issues of this tracker's project with one call: Jira `key in (...)`
-    /// search, GitLab `iids[]`, GitHub GraphQL (one `issue(number:)` alias per issue) and
-    /// Azure DevOps `workitemsbatch`. Answers the states by issue key; an issue the tracker
-    /// did not return (deleted, no access, another project) is missing. At most
-    /// [`MAX_BATCH`] issues are asked for; the rest are ignored. The second part of an
+    /// search, GitLab `iids[]`, GitHub GraphQL (an `issueOrPullRequest(number:)` alias for each,
+    /// so pull requests are read like the single read does) and Azure DevOps `workitemsbatch`.
+    /// Queries are built from the normalised key. Answers the states by normalised key; an
+    /// issue the tracker did not return (deleted, no access, another project) is missing from
+    /// `found`. At most [`MAX_BATCH`] issues are asked for: `asked` names the normalised keys
+    /// that were, and the caller leaves the others for a later round. The second part of an
     /// answer is Jira's `updated` time (the etag of its next read).
     pub async fn get_many(
         &self,
         items: &[(String, Option<String>)],
-    ) -> Result<HashMap<String, (IssueState, Option<String>)>, TrackerError> {
+    ) -> Result<Batch, TrackerError> {
         let kind = self.tracker.tracker.as_str();
-        let items: Vec<&(String, Option<String>)> = items
+        let items: Vec<(String, Option<String>)> = items
             .iter()
-            .filter(|(k, _)| parse_key(kind, k).is_some())
+            .filter_map(|(k, r)| parse_key(kind, k).map(|k| (k, r.clone())))
             .take(MAX_BATCH)
             .collect();
-        let mut out = HashMap::new();
+        let mut out = Batch {
+            found: HashMap::new(),
+            asked: items.iter().map(|(k, _)| k.clone()).collect(),
+        };
         if items.is_empty() {
             return Ok(out);
         }
@@ -875,13 +888,17 @@ impl<'a> Client<'a> {
         match kind {
             "jira" => {
                 let keys: Vec<&str> = items.iter().map(|(k, _)| k.as_str()).collect();
-                let url = if self.api.jira_server() {
+                let server = self.api.jira_server();
+                let url = if server {
                     self.jira("/search")
                 } else {
                     self.jira("/search/jql")
                 };
-                let body = json!({"jql": format!("key in ({})", keys.join(",")),
+                let mut body = json!({"jql": format!("key in ({})", keys.join(",")),
                     "fields": JIRA_FIELDS.split(',').collect::<Vec<_>>(), "maxResults": keys.len()});
+                if server {
+                    body["validateQuery"] = json!("warn");
+                }
                 let r = self
                     .call(Method::POST, &url, Payload::Json(body), None)
                     .await?;
@@ -894,7 +911,7 @@ impl<'a> Client<'a> {
                     .take(items.len())
                 {
                     if let Ok(s) = self.jira_state(i) {
-                        out.insert(s.key.clone(), (s, jira_updated(i)));
+                        out.found.insert(s.key.clone(), (s, jira_updated(i)));
                     }
                 }
             }
@@ -912,7 +929,7 @@ impl<'a> Client<'a> {
                 let v = Self::json(&r)?;
                 for i in v.as_array().into_iter().flatten().take(items.len()) {
                     if let Ok(s) = self.gitlab_state(i) {
-                        out.insert(s.key.clone(), (s, None));
+                        out.found.insert(s.key.clone(), (s, None));
                     }
                 }
             }
@@ -924,13 +941,14 @@ impl<'a> Client<'a> {
                     .iter()
                     .map(|(k, _)| {
                         let n = number(k);
-                        format!("i{n}:issue(number:{n}){{...F}}")
+                        format!("i{n}:issueOrPullRequest(number:{n}){{...F}}")
                     })
                     .collect::<Vec<_>>()
                     .join(" ");
                 let query = format!(
                     "query($owner:String!,$name:String!){{repository(owner:$owner,name:$name){{{aliases}}}}} \
-                     fragment F on Issue{{databaseId number title state stateReason url}}"
+                     fragment F on IssueOrPullRequest {{ ... on Issue {{ __typename databaseId number title state stateReason url repository {{ nameWithOwner }} }} \
+                     ... on PullRequest {{ __typename databaseId number title state url repository {{ nameWithOwner }} }} }}"
                 );
                 let r = self
                     .call(
@@ -943,25 +961,43 @@ impl<'a> Client<'a> {
                     )
                     .await?;
                 let v = Self::json(&r)?;
-                let limited = v
+                let kinds: Vec<&str> = v
                     .get("errors")
                     .and_then(Value::as_array)
                     .into_iter()
                     .flatten()
-                    .any(|e| e.get("type").and_then(Value::as_str) == Some("RATE_LIMITED"));
-                if limited {
+                    .filter_map(|e| e.get("type").and_then(Value::as_str))
+                    .collect();
+                if kinds.contains(&"RATE_LIMITED") {
                     pause(self.project_id, self.id(), DEFAULT_PAUSE);
                     return Err(TrackerError::Throttled(DEFAULT_PAUSE));
                 }
+                if kinds
+                    .iter()
+                    .any(|k| matches!(*k, "FORBIDDEN" | "INSUFFICIENT_SCOPES"))
+                {
+                    return Err(TrackerError::Config(
+                        "the token may not read issues of the repository".into(),
+                    ));
+                }
+                let has_errors = v
+                    .get("errors")
+                    .and_then(Value::as_array)
+                    .is_some_and(|e| !e.is_empty());
                 let Some(repo) = v.pointer("/data/repository").filter(|r| r.is_object()) else {
+                    if has_errors && !kinds.contains(&"NOT_FOUND") {
+                        return Err(TrackerError::Unavailable(
+                            "the GraphQL answer has no repository".into(),
+                        ));
+                    }
                     return Ok(out);
                 };
                 for (k, _) in &items {
                     let n = number(k);
                     if let Some(i) = repo.get(format!("i{n}")).filter(|i| i.is_object())
-                        && let Some(s) = self.github_graphql_state(i)
+                        && let Some(s) = self.github_graphql_state(i, &n)
                     {
-                        out.insert(s.key.clone(), (s, None));
+                        out.found.insert(k.clone(), (s, None));
                     }
                 }
             }
@@ -985,7 +1021,7 @@ impl<'a> Client<'a> {
                     .take(items.len())
                 {
                     if let Ok(s) = self.azure_state(i) {
-                        out.insert(s.key.clone(), (s, None));
+                        out.found.insert(s.key.clone(), (s, None));
                     }
                 }
             }
@@ -1001,8 +1037,19 @@ impl<'a> Client<'a> {
         }
     }
 
-    fn github_graphql_state(&self, v: &Value) -> Option<IssueState> {
+    /// The state in a GraphQL answer, only when it is the requested number of this project's
+    /// repository.
+    fn github_graphql_state(&self, v: &Value, requested: &str) -> Option<IssueState> {
         let n = v.get("number").and_then(Value::as_u64)?;
+        if n.to_string() != requested {
+            return None;
+        }
+        let repo = v
+            .pointer("/repository/nameWithOwner")
+            .and_then(Value::as_str)?;
+        if !repo.eq_ignore_ascii_case(&self.api.project) {
+            return None;
+        }
         let key = format!("#{n}");
         let state = v.get("state").and_then(Value::as_str)?.to_ascii_lowercase();
         let shown = match v.get("stateReason").and_then(Value::as_str) {
@@ -1022,7 +1069,7 @@ impl<'a> Client<'a> {
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_string(),
-            closed: state == "closed",
+            closed: state == "closed" || state == "merged",
             state: shown,
             key,
         })

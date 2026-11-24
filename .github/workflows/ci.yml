@@ -259,6 +259,9 @@ jobs:
         run: |
           pip install -e . pytest-rerunfailures pytest-xdist
           pytest
+      - name: Allure pytest enhancer
+        working-directory: fastproof/reporters/allure-pytest
+        run: pip install -e . "allure-pytest==2.16.2"
       - name: install the browser for the Playwright integration tests
         working-directory: fastproof/reporters/playwright
         run: npx playwright install --with-deps chromium

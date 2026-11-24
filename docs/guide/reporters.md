@@ -11,6 +11,7 @@ never fail your test run when the server is unreachable.
 | Vitest | `@franshub/fastproof-vitest` (npm) | In preparation |
 | Jest | `@franshub/fastproof-jest` (npm) | In preparation |
 | Cypress | `@franshub/fastproof-cypress` (npm) | In preparation |
+| NUnit 4, xUnit.net v3 | `FransHub.FastProof.NUnit`, `FransHub.FastProof.Xunit` (NuGet) | In preparation |
 
 More frameworks follow; until then, upload the files of the framework's own reporter with `fastproof upload`.
 
@@ -28,6 +29,11 @@ More frameworks follow; until then, upload the files of the framework's own repo
     # Vitest, Jest, Cypress: same steps in their folders; they need the Playwright package above as well,
     # because they share its core
     cd reporters/vitest && npm install --legacy-peer-deps && npm run build && npm pack
+
+    # .NET: build the packages into a local folder and add it as a NuGet source
+    cd reporters/dotnet && dotnet pack src/FransHub.FastProof.NUnit -c Release -o /path/to/nupkgs
+    dotnet pack src/FransHub.FastProof.Xunit -c Release -o /path/to/nupkgs
+    dotnet add package FransHub.FastProof.NUnit --source /path/to/nupkgs --source https://api.nuget.org/v3/index.json
     ```
 
     The commands below (`npm install @franshub/fastproof-playwright`, `pip install pytest-fastproof`) work once
@@ -262,6 +268,60 @@ and the spec video goes to failed attempts (`video: 'always'` or `'off'` change 
     a fake server and a FastProof server built from this repository. The Cypress plugin was driven with the
     event sequence Cypress produces, in the same two ways; the Cypress application itself could not be started
     in the build environment, so a first run in your project is the real check.
+
+## .NET (NUnit, xUnit v3)
+
+```sh
+dotnet add package FransHub.FastProof.NUnit    # or FransHub.FastProof.Xunit
+```
+
+```csharp
+using FransHub.FastProof.NUnit;               // xUnit v3: using FransHub.FastProof.Xunit;
+[assembly: FastProofReporter]                 // xUnit v3: add [assembly: CaptureConsole] too
+```
+
+```sh
+FASTPROOF_URL=https://fastproof.example.com FASTPROOF_PROJECT=shop FASTPROOF_TOKEN=... dotnet test
+```
+
+.NET 8 or newer; NUnit 4 (run with 4.6.1 and 5.0.0) or xUnit.net v3 (run with 4.0.2). The reporter stays off
+without `FASTPROOF_URL`. It works with `dotnet test` and, for xUnit v3, with the test project's own executable.
+`FransHub.FastProof.Core` holds the client, spool, masking and trace context and has no dependency beyond the
+base class library.
+
+```csharp
+using FransHub.FastProof;
+
+[Test, Retry(3), FastProofId("CASE-7"), Category("checkout")]
+public async Task Pays()
+{
+    Console.WriteLine("paying");
+    await FastProofContext.StepAsync("call the payment API", async () =>
+        await http.PostAsync(url, content, FastProofContext.Trace.Headers()));
+    FastProofContext.Attach("response.json", json, "application/json");
+    FastProofContext.AttachFile("screenshots/pay.png");
+}
+```
+
+- Every run of a test is an attempt: NUnit `[Retry]` and `[Repeat]` passes arrive as attempts of one result with
+  their own status, error, output and trace id. `[TestCase]`, `[TestCaseSource]`, `[Theory]` and `[InlineData]`
+  rows are separate results with their arguments as parameters. xUnit has no retries of its own; a third-party
+  retry attribute that reruns the test is reported the same way.
+- Labels: `parentSuite` (namespace), `suite` (class), `subSuite` (nested classes), `thread`, `tag` (NUnit
+  `[Category]`, xUnit `Category` trait), and other NUnit `[Property]` values or xUnit traits by name.
+  `[FastProofLabel]`, `[FastProofLink]` and `[FastProofId]` add labels, links and an explicit test case id.
+- Console output, `ITestOutputHelper` output (xUnit; sampled every 200 ms) and `FastProofContext.Log` stream
+  live. `FastProofContext.Trace.Headers()` and `.Env()` carry the attempt's `traceparent` to HTTP calls and child
+  processes. Parallel fixtures and collections are safe.
+- Test plans (`FASTPROOF_TESTPLAN`): selectors `Namespace.Type.Method` or `Namespace.Type#Method`, with or without
+  arguments, or an id (`[FastProofId]`, property or trait `fastproof.id`, `allure_id`, `as_id`). Tests outside
+  the plan are skipped and not reported.
+- NUnit tests marked `[Ignore]` are reported as skipped; xUnit tests with a static `Skip` never reach the
+  framework's extension points and are not reported, while `Assert.Skip` at run time is.
+- A failing NUnit `[OneTimeSetUp]` is not reported (its tests never start), and `TestContext.Out` is not
+  captured: write to `Console` or `FastProofContext.Log`.
+- Separate test projects in one `dotnet test` run are separate processes; set `FASTPROOF_LAUNCH`, or run in CI
+  where the launch id comes from the pipeline, so they share one launch.
 
 ## Allure adapter enhancers
 

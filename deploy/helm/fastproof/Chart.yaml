@@ -3,7 +3,7 @@ name: fastproof
 description: FastProof self-hosted test reporting server with PostgreSQL, S3-compatible or filesystem storage, optional Valkey, Kafka streaming and ClickHouse or OpenSearch sinks
 type: application
 version: 0.2.0
-appVersion: "0.2.0-dev1"
+appVersion: "0.2.0-dev2"
 kubeVersion: ">=1.30.0-0"
 home: https://fastproof.franshub.io/
 icon: https://fastproof.franshub.io/assets/brand/favicon.svg

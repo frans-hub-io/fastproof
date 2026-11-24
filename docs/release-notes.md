@@ -8,6 +8,48 @@
   failures see the history from before FastProof. See [Importing Allure history](guide/importing-allure-history.md).
   The release adds migration `0820`.
 
+## 0.2.0-dev2
+
+Published as `docker.io/franshub/fastproof:0.2.0-dev2` for `linux/amd64` and `linux/arm64`; Helm chart
+`fastproof` 0.2.0. This is a development release. Read [Upgrading](operations/upgrading.md#020-dev2-faster-first-view-of-large-launches-merge-isolation)
+before you upgrade: the release adds migrations, a background index job and drops a column that only releases
+before 0.2.0-dev1 still write.
+
+### Reports and launches
+
+- **Allure history import.** Bring the history of Allure 2 reports and Allure 3 history files in as past launches
+  joined to the same tests, from the command line (`fastproof import allure-history`), the API or the **History
+  import** tab of the project settings. It needs the `settings:write` permission. See
+  [Importing Allure history](guide/importing-allure-history.md).
+- **Faster Suites tree on large launches.** The tree of a finished launch is built ahead in the background and the
+  tests of a suite are read through a new index, so the first view of a launch with hundreds of thousands of
+  results opens quickly.
+- **Merging does not hold up other projects.** A merge, a manual run or a launch deletion in one project no longer
+  waits for a merge running in another one.
+- **Long names, messages and ids are stored.** A test with a very long name, failure message or writer id used to
+  fail its request with `500`; it is stored now. Names sent to the API are cut to 4 KiB with a warning, and the
+  identity of a test, and so its history, stays the same.
+
+### Dashboards and integrations
+
+- **Three new dashboard widgets:** cumulative trend, unique bugs and activity stream. See
+  [Dashboards](guide/dashboards.md#widgets).
+- **Issue tracker status in batches.** FastProof reads the status of many linked issues in one call where the
+  tracker allows it, which keeps large projects under the trackers' rate limits. See
+  [Issue trackers](guide/issue-trackers.md).
+
+### Reporters
+
+- **Vitest, Jest and Cypress.** New reporters next to Playwright and pytest, with live results and logs; build them from the repository until their packages are published. See
+  [Reporters](guide/reporters.md).
+
+### Upgrading
+
+Back up the database first and follow [Upgrading](operations/upgrading.md). Migrations `0800` and `0810` to `0820`
+run while the previous version keeps serving; the new indexes are built in the background by the `analysis.indexes`
+job, which runs every 10 minutes, so the full speed-up of large launches comes once it has built them. Upgrade
+to this release from 0.2.0-dev1, not from an older one: it drops the column `launches.log_bytes`.
+
 ## 0.2.0-dev1
 
 Published as `docker.io/franshub/fastproof:0.2.0-dev1` for `linux/amd64` and `linux/arm64`; Helm chart

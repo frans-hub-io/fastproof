@@ -265,7 +265,7 @@ export const handlers = [
   ...tmHandlers({ role: currentRole, error, audit }),
 
   http.get(`${API}/me`, () => HttpResponse.json(meFor(currentRole()))),
-  http.get(`${API}/version`, () => HttpResponse.json({ version: '0.2.0-dev1' })),
+  http.get(`${API}/version`, () => HttpResponse.json({ version: '0.2.0-dev2' })),
   http.post('/auth/logout', () => HttpResponse.json({ loggedOut: true })),
 
   http.get(`${API}/projects`, () => {

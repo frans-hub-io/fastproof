@@ -2,7 +2,7 @@ publicUrl: https://fastproof.example.com
 
 image:
   repository: registry.example.com/mirror/franshub/fastproof
-  tag: 0.2.0-dev1
+  tag: 0.2.0-dev2
   digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
 
 imagePullSecrets:

@@ -164,4 +164,4 @@ S3-compatible bucket or a directory.
   `fastproof`).
 - `FASTPROOF_TOKEN` holds an API token; `FASTPROOF_URL` the server URL; `FASTPROOF_PROJECT` the project key.
 - Example host names use `example.com`, example addresses `198.51.100.0/24` and `203.0.113.0/24`.
-- FastProof is at an early stage (`0.2.0-dev1`); names on these pages are the ones the current release ships.
+- FastProof is at an early stage (`0.2.0-dev2`); names on these pages are the ones the current release ships.

@@ -47,7 +47,7 @@ RUN triple="$(cat /target-triple)" \
  && install -d -m 0750 /out/var/lib/fastproof/blobs
 
 FROM ${RUNTIME_IMAGE}
-ARG VERSION=0.2.0-dev1
+ARG VERSION=0.2.0-dev2
 ARG REVISION=unknown
 LABEL org.opencontainers.image.title="FastProof" \
       org.opencontainers.image.description="Self-hosted test reporting server: allure-results, JUnit XML, CTRF and Playwright reports with history, flaky detection and triage" \

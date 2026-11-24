@@ -7,7 +7,7 @@ version has migrated the schema.
 
 This page lists what needs attention per release.
 
-## Next release: faster first view of large launches, merge isolation
+## 0.2.0-dev2: faster first view of large launches, merge isolation
 
 - **Index job every 10 minutes.** The scheduled job `analysis.indexes` (it built the fingerprint index every
   6 hours) now runs every 10 minutes and builds the new indexes below. It changes the table `results` itself
@@ -82,6 +82,16 @@ This page lists what needs attention per release.
     waits of 5 seconds) on the next run, after the others (`fastproof_merge_job_escalations_total`);
   - mute expiry (`mutes.expire`) runs one project per transaction and leaves a project with held rows for the
     next minute (`fastproof_mute_expiry_busy_total`), without waiting for it again in the same run.
+
+### Column `launches.log_bytes` dropped
+
+| Migration | Does |
+|---|---|
+| `0800_kafka_drop_launch_log_bytes` | Drops `launches.log_bytes`, which the release with `0101`/`0102` stopped writing. It waits at most 5 seconds for the lock on `launches` and runs again at the next start |
+
+Replicas of releases before `0101`/`0102` still write that column and fail on log requests once it is gone.
+Upgrade to this release only from the release with `0101`/`0102`, after every replica runs it (the usual
+one-version-at-a-time rule); rolling back from this release to that one is fine, to anything older is not.
 
 ## 0.2.0-dev1: big launches on every writer
 

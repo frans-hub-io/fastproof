@@ -12,6 +12,6 @@ describe('shell', () => {
         </Shell>
       </Providers>,
     );
-    expect(await screen.findByTestId('server-version')).toHaveTextContent('FastProof 0.2.0-dev1');
+    expect(await screen.findByTestId('server-version')).toHaveTextContent('FastProof 0.2.0-dev2');
   });
 });

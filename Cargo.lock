@@ -715,7 +715,7 @@ dependencies = [
 
 [[package]]
 name = "fastproof-blob"
-version = "0.2.0-dev1"
+version = "0.2.0-dev2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -736,7 +736,7 @@ dependencies = [
 
 [[package]]
 name = "fastproof-ingest"
-version = "0.2.0-dev1"
+version = "0.2.0-dev2"
 dependencies = [
  "ammonia",
  "fastproof-model",
@@ -754,7 +754,7 @@ dependencies = [
 
 [[package]]
 name = "fastproof-media"
-version = "0.2.0-dev1"
+version = "0.2.0-dev2"
 dependencies = [
  "hex",
  "matroska-demuxer",
@@ -765,7 +765,7 @@ dependencies = [
 
 [[package]]
 name = "fastproof-model"
-version = "0.2.0-dev1"
+version = "0.2.0-dev2"
 dependencies = [
  "md-5",
  "regex",
@@ -778,7 +778,7 @@ dependencies = [
 
 [[package]]
 name = "fastproof-server"
-version = "0.2.0-dev1"
+version = "0.2.0-dev2"
 dependencies = [
  "ammonia",
  "anyhow",
@@ -837,7 +837,7 @@ dependencies = [
 
 [[package]]
 name = "fastproof-store"
-version = "0.2.0-dev1"
+version = "0.2.0-dev2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -865,7 +865,7 @@ dependencies = [
 
 [[package]]
 name = "fastproof-stream"
-version = "0.2.0-dev1"
+version = "0.2.0-dev2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -895,7 +895,7 @@ dependencies = [
 
 [[package]]
 name = "fastproof-tm-import"
-version = "0.2.0-dev1"
+version = "0.2.0-dev2"
 dependencies = [
  "fastproof-ingest",
  "serde",

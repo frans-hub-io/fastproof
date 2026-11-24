@@ -102,6 +102,7 @@ class Api:
         headers: Optional[Dict[str, str]] = None,
         timeout: Optional[float] = None,
         file: Optional[str] = None,
+        fileobj: Any = None,
     ) -> _Response:
         h = {"Accept": "application/json", "User-Agent": USER_AGENT}
         if self.token:
@@ -109,7 +110,15 @@ class Api:
         h.update(headers or {})
         body: Any = data
         fh = None
-        if file is not None:
+        if fileobj is not None:
+            try:
+                size = os.fstat(fileobj.fileno()).st_size
+                fileobj.seek(0)
+            except OSError as e:
+                return _Response(-1, None, error=f"cannot read the attachment: {e}")
+            body = fileobj
+            h["Content-Length"] = str(size)
+        elif file is not None:
             try:
                 size = os.path.getsize(file)
                 fh = open(file, "rb")
@@ -178,13 +187,13 @@ class Api:
 
     def upload_attachment(
         self, launch_id: str, name: str, content_type: str, path: Optional[str] = None, body: Optional[bytes] = None,
-        retries: Optional[int] = None,
+        retries: Optional[int] = None, fileobj: Any = None,
     ) -> Dict[str, Any]:
         headers = {"X-FastProof-Attachment-Name": encode_header(name)}
         r = self.call(
             lambda: self.request(
-                "POST", f"{self._path(launch_id)}/attachments", body if path is None else None, content_type,
-                headers, timeout=120.0, file=path,
+                "POST", f"{self._path(launch_id)}/attachments", body if path is None and fileobj is None else None, content_type,
+                headers, timeout=120.0, file=path, fileobj=fileobj,
             ),
             retries,
         )

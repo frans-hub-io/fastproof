@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { Api } from './api';
 import { resolveConfig } from './config';
-import { flushSpool, listSessions } from './spool';
+import { PROJECT_KEY, flushSpool, listSessions } from './spool';
 
 const USAGE = `usage: fastproof-playwright flush [--spool DIR] [--timeout SECONDS]
        fastproof-playwright list [--spool DIR]
@@ -33,7 +33,7 @@ async function main(argv: string[]): Promise<number> {
   }
   const projects = cfg.project
     ? [cfg.project]
-    : [...new Set(listSessions(cfg.spoolDir).map((s) => s.meta.project).filter((p): p is string => !!p))].sort();
+    : [...new Set(listSessions(cfg.spoolDir).map((s) => s.meta.project).filter((p): p is string => typeof p === 'string' && PROJECT_KEY.test(p)))].sort();
   const timeout = Number(opts.timeout ?? '600');
   const deadline = Date.now() + timeout * 1000;
   const r = { sessions: 0, results: 0, failed: 0, remaining: 0, errors: [] as string[] };

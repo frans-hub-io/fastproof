@@ -3,12 +3,15 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
+import stat
 import shutil
 import socket
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, BinaryIO, Dict, List, Optional
 
 from .api import Api, ApiError
 
@@ -175,6 +178,50 @@ def _replace_blob_ids(node: Dict[str, Any], ids: Dict[str, str]) -> None:
         _replace_blob_ids(s, ids)
 
 
+BLOB_NAME = re.compile(r"[0-9a-f]{64}")
+PROJECT_KEY = re.compile(r"[a-z0-9][a-z0-9-]{1,62}")
+
+
+def open_verified_blob(session_dir: str, name: Any) -> Optional[BinaryIO]:
+    """Opens ``blobs/<name>`` for sending, or returns None. The name must be 64 lowercase hex characters, the
+    entry a regular file that is not a link, and the content of the opened descriptor must hash to the name. The
+    caller sends that same open file and closes it."""
+    if not isinstance(name, str) or not BLOB_NAME.fullmatch(name):
+        return None
+    path = os.path.join(session_dir, "blobs", name)
+    fd = -1
+    try:
+        before = os.lstat(path)
+        if not stat.S_ISREG(before.st_mode):
+            return None
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
+        fd = os.open(path, flags)
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or (st.st_ino, st.st_dev) != (before.st_ino, before.st_dev):
+            os.close(fd)
+            return None
+        fh = os.fdopen(fd, "rb")
+    except OSError:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        return None
+    h = hashlib.sha256()
+    try:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    except OSError:
+        fh.close()
+        return None
+    if h.hexdigest() != name:
+        fh.close()
+        return None
+    fh.seek(0)
+    return fh
+
+
 def flush_spool(
     api: Api, root: str, exclude: Optional[str] = None, deadline: Optional[float] = None,
     project: Optional[str] = None, batch: int = 200,
@@ -189,6 +236,9 @@ def flush_spool(
     for s in list_sessions(root, exclude):
         meta = s["meta"]
         if project and meta.get("project") != project:
+            continue
+        if not isinstance(meta.get("project"), str) or not PROJECT_KEY.fullmatch(meta["project"]):
+            out["errors"].append(f"session {s['id']} skipped: invalid project key")
             continue
         try:
             with open(os.path.join(s["dir"], "results.ndjson"), encoding="utf-8") as f:
@@ -206,6 +256,7 @@ def flush_spool(
         try:
             launch = api.start_launch(meta["launch"], retries=2)
             blob_ids: Dict[str, str] = {}
+            bad: set = set()
             while done < len(lines) and not late():
                 chunk = lines[done : done + batch]
                 results = []
@@ -216,13 +267,21 @@ def flush_spool(
                         out["failed"] += 1
                         continue
                     for b in e.get("blobs") or []:
-                        if b["sha256"] in blob_ids:
+                        sha = b["sha256"]
+                        if sha in blob_ids or str(sha) in bad:
                             continue
-                        p = os.path.join(s["dir"], "blobs", b["sha256"])
-                        if not os.path.exists(p):
+                        fh = open_verified_blob(s["dir"], sha)
+                        if fh is None:
+                            bad.add(str(sha))
+                            out["errors"].append(
+                                f"attachment in {s['id']} skipped: invalid name, missing, not a regular file or content differs"
+                            )
                             continue
-                        r = api.upload_attachment(launch["id"], b["name"], b["contentType"], path=p, retries=2)
-                        blob_ids[b["sha256"]] = r["id"]
+                        try:
+                            r = api.upload_attachment(launch["id"], b["name"], b["contentType"], fileobj=fh, retries=2)
+                        finally:
+                            fh.close()
+                        blob_ids[sha] = r["id"]
                     _replace_blob_ids(e["result"], blob_ids)
                     results.append(e["result"])
                 if results:

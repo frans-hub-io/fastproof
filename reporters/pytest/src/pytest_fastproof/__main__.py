@@ -9,7 +9,7 @@ from typing import List, Optional
 
 from .api import Api
 from .config import resolve_config
-from .spool import flush_spool, list_sessions
+from .spool import PROJECT_KEY, flush_spool, list_sessions
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -38,7 +38,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     if cfg.project:
         projects = [cfg.project]
     else:
-        projects = sorted({str(s["meta"].get("project")) for s in list_sessions(cfg.spool_dir) if s["meta"].get("project")})
+        projects = sorted({str(s["meta"].get("project")) for s in list_sessions(cfg.spool_dir) if isinstance(s["meta"].get("project"), str) and PROJECT_KEY.fullmatch(s["meta"]["project"])})
     deadline = time.time() + a.timeout
     r = {"sessions": 0, "results": 0, "failed": 0, "remaining": 0, "errors": []}
     for project in projects:

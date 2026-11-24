@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
@@ -187,6 +188,58 @@ describe('client against a live server', () => {
     assert.equal(listSessions(cfg.spoolDir).length, 0);
     const again = await flushSpool(new Api(srv.url, TOKEN, 'demo'), cfg.spoolDir);
     assert.equal(again.results, 0);
+  });
+
+  it('flush sends only blobs inside the session whose content matches their name, and skips bad project keys', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'fp-plant-'));
+    const secret = join(root, 'secret.txt');
+    writeFileSync(secret, 'TOKEN=do-not-send');
+    const spool = join(root, 'spool');
+    const plant = (id: string, project: string, blobs: { sha256: string; name: string }[], files: (blobsDir: string) => void) => {
+      const dir = join(spool, id);
+      mkdirSync(join(dir, 'blobs'), { recursive: true });
+      writeFileSync(
+        join(dir, 'meta.json'),
+        JSON.stringify({ v: 1, reporter: 't', project, launch: { externalId: id, name: id }, createdAt: '', pid: 1, host: 'other', ended: true }),
+      );
+      const r = { id: `r-${id}`, name: 'x', fullName: 'x', status: 'passed', start: 1, stop: 2, retry: 0, attachments: blobs.map((b) => ({ id: `blob:${b.sha256}`, name: b.name })) };
+      writeFileSync(
+        join(dir, 'results.ndjson'),
+        JSON.stringify({ v: 1, result: r, blobs: blobs.map((b) => ({ ...b, contentType: 'text/plain', size: 1 })) }) + '\n',
+      );
+      files(join(dir, 'blobs'));
+    };
+    const good = Buffer.from('good attachment');
+    const goodSha = createHash('sha256').update(good).digest('hex');
+    const linked = 'a'.repeat(64);
+    const wrong = 'b'.repeat(64);
+    plant(
+      's1',
+      'demo',
+      [
+        { sha256: secret, name: 'absolute' },
+        { sha256: '../../secret.txt', name: 'traversal' },
+        { sha256: linked, name: 'link' },
+        { sha256: wrong, name: 'wrong' },
+        { sha256: goodSha, name: 'good' },
+      ],
+      (b) => {
+        symlinkSync(secret, join(b, linked));
+        writeFileSync(join(b, wrong), 'not what the name says');
+        writeFileSync(join(b, goodSha), good);
+      },
+    );
+    plant('s2', 'demo/launches?x=', [], () => undefined);
+    const srv = await new FakeServer({ token: TOKEN }).start();
+    servers.push(srv);
+    const r = await flushSpool(new Api(srv.url, TOKEN, 'demo'), spool);
+    assert.equal(srv.uploads, 1, 'only the verified blob is sent');
+    assert.deepEqual([...srv.attachments.values()].map((a) => a.body.toString()), ['good attachment']);
+    for (const a of srv.attachments.values()) assert.ok(!a.body.includes('do-not-send'));
+    assert.equal(r.results, 1, 'the result of the planted session is kept, the invalid project is skipped');
+    assert.ok(existsSync(join(spool, 's2')), 'the session with an invalid project key stays on disk');
+    assert.ok(r.errors.some((e) => e.includes('invalid project key')));
+    assert.ok(!srv.requests.some((q) => q.includes('launches?x')));
   });
 
   it('keeps half of the spool for failures', () => {

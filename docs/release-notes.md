@@ -7,6 +7,12 @@
   `fastproof import allure-history` or in the project settings. Flaky detection, trends, dashboards and new
   failures see the history from before FastProof. See [Importing Allure history](guide/importing-allure-history.md).
   The release adds migration `0820`.
+- **Security: the offline spool is verified before it is sent.** The `flush` of the Playwright, Vitest, Jest,
+  Cypress and pytest reporters built the path of an attachment from the `sha256` in a spooled session without
+  checking it, so a spool planted through a restored CI cache, an artifact or a shared `FASTPROOF_SPOOL_DIR`
+  could make the next run upload any local file readable by that run to a launch of the planter's choice. Senders
+  now accept only 64 lowercase hex names, never follow links, send an attachment only when its content hashes to
+  its name, and skip sessions whose project key is invalid. Update the reporters; no server change is needed.
 
 ## 0.2.0-dev2
 

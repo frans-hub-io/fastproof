@@ -230,6 +230,15 @@ flushing tool supports it.
   session: `POST launches` with the stored `LaunchStart` (idempotent by external id), upload `blobs/` once per
   hash, replace `blob:` ids, post results in batches of 200 (idempotent by client id), update `progress.json`
   after each batch, finish the launch if `finish` is set, delete the session. Interrupted sends resume.
+- **A spool is untrusted input.** It can come from a restored CI cache, an artifact or a shared directory, so a
+  sender verifies it and never follows links:
+  - an attachment name in `results.ndjson` must be exactly 64 lowercase hex characters; anything else (an absolute
+    path, `../`, other characters) is skipped;
+  - `blobs/<sha256>` must be a regular file and not a link (open without following links, skip FIFOs and other
+    special files); the sender opens it once, hashes that open file, and sends that same open file only when the
+    hash equals the name; otherwise the attachment is skipped and the result is still sent;
+  - the `project` in `meta.json` must match `^[a-z0-9][a-z0-9-]{1,62}$` before it is used in a request path; a
+    session with another value is skipped and stays on disk.
 - Who sends: the next run of either reporter (in the background, same project), the end of the same run when
   the server is back, `npx fastproof-playwright flush [--spool DIR]` or `python -m pytest_fastproof flush
   [--spool DIR]`. Both read the same format, so either tool can send any session. The `flush` commands need

@@ -108,3 +108,50 @@ def test_spool_budget_keeps_room_for_failures(tmp_path):
     assert s.append({"v": 1, "result": {"id": "z", "name": "z", "status": "passed"}, "blobs": []})
     assert s.dropped["blobs"] == 2
     assert '"z"' in (tmp_path / "s1" / "results.ndjson").read_text()
+
+
+def _plant_session(spool, sid, project, blobs):
+    d = spool / sid
+    (d / "blobs").mkdir(parents=True)
+    (d / "meta.json").write_text(json.dumps({
+        "v": 1, "reporter": "t", "project": project, "launch": {"externalId": sid, "name": sid},
+        "createdAt": "", "pid": 1, "host": "other", "ended": True,
+    }))
+    atts = [{"id": "blob:" + b["sha256"], "name": b["name"]} for b in blobs]
+    result = {"id": "r-" + sid, "name": "x", "fullName": "x", "status": "passed", "start": 1, "stop": 2, "retry": 0,
+              "attachments": atts}
+    entry = {"v": 1, "result": result, "blobs": [dict(b, contentType="text/plain", size=1) for b in blobs]}
+    (d / "results.ndjson").write_text(json.dumps(entry) + "\n")
+    return d / "blobs"
+
+
+def test_flush_sends_only_blobs_inside_the_session_that_match_their_name(tmp_path):
+    import hashlib
+    from fake_server import FakeServer
+    from pytest_fastproof.api import Api
+    from pytest_fastproof.spool import flush_spool
+
+    secret = tmp_path / "secret.txt"
+    secret.write_text("TOKEN=do-not-send")
+    spool = tmp_path / "spool"
+    good = b"good attachment"
+    good_sha = hashlib.sha256(good).hexdigest()
+    linked, wrong = "a" * 64, "b" * 64
+    blobs = _plant_session(spool, "s1", "demo", [
+        {"sha256": str(secret), "name": "absolute"},
+        {"sha256": "../../secret.txt", "name": "traversal"},
+        {"sha256": linked, "name": "link"},
+        {"sha256": wrong, "name": "wrong"},
+        {"sha256": good_sha, "name": "good"},
+    ])
+    os.symlink(secret, blobs / linked)
+    (blobs / wrong).write_text("not what the name says")
+    (blobs / good_sha).write_bytes(good)
+    _plant_session(spool, "s2", "demo/launches?x=", [])
+    with FakeServer(token="t") as fake:
+        out = flush_spool(Api(fake.url, "t", "demo"), str(spool))
+        assert fake.uploads == 1
+        assert [a["body"] for a in fake.attachments.values()] == [good]
+        assert out["results"] == 1
+        assert any("invalid project key" in e for e in out["errors"])
+    assert (spool / "s2").exists()

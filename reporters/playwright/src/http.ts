@@ -1,4 +1,4 @@
-import { createReadStream } from 'node:fs';
+import { createReadStream, fstatSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { Readable } from 'node:stream';
 
@@ -44,7 +44,7 @@ export class Http {
   async request(
     method: string,
     path: string,
-    body?: { json?: unknown; ndjson?: unknown[]; raw?: Buffer; file?: string; contentType?: string },
+    body?: { json?: unknown; ndjson?: unknown[]; raw?: Buffer; file?: string; fd?: number; contentType?: string },
     headers: Record<string, string> = {},
     timeoutMs = this.o.timeoutMs,
   ): Promise<HttpResult> {
@@ -65,6 +65,15 @@ export class Http {
     } else if (body?.raw) {
       h['content-type'] = body.contentType ?? 'application/octet-stream';
       payload = new Uint8Array(body.raw.buffer, body.raw.byteOffset, body.raw.byteLength);
+    } else if (body?.fd !== undefined) {
+      h['content-type'] = body.contentType ?? 'application/octet-stream';
+      try {
+        h['content-length'] = String(fstatSync(body.fd).size);
+      } catch (e) {
+        return { status: -1, body: undefined, error: `cannot read the attachment: ${String(e)}` };
+      }
+      payload = Readable.toWeb(createReadStream('', { fd: body.fd, start: 0, autoClose: false })) as unknown as RequestInit['body'];
+      duplex = true;
     } else if (body?.file) {
       h['content-type'] = body.contentType ?? 'application/octet-stream';
       try {

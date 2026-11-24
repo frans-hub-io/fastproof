@@ -4,12 +4,27 @@ import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ADMIN_TOKEN, BASE_URL, BIN, ENABLED, FIXTURES, PROJECT, WORK_DIR, adminTokensFile, saveSeeded } from './env';
 
+function closedBeforeResponse(e: unknown): boolean {
+  const cause = e instanceof Error ? (e.cause as { code?: string } | undefined) : undefined;
+  return cause?.code === 'UND_ERR_SOCKET' || cause?.code === 'ECONNRESET';
+}
+
 async function api(method: string, path: string, body?: unknown, contentType = 'application/json'): Promise<{ status: number; body: unknown }> {
-  const res = await fetch(`${BASE_URL}${path}`, {
-    method,
-    headers: { Authorization: `Bearer ${ADMIN_TOKEN}`, Accept: 'application/json', ...(body === undefined ? {} : { 'Content-Type': contentType }) },
-    body: body === undefined ? undefined : typeof body === 'string' ? body : JSON.stringify(body),
-  });
+  const send = () =>
+    fetch(`${BASE_URL}${path}`, {
+      method,
+      headers: { Authorization: `Bearer ${ADMIN_TOKEN}`, Accept: 'application/json', ...(body === undefined ? {} : { 'Content-Type': contentType }) },
+      body: body === undefined ? undefined : typeof body === 'string' ? body : JSON.stringify(body),
+    });
+  let res: Response;
+  try {
+    res = await send();
+  } catch (e) {
+    // The seeding uploads run for longer than the server keeps an idle connection open, so the pooled
+    // connection may already be closed; the request never reached the server and is sent again once.
+    if (!closedBeforeResponse(e)) throw e;
+    res = await send();
+  }
   const text = await res.text();
   return { status: res.status, body: text ? (JSON.parse(text) as unknown) : null };
 }

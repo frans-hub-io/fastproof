@@ -222,15 +222,19 @@ async fn direct_upload_is_verified_and_behaves_like_any_attachment() {
         "the upload's objects are gone"
     );
     let project = st8.store.project(&p).await.unwrap().unwrap();
-    let jobs: i64 =
-        sqlx::query_scalar("select count(*) from attachment_media where attachment_id = $1")
-            .bind(aid.parse::<uuid::Uuid>().unwrap())
-            .fetch_one(&db.pool)
-            .await
-            .unwrap();
-    assert_eq!(
-        jobs, 1,
-        "the video gets a seekable-copy job like any uploaded video (the server's worker may already run it)"
+    let (content_type, media_state, claimed): (String, i16, bool) = sqlx::query_as(
+        "select a.content_type, a.media_state, \
+           exists (select 1 from attachment_media m where m.attachment_id = a.id) \
+         from attachments a where a.id = $1",
+    )
+    .bind(aid.parse::<uuid::Uuid>().unwrap())
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert!(
+        content_type.starts_with("video/") && (media_state == 0 || claimed),
+        "the video waits for its seekable copy like any uploaded video \
+         (pending, or already claimed by the server's worker): {content_type} {media_state} {claimed}"
     );
 
     let (st, out) = s

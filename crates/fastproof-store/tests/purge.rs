@@ -180,6 +180,10 @@ begin
     insert into tm_jobs (id, project_id, kind, params) values (gen_random_uuid(), p, 'import', '{}'), (gen_random_uuid(), p, 'export', '{}');
     insert into launch_exports (id, project_id, launch_id, format, created_by, status) select gen_random_uuid(), p, l.id, 'html', 'u', 'failed' from launches l where l.project_id = p limit 2;
     insert into history_imports (id, project_id, source, created_by, status) select gen_random_uuid(), p, 'allure2', 'u', 'failed' from generate_series(1, 2);
+    insert into rp_launches (project_id, uuid, launch_id, creator) select p, 'rp-' || l.id, l.id, 'u' from launches l where l.project_id = p limit 2;
+    insert into rp_items (project_id, uuid, launch_id, rp_launch, role, log_key, item_type, name, start_ms, created_by)
+        select p, 'item-' || l.id || '-' || gs, l.id, 'rp-' || l.id, 'result', 'rp:x', 'STEP', 't', 0, 'u'
+        from launches l, generate_series(1, 3) gs where l.project_id = p and exists (select 1 from rp_launches r where r.launch_id = l.id);
     insert into tracker_issues (id, project_id, tracker_id, tracker_type, issue_key, category, created_by)
         values (f1, p, 'jira', 'jira', 'SHOP-1', 'open', 't'), (f2, p, 'jira', 'jira', 'SHOP-2', 'closed', 't');
     insert into tracker_issue_links (id, issue_id, project_id, launch_id, fingerprint, created_by)

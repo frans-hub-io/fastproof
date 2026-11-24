@@ -355,6 +355,7 @@ pub fn standard_jobs() -> anyhow::Result<Scheduler> {
     media_jobs(&mut sch)?;
     crate::merges::register_jobs(&mut sch)?;
     direct_upload_jobs(&mut sch)?;
+    crate::rp::settle::register_jobs(&mut sch)?;
     Ok(sch)
 }
 

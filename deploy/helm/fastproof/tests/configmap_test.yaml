@@ -95,3 +95,26 @@ tests:
       - matchRegex:
           path: data["access.yaml"]
           pattern: "subject: group:qa"
+
+  - it: configures the ReportPortal endpoint
+    documentIndex: 0
+    set:
+      server.rp.settleMs: 500
+      server.rp.launchIdleTimeout: 30m
+      server.rp.maxInflight: 64
+    asserts:
+      - equal:
+          path: data.FASTPROOF_RP_ENABLED
+          value: "true"
+      - equal:
+          path: data.FASTPROOF_RP_SETTLE_MS
+          value: "500"
+      - equal:
+          path: data.FASTPROOF_RP_LAUNCH_IDLE_TIMEOUT
+          value: 30m
+      - equal:
+          path: data.FASTPROOF_RP_MAX_REQUEST_BYTES
+          value: "67108864"
+      - equal:
+          path: data.FASTPROOF_RP_MAX_INFLIGHT
+          value: "64"

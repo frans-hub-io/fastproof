@@ -31,6 +31,7 @@ fastproof-store.workspace = true
 fastproof-stream.workspace = true
 fastproof-tm-import.workspace = true
 fastproof-media.workspace = true
+fastproof-rp.workspace = true
 flate2.workspace = true
 franshub-access.workspace = true
 franshub-auth.workspace = true

@@ -599,6 +599,7 @@ pub async fn put_settings(
     body.validate().map_err(ApiError::bad_request)?;
     validate_integration_settings(&body)?;
     let new_doc = serde_json::to_value(&body).map_err(|e| ApiError::bad_request(e.to_string()))?;
+    crate::rp::validate_settings(&s, p.id, &new_doc).await?;
     crate::integrations::settings::check_secret_uses(&s, p.id, &new_doc)
         .await
         .map_err(ApiError::bad_request)?;

@@ -232,6 +232,8 @@ pub struct Inner {
     pub stopping: tokio_util::sync::CancellationToken,
     /// Verification slots of direct uploads (`crate::direct_uploads`).
     pub direct: crate::direct_uploads::DirectState,
+    /// The ReportPortal endpoint of this replica (`crate::rp`).
+    pub rp: crate::rp::RpState,
 }
 
 /// The axum state.

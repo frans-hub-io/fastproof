@@ -246,6 +246,7 @@ pub fn router(state: AppState) -> Router {
         .route("/auth/config", get(auth_config))
         .route("/api/openapi.json", get(openapi_json))
         .merge(crate::mcp::router(&state))
+        .merge(crate::rp::router(&state))
         .route("/healthz", get(|| async { "ok" }));
     if state.cfg.ui {
         app = app
@@ -517,6 +518,7 @@ async fn start_inner(cfg: Config, pool: PgPool, boot: Boot) -> anyhow::Result<Ru
         _ => None,
     };
     let search = crate::stream::search_backend(&cfg)?;
+    let (rp, rp_tasks) = crate::rp::RpState::new(&cfg.rp);
     let state = AppState(Arc::new(Inner {
         media,
         perms: Perms::new(&platform),
@@ -538,6 +540,7 @@ async fn start_inner(cfg: Config, pool: PgPool, boot: Boot) -> anyhow::Result<Ru
         guards: crate::limits::Guards::new(cfg.guards, cfg.db.heavy_slots()),
         stopping: boot.stop.clone(),
         direct: crate::direct_uploads::DirectState::new(&cfg.direct_uploads),
+        rp,
         cfg: Arc::new(cfg),
     }));
     if state.cfg.roles.api {
@@ -595,6 +598,7 @@ async fn start_inner(cfg: Config, pool: PgPool, boot: Boot) -> anyhow::Result<Ru
         stop.clone(),
     )));
     tasks.extend(crate::stream::start(&state, &stop).await?);
+    tasks.extend(crate::rp::start(&state, rp_tasks, &stop));
     {
         let s = state.clone();
         let stop = stop.clone();

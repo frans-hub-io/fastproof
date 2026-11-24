@@ -100,9 +100,19 @@ final class Json {
         return v instanceof List ? (List<Object>) v : List.of();
     }
 
+    /** Deeper documents are rejected, so a test plan, spool line or server answer cannot overflow the stack. */
+    static final int MAX_DEPTH = 256;
+
     private static final class Parser {
         private final String s;
         private int i;
+        private int depth;
+
+        void enter() {
+            if (++depth > MAX_DEPTH) {
+                throw new IllegalStateException("nested too deeply");
+            }
+        }
 
         Parser(final String s) {
             this.s = s;
@@ -119,10 +129,12 @@ final class Json {
             final char c = s.charAt(i);
             if (c == '{') {
                 i++;
+                enter();
                 final Map<String, Object> m = new LinkedHashMap<>();
                 ws();
                 if (s.charAt(i) == '}') {
                     i++;
+                    depth--;
                     return m;
                 }
                 while (true) {
@@ -136,16 +148,19 @@ final class Json {
                         i++;
                     } else {
                         expect('}');
+                        depth--;
                         return m;
                     }
                 }
             }
             if (c == '[') {
                 i++;
+                enter();
                 final List<Object> l = new ArrayList<>();
                 ws();
                 if (s.charAt(i) == ']') {
                     i++;
+                    depth--;
                     return l;
                 }
                 while (true) {
@@ -155,6 +170,7 @@ final class Json {
                         i++;
                     } else {
                         expect(']');
+                        depth--;
                         return l;
                     }
                 }

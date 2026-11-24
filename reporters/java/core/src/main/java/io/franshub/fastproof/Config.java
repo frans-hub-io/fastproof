@@ -146,6 +146,10 @@ final class Config {
         return c;
     }
 
+    static boolean validProject(final String key) {
+        return key != null && PROJECT_KEY.matcher(key).matches();
+    }
+
     private static String orEmpty(final String v) {
         return v == null ? "" : v;
     }

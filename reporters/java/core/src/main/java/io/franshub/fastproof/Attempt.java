@@ -303,10 +303,10 @@ public final class Attempt {
     private Map<String, Object> error(final Throwable t) {
         final Map<String, Object> e = new LinkedHashMap<>();
         final String msg = t.getMessage() == null ? t.getClass().getName() : t.getClass().getName() + ": " + t.getMessage();
-        e.put("message", client.masker.mask(cut(msg, 64 * 1024)));
+        e.put("message", cut(client.masker.mask(msg), 64 * 1024));
         final StringWriter sw = new StringWriter();
         t.printStackTrace(new PrintWriter(sw));
-        e.put("trace", client.masker.mask(cut(sw.toString(), MAX_TEXT)));
+        e.put("trace", cut(client.masker.mask(sw.toString()), MAX_TEXT));
         return e;
     }
 
@@ -320,18 +320,18 @@ public final class Attempt {
 
     private Map<String, Object> parameter(final String[] p) {
         final Map<String, Object> m = new LinkedHashMap<>();
-        m.put("name", mask(cut(p[0], 1000)));
+        m.put("name", cut(mask(p[0]), 1000));
         if (p[1] != null) {
-            m.put("value", mask(cut(p[1], 1000)));
+            m.put("value", cut(mask(p[1]), 1000));
         }
         return m;
     }
 
     private Map<String, Object> identity() {
         final Map<String, Object> m = new LinkedHashMap<>();
-        m.put("name", mask(cut(desc.name, 1000)));
+        m.put("name", cut(mask(desc.name), 1000));
         if (desc.fullName != null) {
-            m.put("fullName", mask(cut(desc.fullName, 2000)));
+            m.put("fullName", cut(mask(desc.fullName), 2000));
         }
         if (testCaseId != null) {
             m.put("testCaseId", testCaseId);
@@ -358,7 +358,7 @@ public final class Attempt {
             }
             final Map<String, Object> lm = new LinkedHashMap<>();
             lm.put("name", l[0]);
-            lm.put("value", mask(cut(l[1], 1000)));
+            lm.put("value", cut(mask(l[1]), 1000));
             out.add(lm);
         }
         return out;
@@ -411,7 +411,7 @@ public final class Attempt {
         Map<String, Object> e = null;
         if (message != null && !message.isBlank()) {
             e = new LinkedHashMap<>();
-            e.put("message", client.masker.mask(cut(message, 64 * 1024)));
+            e.put("message", cut(client.masker.mask(message), 64 * 1024));
         }
         finishWith(status, e);
     }
@@ -432,7 +432,7 @@ public final class Attempt {
             result.put("retry", retry);
             result.put("traceparent", trace.traceparent());
             if (desc.description != null) {
-                result.put("description", mask(cut(desc.description, 64 * 1024)));
+                result.put("description", cut(mask(desc.description), 64 * 1024));
             }
             result.put("start", start);
             result.put("stop", Math.max(stop, start));

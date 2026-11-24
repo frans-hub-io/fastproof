@@ -32,6 +32,20 @@ class UnitTest {
     }
 
     @Test
+    void jsonRejectsDeepNestingInsteadOfOverflowingTheStack() {
+        assertNull(Json.parse("[".repeat(200_000) + "]".repeat(200_000)));
+        assertNull(Json.parse("{\"a\":".repeat(100_000) + "1" + "}".repeat(100_000)));
+        final String ok = "[".repeat(Json.MAX_DEPTH) + "]".repeat(Json.MAX_DEPTH);
+        assertEquals(ok, Json.write(Json.parse(ok)));
+    }
+
+    @Test
+    void aTestPlanNestedTooDeeplyIsIgnored() throws Exception {
+        final Path plan = Files.writeString(dir.resolve("plan.json"), "{\"tests\":" + "[".repeat(200_000) + "]".repeat(200_000) + "}");
+        assertNull(TestPlan.load(plan));
+    }
+
+    @Test
     void maskerHidesEnvValuesUrlEncodedFormAndPatterns() {
         final Masker m = new Masker(Masker.DEFAULT_ENV, List.of("literal-value"), List.of("card-\\d{4}"),
                 Map.of("SHOP_PASSWORD", "p@ss word!", "PLAIN", "visible-value", "FLAG_TOKEN", "true"));

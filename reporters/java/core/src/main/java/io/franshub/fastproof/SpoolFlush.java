@@ -1,24 +1,35 @@
 package io.franshub.fastproof;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.net.InetAddress;
 import java.net.http.HttpRequest;
+import java.nio.ByteBuffer;
+import java.nio.channels.Channels;
+import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 /** Sends spooled sessions (format v1 in reporters/PROTOCOL.md): launch by external id, blobs once per hash, results in batches. */
 final class SpoolFlush {
     private static final int BATCH = 200;
+    private static final Pattern BLOB_NAME = Pattern.compile("^[0-9a-f]{64}$");
 
     record Session(String id, Path dir, Map<String, Object> meta) {
     }
@@ -95,6 +106,10 @@ final class SpoolFlush {
             if (project != null && !project.isEmpty() && !project.equals(sessionProject)) {
                 continue;
             }
+            if (!Config.validProject(sessionProject)) {
+                errors.add("session " + s.id() + ": not a valid project key; skipped");
+                continue;
+            }
             final List<String> lines = new ArrayList<>();
             try {
                 for (final String l : Files.readString(s.dir().resolve("results.ndjson"), StandardCharsets.UTF_8).split("\n")) {
@@ -141,13 +156,17 @@ final class SpoolFlush {
                     for (final Object b : Json.array(entry.get("blobs"))) {
                         final Map<String, Object> blob = Json.object(b);
                         final String sha = String.valueOf(blob.get("sha256"));
-                        final Path file = s.dir().resolve("blobs").resolve(sha.replaceAll("[^0-9a-f]", ""));
-                        if (blobIds.containsKey(sha) || !Files.isRegularFile(file)) {
+                        if (blobIds.containsKey(sha) || !BLOB_NAME.matcher(sha).matches()) {
+                            continue;
+                        }
+                        final Path file = s.dir().resolve("blobs").resolve(sha);
+                        if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) {
                             continue;
                         }
                         try {
+                            final HttpRequest.BodyPublisher verified = verifiedBlob(file, sha);
                             final Http.Resp up = http.post(sessionProject, "/" + launchId + "/attachments",
-                                    String.valueOf(blob.get("contentType")), HttpRequest.BodyPublishers.ofFile(file),
+                                    String.valueOf(blob.get("contentType")), verified,
                                     Map.of("X-FastProof-Attachment-Name", Client.headerValue(String.valueOf(blob.get("name")))), 2);
                             if (up.ok() && Json.object(up.body()).get("id") instanceof String id) {
                                 blobIds.put(sha, id);
@@ -205,6 +224,46 @@ final class SpoolFlush {
             }
         }
         return new Result(sessions, results, failed, remaining, errors);
+    }
+
+    /**
+     * A body for a spooled blob that is read without following links and only when its content hashes to its name,
+     * checked before the upload and again on the handle each attempt sends, so a planted spool line or a link swapped
+     * into {@code blobs/} cannot send another file with this run's token.
+     */
+    static HttpRequest.BodyPublisher verifiedBlob(final Path file, final String sha) throws IOException {
+        final long size;
+        try (FileChannel ch = openVerified(file, sha)) {
+            size = ch.size();
+        }
+        return HttpRequest.BodyPublishers.fromPublisher(HttpRequest.BodyPublishers.ofInputStream(() -> {
+            try {
+                return Channels.newInputStream(openVerified(file, sha));
+            } catch (IOException e) {
+                throw new UncheckedIOException(e);
+            }
+        }), size);
+    }
+
+    private static FileChannel openVerified(final Path file, final String sha) throws IOException {
+        final FileChannel ch = FileChannel.open(file, StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS);
+        try {
+            final MessageDigest md = MessageDigest.getInstance("SHA-256");
+            final ByteBuffer buf = ByteBuffer.allocate(1 << 16);
+            while (ch.read(buf) >= 0) {
+                buf.flip();
+                md.update(buf);
+                buf.clear();
+            }
+            if (!HexFormat.of().formatHex(md.digest()).equals(sha)) {
+                throw new IOException("the spooled attachment " + sha + " does not match its hash; skipped");
+            }
+            ch.position(0);
+            return ch;
+        } catch (IOException | RuntimeException | NoSuchAlgorithmException e) {
+            ch.close();
+            throw e instanceof IOException io ? io : new IOException(e);
+        }
     }
 
     @SuppressWarnings("unchecked")

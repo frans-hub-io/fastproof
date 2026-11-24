@@ -98,6 +98,54 @@ class SpoolTest {
         }
     }
 
+    private static String plantedLine(final String name, final String sha) {
+        final Map<String, Object> att = Map.of("id", "blob:" + sha, "name", "a.txt", "contentType", "text/plain");
+        final Map<String, Object> result = Map.of("id", "ju-000000000000-" + name + "-0", "name", name, "status", "passed",
+                "start", 1, "stop", 2, "retry", 0, "attachments", List.of(att));
+        final Map<String, Object> blob = Map.of("sha256", sha, "name", "a.txt", "contentType", "text/plain", "size", 10);
+        return Json.write(Map.of("v", 1, "result", result, "blobs", List.of(blob))) + "\n";
+    }
+
+    private static Path plantedSession(final Path root, final String name, final String project) throws Exception {
+        final Path session = Files.createDirectories(root.resolve(name).resolve("blobs")).getParent();
+        Files.writeString(session.resolve("meta.json"), Json.write(Map.of("v", 1, "project", project, "pid", 1, "host", "elsewhere",
+                "ended", true, "launch", Map.of("externalId", "planted-" + name, "name", "planted"))));
+        return session;
+    }
+
+    @Test
+    void flushSendsOnlyBlobsThatMatchTheirHashAndSkipsBadProjectKeys() throws Exception {
+        final Path secret = Files.writeString(dir.resolve("secret.txt"), "outside-the-spool-secret");
+        final Path root = dir.resolve("spool");
+        final Path session = plantedSession(root, "20260101T000000-1-planted", "demo");
+        final byte[] good = "legit evidence".getBytes(StandardCharsets.UTF_8);
+        final String goodSha = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(good));
+        Files.write(session.resolve("blobs").resolve(goodSha), good);
+        final String wrongSha = "a".repeat(64);
+        Files.writeString(session.resolve("blobs").resolve(wrongSha), "outside-the-spool-secret");
+        final String linkSha = "b".repeat(64);
+        Files.createSymbolicLink(session.resolve("blobs").resolve(linkSha), secret);
+        Files.writeString(session.resolve("results.ndjson"), plantedLine("dots", "../../../secret.txt") + plantedLine("wrong", wrongSha)
+                + plantedLine("link", linkSha) + plantedLine("good", goodSha));
+        final Path other = plantedSession(root, "20260101T000001-1-planted", "demo/launches?x=");
+        Files.writeString(other.resolve("results.ndjson"), plantedLine("elsewhere", goodSha));
+
+        try (FakeServer srv = new FakeServer(TOKEN, true, true)) {
+            final Map<String, String> env = env(srv.url(), "flush");
+            env.remove("FASTPROOF_PROJECT");
+            final Config cfg = Config.resolve(env, dir);
+            final SpoolFlush.Result r = new SpoolFlush(new Http(cfg), cfg).run(root, null, System.currentTimeMillis() + 30_000, "");
+            assertEquals(4, r.results());
+            assertEquals(List.of("legit evidence"), srv.attachmentBodies.values().stream().map(b -> new String(b, StandardCharsets.UTF_8)).toList());
+            assertFalse(srv.launches.containsValue("planted-20260101T000001-1-planted"), srv.launches.toString());
+            for (final Map<String, Object> res : srv.results.values()) {
+                final int expected = res.get("name").equals("good") ? 1 : 0;
+                assertEquals(expected, Json.array(res.get("attachments")).size(), String.valueOf(res.get("name")));
+            }
+            assertTrue(Files.exists(other), "the session with a bad project key stays");
+        }
+    }
+
     @Test
     void directUploadsGoToTheStoreAndFallBackWhenItIsUnreachable() throws Exception {
         try (FakeServer srv = new FakeServer(TOKEN, true, true)) {

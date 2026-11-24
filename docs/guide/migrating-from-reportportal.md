@@ -138,6 +138,54 @@ When the agent finishes the launch, tests that are still open get `FASTPROOF_RP_
 to finish; then they become broken `interrupted` and the launch finishes. A launch without any call for
 `FASTPROOF_RP_LAUNCH_IDLE_TIMEOUT` (1 h), for example after the agent crashed, finishes as interrupted.
 
+## Import the history of an existing ReportPortal
+
+`fastproof rp import` copies launches, tests, retries, defect triage, logs and attachments from a running
+ReportPortal. It reads the ReportPortal REST API (never its database) and replays every launch through the
+`/rp` endpoint of FastProof with the original uuids and times. Imported history and the reports of RP agents
+therefore form the same series, and the first new run continues the imported history of each test.
+
+```bash
+export RP_API_KEY=...                       # or --rp-key-file; never pass the key as an argument
+export FASTPROOF_TOKEN=fp_...               # launches:write; add results:triage to keep the triage
+
+fastproof rp import --dry-run --rp-url https://rp.example.com --rp-project team   # counts only
+fastproof rp import --url https://fastproof.example.com --project shop \
+  --rp-url https://rp.example.com --rp-project team
+```
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--since` | `90d` | Launches that started within this time (`12h`, `4w`), since a date (`2026-01-31`), or `all`. |
+| `--launch-name` | all | Only launches with this exact name. |
+| `--include-debug` | off | Also copy DEBUG launches (they stay debug launches). |
+| `--logs` | `warn` | `none`, `error`, `warn` (that level and above) or `all`. |
+| `--attachments` | `failed` | `none`, `failed` (files of failed tests and their steps) or `all`. |
+| `--max-attachment` | `64MiB` | Larger files are skipped and counted. |
+| `--dry-run` | off | Reads everything, counts launches, items, log bytes and files, writes nothing. |
+| `--state` | `.fastproof/rp-import.json` | The state file. |
+| `--rate` | `10` | ReportPortal requests per second at most (ReportPortal has no rate limit of its own). |
+| `--parallel` | `2` | Launches replayed at once (1 to 4). |
+| `--rp-ca-file` | none | PEM file with the certificate authority of ReportPortal. |
+
+How it behaves:
+
+- **Safe to repeat.** A launch is recorded in the state file when it is replayed completely. An interrupted
+  import continues with the launches left; an import with a lost state file replays them again under the same
+  uuids, which changes nothing in tests and attempts (log lines may repeat). The state file belongs to one
+  source and target and is refused for another.
+- **Only finished launches.** A launch still `IN_PROGRESS` in ReportPortal is skipped and counted.
+- **Defects.** `issue` is applied as triage when the token has `results:triage`; without it the result gets the
+  `rp.issue` label and the ticket links, as for live reports. A custom defect type of ReportPortal becomes
+  the built-in type of its group, and its name leads the comment.
+- **Retries.** Earlier attempts listed in `retries` are replayed as attempts of the same test.
+- **Connection.** HTTPS is required (plain http only to localhost or with `--rp-allow-http`), redirects are not
+  followed so the key goes only to the URL you gave, requests are retried with a growing pause on 429 and 5xx,
+  and the API key never appears in the state file or the output.
+- **Not copied.** Dashboards, widgets, filters, users, ML indexes, action history, Quality Gates, notification
+  and BTS settings, the ReportPortal test case management, launch-level logs, nested steps of retried
+  attempts, and data that the ReportPortal retention removed.
+
 ## Not supported
 
 The endpoint covers reporting only. The rest answers `501` with

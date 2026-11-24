@@ -214,7 +214,15 @@ export class Client {
   }
 
   /** Queues one live log line; the sequence number is per result id and attempt. */
-  log(resultId: string, attempt: number, level: LogLevel, stream: LogStream, message: string, step?: string): void {
+  log(
+    resultId: string,
+    attempt: number,
+    level: LogLevel,
+    stream: LogStream,
+    message: string,
+    step?: string,
+    ts: number = Date.now(),
+  ): void {
     if (this.logsState === 'off' || this.offline) return;
     const key = `${resultId}\u0000${attempt}`;
     const seq = this.seq.get(key) ?? 0;
@@ -223,7 +231,7 @@ export class Client {
       resultId,
       attempt,
       seq,
-      ts: Date.now(),
+      ts,
       level,
       stream,
       message: cut(this.masker.mask(message), MAX_LOG_MESSAGE),

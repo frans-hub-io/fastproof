@@ -74,7 +74,7 @@ Response `202 {accepted, duplicates, rejected: [{index, message}]}`. Each line i
 (`schemas/fastproof-report-v1.json`), **one attempt** of one test.
 
 - **Client id** (`id`): unique per attempt and per run, stable across HTTP retries and spool flushes:
-  `pw-<runId>-<playwright test id>-<retry>`, `py-<runId>-<sha1(nodeid)[:16]>-<attempt>`; the Allure enhancers use `aj-<runId>-<allure result uuid>` (JavaScript), `jv-…` (Java) and `ap-<runId>-<sha1(nodeid)[:16]>-<attempt>` (Python); `runId` is 12 random
+  `pw-<runId>-<playwright test id>-<retry>`, `py-<runId>-<sha1(nodeid)[:16]>-<attempt>`; Vitest, Jest and Cypress use `vt-`, `jt-` and `cy-<runId>-<sha1(test key)[:16]>-<attempt>`; the Allure enhancers use `aj-<runId>-<allure result uuid>` (JavaScript), `jv-…` (Java) and `ap-<runId>-<sha1(nodeid)[:16]>-<attempt>` (Python); `runId` is 12 random
   hex characters per run. Sending the same id again is a no-op (`duplicates`), so every retry is safe. A
   random run id keeps a re-run CI job (same external id) from being dropped as duplicates.
 - **Attempts**: every attempt is its own result with the same identity (`fullName`, `testCaseId`, parameters)

@@ -8,6 +8,9 @@ never fail your test run when the server is unreachable.
 |---|---|---|
 | Playwright | `@franshub/fastproof-playwright` (npm) | First release in preparation |
 | pytest | `pytest-fastproof` (PyPI) | First release in preparation |
+| Vitest | `@franshub/fastproof-vitest` (npm) | In preparation |
+| Jest | `@franshub/fastproof-jest` (npm) | In preparation |
+| Cypress | `@franshub/fastproof-cypress` (npm) | In preparation |
 
 More frameworks follow; until then, upload the files of the framework's own reporter with `fastproof upload`.
 
@@ -21,6 +24,10 @@ More frameworks follow; until then, upload the files of the framework's own repo
     # Playwright: build a package file once, then install it in your test project
     cd reporters/playwright && npm ci && npm run build && npm pack
     npm install --save-dev /path/to/fastproof/reporters/playwright/franshub-fastproof-playwright-0.1.0.tgz
+
+    # Vitest, Jest, Cypress: same steps in their folders; they need the Playwright package above as well,
+    # because they share its core
+    cd reporters/vitest && npm install --legacy-peer-deps && npm run build && npm pack
     ```
 
     The commands below (`npm install @franshub/fastproof-playwright`, `pip install pytest-fastproof`) work once
@@ -47,7 +54,7 @@ More frameworks follow; until then, upload the files of the framework's own repo
 
 ## Common settings
 
-Both reporters read the same environment variables as the `fastproof` CLI; without `FASTPROOF_URL` they stay
+All reporters read the same environment variables as the `fastproof` CLI; without `FASTPROOF_URL` they stay
 off.
 
 | Variable | Meaning |
@@ -139,6 +146,122 @@ python -m pytest_fastproof flush
 As with Playwright, `flush` needs `FASTPROOF_URL` and a token; each session goes to the project it was recorded
 for, and `FASTPROOF_PROJECT` limits the flush to one project. Both tools read the same spool format, so either
 one can send the other's sessions (`--spool DIR`).
+
+## Vitest
+
+```sh
+npm install --save-dev @franshub/fastproof-vitest @franshub/fastproof-playwright
+```
+
+```ts
+// vitest.config.ts
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    retry: 2,
+    reporters: ['default', ['@franshub/fastproof-vitest', { environment: 'staging' }]],
+    setupFiles: ['@franshub/fastproof-vitest/setup'],
+  },
+});
+```
+
+Vitest 4.1 or newer (the exact attempt list needs Vitest 5) and Node.js 20 or newer. Every retry and repeat is
+an attempt with its own status, error, output and trace id. Vitest hands task events to the reporter in
+batches, so a test is `running` a moment after it starts. Console output of a test without retries streams
+live; for tests with retries it is held until the test ends so that each line lands on the attempt that wrote
+it. Files from `annotate()` attachments and browser-mode artifacts are uploaded with the last attempt.
+
+- `fastproofTrace(task)` from `@franshub/fastproof-vitest/trace` returns the `traceparent`, `baggage`,
+  `headers({ newSpan })` and `env()` of the running attempt.
+- Test case ids and labels come from the test's `meta`: `test('pays', { meta: { fastproofId: 'CASE-7',
+  fastproofLabels: { owner: 'team-a' }, fastproofLinks: ['https://tracker.example.com/T-1'] } }, ...)`.
+- With a test plan (`FASTPROOF_TESTPLAN`), the `setup` file skips tests the plan does not name and the
+  reporter leaves them out of the launch. Selectors by line (`file:12`) need `includeTaskLocation: true`.
+- Watch mode is not supported: the reporter stays quiet when Vitest runs with `--watch`.
+
+## Jest
+
+```sh
+npm install --save-dev @franshub/fastproof-jest @franshub/fastproof-playwright
+```
+
+```js
+// jest.config.js
+module.exports = {
+  reporters: ['default', ['@franshub/fastproof-jest', { environment: 'staging' }]],
+  setupFilesAfterEnv: ['@franshub/fastproof-jest/setup'],
+};
+```
+
+Jest 29 or newer and Node.js 20 or newer. With `jest.retryTimes(n)` Jest reports each attempt, and each becomes
+an attempt of the result. The reporter alone sends results, statuses, errors and durations; the `setup` file
+(in the test processes) adds what Jest does not report per test: console output, steps and attachments. They
+pass through a private temporary directory the reporter creates for the run, so parallel workers need no
+credentials and no extra connections.
+
+```js
+const { attach, attachFile, step, fastproofTrace } = require('@franshub/fastproof-jest/setup');
+
+test('pays [fastproof-id:CASE-7]', async () => {
+  console.log('paying');
+  await step('call the payment API', async () => {
+    await fetch(url, { headers: fastproofTrace().headers() });
+  });
+  attach('response.json', JSON.stringify(body), 'application/json');
+  attachFile('screenshots/pay.png', 'pay.png', 'image/png');
+});
+```
+
+- Test case ids are written in the title as `[fastproof-id:ID]` (or `@allure.id=ID`).
+- A test file that cannot be loaded is reported as a broken result named `<file> (suite failed to run)`.
+- `testPlanPattern()` (from `@franshub/fastproof-jest`) builds a `testNamePattern` from a test plan; the
+  reporter leaves out of the launch any test the plan does not select. Selectors by line are not available,
+  because Jest does not report test locations.
+- Watch mode is not supported.
+
+## Cypress
+
+```sh
+npm install --save-dev @franshub/fastproof-cypress @franshub/fastproof-playwright
+```
+
+```js
+// cypress.config.js
+const { defineConfig } = require('cypress');
+const { fastproof } = require('@franshub/fastproof-cypress');
+
+module.exports = defineConfig({
+  retries: { runMode: 2 },
+  e2e: {
+    setupNodeEvents(on, config) {
+      return fastproof(on, config, { environment: 'staging' });
+    },
+  },
+});
+```
+
+```js
+// cypress/support/e2e.js
+import '@franshub/fastproof-cypress/support';
+```
+
+Cypress 16 (the APIs used exist since Cypress 13), `cypress run`. With the support file a test is `running` when it starts, its command log is
+sent with the result and every attempt gets a `traceparent` (`fastproofTrace().headers()` in the test). Without
+it, results are built from Cypress's own result at the end of each spec: statuses, errors and attempts are the
+same, but nothing is live and no `traceparent` reaches the test. Final results are sent when the spec ends,
+because the failure screenshot and the video exist only then; screenshots go to the attempt that took them,
+and the spec video goes to failed attempts (`video: 'always'` or `'off'` change that).
+
+- Test case ids are written in the title as `[fastproof-id:ID]`.
+- With a test plan, the plugin narrows `specPattern` to the files the plan names and skips other tests.
+- `cypress open` is not supported.
+
+!!! note "How these three were verified"
+    Vitest and Jest reporters were run for real (retries, workers, plans, masking, large attachments) against
+    a fake server and a FastProof server built from this repository. The Cypress plugin was driven with the
+    event sequence Cypress produces, in the same two ways; the Cypress application itself could not be started
+    in the build environment, so a first run in your project is the real check.
 
 ## Allure adapter enhancers
 

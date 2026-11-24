@@ -163,6 +163,122 @@ jobs:
             fastproof/ui/test-results
           retention-days: 7
 
+  reporters:
+    name: JavaScript and Python reporters against the real server
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    needs: ui
+    services:
+      postgres:
+        image: docker.io/library/postgres:18.7-trixie
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      FASTPROOF_TEST_SERVER_BIN: ${{ github.workspace }}/fastproof/target/debug/fastproof
+      FASTPROOF_TEST_DATABASE_URL: postgres://postgres@localhost:5432/postgres
+      FASTPROOF_TEST_CYPRESS: "1"
+    defaults:
+      run:
+        working-directory: fastproof
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: fastproof
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ env.PLATFORM_REPOSITORY }}
+          ref: ${{ env.PLATFORM_REF }}
+          ssh-key: ${{ secrets.PLATFORM_DEPLOY_KEY }}
+          path: franshub-platform
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: ui-dist
+          path: fastproof/ui/dist
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+        with:
+          workspaces: fastproof
+          key: e2e-real
+      - name: build the server
+        run: cargo build -p fastproof-server --bin fastproof --locked
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: "3.13"
+      - name: Playwright reporter, build and unit tests
+        working-directory: fastproof/reporters/playwright
+        run: |
+          npm ci
+          npm run build
+          npm run typecheck
+          npm test
+      - name: Vitest reporter, build and tests
+        working-directory: fastproof/reporters/vitest
+        run: |
+          npm install --legacy-peer-deps
+          npm run build
+          npm run typecheck
+          npm test
+      - name: Jest reporter, build and tests
+        working-directory: fastproof/reporters/jest
+        run: |
+          npm install --legacy-peer-deps
+          npm run build
+          npm run typecheck
+          npm test
+      - name: Cypress plugin, build and tests
+        working-directory: fastproof/reporters/cypress
+        run: |
+          npm install --legacy-peer-deps
+          npm run build
+          npm run typecheck
+          npm test
+      - name: Allure JavaScript enhancer, build and tests
+        working-directory: fastproof/reporters/allure-js
+        run: |
+          npm ci --legacy-peer-deps
+          npm run build
+          npm run typecheck
+          npm test
+      - name: pytest plugin unit tests
+        working-directory: fastproof/reporters/pytest
+        run: |
+          pip install -e . pytest-rerunfailures pytest-xdist
+          pytest
+      - name: Allure pytest enhancer
+        working-directory: fastproof/reporters/allure-pytest
+        run: pip install -e . "allure-pytest==2.16.2"
+      - name: install the browser for the Playwright integration tests
+        working-directory: fastproof/reporters/playwright
+        run: npx playwright install --with-deps chromium
+      - name: integration tests against the real server
+        env:
+          FASTPROOF_TEST_BROWSER: "1"
+        run: python -m pytest -p no:fastproof reporters/integration -v
+      - if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: reporters-cypress-artifacts
+          path: |
+            fastproof/reporters/cypress/sample/cypress/screenshots
+            fastproof/reporters/cypress/sample/cypress/videos
+          retention-days: 7
+          if-no-files-found: ignore
+
   rust:
     name: rust (postgres ${{ matrix.postgres }}, valkey ${{ matrix.valkey }})
     runs-on: ubuntu-24.04

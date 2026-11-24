@@ -6,6 +6,12 @@ Thin, dependency-free reporters that send test runs to FastProof while they happ
 |---|---|---|
 | `@franshub/fastproof-playwright` | Playwright Test ≥ 1.45 (tested with 1.65.0), Node ≥ 20 | [`playwright/`](playwright) |
 | `pytest-fastproof` | pytest ≥ 7 (tested with 9.2.0), Python ≥ 3.9 (tested on 3.11), xdist and pytest-rerunfailures | [`pytest/`](pytest) |
+| `@franshub/fastproof-vitest` | Vitest ≥ 4.1 (tested with 5.1.0 and 4.1.12), Node ≥ 20 | [`vitest/`](vitest) |
+| `@franshub/fastproof-jest` | Jest ≥ 29 (tested with 30.5.2), Node ≥ 20 | [`jest/`](jest) |
+| `@franshub/fastproof-cypress` | Cypress ≥ 13 (typed against 16.2.1; `cypress run`), Node ≥ 20 | [`cypress/`](cypress) |
+
+The Vitest, Jest and Cypress packages are thin: they map the framework's events to the same core
+(`@franshub/fastproof-playwright` exports it: client, spool, masking, trace, test plans, `ReporterSession`).
 
 Allure adapter enhancers keep the Allure adapter and add live streaming, `traceparent`, retries as attempts and
 masking on top (see the docs page "Reporters"):
@@ -158,6 +164,10 @@ the CLI, masking inside Playwright trace archives (HAR), and HTTP-client hooks t
 automatically in Python (`requests`/`httpx`).
 
 ## Development
+
+The Vitest, Jest and Cypress packages install with `npm install --legacy-peer-deps` (their frameworks have
+optional peers that npm 10 resolves badly) after `reporters/playwright` is built:
+`cd vitest && npm install --legacy-peer-deps && npm run build && npm test`.
 
 ```bash
 cd playwright && npm ci && npm run build && npm run typecheck && npm test

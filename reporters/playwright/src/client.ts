@@ -550,7 +550,7 @@ export class Client {
     if (this.timer) clearInterval(this.timer);
     try {
       await until(Promise.allSettled([...this.pipelines]));
-      while (!this.offline && (this.queue.length || this.logs.length) && remaining() > 0) {
+      while (!this.offline && (this.queue.length || this.logs.length || this.pumping) && remaining() > 0) {
         const before = this.queue.length + this.logs.length;
         await until(this.pump());
         if (this.queue.length + this.logs.length >= before) await until(new Promise((r) => setTimeout(r, 200)));

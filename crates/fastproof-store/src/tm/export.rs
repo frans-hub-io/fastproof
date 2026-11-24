@@ -12,7 +12,7 @@ use fastproof_tm_import::{
 use sqlx::Row;
 use uuid::Uuid;
 
-use super::cases::filter_numbers;
+use super::cases::{CaseSelection, filter_numbers, selection_numbers};
 use super::fields::field_defs;
 use super::lookup::{CASE_COLS, case_row};
 use super::{CaseFieldDef, CaseFilter, CaseRow, CaseStep, FieldValue, TmError, TmResult};
@@ -137,8 +137,46 @@ impl Store {
         filter: &CaseFilter,
         max: usize,
     ) -> TmResult<ExportSource> {
-        let mut conn = self.pool.acquire().await?;
-        let numbers = filter_numbers(&mut conn, project_id, filter, Some(false), max).await?;
+        self.export_source_query(project_id, filter, None, "", max)
+            .await
+    }
+
+    /// The cases of a filter or, when given, of an FPQL query (exclusive; `me` is the caller
+    /// for `me()`), not archived, as [`Self::export_source`].
+    pub async fn export_source_query(
+        &self,
+        project_id: Uuid,
+        filter: &CaseFilter,
+        query: Option<&str>,
+        me: &str,
+        max: usize,
+    ) -> TmResult<ExportSource> {
+        let mut conn = self.pool.begin().await?;
+        let numbers = match query.filter(|q| !q.trim().is_empty()) {
+            Some(src) => {
+                if *filter != CaseFilter::default() {
+                    return Err(TmError::bad_request("give either a filter or a query"));
+                }
+                super::query::set_timeout(&mut conn).await?;
+                let q = super::query::prepare(
+                    &mut conn,
+                    project_id,
+                    super::QueryEntity::Cases,
+                    src,
+                    &super::query::QueryCtx::new(me),
+                )
+                .await?;
+                selection_numbers(
+                    &mut conn,
+                    project_id,
+                    CaseSelection::Query(&q),
+                    Some(false),
+                    max,
+                )
+                .await?
+            }
+            None => filter_numbers(&mut conn, project_id, filter, Some(false), max).await?,
+        };
         if numbers.len() > max {
             return Err(TmError::limit("maxExportCases", max as u64));
         }
@@ -147,9 +185,11 @@ impl Store {
                 .bind(project_id)
                 .fetch_all(&mut *conn)
                 .await?;
+        let defs = field_defs(&mut conn, project_id, false).await?;
+        conn.commit().await?;
         Ok(ExportSource {
             numbers,
-            defs: field_defs(&mut conn, project_id, false).await?,
+            defs,
             folders: rows.into_iter().map(|(id, p, n)| (id, (p, n))).collect(),
         })
     }

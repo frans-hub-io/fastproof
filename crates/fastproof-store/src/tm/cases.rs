@@ -24,7 +24,7 @@ use super::{
     CaseFieldDef, CaseFilter, CaseFolderRef, CaseHistoryEntry, CaseHtml, CaseIdentity, CaseKeyKind,
     CaseLink, CaseList, CaseOrigin, CasePatch, CaseProposal, CaseRow, CaseSnapshot, CaseStatus,
     CaseStep, CaseSuggestion, CaseSummary, CaseTree, CaseTreeGroupBy, CaseTreeNode, CaseWrite,
-    FieldValue, FolderCounts, IdentityKind, LastResult, MAX_TAG_BYTES, ResultSource,
+    FieldValue, FolderCounts, IdentityKind, LastResult, MAX_TAG_BYTES, QueryEntity, ResultSource,
     SuggestionStatus, TREE_ID_SEPARATOR, TestIdentity, TmError, TmLimits, TmResult, VersionSource,
     check_name, violated_constraint,
 };
@@ -1239,6 +1239,10 @@ pub struct CaseQuery {
     pub sort: CaseSort,
     pub before: Option<String>,
     pub limit: i64,
+    /// An FPQL query, ANDed with the filter (`archived` applies unless the query names it).
+    pub query: Option<String>,
+    /// The caller's principal name (`me()`, personal saved queries).
+    pub me: String,
 }
 
 /// Checks the sizes of a filter.
@@ -1287,78 +1291,19 @@ pub async fn check_filter_folders(
     Ok(())
 }
 
-/// Appends the conditions of a filter on cases aliased `c` (` and ...`).
+/// Appends the conditions of a filter on cases aliased `c` (` and ...`): the filter becomes
+/// the FPQL syntax tree and goes through the one compiler.
 pub fn push_filter(qb: &mut QueryBuilder<Postgres>, project_id: Uuid, f: &CaseFilter) {
-    if let Some(ids) = f.folder_ids.as_ref().filter(|v| !v.is_empty()) {
-        if f.recursive.unwrap_or(false) {
-            qb.push(" and c.folder_id in (select d.id from case_folders d where d.project_id = ")
-                .push_bind(project_id)
-                .push(" and d.path_ids && ")
-                .push_bind(ids.clone())
-                .push(")");
-        } else {
-            qb.push(" and c.folder_id = any(")
-                .push_bind(ids.clone())
-                .push(")");
-        }
-    }
-    if let Some(s) = f.statuses.as_ref().filter(|v| !v.is_empty()) {
-        let s: Vec<String> = s.iter().map(|s| s.as_str().to_string()).collect();
-        qb.push(" and c.status = any(").push_bind(s).push(")");
-    }
-    match f.automation {
-        Some(ResultSource::Automated) => {
-            qb.push(" and c.automated");
-        }
-        Some(ResultSource::Manual) => {
-            qb.push(" and not c.automated");
-        }
-        None => {}
-    }
-    if let Some(fields) = &f.fields {
-        for (k, values) in fields {
-            if values.is_empty() {
-                qb.push(" and c.fields ? ").push_bind(no_nul(k));
-                continue;
-            }
-            qb.push(" and (false");
-            for v in values {
-                let v = no_nul(v);
-                qb.push(" or c.fields @> ")
-                    .push_bind(json!({ k.as_str(): v }))
-                    .push(" or c.fields @> ")
-                    .push_bind(json!({ k.as_str(): [v] }));
-                if let Ok(n) = v.parse::<f64>()
-                    && n.is_finite()
-                {
-                    qb.push(" or c.fields @> ")
-                        .push_bind(json!({ k.as_str(): n }));
-                }
-            }
-            qb.push(")");
-        }
-    }
-    if let Some(t) = f.tags.as_ref().filter(|v| !v.is_empty()) {
-        let t: Vec<String> = t.iter().map(|t| no_nul(t.trim())).collect();
-        qb.push(" and c.tags @> ").push_bind(t);
-    }
-    if let Some(q) = f.q.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
-        let q = no_nul(q);
-        let number = q
-            .strip_prefix("TC-")
-            .or(q.strip_prefix("tc-"))
-            .unwrap_or(&q)
-            .parse::<i64>()
-            .ok();
-        qb.push(" and (to_tsvector('simple', c.search_text) @@ plainto_tsquery('simple', ")
-            .push_bind(q.clone())
-            .push(") or c.name ilike ")
-            .push_bind(format!("%{}%", like_escape(&q)));
-        if let Some(n) = number {
-            qb.push(" or c.number = ").push_bind(n);
-        }
-        qb.push(")");
-    }
+    let q = super::query::from_filter(f);
+    super::query::compile::push_query(qb, project_id, &q);
+}
+
+/// What selects cases for a bulk action, an export or a plan: a structured filter or a
+/// resolved FPQL query.
+#[derive(Clone, Copy, Debug)]
+pub enum CaseSelection<'a> {
+    Filter(&'a CaseFilter),
+    Query(&'a super::query::ast::Query),
 }
 
 /// The case list reads the denormalized last result (`cases.last_*`, §4.6).
@@ -1547,9 +1492,26 @@ pub async fn filter_numbers(
 ) -> TmResult<Vec<i64>> {
     check_filter(f)?;
     check_filter_folders(conn, project_id, f).await?;
+    selection_numbers(conn, project_id, CaseSelection::Filter(f), archived, max).await
+}
+
+/// Numbers of the cases a checked filter or a resolved query selects, by number, at most
+/// `max + 1`. `archived` restricts unless the query names `archived`. A query runs under the
+/// statement timeout of FPQL (the caller is in a transaction).
+pub async fn selection_numbers(
+    conn: &mut PgConnection,
+    project_id: Uuid,
+    sel: CaseSelection<'_>,
+    archived: Option<bool>,
+    max: usize,
+) -> TmResult<Vec<i64>> {
     let mut qb: QueryBuilder<Postgres> =
         QueryBuilder::new("select c.number from cases c where c.project_id = ");
     qb.push_bind(project_id);
+    let archived = match sel {
+        CaseSelection::Query(q) if q.mentions("archived") => None,
+        _ => archived,
+    };
     match archived {
         Some(true) => {
             qb.push(" and c.archived_at is not null");
@@ -1559,10 +1521,25 @@ pub async fn filter_numbers(
         }
         None => {}
     }
-    push_filter(&mut qb, project_id, f);
+    match sel {
+        CaseSelection::Filter(f) => push_filter(&mut qb, project_id, f),
+        CaseSelection::Query(q) => super::query::compile::push_query(&mut qb, project_id, q),
+    }
     qb.push(" order by c.number limit ")
         .push_bind(max as i64 + 1);
-    Ok(qb.build_query_scalar().fetch_all(&mut *conn).await?)
+    match sel {
+        CaseSelection::Filter(_) => Ok(qb.build_query_scalar().fetch_all(&mut *conn).await?),
+        CaseSelection::Query(q) => {
+            super::query::set_timeout(conn).await?;
+            let n = qb
+                .build_query_scalar()
+                .fetch_all(&mut *conn)
+                .await
+                .map_err(super::query::run_error(&q.src))?;
+            super::query::reset_timeout(conn).await?;
+            Ok(n)
+        }
+    }
 }
 
 /// A history request of a case.
@@ -1927,16 +1904,31 @@ impl Store {
     /// A page of cases.
     pub async fn list_cases(&self, project_id: Uuid, q: &CaseQuery) -> TmResult<CaseList> {
         check_filter(&q.filter)?;
-        let mut conn = self.pool.acquire().await?;
+        let mut conn = self.pool.begin().await?;
         check_filter_folders(&mut conn, project_id, &q.filter).await?;
+        let src = q.query.as_deref().filter(|s| !s.trim().is_empty());
+        let fpql = match src {
+            Some(src) => {
+                super::query::set_timeout(&mut conn).await?;
+                let ctx = super::query::QueryCtx::new(&q.me);
+                Some(
+                    super::query::prepare(&mut conn, project_id, QueryEntity::Cases, src, &ctx)
+                        .await?,
+                )
+            }
+            None => None,
+        };
         let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(SUMMARY_SELECT);
         qb.push("where c.project_id = ").push_bind(project_id);
-        qb.push(if q.archived {
-            " and c.archived_at is not null"
-        } else {
-            " and c.archived_at is null"
-        });
+        if q.archived {
+            qb.push(" and c.archived_at is not null");
+        } else if !fpql.as_ref().is_some_and(|f| f.mentions("archived")) {
+            qb.push(" and c.archived_at is null");
+        }
         push_filter(&mut qb, project_id, &q.filter);
+        if let Some(f) = &fpql {
+            super::query::compile::push_query(&mut qb, project_id, f);
+        }
         if let Some(d) = q.stale_days {
             qb.push(" and c.automated and (c.last_trusted_at is null or c.last_trusted_at < now() - make_interval(days => ")
                 .push_bind(d.min(36_500) as i32)
@@ -1978,7 +1970,12 @@ impl Store {
             }
         }
         qb.push(" limit ").push_bind(q.limit + 1);
-        let rows = qb.build().fetch_all(&mut *conn).await?;
+        let rows = qb
+            .build()
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(super::query::run_error(src.unwrap_or("")))?;
+        conn.commit().await?;
         let more = rows.len() as i64 > q.limit;
         let mut items = Vec::with_capacity(rows.len());
         let mut last: Option<(DateTime<Utc>, Uuid)> = None;
@@ -2093,16 +2090,36 @@ impl Store {
     /// code (`not_found`, `unchanged`, `field_from_code`, `invalid_case`, `archived`).
     pub async fn bulk_cases(&self, ctx: &CaseCtx<'_>, b: &CaseBulk) -> TmResult<CaseBulkResult> {
         let l = ctx.limits;
+        let ctx_project = ctx.project_id;
         let op = bulk_op(b, l)?;
-        if b.query.is_some() {
-            return Err(TmError::invalid(
-                "invalid_query",
-                "queries are not available",
-            ));
-        }
         let mut tx = self.pool.begin().await?;
-        let numbers: Vec<i64> = match (&b.numbers, &b.filter) {
-            (Some(n), None) => {
+        let numbers: Vec<i64> = match (&b.numbers, &b.filter, &b.query) {
+            (None, None, Some(src)) => {
+                if src.trim().is_empty() {
+                    return Err(TmError::bad_request("query must not be empty"));
+                }
+                let archived = match op {
+                    BulkOp::Restore => Some(true),
+                    _ => Some(false),
+                };
+                super::query::set_timeout(&mut tx).await?;
+                let ctx = super::query::QueryCtx::new(ctx.by);
+                let q = super::query::prepare(&mut tx, ctx_project, QueryEntity::Cases, src, &ctx)
+                    .await?;
+                let n = selection_numbers(
+                    &mut tx,
+                    ctx_project,
+                    CaseSelection::Query(&q),
+                    archived,
+                    l.max_bulk,
+                )
+                .await?;
+                if n.len() > l.max_bulk {
+                    return Err(TmError::limit("maxBulk", l.max_bulk as u64));
+                }
+                n
+            }
+            (Some(n), None, None) => {
                 if n.len() > l.max_bulk {
                     return Err(TmError::limit("maxBulk", l.max_bulk as u64));
                 }
@@ -2111,7 +2128,7 @@ impl Store {
                 n.dedup();
                 n
             }
-            (None, Some(f)) => {
+            (None, Some(f), None) => {
                 let archived = match op {
                     BulkOp::Restore => Some(true),
                     _ => Some(false),
@@ -2123,7 +2140,9 @@ impl Store {
                 n
             }
             _ => {
-                return Err(TmError::bad_request("give either numbers or a filter"));
+                return Err(TmError::bad_request(
+                    "give exactly one of numbers, filter and query",
+                ));
             }
         };
         if let BulkOp::Move(Some(f)) = &op

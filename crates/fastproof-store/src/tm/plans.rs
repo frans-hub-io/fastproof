@@ -1,6 +1,7 @@
-//! Managed test plans: explicit items plus items added by a stored [`CaseFilter`], sync of the
-//! filter with a diff, `testplan.json` computed live from the plan's automated cases, and
-//! launches started from a plan with run items for its manual cases.
+//! Managed test plans: explicit items plus items added by a stored [`CaseFilter`] or FPQL
+//! query, sync of the filter or query with a diff, `testplan.json` computed live from the
+//! plan's automated cases, and launches started from a plan with run items for its manual
+//! cases.
 //!
 //! Adhoc plans (stage 1, `analysis/plans.rs`) keep their stored `tests` and expire; managed
 //! plans never expire and are archived instead.
@@ -95,15 +96,57 @@ fn bad(message: impl Into<String>) -> TmError {
     TmError::bad_request(message)
 }
 
-/// Plan queries arrive with FPQL; until then a query is refused rather than ignored.
-fn no_query(q: Option<&Option<String>>) -> TmResult<()> {
-    if matches!(q, Some(Some(_))) {
-        return Err(TmError::invalid(
-            "invalid_query",
-            "plan queries are not available",
-        ));
+/// A plan keeps a filter or a query, never both.
+fn exclusive(filter: Option<&Option<CaseFilter>>, query: Option<&Option<String>>) -> TmResult<()> {
+    if matches!(filter, Some(Some(_))) && matches!(query, Some(Some(_))) {
+        return Err(bad("give either a filter or a query"));
     }
     Ok(())
+}
+
+/// A plan query parsed and resolved (under the FPQL statement timeout; the caller is in a
+/// transaction and resets the timeout before writing).
+async fn plan_query(
+    conn: &mut PgConnection,
+    project_id: Uuid,
+    src: &str,
+    by: &str,
+) -> TmResult<super::query::ast::Query> {
+    if src.trim().is_empty() {
+        return Err(bad("query must not be empty"));
+    }
+    super::query::set_timeout(conn).await?;
+    super::query::prepare(
+        conn,
+        project_id,
+        super::QueryEntity::Cases,
+        src,
+        &super::query::QueryCtx::new(by),
+    )
+    .await
+}
+
+/// Ids of the cases (not archived) a resolved query selects, at most `cap`, by number.
+pub async fn query_case_ids(
+    conn: &mut PgConnection,
+    project_id: Uuid,
+    q: &super::query::ast::Query,
+    cap: usize,
+) -> TmResult<Vec<Uuid>> {
+    let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(
+        "select c.id from cases c where c.archived_at is null and c.project_id = ",
+    );
+    qb.push_bind(project_id);
+    super::query::compile::push_query(&mut qb, project_id, q);
+    qb.push(" order by c.number limit ").push_bind(cap as i64);
+    super::query::set_timeout(conn).await?;
+    let ids = qb
+        .build_query_scalar()
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(super::query::run_error(&q.src))?;
+    super::query::reset_timeout(conn).await?;
+    Ok(ids)
 }
 
 /// An assignee: 1 to [`MAX_ASSIGNEE_BYTES`] bytes, no control characters.
@@ -522,7 +565,8 @@ impl Store {
                 ),
             });
         }
-        no_query(w.query.as_ref())?;
+        exclusive(w.filter.as_ref(), w.query.as_ref())?;
+        let query_src = w.query.clone().flatten().filter(|q| !q.trim().is_empty());
         let filter = w.filter.clone().flatten().map(plan_filter);
         if let Some(f) = &filter {
             super::cases::check_filter(f)?;
@@ -536,11 +580,15 @@ impl Store {
         if let Some(f) = &filter {
             super::cases::check_filter_folders(&mut tx, project_id, f).await?;
         }
+        let query = match &query_src {
+            Some(src) => Some(plan_query(&mut tx, project_id, src, by).await?),
+            None => None,
+        };
         let explicit = resolve_numbers(&mut tx, project_id, &numbers).await?;
         let id = Uuid::now_v7();
         sqlx::query(
-            "insert into test_plans (id, project_id, name, kind, description, filter, created_by, updated_at, updated_by) \
-             values ($1, $2, $3, 'managed', $4, $5, $6, now(), $6)",
+            "insert into test_plans (id, project_id, name, kind, description, filter, query, created_by, updated_at, updated_by) \
+             values ($1, $2, $3, 'managed', $4, $5, $7, $6, now(), $6)",
         )
         .bind(id)
         .bind(project_id)
@@ -554,12 +602,17 @@ impl Store {
                 .map(json_no_nul),
         )
         .bind(no_nul(by))
+        .bind(query_src.as_deref().map(|q| no_nul(q.trim())))
         .execute(&mut *tx)
         .await?;
         add_items(&mut tx, id, &explicit, false, limits.max_plan_cases).await?;
         if let Some(f) = &filter {
             let matched =
                 filter_case_ids(&mut tx, project_id, f, limits.max_plan_cases + 1).await?;
+            add_items(&mut tx, id, &matched, true, limits.max_plan_cases).await?;
+        }
+        if let Some(q) = &query {
+            let matched = query_case_ids(&mut tx, project_id, q, limits.max_plan_cases + 1).await?;
             add_items(&mut tx, id, &matched, true, limits.max_plan_cases).await?;
         }
         let plan = plan_in(&mut tx, project_id, id, false)
@@ -642,7 +695,7 @@ impl Store {
                 ),
             });
         }
-        no_query(p.query.as_ref())?;
+        exclusive(p.filter.as_ref(), p.query.as_ref())?;
         if let Some(Some(f)) = &p.filter {
             super::cases::check_filter(f)?;
         }
@@ -658,13 +711,24 @@ impl Store {
         if let Some(Some(f)) = &p.filter {
             super::cases::check_filter_folders(&mut tx, project_id, f).await?;
         }
+        let query_src = match &p.query {
+            Some(Some(q)) if !q.trim().is_empty() => {
+                plan_query(&mut tx, project_id, q, by).await?;
+                super::query::reset_timeout(&mut tx).await?;
+                Some(q.trim().to_string())
+            }
+            _ => None,
+        };
         let filter_json = match &p.filter {
             Some(Some(f)) => Some(json_no_nul(serde_json::to_value(plan_filter(f.clone()))?)),
             _ => None,
         };
+        let set_filter = p.filter.is_some() || query_src.is_some();
+        let set_query = p.query.is_some() || matches!(p.filter, Some(Some(_)));
         sqlx::query(
             "update test_plans set name = coalesce($3, name), description = coalesce($4, description), \
              filter = case when $5 then $6 else filter end, \
+             query = case when $9 then $10 else query end, \
              revision = revision + 1, updated_at = now(), updated_by = $7 \
              where id = $1 and project_id = $2 and revision = $8",
         )
@@ -672,10 +736,12 @@ impl Store {
         .bind(project_id)
         .bind(name.as_deref().map(no_nul))
         .bind(p.description.as_deref().map(no_nul))
-        .bind(p.filter.is_some())
+        .bind(set_filter)
         .bind(filter_json)
         .bind(no_nul(by))
         .bind(revision)
+        .bind(set_query)
+        .bind(query_src.as_deref().map(no_nul))
         .execute(&mut *tx)
         .await?;
         let plan = plan_in(&mut tx, project_id, id, false)
@@ -864,11 +930,16 @@ impl Store {
     ) -> TmResult<super::PlanSyncDiff> {
         let mut tx = self.pool.begin().await?;
         let row = managed_for_change(&mut tx, project_id, plan_id, false).await?;
-        let Some(filter) = row.plan.filter else {
-            return Err(bad("the plan has no filter"));
+        let matched = match (row.plan.filter, row.plan.query) {
+            (_, Some(src)) => {
+                let q = plan_query(&mut tx, project_id, &src, by).await?;
+                query_case_ids(&mut tx, project_id, &q, limits.max_plan_cases + 1).await?
+            }
+            (Some(filter), None) => {
+                filter_case_ids(&mut tx, project_id, &filter, limits.max_plan_cases + 1).await?
+            }
+            (None, None) => return Err(bad("the plan has no filter or query")),
         };
-        let matched =
-            filter_case_ids(&mut tx, project_id, &filter, limits.max_plan_cases + 1).await?;
         if matched.len() > limits.max_plan_cases {
             return Err(TmError::limit("maxPlanCases", limits.max_plan_cases as u64));
         }

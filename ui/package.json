@@ -20,6 +20,11 @@
     "gen:api": "node scripts/gen-api.mjs ../schemas/openapi.json src/api/schema.gen.ts"
   },
   "dependencies": {
+    "@codemirror/autocomplete": "6.20.4",
+    "@codemirror/commands": "6.11.1",
+    "@codemirror/lint": "6.9.7",
+    "@codemirror/state": "6.7.6",
+    "@codemirror/view": "6.43.15",
     "@franshub/ui-shell": "file:../../franshub-platform/packages/ui-shell",
     "@mantine/charts": "9.7.5",
     "@mantine/core": "9.7.5",

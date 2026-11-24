@@ -325,7 +325,7 @@ async fn formats_of_later_areas_are_refused_until_built() {
         .post(
             "/api/v1/projects/later/test-plans",
             ADMIN_TOKEN,
-            json!({"kind": "managed", "name": "q", "query": "status = active"}),
+            json!({"kind": "managed", "name": "q", "query": "status ~ active"}),
         )
         .await;
     assert_eq!(st, StatusCode::BAD_REQUEST, "{b}");
@@ -334,7 +334,7 @@ async fn formats_of_later_areas_are_refused_until_built() {
         .post(
             "/api/v1/projects/later/cases/bulk",
             ADMIN_TOKEN,
-            json!({"query": "status = active", "action": "archive"}),
+            json!({"query": "status ~ active", "action": "archive"}),
         )
         .await;
     assert_eq!(st, StatusCode::BAD_REQUEST, "{b}");

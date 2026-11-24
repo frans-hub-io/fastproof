@@ -56,6 +56,7 @@ import {
   type MockRunItem,
   type TmState,
 } from './tmFixtures';
+import { matchesQuery, queryProblem } from './queries';
 import { renderMarkdown } from './tmMarkdown';
 
 const API = '/api/v1';
@@ -286,6 +287,8 @@ function listCases(url: URL): MockCase[] {
   const ai = sp.get('aiUnreviewed') === 'true';
   let list = [...st.cases.values()].filter((c) => (archived ? c.archivedAt !== null : true) && matchesFilter({ ...c, archivedAt: null }, f) && (archived || c.archivedAt === null));
   if (ai) list = list.filter((c) => c.aiUnreviewed);
+  const query = sp.get('query');
+  if (query) list = list.filter((c) => matchesQuery(query, c));
   if (stale > 0) {
     const limit = Date.now() - stale * 86_400_000;
     list = list.filter((c) => {
@@ -617,9 +620,10 @@ function planView(p: MockPlan): TestPlan {
 }
 
 function syncDiff(p: MockPlan): { added: number[]; removed: number[] } {
-  if (!p.filter) return { added: [], removed: [] };
   const filter = p.filter;
-  const matching = new Set([...st.cases.values()].filter((c) => matchesFilter(c, filter)).map((c) => c.number));
+  const query = p.query;
+  if (!filter && !query) return { added: [], removed: [] };
+  const matching = new Set([...st.cases.values()].filter((c) => (query ? !c.archivedAt && matchesQuery(query, c) : filter && matchesFilter(c, filter))).map((c) => c.number));
   const have = new Set(p.items.map((i) => i.caseNumber));
   return {
     added: [...matching].filter((n) => !have.has(n)).sort((a, b) => a - b),
@@ -1040,6 +1044,8 @@ export function tmHandlers({ role, error, audit }: Helpers) {
       const key = String(params.key);
       if (!tmProject(key)) return HttpResponse.json({ items: [], next: null });
       const url = new URL(request.url);
+      const bad = queryProblem(url.searchParams.get('query') ?? '');
+      if (bad) return error(400, 'invalid_query', bad.message, bad);
       const page = pageOf(listCases(url), url, (c) => String(c.number), 50);
       return HttpResponse.json({ items: page.items.map(summaryView), next: page.next });
     }),
@@ -1466,7 +1472,7 @@ export function tmHandlers({ role, error, audit }: Helpers) {
       const items = [...numbers].filter((n) => st.cases.has(n)).map((n, i) => ({ caseNumber: n, assignee: null, viaFilter: false, position: i }));
       const filter = b.filter ?? null;
       if (filter) for (const c of st.cases.values()) if (matchesFilter(c, filter) && !numbers.has(c.number)) items.push({ caseNumber: c.number, assignee: null, viaFilter: true, position: items.length });
-      const plan: MockPlan = { id: tmId(`plan:${String(Date.now())}:${String(Math.random())}`), kind: 'managed', name: b.name.trim(), description: b.description ?? '', filter, counts: { total: 0, manual: 0, automated: 0 }, revision: 1, createdBy: ME, createdAt: now(), updatedAt: null, archived: false, items };
+      const plan: MockPlan = { id: tmId(`plan:${String(Date.now())}:${String(Math.random())}`), kind: 'managed', name: b.name.trim(), description: b.description ?? '', filter, query: b.query ?? null, counts: { total: 0, manual: 0, automated: 0 }, revision: 1, createdBy: ME, createdAt: now(), updatedAt: null, archived: false, items };
       st.plans.unshift(plan);
       audit('testPlan.create', key, { id: plan.id, name: plan.name });
       return withEtag(planView(plan), plan.revision, 201);
@@ -1614,6 +1620,8 @@ export function tmHandlers({ role, error, audit }: Helpers) {
       if (b.name) p.name = b.name.trim();
       if (b.description !== undefined) p.description = b.description ?? '';
       if (b.filter !== undefined) p.filter = b.filter;
+      if (b.query !== undefined) p.query = b.query;
+      if (b.filter) p.query = null;
       p.revision++;
       p.updatedAt = now();
       audit('testPlan.update', key, { id: p.id });

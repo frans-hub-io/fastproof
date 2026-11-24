@@ -49,6 +49,8 @@ pub struct ExportQuery {
     pub status: Option<String>,
     pub field: Option<String>,
     pub tag: Option<String>,
+    /// An FPQL query (exclusive with the filter parameters).
+    pub query: Option<String>,
 }
 
 fn format_of(raw: Option<&str>) -> ApiResult<&'static str> {
@@ -82,7 +84,13 @@ pub async fn export_cases(
     let permit = s.guards.heavy(&auth).await?;
     let src = s
         .store
-        .export_source(p.id, &q.filter, MAX_EXPORT_CASES)
+        .export_source_query(
+            p.id,
+            &q.filter,
+            q.query.as_deref(),
+            &auth.principal.name,
+            MAX_EXPORT_CASES,
+        )
         .await
         .map_err(tm_error)?;
     s.audit(
@@ -90,7 +98,7 @@ pub async fn export_cases(
         "export.create",
         Some(&p.key),
         serde_json::json!({"format": format, "cases": src.numbers.len(),
-        "filter": q.filter}),
+        "filter": q.filter, "query": q.query}),
     )
     .await;
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<bytes::Bytes, std::io::Error>>(8);
@@ -162,6 +170,9 @@ pub struct CaseExportRequest {
     pub format: String,
     #[serde(default)]
     pub filter: Option<CaseFilter>,
+    /// An FPQL query selecting the cases (exclusive with `filter`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
     /// Put the attachments of the cases into the zip.
     #[serde(default)]
     pub attachments: bool,
@@ -176,7 +187,8 @@ fn token_hash(t: &str) -> String {
 }
 
 #[utoipa::path(post, path = "/api/v1/projects/{key}/cases/exports", tag = "imports", operation_id = "create_case_export",
-    description = "Starts a zip export job. The answer's `downloadUrl` (shown only here) is a one-time link for the caller, \
+    description = "Starts a zip export job of the cases of `filter` or of an FPQL `query` (a query is a new format: \
+        while an upgrade is in progress it is 409 `upgrade_in_progress`). The answer's `downloadUrl` (shown only here) is a one-time link for the caller, \
         valid for 24 hours once the job is `done`. A caller has at most 2 and a project at most 4 exports queued or running \
         (else 409 `export_busy`).",
     request_body = CaseExportRequest,
@@ -194,9 +206,35 @@ pub async fn create_case_export(
     if body.format != "zip" {
         return Err(ApiError::bad_request("format must be zip"));
     }
+    let query = body
+        .query
+        .as_deref()
+        .map(str::trim)
+        .filter(|q| !q.is_empty())
+        .map(str::to_string);
+    if query.is_some() && body.filter.is_some() {
+        return Err(ApiError::bad_request("give either a filter or a query"));
+    }
     let filter = body.filter.unwrap_or_default();
+    if query.is_some() {
+        let mut conn = s
+            .store
+            .pool()
+            .acquire()
+            .await
+            .map_err(anyhow::Error::from)?;
+        fastproof_store::tm::gate::require(&mut conn, &s.cfg.tm, "export.query")
+            .await
+            .map_err(tm_error)?;
+    }
     s.store
-        .export_source(p.id, &filter, MAX_EXPORT_CASES)
+        .export_source_query(
+            p.id,
+            &filter,
+            query.as_deref(),
+            &auth.principal.name,
+            MAX_EXPORT_CASES,
+        )
         .await
         .map_err(tm_error)?;
     let token: String = {
@@ -206,6 +244,7 @@ pub async fn create_case_export(
     };
     let params = ExportParams {
         filter: filter.clone(),
+        query: query.clone(),
         attachments: body.attachments,
         token_sha256: token_hash(&token),
         blob: None,
@@ -234,7 +273,7 @@ pub async fn create_case_export(
         "export.create",
         Some(&p.key),
         serde_json::json!({"jobId": id, "format": "zip",
-        "attachments": body.attachments, "filter": filter}),
+        "attachments": body.attachments, "filter": filter, "query": query}),
     )
     .await;
     tm_jobs::kick(&s);

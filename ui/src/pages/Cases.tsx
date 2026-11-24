@@ -6,6 +6,7 @@ import { IconChevronDown, IconFileExport, IconFileImport, IconFolders, IconForms
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
 import { errorMessage } from '../api/client';
+import { invalidQueryDetails } from '../api/queries';
 import { flatItems, useProject } from '../api/hooks';
 import { createCaseExport, downloadAuthed, exportCasesUrl, useBulkCases, useCaseFields, useCaseFolders, useCases, useCreateCase, useTmJob } from '../api/tm';
 import { PageHeader } from '../components/PageHeader';
@@ -84,6 +85,7 @@ export default function CasesPage() {
   const [creating, setCreating] = useState(false);
   const previewed = Number(sp.get('preview')) || null;
 
+  const queryMode = state.query !== null;
   const query = useMemo(() => {
     const q = toCaseQuery(state);
     if (mode !== 'folder' && node) q.field = [...(q.field ?? []), ...nodeFields(mode, node)];
@@ -95,6 +97,7 @@ export default function CasesPage() {
   }, [state, mode, node]);
   const cases = useCases(key, query, tab === 'cases');
   const items = flatItems(cases.data);
+  const invalid = queryMode ? invalidQueryDetails(cases.error) : null;
 
   const update = useCallback(
     (s: Partial<CaseListState>, extra?: Record<string, string | null>) => {
@@ -131,7 +134,15 @@ export default function CasesPage() {
   useListKeys({ count: items.length, index: cursor, setIndex: setCursor, onOpen: open, enabled: tab === 'cases' });
 
   const preview = (n: number) => {
-    if (wide) setSp((prev) => { const next = new URLSearchParams(prev); next.set('preview', String(n)); return next; }, { replace: true });
+    if (wide)
+      setSp(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          next.set('preview', String(n));
+          return next;
+        },
+        { replace: true },
+      );
     else void navigate(caseLink(key, n));
   };
 
@@ -175,14 +186,23 @@ export default function CasesPage() {
   const download = (format: 'csv' | 'ndjson') =>
     downloadAuthed(exportCasesUrl(key, format, query), `cases-${key}.${format}`).catch((e: unknown) => notifications.show({ color: 'red', title: 'Export failed', message: errorMessage(e) }));
   const exportZip = () =>
-    createCaseExport(key, toCaseFilter(state))
+    createCaseExport(key, queryMode ? (query.query ? { query: query.query } : { filter: {} }) : { filter: toCaseFilter(state) })
       .then((job) => {
         if (job.downloadUrl) setZipJob({ id: job.id, url: job.downloadUrl });
         notifications.show({ color: 'blue', title: 'Export started', message: 'The zip downloads when it is ready.' });
       })
       .catch((e: unknown) => notifications.show({ color: 'red', title: 'Export failed', message: errorMessage(e) }));
 
-  const setTab = (t: string | null) => setSp((prev) => { const next = new URLSearchParams(prev); if (t === 'unlinked') next.set('tab', 'unlinked'); else next.delete('tab'); return next; }, { replace: true });
+  const setTab = (t: string | null) =>
+    setSp(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        if (t === 'unlinked') next.set('tab', 'unlinked');
+        else next.delete('tab');
+        return next;
+      },
+      { replace: true },
+    );
 
   const tree = <CaseTree project={key} selection={selection} onSelect={onSelectTree} onDropCases={canWrite ? dropCases : undefined} />;
   const total = cases.data?.pages[0] ? `${String(items.length)}${cases.hasNextPage ? '+' : ''}` : '…';
@@ -239,7 +259,11 @@ export default function CasesPage() {
         </Tabs.List>
         <Tabs.Panel value="cases">
           <div className="fp-tm-cases" data-wide={wide}>
-            {!mobile && <aside className="fp-tm-cases-tree" aria-label="Case tree">{tree}</aside>}
+            {!mobile && (
+              <aside className="fp-tm-cases-tree" aria-label="Case tree">
+                {tree}
+              </aside>
+            )}
             <section className="fp-tm-cases-list" aria-label="Case list">
               <Stack gap="sm">
                 {mobile && (
@@ -247,7 +271,7 @@ export default function CasesPage() {
                     {selection.id ? (mode === 'folder' ? folderPathLabel(folders.data, selection.id) : selection.id.split('\u001f').join(' / ')) : 'All cases'}
                   </Button>
                 )}
-                <CaseFilters state={state} fields={fields.data ?? []} onChange={(s) => update(s)} />
+                <CaseFilters project={key} state={state} fields={fields.data ?? []} onChange={(s) => update(s)} queryError={invalid} />
                 {selected.size > 0 && canWrite && <BulkBar project={key} numbers={[...selected]} fields={fields.data ?? []} archived={state.archived} onDone={() => setSelected(new Set())} />}
                 <Group gap="sm" justify="space-between" wrap="nowrap">
                   {canWrite ? (
@@ -268,31 +292,38 @@ export default function CasesPage() {
                     j / k move, Enter opens; drag cases onto a folder or use Move….
                   </Text>
                 </Group>
-                <QueryState query={cases}>
-                  {() =>
-                    items.length === 0 ? (
-                      <EmptyState title={state.archived ? 'The trash is empty' : 'No cases match'} description={state.archived ? 'Archived cases appear here.' : 'Change the filters or the folder, or create a case.'} />
-                    ) : (
-                      <CaseList
-                        project={key}
-                        items={items}
-                        fields={fields.data ?? []}
-                        folders={folders.data}
-                        selected={selected}
-                        onToggle={toggle}
-                        previewed={previewed}
-                        onPreview={preview}
-                        cursor={cursor}
-                        setCursor={setCursor}
-                        onEnd={() => {
-                          if (cases.hasNextPage && !cases.isFetchingNextPage) void cases.fetchNextPage();
-                        }}
-                        mobile={mobile}
-                        draggable={canWrite && !mobile}
-                      />
-                    )
-                  }
-                </QueryState>
+                {invalid ? (
+                  <EmptyState title="The query is not valid" description="Fix it in the query bar, or switch back to the filters." />
+                ) : (
+                  <QueryState query={cases}>
+                    {() =>
+                      items.length === 0 ? (
+                        <EmptyState
+                          title={state.archived ? 'The trash is empty' : 'No cases match'}
+                          description={state.archived ? 'Archived cases appear here.' : 'Change the filters or the folder, or create a case.'}
+                        />
+                      ) : (
+                        <CaseList
+                          project={key}
+                          items={items}
+                          fields={fields.data ?? []}
+                          folders={folders.data}
+                          selected={selected}
+                          onToggle={toggle}
+                          previewed={previewed}
+                          onPreview={preview}
+                          cursor={cursor}
+                          setCursor={setCursor}
+                          onEnd={() => {
+                            if (cases.hasNextPage && !cases.isFetchingNextPage) void cases.fetchNextPage();
+                          }}
+                          mobile={mobile}
+                          draggable={canWrite && !mobile}
+                        />
+                      )
+                    }
+                  </QueryState>
+                )}
               </Stack>
             </section>
             {wide && (

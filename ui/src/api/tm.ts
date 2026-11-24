@@ -205,6 +205,8 @@ function invalidateCases(qc: QueryClient, key: string): void {
 // Cases
 
 export interface CaseQuery {
+  /** An FPQL query; when set, `q`, `status`, `automation`, `field`, `tag`, `staleDays` and `aiUnreviewed` are not sent. */
+  query?: string;
   folder?: string;
   recursive?: boolean;
   q?: string;
@@ -911,8 +913,8 @@ export function exportCasesUrl(key: string, format: 'csv' | 'ndjson', q: CaseQue
   return casesUrl(key, q, { format }, '/export');
 }
 
-export function createCaseExport(key: string, filter: CaseFilter): Promise<TmJob> {
-  return request<TmJob>(`${projectPath(key)}/cases/exports`, { method: 'POST', json: { format: 'zip', filter, attachments: true } });
+export function createCaseExport(key: string, scope: { filter: CaseFilter } | { query: string }): Promise<TmJob> {
+  return request<TmJob>(`${projectPath(key)}/cases/exports`, { method: 'POST', json: { format: 'zip', ...scope, attachments: true } });
 }
 
 export function useTmJob(key: string, id: string | null) {

@@ -16,6 +16,8 @@ export interface CaseListState {
   staleDays: number | null;
   aiDraft: boolean;
   archived: boolean;
+  /** The FPQL query; `null` means the chips mode, any string (even empty) the query mode. */
+  query: string | null;
 }
 
 export function readListState(sp: URLSearchParams): CaseListState {
@@ -32,6 +34,7 @@ export function readListState(sp: URLSearchParams): CaseListState {
     staleDays: Number.isFinite(stale) && stale > 0 ? Math.floor(stale) : null,
     aiDraft: sp.get('aiUnreviewed') === 'true',
     archived: sp.get('archived') === 'true',
+    query: sp.has('query') ? (sp.get('query') ?? '') : null,
   };
 }
 
@@ -54,10 +57,17 @@ export function writeListState(prev: URLSearchParams, s: Partial<CaseListState>)
   if ('staleDays' in s) set('staleDays', s.staleDays ? String(s.staleDays) : null);
   if ('aiDraft' in s) set('aiUnreviewed', s.aiDraft ? 'true' : null);
   if ('archived' in s) set('archived', s.archived ? 'true' : null);
+  if ('query' in s) {
+    if (s.query === null || s.query === undefined) next.delete('query');
+    else next.set('query', s.query);
+  }
   return next;
 }
 
 export function toCaseQuery(s: CaseListState): CaseQuery {
+  if (s.query !== null) {
+    return { query: s.query.trim() ? s.query : undefined, folder: s.folder ?? undefined, recursive: s.folder ? s.recursive : undefined, archived: s.archived || undefined };
+  }
   return {
     folder: s.folder ?? undefined,
     recursive: s.folder ? s.recursive : undefined,

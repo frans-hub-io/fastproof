@@ -312,7 +312,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description One action on cases named by number or matched by a filter (at most `maxBulk`). `move` takes a folder id or null, `setStatus` a status, `setField` `{key, value}`, `addTags`/`removeTags` a list. Each changed case gets one version with `source = bulk`; the others are listed in `skipped` with a code. */
+        /** @description One action on cases named by number, matched by a filter or by an FPQL `query` (exactly one of them; at most `maxBulk`). `move` takes a folder id or null, `setStatus` a status, `setField` `{key, value}`, `addTags`/`removeTags` a list. Each changed case gets one version with `source = bulk`; the others are listed in `skipped` with a code. */
         post: operations["bulk_cases"];
         delete?: never;
         options?: never;
@@ -346,7 +346,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description Starts a zip export job. The answer's `downloadUrl` (shown only here) is a one-time link for the caller, valid for 24 hours once the job is `done`. A caller has at most 2 and a project at most 4 exports queued or running (else 409 `export_busy`). */
+        /** @description Starts a zip export job of the cases of `filter` or of an FPQL `query` (a query is a new format: while an upgrade is in progress it is 409 `upgrade_in_progress`). The answer's `downloadUrl` (shown only here) is a one-time link for the caller, valid for 24 hours once the job is `done`. A caller has at most 2 and a project at most 4 exports queued or running (else 409 `export_busy`). */
         post: operations["create_case_export"];
         delete?: never;
         options?: never;
@@ -1494,6 +1494,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{key}/query/schema": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description What FPQL offers for an entity: attributes with their operators and values, functions, the project's fields and the keywords (for completion). `entity=requirements` answers 400 until requirement queries exist. */
+        get: operations["query_schema"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/query/validate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Checks a query: 200 with `ok: true`, the normalized text and the number of matching cases (not archived unless the query names `archived`; at most 10 000, then `countCapped`), or 200 with `ok: false` and the `error` (position and length in UTF-16 code units). The count runs with a 5 s statement timeout. */
+        post: operations["validate_query"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{key}/results/{id}": {
         parameters: {
             query?: never;
@@ -1758,6 +1792,42 @@ export interface paths {
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/saved-queries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description The caller's saved queries and the shared ones of an entity, by position. */
+        get: operations["list_saved_queries"];
+        put?: never;
+        /** @description Saves a query of the caller (checked like a query that runs). `shared: true` needs `cases:write`. At most 100 per owner and entity and 200 shared ones per project and entity (409 `limit_reached`); a name the caller already uses is 409 `saved_query_name_taken`. */
+        post: operations["create_saved_query"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/saved-queries/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** @description Deletes a saved query: the caller's own, or a shared one with `cases:write`. Another user's personal query is 404. */
+        delete: operations["delete_saved_query"];
+        options?: never;
+        head?: never;
+        /** @description Changes a saved query: the caller's own, or a shared one with `cases:write` (sharing and unsharing: the owner with `cases:write`). Another user's personal query is 404. */
+        patch: operations["update_saved_query"];
         trace?: never;
     };
     "/api/v1/projects/{key}/search/logs": {
@@ -2503,6 +2573,8 @@ export interface components {
             filter?: components["schemas"]["CaseFilter"] | null;
             /** @description `zip` (the default and only value): `cases.ndjson`, `cases.csv` and `attachments/`. */
             format?: string;
+            /** @description An FPQL query selecting the cases (exclusive with `filter`). */
+            query?: string | null;
         };
         /** @description A case field definition. */
         CaseFieldDef: {
@@ -8515,6 +8587,12 @@ export interface operations {
                 aiUnreviewed?: boolean;
                 /** @description `true` lists the archived cases (the trash). */
                 archived?: boolean;
+                /**
+                 * @description An FPQL query (at most 4096 bytes), ANDed with the other parameters; without
+                 *     `archived=true` archived cases stay out unless the query names `archived`. An invalid
+                 *     query is 400 `invalid_query` with `details: QueryError`.
+                 */
+                query?: string;
                 /** @description `number` (default), `-number` or `updated` (most recent first). */
                 sort?: string;
                 before?: string;
@@ -8729,6 +8807,8 @@ export interface operations {
                 status?: string;
                 field?: string;
                 tag?: string;
+                /** @description An FPQL query (exclusive with the filter parameters). */
+                query?: string;
             };
             header?: never;
             path: {
@@ -13627,6 +13707,111 @@ export interface operations {
             };
         };
     };
+    query_schema: {
+        parameters: {
+            query?: {
+                /** @description `cases` (default) or `requirements`. */
+                entity?: string;
+            };
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QuerySchema"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    validate_query: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["QueryValidate"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QueryValidation"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     results_detail: {
         parameters: {
             query?: never;
@@ -14642,6 +14827,207 @@ export interface operations {
                 };
             };
             /** @description `manual_run_closed`, `limit_reached` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    list_saved_queries: {
+        parameters: {
+            query?: {
+                /** @description `cases` (default) or `requirements`. */
+                entity?: string;
+            };
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SavedQueryList"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    create_saved_query: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SavedQueryWrite"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SavedQuery"];
+                };
+            };
+            /** @description `invalid_query` */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    delete_saved_query: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    update_saved_query: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SavedQueryPatch"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SavedQuery"];
+                };
+            };
+            /** @description `invalid_query` */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             409: {
                 headers: {
                     [name: string]: unknown;

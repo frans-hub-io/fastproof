@@ -831,7 +831,13 @@ async fn export(s: &AppState, job: &ClaimedJob, owner: &str) -> anyhow::Result<(
     let params: ExportParams = serde_json::from_value(job.params.clone())?;
     let src = s
         .store
-        .export_source(job.project_id, &params.filter, MAX_EXPORT_CASES)
+        .export_source_query(
+            job.project_id,
+            &params.filter,
+            params.query.as_deref(),
+            job.created_by.as_deref().unwrap_or_default(),
+            MAX_EXPORT_CASES,
+        )
         .await?;
     let dir = TempFile(spool(s)?);
     std::fs::create_dir_all(dir.0.join("attachments"))?;

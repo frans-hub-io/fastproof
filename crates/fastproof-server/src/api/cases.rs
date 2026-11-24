@@ -134,6 +134,10 @@ pub struct CaseListQuery {
     pub ai_unreviewed: Option<bool>,
     /// `true` lists the archived cases (the trash).
     pub archived: Option<bool>,
+    /// An FPQL query (at most 4096 bytes), ANDed with the other parameters; without
+    /// `archived=true` archived cases stay out unless the query names `archived`. An invalid
+    /// query is 400 `invalid_query` with `details: QueryError`.
+    pub query: Option<String>,
     /// `number` (default), `-number` or `updated` (most recent first).
     pub sort: Option<String>,
     pub before: Option<String>,
@@ -156,6 +160,7 @@ pub fn case_query(raw: Option<&str>) -> ApiResult<CaseQuery> {
             }
             "recursive" => q.filter.recursive = Some(parse_bool(&k, &v)?),
             "q" => q.filter.q = Some(v),
+            "query" => q.query = Some(v),
             "status" => {
                 for s in v.split(',').map(str::trim).filter(|s| !s.is_empty()) {
                     statuses.push(CaseStatus::parse(s).ok_or_else(|| {
@@ -225,7 +230,8 @@ pub async fn list_cases(
 ) -> ApiResult<Json<CaseList>> {
     let p = s.project_for(&auth, &key, &s.perms.cases_read).await?;
     crate::tm_people::note(&s, &auth, &headers);
-    let q = case_query(raw.as_deref())?;
+    let mut q = case_query(raw.as_deref())?;
+    q.me = auth.principal.name.clone();
     Ok(Json(s.store.list_cases(p.id, &q).await.map_err(tm_error)?))
 }
 
@@ -526,8 +532,8 @@ pub async fn restore_case(
 }
 
 #[utoipa::path(post, path = "/api/v1/projects/{key}/cases/bulk", tag = "cases", operation_id = "bulk_cases",
-    description = "One action on cases named by number or matched by a filter (at most `maxBulk`). `move` takes a folder \
-        id or null, `setStatus` a status, `setField` `{key, value}`, `addTags`/`removeTags` a list. Each changed case gets one \
+    description = "One action on cases named by number, matched by a filter or by an FPQL `query` (exactly one of them; \
+        at most `maxBulk`). `move` takes a folder id or null, `setStatus` a status, `setField` `{key, value}`, `addTags`/`removeTags` a list. Each changed case gets one \
         version with `source = bulk`; the others are listed in `skipped` with a code.",
     request_body = CaseBulk,
     params(("key" = String, Path)),
@@ -552,7 +558,7 @@ pub async fn bulk_cases(
         "case.bulk",
         Some(&p.key),
         serde_json::json!({"action": body.action, "updated": r.updated, "skipped": r.skipped.len(),
-            "byFilter": body.filter.is_some()}),
+            "byFilter": body.filter.is_some(), "query": body.query}),
     )
     .await;
     Ok(Json(r))

@@ -281,6 +281,89 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+  reporters-jvm:
+    name: JVM reporters (JDK ${{ matrix.java }}, JUnit ${{ matrix.junit }}) against the real server
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    needs: ui
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - java: "17"
+            junit: 5.14.4
+          - java: "25"
+            junit: 6.1.0
+          - java: "25"
+            junit: 5.10.5
+    services:
+      postgres:
+        image: docker.io/library/postgres:18.7-trixie
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      FASTPROOF_TEST_SERVER_BIN: ${{ github.workspace }}/fastproof/target/debug/fastproof
+      FASTPROOF_TEST_DATABASE_URL: postgres://postgres@localhost:5432/postgres
+      FASTPROOF_TEST_JUNIT_VERSION: ${{ matrix.junit }}
+      MAVEN_VERSION: 3.9.16
+      MAVEN_SHA512: 831a8591fe20c8243b1dbe7d71e3244f31d1665b0804b2e825e38cbbe5ce0cafb8338851f90780735568773e0a6cd07bbec107cda0b896b008b861075358b6f6
+    defaults:
+      run:
+        working-directory: fastproof
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: fastproof
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ env.PLATFORM_REPOSITORY }}
+          ref: ${{ env.PLATFORM_REF }}
+          ssh-key: ${{ secrets.PLATFORM_DEPLOY_KEY }}
+          path: franshub-platform
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: ui-dist
+          path: fastproof/ui/dist
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+        with:
+          workspaces: fastproof
+          key: reporters-jvm
+      - name: build the server
+        run: cargo build -p fastproof-server --bin fastproof --locked
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: "3.13"
+      - name: install Maven
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/maven.tar.gz" "https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/${MAVEN_VERSION}/apache-maven-${MAVEN_VERSION}-bin.tar.gz"
+          echo "${MAVEN_SHA512}  $RUNNER_TEMP/maven.tar.gz" | sha512sum -c -
+          tar -xzf "$RUNNER_TEMP/maven.tar.gz" -C "$RUNNER_TEMP"
+          echo "FASTPROOF_TEST_MVN=$RUNNER_TEMP/apache-maven-${MAVEN_VERSION}/bin/mvn" >> "$GITHUB_ENV"
+      - name: JVM reporters, build and unit tests
+        working-directory: fastproof/reporters/java
+        run: '"$FASTPROOF_TEST_MVN" -B -ntp install'
+      - name: install pytest
+        run: pip install pytest==9.0.2
+      - name: JVM integration tests against the real server
+        run: python -m pytest -p no:fastproof reporters/integration/test_java.py -v
+
   reporters-dotnet:
     name: .NET reporters (NUnit, xUnit v3) against the real server
     runs-on: ubuntu-24.04

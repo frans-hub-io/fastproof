@@ -74,7 +74,7 @@ Response `202 {accepted, duplicates, rejected: [{index, message}]}`. Each line i
 (`schemas/fastproof-report-v1.json`), **one attempt** of one test.
 
 - **Client id** (`id`): unique per attempt and per run, stable across HTTP retries and spool flushes:
-  `pw-<runId>-<playwright test id>-<retry>`, `py-<runId>-<sha1(nodeid)[:16]>-<attempt>`; Vitest, Jest and Cypress use `vt-`, `jt-` and `cy-<runId>-<sha1(test key)[:16]>-<attempt>`; the Allure enhancers use `aj-<runId>-<allure result uuid>` (JavaScript), `jv-…` (Java) and `ap-<runId>-<sha1(nodeid)[:16]>-<attempt>` (Python); `runId` is 12 random
+  `pw-<runId>-<playwright test id>-<retry>`, `py-<runId>-<sha1(nodeid)[:16]>-<attempt>`; Vitest, Jest and Cypress use `vt-`, `jt-` and `cy-<runId>-<sha1(test key)[:16]>-<attempt>`; the JVM reporters use `ju-` (JUnit 5) and `tn-` (TestNG) with the same form; the Allure enhancers use `aj-<runId>-<allure result uuid>` (JavaScript), `jv-…` (Java) and `ap-<runId>-<sha1(nodeid)[:16]>-<attempt>` (Python); `runId` is 12 random
   hex characters per run. The .NET reporters use `dn-<runId>-<sha1(full name and parameters)[:16]>-<attempt>`. Sending the same id again is a no-op (`duplicates`), so every retry is safe. A
   random run id keeps a re-run CI job (same external id) from being dropped as duplicates.
 - **Attempts**: every attempt is its own result with the same identity (`fullName`, `testCaseId`, parameters)
@@ -231,8 +231,8 @@ flushing tool supports it.
   hash, replace `blob:` ids, post results in batches of 200 (idempotent by client id), update `progress.json`
   after each batch, finish the launch if `finish` is set, delete the session. Interrupted sends resume.
 - Who sends: the next run of either reporter (in the background, same project), the end of the same run when
-  the server is back, `npx fastproof-playwright flush [--spool DIR]` or `python -m pytest_fastproof flush
-  [--spool DIR]`. Both read the same format, so either tool can send any session. The `flush` commands need
+  the server is back, `npx fastproof-playwright flush [--spool DIR]`, `python -m pytest_fastproof flush
+  [--spool DIR]` or `java -jar fastproof-core.jar flush [--spool DIR]`. All read the same format, so any tool can send any session. The `flush` commands need
   `FASTPROOF_URL` and a token; each session goes to the project in its `meta.json`, and `FASTPROOF_PROJECT`
   limits a flush to one project.
 
@@ -275,6 +275,9 @@ Allure format `{"version": "1.0", "tests": [{"id": "...", "selector": "..."}]}` 
   `file:line[:column]`; ids from annotations `fastproof.id`, `allure_id`, `as_id`. `testPlanGrep()` builds a
   `grep` for `playwright.config` (title selectors); the `fastproofTestPlan` auto fixture of
   `@franshub/fastproof-playwright/fixture` skips tests that are not in the plan (all forms, ids included).
+- JVM selectors (JUnit 5 and TestNG): `pkg.Class#method` or `pkg.Class.method`, with or without `(parameter,types)`,
+  nested classes by binary (`Outer$Inner`) or dotted name; ids from tags or groups `fastproof.id:ID` (or
+  `allure.id:ID`). JUnit uses a `PostDiscoveryFilter`, TestNG an `IMethodInterceptor`; the filter fails open.
 - pytest selectors: node id with or without parameters, allure-pytest full name (`package.module.Class#test`);
   ids from `@pytest.mark.fastproof_id("…")` or `allure_label(..., label_type="as_id")`. Tests not in the plan
   are deselected (`pytest_deselected`). An unreadable plan is ignored with a warning (fail-open).

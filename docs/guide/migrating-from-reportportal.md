@@ -182,6 +182,10 @@ How it behaves:
 - **Connection.** HTTPS is required (plain http only to localhost or with `--rp-allow-http`), redirects are not
   followed so the key goes only to the URL you gave, requests are retried with a growing pause on 429 and 5xx,
   and the API key never appears in the state file or the output.
+- **Bounds.** A launch with more than 1 000 000 items (earlier attempts included) or more than 512 MiB of item
+  data is reported as failed and not imported; so is one whose logs exceed 256 MiB for 50 items in a row (import
+  it with `--logs warn` or `error`). A log line longer than 128 KiB is cut. Text that comes from ReportPortal is
+  printed with control characters escaped.
 - **Not copied.** Dashboards, widgets, filters, users, ML indexes, action history, Quality Gates, notification
   and BTS settings, the ReportPortal test case management, launch-level logs, nested steps of retried
   attempts, and data that the ReportPortal retention removed.

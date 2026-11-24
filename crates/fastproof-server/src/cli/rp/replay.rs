@@ -56,6 +56,32 @@ impl Counts {
     }
 }
 
+/// Warnings kept per launch; the rest are counted.
+const MAX_WARNINGS: usize = 100;
+/// A log message is cut to this many bytes so that one entry fits a request of the server
+/// even when every character needs escaping in JSON.
+pub const MAX_MESSAGE_BYTES: usize = 128 * 1024;
+/// A batch of log entries is sent once its JSON reaches this size (the server takes 1 MiB).
+const MAX_BATCH_BYTES: usize = 400 * 1024;
+/// Downloaded attachments kept for repeated references, in bytes.
+pub const FILE_CACHE_BYTES: usize = 16 << 20;
+
+impl Counts {
+    fn warn(&mut self, w: String) {
+        if self.warnings.len() < MAX_WARNINGS {
+            self.warnings.push(w);
+        } else if self.warnings.len() == MAX_WARNINGS {
+            self.warnings
+                .push("more warnings of this launch are not shown".into());
+        }
+    }
+}
+
+/// A uuid that can name a launch or an item in a URL path of the server.
+pub fn usable_uuid(u: &str) -> bool {
+    ids::valid_uuid(u) && !u.bytes().all(|b| b == b'.')
+}
+
 fn rank(level: &str) -> u8 {
     match level {
         "trace" => 0,
@@ -439,6 +465,65 @@ pub fn safe_name(raw: &str, fallback: &str) -> String {
     }
 }
 
+/// The `type/subtype` of a content type when it is well formed, else `application/octet-stream`;
+/// the value goes into a header of the multipart body.
+pub fn clean_content_type(raw: &str) -> String {
+    let t = raw.split(';').next().unwrap_or("").trim();
+    let token = |p: &str| {
+        !p.is_empty()
+            && p.len() <= 127
+            && p.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"!#$&^_.+-".contains(&b))
+    };
+    match t.split_once('/') {
+        Some((a, b)) if token(a) && token(b) => t.to_ascii_lowercase(),
+        _ => "application/octet-stream".into(),
+    }
+}
+
+/// Downloaded attachments by ReportPortal id within a byte budget, so repeated references are
+/// fetched once without keeping large files in memory. `None` remembers a file not copied.
+#[derive(Default)]
+pub struct FileCache {
+    files: HashMap<String, Option<(String, String, Bytes)>>,
+    bytes: usize,
+}
+
+impl FileCache {
+    pub fn get(&self, id: &str) -> Option<&Option<(String, String, Bytes)>> {
+        self.files.get(id)
+    }
+
+    pub fn put(&mut self, id: &str, f: Option<(String, String, Bytes)>) {
+        let size = f.as_ref().map_or(0, |x| x.2.len());
+        if size > FILE_CACHE_BYTES {
+            return;
+        }
+        if self.bytes + size > FILE_CACHE_BYTES || self.files.len() >= 1024 {
+            self.files.clear();
+            self.bytes = 0;
+        }
+        self.bytes += size;
+        self.files.insert(id.to_string(), f);
+    }
+
+    pub fn bytes(&self) -> usize {
+        self.bytes
+    }
+}
+
+/// The message cut to `MAX_MESSAGE_BYTES` on a character boundary.
+fn cut_message(m: &str) -> String {
+    if m.len() <= MAX_MESSAGE_BYTES {
+        return m.to_string();
+    }
+    let mut end = MAX_MESSAGE_BYTES;
+    while !m.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{} [cut by the import]", &m[..end])
+}
+
 fn extension(content_type: &str) -> &'static str {
     match content_type.split(';').next().unwrap_or("").trim() {
         "image/png" => ".png",
@@ -510,8 +595,17 @@ pub async fn replay_launch(
     l: &RpLaunch,
     opts: &Options,
 ) -> anyhow::Result<Counts> {
+    if !usable_uuid(&l.uuid) {
+        bail!("the launch uuid is not usable (at most 64 of A-Z a-z 0-9 . _ -)");
+    }
     let items = reader.items(l.id).await?;
     let (flat, evs) = plan(items);
+    if let Some(f) = flat.iter().find(|f| !usable_uuid(&f.item.uuid)) {
+        bail!(
+            "item {} has an unusable uuid (at most 64 of A-Z a-z 0-9 . _ -)",
+            f.item.id
+        );
+    }
     let mut feed = LogFeed::new(reader, &flat, &evs, opts.min_level);
     let mut c = Counts::default();
     let end = l.end_ms.unwrap_or(l.start_ms);
@@ -532,7 +626,7 @@ pub async fn replay_launch(
     .await
     .context("starting the launch")?;
 
-    let mut files_seen: HashMap<String, Option<(String, String, Bytes)>> = HashMap::new();
+    let mut files_seen = FileCache::default();
     for e in &evs {
         match *e {
             Ev::Start(n) => {
@@ -587,7 +681,7 @@ pub async fn replay_launch(
     .await
     .context("finishing the launch")?;
     if !w.wait_finished(&l.uuid, Duration::from_secs(180)).await {
-        c.warnings.push(format!(
+        c.warn(format!(
             "launch {}: FastProof was still settling it after 180 s; it finishes on its own",
             l.uuid
         ));
@@ -614,14 +708,14 @@ async fn send_logs(
     f: &Flat,
     logs: Vec<RpLog>,
     opts: &Options,
-    files_seen: &mut HashMap<String, Option<(String, String, Bytes)>>,
+    files_seen: &mut FileCache,
     c: &mut Counts,
 ) -> anyhow::Result<()> {
     let mut text: Vec<Value> = Vec::new();
     let mut text_bytes = 0usize;
     for log in logs {
         let mut entry = json!({"launchUuid": l.uuid, "itemUuid": f.item.uuid,
-            "time": log.time_ms.max(0), "message": log.message,
+            "time": log.time_ms.max(0), "message": cut_message(&log.message),
             "level": log.level.to_ascii_uppercase()});
         if let Some(u) = log.uuid.as_deref().filter(|u| ids::valid_uuid(u)) {
             entry["uuid"] = json!(u);
@@ -630,13 +724,15 @@ async fn send_logs(
         c.log_bytes += log.message.len() as u64;
         let file = match &log.file {
             Some(r) if wants_file(opts, f.failing) => {
-                if !files_seen.contains_key(&r.id) {
+                if files_seen.get(&r.id).is_none() {
                     let got = match reader.file(&r.id, opts.max_attachment).await {
                         Ok(Some(file)) => {
-                            let ct = file
-                                .content_type
-                                .or_else(|| Some(r.content_type.clone()).filter(|t| !t.is_empty()))
-                                .unwrap_or_else(|| "application/octet-stream".into());
+                            let ct = clean_content_type(
+                                file.content_type
+                                    .as_deref()
+                                    .filter(|t| !t.trim().is_empty())
+                                    .unwrap_or(&r.content_type),
+                            );
                             let name = safe_name(
                                 file.file_name.as_deref().unwrap_or_default(),
                                 &format!(
@@ -649,19 +745,18 @@ async fn send_logs(
                         }
                         Ok(None) => None,
                         Err(e) => {
-                            c.warnings.push(format!(
+                            c.warn(format!(
                                 "item {}: attachment {} not copied: {e:#}",
                                 f.item.uuid, r.id
                             ));
                             None
                         }
                     };
-                    if files_seen.len() > 8 {
-                        files_seen.clear();
-                    }
-                    files_seen.insert(r.id.clone(), got);
+                    files_seen.put(&r.id, got.clone());
+                    got
+                } else {
+                    files_seen.get(&r.id).cloned().flatten()
                 }
-                files_seen.get(&r.id).cloned().flatten()
             }
             _ => None,
         };
@@ -679,9 +774,13 @@ async fn send_logs(
                 if log.file.is_some() && wants_file(opts, f.failing) {
                     c.skipped_files += 1;
                 }
-                text_bytes += log.message.len() + 200;
+                let size = entry.to_string().len();
+                if text_bytes + size > MAX_BATCH_BYTES {
+                    flush_text(w, &mut text, &mut text_bytes).await?;
+                }
+                text_bytes += size;
                 text.push(entry);
-                if text.len() >= 500 || text_bytes >= 400 * 1024 {
+                if text.len() >= 500 {
                     flush_text(w, &mut text, &mut text_bytes).await?;
                 }
             }
@@ -814,5 +913,49 @@ mod tests {
         assert_eq!(safe_name("../../etc/pa ss\"wd.png", "x"), "pa_ss_wd.png");
         assert_eq!(safe_name("", "attachment-1.png"), "attachment-1.png");
         assert_eq!(safe_name("..", "f"), "f");
+    }
+
+    #[test]
+    fn content_types_from_reportportal_cannot_inject_part_headers() {
+        assert_eq!(clean_content_type("image/PNG; charset=x"), "image/png");
+        assert_eq!(clean_content_type(""), "application/octet-stream");
+        let evil = "image/png\r\nContent-Disposition: form-data; name=\"json_request_part\"";
+        let ct = clean_content_type(evil);
+        assert_eq!(ct, "application/octet-stream");
+        let (_, body) = multipart_body(
+            &json!([]),
+            &[("a.png".into(), ct, Bytes::from_static(b"x"))],
+        );
+        let text = String::from_utf8_lossy(&body);
+        assert_eq!(text.matches("json_request_part").count(), 1, "{text}");
+    }
+
+    #[test]
+    fn the_file_cache_keeps_to_its_budget() {
+        let f = |n: usize| Some(("a".to_string(), "b".to_string(), Bytes::from(vec![0u8; n])));
+        let mut c = FileCache::default();
+        c.put("big", f(FILE_CACHE_BYTES + 1));
+        assert!(c.get("big").is_none(), "a file over the budget is not kept");
+        c.put("a", f(FILE_CACHE_BYTES / 2));
+        c.put("b", f(FILE_CACHE_BYTES / 2));
+        assert!(c.get("a").is_some() && c.get("b").is_some());
+        c.put("c", f(10));
+        assert!(c.get("a").is_none() && c.get("c").is_some());
+        assert!(c.bytes() <= FILE_CACHE_BYTES);
+        c.put("gone", None);
+        assert!(matches!(c.get("gone"), Some(None)));
+    }
+
+    #[test]
+    fn messages_are_cut_and_dot_uuids_refused() {
+        let long = "\u{1}é".repeat(MAX_MESSAGE_BYTES);
+        let m = cut_message(&long);
+        assert!(m.len() <= MAX_MESSAGE_BYTES + 32);
+        assert!(json!({"message": m}).to_string().len() < 1 << 20);
+        assert_eq!(cut_message("short"), "short");
+        assert!(usable_uuid("5f3c-aa_b.1"));
+        for bad in ["..", ".", "", "a/b", "a%2fb", &"x".repeat(65)] {
+            assert!(!usable_uuid(bad), "{bad}");
+        }
     }
 }

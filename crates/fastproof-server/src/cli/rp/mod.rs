@@ -7,6 +7,7 @@ pub mod reader;
 pub mod replay;
 pub mod state;
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -151,6 +152,24 @@ pub fn parse_size(v: &str) -> anyhow::Result<u64> {
         .with_context(|| format!("--max-attachment: bad size {v:?}"))
 }
 
+/// A value from ReportPortal or a server made safe for a terminal or a CI log: control and
+/// bidirectional characters are escaped and the text is cut to `max` characters.
+pub fn shown(s: &str, max: usize) -> String {
+    let mut out = String::new();
+    for (n, c) in s.chars().enumerate() {
+        if n >= max {
+            out.push('…');
+            break;
+        }
+        if c.is_control() || matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}') {
+            out.extend(c.escape_default());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 fn read_secret(file: Option<&PathBuf>, var: &str) -> anyhow::Result<String> {
     Ok(match file {
         Some(f) => {
@@ -205,7 +224,11 @@ async fn import(a: ImportArgs) -> anyhow::Result<i32> {
         retry_delay,
     })?;
     let version = reader.version().await.context("ReportPortal /api/info")?;
-    eprintln!("ReportPortal {version}, project {}", a.rp_project);
+    eprintln!(
+        "ReportPortal {}, project {}",
+        shown(&version, 64),
+        shown(&a.rp_project, 200)
+    );
     let types = reader.defect_types().await;
 
     let (writer, state) = if a.dry_run {
@@ -228,21 +251,34 @@ async fn import(a: ImportArgs) -> anyhow::Result<i32> {
 
     let mut total = Counts::default();
     let (mut imported, mut already, mut running, mut failed) = (0u64, 0u64, 0u64, 0u64);
+    let mut seen_uuids = HashSet::new();
     for debug in [false, true] {
         if debug && !a.include_debug {
             break;
         }
-        let mut page = 1;
-        loop {
+        let mut seen_ids = HashSet::new();
+        for page in 1.. {
+            if page > reader::Limits::default().max_pages {
+                bail!("ReportPortal lists more than {page} pages of launches");
+            }
             let Some(batch) = reader
                 .launches_page(page, debug, since, a.launch_name.as_deref())
                 .await?
             else {
                 break;
             };
-            page += 1;
+            let fresh: Vec<RpLaunch> = batch
+                .into_iter()
+                .filter(|l| seen_ids.insert(l.id))
+                .collect();
+            if fresh.is_empty() {
+                break;
+            }
             let mut todo: Vec<RpLaunch> = Vec::new();
-            for l in batch {
+            for l in fresh {
+                if !seen_uuids.insert(l.uuid.clone()) {
+                    continue;
+                }
                 if since.is_some_and(|s| l.start_ms < s)
                     || a.launch_name.as_deref().is_some_and(|n| n != l.name)
                 {
@@ -284,16 +320,21 @@ async fn import(a: ImportArgs) -> anyhow::Result<i32> {
                         };
                         eprintln!(
                             "{verb} {} #{} ({}): {} items, {} log lines, {} files",
-                            l.name, l.number, l.uuid, c.items, c.logs, c.files
+                            shown(&l.name, 200),
+                            l.number,
+                            shown(&l.uuid, 64),
+                            c.items,
+                            c.logs,
+                            c.files
                         );
                         for w in &c.warnings {
-                            eprintln!("warning: {w}");
+                            eprintln!("warning: {}", shown(w, 1000));
                         }
                         if let Some(st) = &state {
                             st.lock().await.mark_done(
                                 &l.uuid,
                                 Done {
-                                    name: l.name.clone(),
+                                    name: l.name.chars().take(256).collect(),
                                     items: c.items,
                                     logs: c.logs,
                                     files: c.files,
@@ -306,7 +347,12 @@ async fn import(a: ImportArgs) -> anyhow::Result<i32> {
                     }
                     Err(e) => {
                         failed += 1;
-                        eprintln!("error: launch {} ({}): {e:#}", l.name, l.uuid);
+                        eprintln!(
+                            "error: launch {} ({}): {}",
+                            shown(&l.name, 200),
+                            shown(&l.uuid, 64),
+                            shown(&format!("{e:#}"), 2000)
+                        );
                     }
                 }
             }
@@ -363,5 +409,17 @@ mod tests {
         assert!(parse_size("0").is_err());
         assert!(parse_size("5 parsecs").is_err());
         assert!(parse_size("").is_err());
+    }
+
+    #[test]
+    fn shown_escapes_terminal_controls_and_cuts() {
+        assert_eq!(shown("nightly", 10), "nightly");
+        let s = shown("a\x1b]52;c;ZXZpbA==\x07b\nerror: fake\u{202e}x", 100);
+        assert!(
+            !s.chars().any(|c| c.is_control() || c == '\u{202e}'),
+            "{s:?}"
+        );
+        assert!(s.contains("\\u{1b}") && s.contains("\\n"), "{s:?}");
+        assert_eq!(shown("abcdef", 3), "abc…");
     }
 }

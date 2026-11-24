@@ -19,6 +19,68 @@ pub const PAGE_SIZE: usize = 300;
 const MAX_JSON_BYTES: usize = 64 * 1024 * 1024;
 /// Items whose logs one request asks for.
 pub const LOG_CHUNK: usize = 50;
+/// The body of an error answer is read up to this size.
+const MAX_ERROR_BYTES: usize = 64 * 1024;
+
+/// What one launch may bring from ReportPortal before its import is refused, so that a broken
+/// or hostile server cannot make the CLI read forever or exhaust its memory.
+#[derive(Clone, Copy, Debug)]
+pub struct Limits {
+    /// Items of a launch, earlier attempts included (the server's own default limit).
+    pub max_items: usize,
+    /// Bytes of the item pages of a launch.
+    pub max_item_bytes: usize,
+    /// Bytes of the log pages of one chunk of items.
+    pub max_log_bytes: usize,
+    /// Pages of one list.
+    pub max_pages: usize,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            max_items: 1_000_000,
+            max_item_bytes: 512 << 20,
+            max_log_bytes: 256 << 20,
+            max_pages: 100_000,
+        }
+    }
+}
+
+/// A failed ReportPortal request.
+#[derive(Debug)]
+pub enum RpError {
+    /// The answer is larger than the limit of the request.
+    TooLarge(usize),
+    /// ReportPortal answered with this status.
+    Status {
+        status: StatusCode,
+        path: String,
+        message: String,
+    },
+}
+
+impl std::fmt::Display for RpError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TooLarge(max) => write!(f, "the answer is larger than {max} bytes"),
+            Self::Status {
+                status,
+                path,
+                message,
+            } => write!(f, "ReportPortal answered {status} for {path}: {message}"),
+        }
+    }
+}
+
+impl std::error::Error for RpError {}
+
+/// A JSON page: the parsed answer, its size and a hash of its bytes.
+struct Page {
+    json: Value,
+    bytes: usize,
+    hash: u64,
+}
 
 /// Spaces requests out: at most `rate` per second over all tasks.
 pub struct Limiter {
@@ -62,6 +124,7 @@ pub struct RpReader {
     http: reqwest::Client,
     limiter: Limiter,
     retry_delay: Duration,
+    limits: Limits,
 }
 
 impl std::fmt::Debug for RpReader {
@@ -114,6 +177,7 @@ pub struct RpItem {
 
 #[derive(Clone, Debug)]
 pub struct RpLog {
+    pub id: Option<i64>,
     pub item_id: Option<i64>,
     pub uuid: Option<String>,
     pub time_ms: i64,
@@ -219,6 +283,7 @@ pub fn log_from(v: &Value) -> Option<RpLog> {
         _ => None,
     };
     Some(RpLog {
+        id: num(&v["id"]),
         item_id: num(&v["itemId"]).or_else(|| num(&v["item"])),
         uuid: text(&v["uuid"]),
         time_ms: rp_time::parse(&v["logTime"])
@@ -253,12 +318,20 @@ impl RpReader {
                 "--rp-url: put no credentials in the URL; the API key comes from RP_API_KEY or --rp-key-file"
             );
         }
+        if base.query().is_some() || base.fragment().is_some() {
+            bail!("--rp-url: expected the base URL of ReportPortal, without a query or fragment");
+        }
         if !base.path().ends_with('/') {
             let p = format!("{}/", base.path());
             base.set_path(&p);
         }
         if c.key.trim().is_empty() {
             bail!("the ReportPortal API key is required (RP_API_KEY or --rp-key-file)");
+        }
+        if !c.key.trim().bytes().all(|b| b.is_ascii_graphic()) {
+            bail!(
+                "the ReportPortal API key holds spaces or control characters; check the key file"
+            );
         }
         if c.project.trim().is_empty() {
             bail!("--rp-project is required");
@@ -283,7 +356,14 @@ impl RpReader {
             http: b.build()?,
             limiter: Limiter::new(c.rate),
             retry_delay: c.retry_delay,
+            limits: Limits::default(),
         })
+    }
+
+    /// The same reader with other limits.
+    pub fn with_limits(mut self, limits: Limits) -> Self {
+        self.limits = limits;
+        self
     }
 
     fn url(&self, path: &str) -> anyhow::Result<url::Url> {
@@ -307,13 +387,13 @@ impl RpReader {
             let wait = match sent {
                 Ok(r) if r.status().is_success() => {
                     let mut r = r;
-                    if r.content_length().is_some_and(|n| n as usize > max) {
-                        bail!("the answer is larger than {max} bytes");
+                    if r.content_length().is_some_and(|n| n > max as u64) {
+                        return Err(RpError::TooLarge(max).into());
                     }
                     let mut body = Vec::new();
                     while let Some(chunk) = r.chunk().await.context("reading the answer")? {
                         if body.len() + chunk.len() > max {
-                            bail!("the answer is larger than {max} bytes");
+                            return Err(RpError::TooLarge(max).into());
                         }
                         body.extend_from_slice(&chunk);
                     }
@@ -334,12 +414,17 @@ impl RpReader {
                         );
                     }
                     if !retryable(st) || attempt >= 5 {
-                        let body = r.text().await.unwrap_or_default();
-                        let msg = serde_json::from_str::<Value>(&body)
+                        let body = read_some(r, MAX_ERROR_BYTES).await;
+                        let msg = serde_json::from_slice::<Value>(&body)
                             .ok()
-                            .and_then(|v| v["message"].as_str().map(str::to_string))
+                            .and_then(|v| v["message"].as_str().map(|m| super::shown(m, 300)))
                             .unwrap_or_default();
-                        bail!("ReportPortal answered {st} for {}: {msg}", url.path());
+                        return Err(RpError::Status {
+                            status: st,
+                            path: url.path().to_string(),
+                            message: msg,
+                        }
+                        .into());
                     }
                     retry_after.unwrap_or_else(|| self.backoff(attempt))
                 }
@@ -359,9 +444,21 @@ impl RpReader {
         (self.retry_delay * 2u32.saturating_pow(attempt)).min(Duration::from_secs(30))
     }
 
-    async fn get_json(&self, path: &str) -> anyhow::Result<Value> {
+    async fn get_page(&self, path: &str) -> anyhow::Result<Page> {
         let (_, body) = self.get(self.url(path)?, MAX_JSON_BYTES).await?;
-        serde_json::from_slice(&body).context("ReportPortal answered with invalid JSON")
+        let json =
+            serde_json::from_slice(&body).context("ReportPortal answered with invalid JSON")?;
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        std::hash::Hasher::write(&mut h, &body);
+        Ok(Page {
+            json,
+            bytes: body.len(),
+            hash: std::hash::Hasher::finish(&h),
+        })
+    }
+
+    async fn get_json(&self, path: &str) -> anyhow::Result<Value> {
+        Ok(self.get_page(path).await?.json)
     }
 
     /// `GET /api/info`: the version of the server.
@@ -416,67 +513,121 @@ impl RpReader {
     }
 
     /// One page of the items of a launch (all of them, steps included).
-    pub async fn items_page(
-        &self,
-        launch_id: i64,
-        page: usize,
-    ) -> anyhow::Result<Option<Vec<RpItem>>> {
+    async fn items_page(&self, launch_id: i64, page: usize) -> anyhow::Result<Page> {
         let q = format!(
             "filter.eq.launchId={launch_id}&page.page={page}&page.size={PAGE_SIZE}&page.sort=id,ASC"
         );
-        let v = self
-            .get_json(&self.project_path(&format!("item?{q}")))
-            .await?;
-        Ok(page_of(&v, page, item_from))
+        self.get_page(&self.project_path(&format!("item?{q}")))
+            .await
     }
 
-    /// All items of a launch.
+    /// All items of a launch, within the limits. A page that brings no new item ends the list
+    /// (a server that ignores the page number).
     pub async fn items(&self, launch_id: i64) -> anyhow::Result<Vec<RpItem>> {
+        let lim = self.limits;
         let mut all: Vec<RpItem> = Vec::new();
         let mut seen = std::collections::HashSet::new();
-        let mut page = 1;
-        while let Some(items) = self.items_page(launch_id, page).await? {
+        let (mut count, mut bytes) = (0usize, 0usize);
+        for page in 1.. {
+            if page > lim.max_pages {
+                bail!(
+                    "launch {launch_id}: more than {} pages of items",
+                    lim.max_pages
+                );
+            }
+            let p = self.items_page(launch_id, page).await?;
+            bytes += p.bytes;
+            if bytes > lim.max_item_bytes {
+                bail!(
+                    "launch {launch_id}: its items are larger than {} MiB; it is not imported",
+                    lim.max_item_bytes >> 20
+                );
+            }
+            let Some(items) = page_of(&p.json, page, item_from) else {
+                break;
+            };
+            let mut fresh = 0;
             for i in items {
                 if seen.insert(i.id) {
+                    fresh += 1;
+                    count += 1 + i.retries.len();
                     all.push(i);
                 }
             }
-            page += 1;
-            if page > 100_000 {
-                bail!("launch {launch_id}: too many pages of items");
+            if count > lim.max_items {
+                bail!(
+                    "launch {launch_id}: more than {} items; it is not imported",
+                    lim.max_items
+                );
+            }
+            if fresh == 0 {
+                break;
             }
         }
         Ok(all)
     }
 
-    /// The log entries of up to `LOG_CHUNK` items, at least `level` (`None`: all).
+    /// The log entries of up to `LOG_CHUNK` items, at least `level` (`None`: all). Entries of
+    /// other items are dropped; the pages of a chunk are bounded in number and bytes, and a page
+    /// equal to the previous one ends the list.
     pub async fn logs(
         &self,
         item_ids: &[i64],
         min_level: Option<&str>,
     ) -> anyhow::Result<Vec<RpLog>> {
+        let lim = self.limits;
+        let wanted: std::collections::HashSet<i64> = item_ids.iter().copied().collect();
         let ids = item_ids
             .iter()
             .map(i64::to_string)
             .collect::<Vec<_>>()
             .join(",");
         let mut out = Vec::new();
-        let mut page = 1;
-        loop {
+        let (mut bytes, mut last) = (0usize, None);
+        let mut seen = std::collections::HashSet::new();
+        for page in 1.. {
+            if page > lim.max_pages {
+                bail!("more than {} pages of logs", lim.max_pages);
+            }
             let mut q = format!(
                 "filter.in.item={ids}&page.page={page}&page.size={PAGE_SIZE}&page.sort=logTime,ASC"
             );
             if let Some(l) = min_level {
                 q.push_str(&format!("&filter.gte.level={}", l.to_ascii_uppercase()));
             }
-            let v = self
-                .get_json(&self.project_path(&format!("log?{q}")))
+            let p = self
+                .get_page(&self.project_path(&format!("log?{q}")))
                 .await?;
-            match page_of(&v, page, log_from) {
-                Some(p) => out.extend(p),
-                None => break,
+            if last == Some(p.hash) {
+                break;
             }
-            page += 1;
+            last = Some(p.hash);
+            bytes += p.bytes;
+            if bytes > lim.max_log_bytes {
+                bail!(
+                    "the logs of {} items are larger than {} MiB; import fewer levels (--logs warn or error)",
+                    item_ids.len(),
+                    lim.max_log_bytes >> 20
+                );
+            }
+            let Some(entries) = page_of(&p.json, page, log_from) else {
+                break;
+            };
+            let before = seen.len();
+            let mut anonymous = false;
+            for l in entries {
+                match l.id {
+                    Some(id) if !seen.insert(id) => continue,
+                    Some(_) => {}
+                    None => anonymous = true,
+                }
+                if l.item_id.is_some_and(|i| wanted.contains(&i)) {
+                    out.push(l);
+                }
+            }
+            if seen.len() == before && !anonymous {
+                break;
+            }
         }
         Ok(out)
     }
@@ -484,6 +635,9 @@ impl RpReader {
     /// An attachment (`GET /api/v1/data/{project}/{id}`) up to `max` bytes; `None` when it is
     /// larger or gone.
     pub async fn file(&self, id: &str, max: u64) -> anyhow::Result<Option<RpFile>> {
+        if id.is_empty() || id.len() > 512 || id.bytes().all(|b| b == b'.') {
+            bail!("unusable attachment id");
+        }
         let path = format!(
             "api/v1/data/{}/{}",
             Client::enc(&self.project),
@@ -510,11 +664,27 @@ impl RpReader {
                     file_name,
                 }))
             }
-            Err(e) if e.to_string().contains("larger than") => Ok(None),
-            Err(e) if e.to_string().contains("answered 404") => Ok(None),
-            Err(e) => Err(e),
+            Err(e) => match e.downcast_ref::<RpError>() {
+                Some(RpError::TooLarge(_)) => Ok(None),
+                Some(RpError::Status { status, .. }) if *status == StatusCode::NOT_FOUND => {
+                    Ok(None)
+                }
+                _ => Err(e),
+            },
         }
     }
+}
+
+/// Up to `cap` bytes of a body; the rest is not read.
+async fn read_some(mut r: Response, cap: usize) -> Vec<u8> {
+    let mut body = Vec::new();
+    while body.len() < cap {
+        match r.chunk().await {
+            Ok(Some(c)) => body.extend_from_slice(&c[..c.len().min(cap - body.len())]),
+            _ => break,
+        }
+    }
+    body
 }
 
 fn retryable(s: StatusCode) -> bool {
@@ -592,5 +762,9 @@ mod tests {
         assert!(RpReader::new(&conn("https://u:p@rp.example.com", "k")).is_err());
         assert!(RpReader::new(&conn("https://rp.example.com", " ")).is_err());
         assert!(RpReader::new(&conn("https://rp.example.com/sub", "k")).is_ok());
+        assert!(RpReader::new(&conn("https://rp.example.com/?access_token=k", "k")).is_err());
+        assert!(RpReader::new(&conn("https://rp.example.com/#k", "k")).is_err());
+        assert!(RpReader::new(&conn("https://rp.example.com", "k\r\nX-Evil: 1")).is_err());
+        assert!(RpReader::new(&conn("https://rp.example.com", "k k")).is_err());
     }
 }

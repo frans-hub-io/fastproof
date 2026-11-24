@@ -658,3 +658,178 @@ async fn refuses_plain_http_to_a_remote_host_a_wrong_key_and_a_foreign_state_fil
         .unwrap_err();
     assert!(e.to_string().contains("belongs to another import"), "{e:#}");
 }
+
+/// A hostile ReportPortal: an endless error body, a message with terminal controls, pages that
+/// ignore the page number (with times that change on every answer), endless distinct pages,
+/// and logs of items that were not asked for.
+async fn hostile(State(mode): State<&'static str>, req: Request) -> Response {
+    let path = req.uri().path().to_string();
+    let q: HashMap<String, String> =
+        url::form_urlencoded::parse(req.uri().query().unwrap_or("").as_bytes())
+            .into_owned()
+            .collect();
+    let n: i64 = q.get("page.page").and_then(|v| v.parse().ok()).unwrap_or(1);
+    let ok = |v: Value| (StatusCode::OK, Json(v)).into_response();
+    if path == "/api/info" {
+        return match mode {
+            "endless-error" => {
+                let chunk = bytes::Bytes::from(vec![b'x'; 64 * 1024]);
+                let body = axum::body::Body::from_stream(futures::stream::repeat_with(move || {
+                    Ok::<_, std::io::Error>(chunk.clone())
+                }));
+                (StatusCode::BAD_REQUEST, body).into_response()
+            }
+            "evil-message" => (
+                StatusCode::FORBIDDEN,
+                Json(json!({"message": "\u{1b}]0;owned\u{7}\nerror: forged line"})),
+            )
+                .into_response(),
+            _ => ok(json!({"build": {"version": "5.14.1"}})),
+        };
+    }
+    let t0 = chrono::Utc::now().timestamp_millis() - DAY;
+    if path.ends_with("/launch") {
+        return ok(json!({"content": [launch(1, "la-1", "nightly", t0, "PASSED", "DEFAULT")]}));
+    }
+    if path.ends_with("/item") {
+        let content: Vec<Value> = if mode == "endless" {
+            (0..300)
+                .map(|k| {
+                    let id = n * 1000 + k;
+                    item(id, &format!("it-{id}"), "t", "STEP", None, t0, "PASSED")
+                })
+                .collect()
+        } else {
+            vec![item(10, "it-10", "t", "STEP", None, t0, "PASSED")]
+        };
+        return ok(json!({"content": content}));
+    }
+    if path.ends_with("/log") {
+        let msg = if mode == "endless" {
+            format!("{n}{}", "y".repeat(10_000))
+        } else {
+            "same".to_string()
+        };
+        static ANSWERS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+        let t = t0 + ANSWERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let base = if mode == "endless" { n * 10 } else { 0 };
+        let mut mine = log(10, t, "ERROR", &msg, None);
+        mine["id"] = json!(base + 1);
+        let mut other = log(999, t0, "ERROR", "of an item not asked for", None);
+        other["id"] = json!(base + 2);
+        return ok(json!({"content": [mine, other]}));
+    }
+    StatusCode::NOT_FOUND.into_response()
+}
+
+async fn start_hostile(mode: &'static str) -> String {
+    let app = axum::Router::new().fallback(hostile).with_state(mode);
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = l.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+    format!("http://{addr}")
+}
+
+fn hostile_reader(url: String) -> fastproof_server::cli::rp::reader::RpReader {
+    fastproof_server::cli::rp::reader::RpReader::new(&fastproof_server::cli::rp::reader::RpConn {
+        url,
+        project: "team".into(),
+        key: RP_KEY.into(),
+        ca_file: None,
+        allow_http: false,
+        rate: 1000.0,
+        retry_delay: Duration::from_millis(1),
+    })
+    .unwrap()
+}
+
+#[tokio::test]
+async fn a_hostile_reportportal_cannot_hang_or_flood_the_import() {
+    use fastproof_server::cli::rp::reader::Limits;
+    use fastproof_server::cli::rp::replay::{Attachments, Options, survey_launch};
+    let within = Duration::from_secs(30);
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("rp-key"), RP_KEY).unwrap();
+    let dry_run = |rp: String| {
+        let key = dir.path().join("rp-key");
+        async move {
+            let args: Vec<String> = [
+                "rp",
+                "import",
+                "--dry-run",
+                "--rp-url",
+                rp.as_str(),
+                "--rp-project",
+                "team",
+                "--rp-key-file",
+                key.to_str().unwrap(),
+                "--retry-delay-ms",
+                "1",
+                "--rate",
+                "1000",
+                "--logs",
+                "all",
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+            tokio::time::timeout(within, run_cli(args))
+                .await
+                .expect("the import ends")
+        }
+    };
+
+    let e = dry_run(start_hostile("endless-error").await)
+        .await
+        .unwrap_err();
+    assert!(format!("{e:#}").contains("400"), "{e:#}");
+
+    let e = dry_run(start_hostile("evil-message").await)
+        .await
+        .unwrap_err();
+    let text = format!("{e:#}");
+    assert!(text.contains("403") && text.contains("owned"), "{text}");
+    assert!(!text.chars().any(|c| c.is_control()), "{text:?}");
+    assert!(!text.contains(RP_KEY));
+
+    let rp = start_hostile("same-page").await;
+    assert_eq!(dry_run(rp.clone()).await.unwrap(), 0);
+    let reader = hostile_reader(rp);
+    let launch = reader
+        .launches_page(1, false, None, None)
+        .await
+        .unwrap()
+        .unwrap()
+        .remove(0);
+    let opts = Options {
+        min_level: Some("trace"),
+        attachments: Attachments::All,
+        max_attachment: 1 << 20,
+    };
+    let c = tokio::time::timeout(within, survey_launch(&reader, &launch, &opts))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (c.items, c.logs),
+        (1, 1),
+        "repeated pages end the lists; logs of other items are dropped"
+    );
+
+    let reader = hostile_reader(start_hostile("endless").await).with_limits(Limits {
+        max_items: 1000,
+        max_item_bytes: 1 << 30,
+        max_log_bytes: 64 << 10,
+        max_pages: 1000,
+    });
+    let e = tokio::time::timeout(within, reader.items(1))
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert!(e.to_string().contains("more than 1000 items"), "{e:#}");
+    let e = tokio::time::timeout(within, reader.logs(&[10], Some("trace")))
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert!(e.to_string().contains("larger than"), "{e:#}");
+}

@@ -56,6 +56,7 @@ import {
   type MockRunItem,
   type TmState,
 } from './tmFixtures';
+import { sharedBriefsFor, sharedPinsOf } from './sharedStepsState';
 import { renderMarkdown } from './tmMarkdown';
 
 const API = '/api/v1';
@@ -180,7 +181,7 @@ function caseView(c: MockCase, key: string): Case {
     state: null,
     approvedVersion: null,
     reviewState: null,
-    sharedSteps: [],
+    sharedSteps: sharedBriefsFor(c.body.steps, key),
   };
 }
 
@@ -444,7 +445,7 @@ function runItemView(r: MockRunItem, key: string): RunItem {
     finishedAt: r.finishedAt,
     revision: r.revision,
     iterationCount: 0,
-    sharedPins: [],
+    sharedPins: sharedPinsOf(r.steps),
     iterations: [],
     parameterColumns: [],
   };

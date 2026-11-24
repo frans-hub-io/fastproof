@@ -1,10 +1,11 @@
-import { Badge, Button, Card, Checkbox, Group, Modal, Stack, Text } from '@mantine/core';
+import { Anchor, Badge, Button, Card, Checkbox, Group, Modal, Stack, Text } from '@mantine/core';
 import { useCan } from '@franshub/ui-shell';
 import { notifications } from '@mantine/notifications';
 import { IconArrowBackUp } from '@tabler/icons-react';
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router';
 import { errorMessage } from '../../api/client';
+import { sharedKey, useCaseSharedStepChanges } from '../../api/sharedSteps';
 import { isConflict, useCaseFields, useCaseFolders, useCaseVersion, useCaseVersions, useRestoreCaseVersion, type Case } from '../../api/tm';
 import { QueryState } from '../../components/QueryState';
 import { formatDateTime, formatRelative } from '../../lib/format';
@@ -13,6 +14,42 @@ import { diffSnapshots } from '../../lib/tm/versionDiff';
 import { VersionDiffView } from './VersionDiffView';
 
 const SOURCE_LABEL: Record<string, string> = { ui: 'edited', code: 'code sync', import: 'import', ai: 'AI suggestion', restore: 'restored', bulk: 'bulk change' };
+
+/** The versions written to the shared steps the case uses: they change what the case does without a case version. */
+function SharedStepChanges({ project, caseNumber }: { project: string; caseNumber: number }) {
+  const changes = useCaseSharedStepChanges(project, caseNumber);
+  const items = changes.data ?? [];
+  if (items.length === 0) return null;
+  return (
+    <Stack gap={6} mt="md" component="section" aria-labelledby="shared-changes-title" data-testid="shared-step-changes">
+      <Text size="sm" fw={600} component="h3" m={0} id="shared-changes-title">
+        Shared step changes
+      </Text>
+      <Text size="xs" c="dimmed">
+        Edits of the shared steps this case uses. They do not create case versions; runs started after an edit use the new steps.
+      </Text>
+      {items.map((x) => (
+        <Card key={`${String(x.sharedStepNumber)}-${String(x.version)}`} withBorder radius="md" padding="xs" data-testid="shared-step-change">
+          <Group gap={6} wrap="wrap">
+            <Anchor component={Link} to={`/p/${project}/shared-steps/${String(x.sharedStepNumber)}?tab=versions`} size="sm" fw={600}>
+              {sharedKey(x.sharedStepNumber)} v{x.version}
+            </Anchor>
+            <Text size="sm" className="fh-truncate" style={{ minWidth: 0 }}>
+              {x.name}
+            </Text>
+            <Badge size="xs" variant="light" radius="sm" color={x.source === 'ai' ? 'grape' : 'gray'}>
+              {SOURCE_LABEL[x.source] ?? x.source}
+            </Badge>
+          </Group>
+          <Text size="xs" c="dimmed" title={formatDateTime(x.createdAt)}>
+            {x.createdBy} · {formatRelative(x.createdAt)}
+            {x.changed.length ? ` · ${x.changed.join(', ')}` : ''}
+          </Text>
+        </Card>
+      ))}
+    </Stack>
+  );
+}
 
 export function VersionsTab({ project, c, etag, onRestored }: { project: string; c: Case; etag: string; onRestored: () => void }) {
   const canWrite = useCan('cases:write', project);
@@ -99,6 +136,7 @@ export function VersionsTab({ project, c, etag, onRestored }: { project: string;
                 </Group>
               </Card>
             ))}
+            <SharedStepChanges project={project} caseNumber={c.number} />
           </Stack>
           <Stack gap="xs" style={{ minWidth: 0 }}>
             {pair ? (

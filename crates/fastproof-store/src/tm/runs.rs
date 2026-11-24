@@ -1265,6 +1265,13 @@ impl Store {
         let pins = pins_of(r.try_get("shared_pins")?);
         let snapshot =
             executed_snapshot(&mut conn, project_id, case_id, case_version, pins.as_ref()).await?;
+        let shared_pins = match pins.as_ref().filter(|p| !p.is_empty()) {
+            Some(p) => {
+                let review = super::review::review_settings(&mut conn, project_id).await?;
+                super::expand::pin_views(&mut conn, project_id, p, &review).await?
+            }
+            None => Vec::new(),
+        };
         let mut steps = step_rows(&mut conn, item_id).await?;
         steps.sort_by_key(|s| path_key(&s.0));
         let att_ids: Vec<Uuid> = steps.iter().flat_map(|s| s.4.iter().copied()).collect();
@@ -1289,7 +1296,7 @@ impl Store {
             started_at: r.try_get("started_at")?,
             finished_at: r.try_get("finished_at")?,
             revision: r.try_get("revision")?,
-            shared_pins: Vec::new(),
+            shared_pins,
             iterations: Vec::new(),
             parameter_columns: Vec::new(),
         })

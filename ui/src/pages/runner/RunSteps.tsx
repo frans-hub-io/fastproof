@@ -1,8 +1,8 @@
-import { Badge, Button, Group, Stack, Text, Textarea, Tooltip } from '@mantine/core';
-import { IconBan, IconCamera, IconCircleCheck, IconCircleDashed, IconCircleX, IconPaperclip, IconPlayerSkipForward } from '@tabler/icons-react';
-import type { RefObject } from 'react';
+import { ActionIcon, Badge, Button, Group, Stack, Text, Textarea, Tooltip } from '@mantine/core';
+import { IconBan, IconCamera, IconChevronDown, IconChevronRight, IconCircleCheck, IconCircleDashed, IconCircleX, IconLink, IconPaperclip, IconPlayerSkipForward } from '@tabler/icons-react';
+import { useEffect, useState, type ReactNode, type RefObject } from 'react';
 import { attachmentUrl } from '../../api/client';
-import type { RunItem, StepStatus } from '../../api/tm';
+import type { CaseStep, RunItem, StepStatus } from '../../api/tm';
 import type { FlatStep } from '../../lib/tm/steps';
 import { RUN_STATUS_LABEL } from '../../lib/tm/steps';
 import { CaseHtml } from '../cases/CaseHtml';
@@ -92,6 +92,29 @@ export function StatusButtons({ path, current, readOnly, onSet, size = 'xs' }: {
   );
 }
 
+/** The title of a shared step in a run: `SS-12 v4`, its name and whether a newer version exists. */
+export function SharedHead({ item, step, toggle }: { item: RunItem; step: CaseStep; toggle?: ReactNode }) {
+  const ref = step.shared;
+  if (!ref) return null;
+  const pin = item.sharedPins.find((p) => p.id === ref.id);
+  return (
+    <Group gap={6} wrap="wrap" data-testid="run-shared-head">
+      {toggle}
+      <Badge size="sm" variant="outline" radius="sm" className="fp-mono" leftSection={<IconLink size={10} />}>
+        SS-{ref.number} v{ref.version ?? pin?.version ?? '?'}
+      </Badge>
+      <Text size="sm" fw={500}>
+        {pin?.name ?? 'Shared step'}
+      </Text>
+      {pin && pin.current !== pin.version && (
+        <Badge size="xs" variant="light" color="yellow" radius="sm">
+          v{pin.current} available
+        </Badge>
+      )}
+    </Group>
+  );
+}
+
 export interface RunStepsProps {
   project: string;
   item: RunItem;
@@ -106,22 +129,54 @@ export interface RunStepsProps {
 
 /** Desktop: every step in a list, the current one expanded with its result fields. */
 export function RunSteps({ project, item, flat, effective, local, current, onCurrent, onSet, fields }: RunStepsProps) {
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
+  const hiddenBy = (path: string): string | undefined => [...collapsed].find((c) => path.startsWith(`${c}.`));
+  const currentPath = flat[current]?.path;
+  useEffect(() => {
+    if (!currentPath) return;
+    const inside = [...collapsed].find((c) => currentPath.startsWith(`${c}.`));
+    if (inside) setCollapsed((c) => new Set([...c].filter((x) => x !== inside)));
+  }, [currentPath, collapsed]);
   return (
     <ol className="fp-tm-run-steps" aria-label="Steps" data-testid="run-steps">
       {flat.map((f, i) => {
         const html = htmlFor(item, f.path);
+        const ref = f.step.shared;
+        const isCollapsed = collapsed.has(f.path);
         const own = local.get(f.path);
         const status = effective.get(f.path) ?? 'untested';
         const derived = f.hasChildren && (!own || own.status === 'untested') && status !== 'untested';
         const active = i === current;
         return (
-          <li key={f.step.id} className="fp-tm-run-step" data-current={active} data-status={status} data-testid="run-step" data-path={f.path} style={{ marginLeft: f.depth * 18 }} aria-current={active ? 'step' : undefined} tabIndex={active ? -1 : undefined}>
+          <li key={`${f.path}-${f.step.id}`} className="fp-tm-run-step" data-current={active} data-status={status} data-shared={ref ? 'true' : undefined} data-testid="run-step" data-path={f.path} style={{ marginLeft: f.depth * 18 }} aria-current={active ? 'step' : undefined} tabIndex={active ? -1 : undefined} hidden={hiddenBy(f.path) !== undefined}>
             <div className="fp-tm-run-step-head" onClick={() => onCurrent(i)}>
               <Text size="xs" c="dimmed" className="fp-mono" style={{ width: 36, flex: 'none' }}>
                 {f.path}
               </Text>
               <div style={{ flex: 1, minWidth: 0 }}>
-                <CaseHtml html={html?.action ?? ''} project={project} />
+                {ref ? (
+                  <SharedHead
+                    item={item}
+                    step={f.step}
+                    toggle={
+                      <ActionIcon
+                        size="sm"
+                        variant="subtle"
+                        aria-expanded={!isCollapsed}
+                        aria-label={`${isCollapsed ? 'Show' : 'Hide'} the steps of SS-${String(ref.number)}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setCollapsed((c) => new Set(isCollapsed ? [...c].filter((x) => x !== f.path) : [...c, f.path]));
+                        }}
+                        data-testid="run-shared-toggle"
+                      >
+                        {isCollapsed ? <IconChevronRight size={14} /> : <IconChevronDown size={14} />}
+                      </ActionIcon>
+                    }
+                  />
+                ) : (
+                  <CaseHtml html={html?.action ?? ''} project={project} />
+                )}
                 {f.step.expected && (
                   <div className="fp-tm-expected">
                     <Text span size="xs" c="dimmed">

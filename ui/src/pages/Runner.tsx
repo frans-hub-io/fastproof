@@ -24,7 +24,7 @@ import { runnerAction } from './runner/keymap';
 import { RunQueue, type QueueFilter } from './runner/RunQueue';
 import { Iterations } from './runner/Iterations';
 import { SharedRefresh } from './runner/SharedRefresh';
-import { RunSteps, StatusButtons, StepFields } from './runner/RunSteps';
+import { RunSteps, SharedHead, StatusButtons, StepFields } from './runner/RunSteps';
 import { SaveQueue, type QueueSnapshot } from './runner/saveQueue';
 import { emptyLocal, htmlFor, isOpen, type LocalStep } from './runner/types';
 
@@ -566,7 +566,7 @@ export default function RunnerPage() {
                             </Text>
                             <RunStatusBadge status={effective.get(cur.path) ?? 'untested'} size="xs" />
                           </Group>
-                          <CaseHtml html={htmlFor(item, cur.path)?.action ?? ''} project={key} />
+                          {cur.step.shared ? <SharedHead item={item} step={cur.step} /> : <CaseHtml html={htmlFor(item, cur.path)?.action ?? ''} project={key} />}
                           {cur.step.expected && (
                             <div className="fp-tm-expected">
                               <Text span size="xs" c="dimmed">

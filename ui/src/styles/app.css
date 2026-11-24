@@ -1250,3 +1250,16 @@
   flex: none;
   font-variant-numeric: tabular-nums;
 }
+
+.fp-tm-shared-row,
+.fp-tm-run-step[data-shared='true'] {
+  background: var(--fh-ui-subtle-bg);
+}
+
+.fp-tm-shared-step {
+  border-left: 3px solid var(--mantine-color-blue-6);
+}
+
+.fp-tm-run-step[hidden] {
+  display: none;
+}

@@ -976,6 +976,11 @@ async fn a8_a9_a10_imports_never_write_into_foreign_launches_run_no_analysis_and
     let events_before = count(&db, "select count(*) from events where type in ('result.updated', 'attempt.stored', 'launch.created')").await;
     let j = import(&s, "vic", "source=allure2&branch=main", &allure2_files()).await;
     assert_eq!(j["launchesCreated"], 3, "{j}");
+    app(&s)
+        .store
+        .backfill_fingerprints(5000, Duration::from_secs(30))
+        .await
+        .unwrap();
     let mine = s.launch_get("vic", &hijacked).await;
     assert_eq!(mine["counts"]["total"], 0, "{mine}");
     assert_eq!(

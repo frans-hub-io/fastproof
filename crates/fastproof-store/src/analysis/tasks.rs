@@ -626,6 +626,7 @@ impl Store {
     /// Fills fingerprints of failed attempts stored without one (rows of earlier versions,
     /// or written by an older replica during an upgrade), with their results and the
     /// fingerprint catalog. Walks attempts by id from a stored cursor; returns rows updated.
+    /// Imported history is skipped: an import runs no analysis.
     pub async fn backfill_fingerprints(&self, batch: i64, budget: Duration) -> anyhow::Result<u64> {
         const STATE: &str = "fingerprints.backfill";
         let started = Instant::now();
@@ -666,8 +667,29 @@ impl Store {
             let mut fps = Vec::new();
             let mut results: BTreeSet<(Uuid, DateTime<Utc>)> = BTreeSet::new();
             let mut catalog: Catalog = BTreeMap::new();
+            let batch_launches: Vec<Uuid> = rows
+                .iter()
+                .map(|r| r.2)
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            let imported: HashSet<Uuid> = sqlx::query_scalar(
+                "select id from launches where id = any($1) and attributes @> $2::jsonb",
+            )
+            .bind(&batch_launches)
+            .bind(serde_json::json!([{
+                "key": crate::history_import::IMPORT_ATTRIBUTE.0,
+                "value": crate::history_import::IMPORT_ATTRIBUTE.1,
+            }]))
+            .fetch_all(&self.pool)
+            .await?
+            .into_iter()
+            .collect();
             for r in &rows {
-                if r.8.is_some() || !Status::parse_lenient(&r.5).is_failure() {
+                if r.8.is_some()
+                    || !Status::parse_lenient(&r.5).is_failure()
+                    || imported.contains(&r.2)
+                {
                     continue;
                 }
                 let Some(fp) = fingerprint(r.6.as_deref(), r.7.as_deref()) else {

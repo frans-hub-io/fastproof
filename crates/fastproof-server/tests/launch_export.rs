@@ -531,7 +531,16 @@ async fn a1_a_job_failed_during_upload_leaves_no_blob_and_heartbeat_keeps_it_ali
     .execute(&db.pool)
     .await
     .unwrap();
-    assert_eq!(app(&s).store.fail_stale_launch_exports().await.unwrap(), 1);
+    assert!(app(&s).store.fail_stale_launch_exports().await.unwrap() <= 1);
+    let (status,): (String,) = sqlx::query_as("select status from launch_exports where id = $1")
+        .bind(job)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        status, "failed",
+        "the scheduler or this call fails the lost job"
+    );
     let key = BlobKey::tm_job(&job.to_string(), "launch-export.html").unwrap();
     app(&s)
         .blobs

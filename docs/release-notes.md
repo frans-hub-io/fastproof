@@ -36,6 +36,12 @@ before 0.2.0-dev1 still write.
 
 ### Reports and launches
 
+- **Import from ReportPortal.** `fastproof rp import` reads launches from a ReportPortal server through its API
+  (read-only; the API key comes from `RP_API_KEY` or a file) and replays them into a FastProof project with their
+  original ids and times, so the imported history and new reports from the same agents form one series per test.
+  By default it takes the last 90 days, log lines at WARN and above and attachments of failed tests up to 64 MiB;
+  `--dry-run` counts what would be imported, and an interrupted import continues from its state file. See
+  [Migrating from ReportPortal](guide/migrating-from-reportportal.md).
 - **Allure history import.** Bring the history of Allure 2 reports and Allure 3 history files in as past launches
   joined to the same tests, from the command line (`fastproof import allure-history`), the API or the **History
   import** tab of the project settings. It needs the `settings:write` permission. See

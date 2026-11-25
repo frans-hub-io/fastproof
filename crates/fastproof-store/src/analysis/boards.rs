@@ -337,8 +337,17 @@ pub fn validate(b: &BoardWrite) -> Result<(), String> {
                 return Err(format!("{what} has at most {max} characters"));
             }
         }
+        if s.patterns.is_some() && w.kind != WidgetType::PopularPatterns {
+            return Err("patterns is a setting of the popular-patterns widget only".into());
+        }
     }
     check_computations(&b.widgets)
+}
+
+/// Whether a dashboard holds a format of FastProof Analysis (`settings.patterns`), which older
+/// replicas cannot read: its writes wait for the analysis gate.
+pub fn uses_analysis_formats(widgets: &[BoardWidget]) -> bool {
+    widgets.iter().any(|w| w.settings.patterns.is_some())
 }
 
 /// Distinct trend computations a request may run.
@@ -812,6 +821,10 @@ pub enum WidgetData {
     Patterns {
         items: Vec<PatternPoint>,
     },
+    /// The popular-patterns widget in `logPatterns` mode: log pattern marks of rules.
+    LogPatterns {
+        items: Vec<super::types::PatternCount>,
+    },
     #[serde(rename_all = "camelCase")]
     Launch {
         launch: Option<LaunchPoint>,
@@ -1145,6 +1158,11 @@ impl Store {
                         .into_iter()
                         .map(|(t, added)| GrowthPoint { t, added })
                         .collect(),
+                })
+            }
+            Source::Patterns if s.patterns == Some(super::types::WidgetPatterns::LogPatterns) => {
+                Ok(WidgetData::LogPatterns {
+                    items: self.pattern_counts(project_id, since, limit).await?,
                 })
             }
             Source::Patterns => {

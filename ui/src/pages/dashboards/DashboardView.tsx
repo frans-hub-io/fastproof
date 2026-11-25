@@ -113,6 +113,19 @@ function SettingsModal({ widget, onClose, onSave }: { widget: DashboardWidget; o
         {has('view') && <Select label="View" data={[{ value: 'chart', label: 'Chart' }, { value: 'table', label: 'Table' }]} value={s.view ?? 'chart'} allowDeselect={false} onChange={(v) => set({ view: v === 'table' ? 'table' : 'chart' })} />}
         {has('groupBy') && <TextInput label="Label to group by" description="A label name such as suite, feature or owner" maxLength={64} value={s.groupBy ?? ''} placeholder="suite" onChange={(e) => set({ groupBy: e.currentTarget.value || undefined })} />}
         {has('attribute') && <TextInput label="Launch attribute" description="The attribute name to group launches by, such as build or release" maxLength={64} value={s.attribute ?? ''} placeholder="build" onChange={(e) => set({ attribute: e.currentTarget.value.trim() || undefined })} />}
+        {has('patterns') && (
+          <Select
+            label="Count"
+            data={[
+              { value: 'fingerprints', label: 'Error messages (fingerprints)' },
+              { value: 'logPatterns', label: 'Log patterns marked by rules' },
+            ]}
+            value={s.patterns ?? 'fingerprints'}
+            allowDeselect={false}
+            onChange={(v) => set({ patterns: v === 'logPatterns' ? 'logPatterns' : undefined })}
+            data-testid="widget-patterns-mode"
+          />
+        )}
         {has('branch') && <TextInput label="Branch" maxLength={200} value={s.branch ?? ''} placeholder="All branches" onChange={(e) => set({ branch: e.currentTarget.value || undefined })} />}
         {has('environment') && <TextInput label="Environment" maxLength={200} value={s.environment ?? ''} placeholder="All environments" onChange={(e) => set({ environment: e.currentTarget.value || undefined })} />}
         {has('launchId') && <TextInput label="Launch id" description="Empty means the latest launch" maxLength={36} value={s.launchId ?? ''} onChange={(e) => set({ launchId: e.currentTarget.value.trim() || undefined })} />}

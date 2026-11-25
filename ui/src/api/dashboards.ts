@@ -47,6 +47,8 @@ export interface WidgetSettings {
   groupBy?: string;
   launchId?: string;
   attribute?: string;
+  /** What the popular-patterns widget counts: error fingerprints (default) or log patterns of rules. */
+  patterns?: 'fingerprints' | 'logPatterns';
 }
 
 export interface DashboardWidget {
@@ -101,6 +103,14 @@ export interface LaunchPoint {
   unknown: number;
   flaky: number;
   muted: number;
+}
+
+/** A log pattern marked by rules, with the results and launches it marks. */
+export interface LogPatternPoint {
+  pattern: string;
+  results: number;
+  launches: number;
+  lastSeenAt: string;
 }
 
 export interface PatternPoint {
@@ -162,6 +172,7 @@ export type WidgetData =
   | { kind: 'trend'; trend: TrendData }
   | { kind: 'growth'; points: { t: string; added: number }[] }
   | { kind: 'patterns'; items: PatternPoint[] }
+  | { kind: 'logPatterns'; items: LogPatternPoint[] }
   | { kind: 'launch'; launch: LaunchPoint | null; defects: Record<DefectGroup, number>; components: ComponentPoint[]; groupBy: string };
 
 export type WidgetResult = { status: 'ok'; data: WidgetData } | { status: 'error'; message: string };
@@ -198,7 +209,7 @@ export const WIDGET_CATALOG: Record<WidgetType, WidgetInfo> = {
   'passing-rate-summary': { type: 'passing-rate-summary', title: 'Passing rate summary', description: 'One pass rate over all chosen launches, with the number of launches and results.', w: 3, h: 3, settings: [...LAUNCH_SETTINGS], group: 'Launches' },
   'flaky-tests': { type: 'flaky-tests', title: 'Flaky tests', description: 'Tests with the highest flakiness score.', w: 6, h: 5, settings: ['branch', 'environment', 'limit'], group: 'Tests' },
   'most-failing-tests': { type: 'most-failing-tests', title: 'Most failing tests', description: 'Tests with the most failed or broken results in the range.', w: 6, h: 5, settings: ['days', 'branch', 'environment', 'limit'], group: 'Tests' },
-  'popular-patterns': { type: 'popular-patterns', title: 'Most popular error patterns', description: 'Failure messages that occur most often.', w: 12, h: 5, settings: ['days', 'limit'], group: 'Failures' },
+  'popular-patterns': { type: 'popular-patterns', title: 'Most popular error patterns', description: 'Failure messages that occur most often, or the log patterns rules marked most.', w: 12, h: 5, settings: ['days', 'limit', 'patterns'], group: 'Failures' },
   'launch-execution': { type: 'launch-execution', title: 'Launch execution and defects', description: 'Statuses and defect groups of one launch (the latest by default).', w: 6, h: 4, settings: ['launchId', 'branch', 'environment'], group: 'Failures' },
   'component-health': { type: 'component-health', title: 'Component health', description: 'Pass rate per label value (suite by default) in one launch, as bars or a table.', w: 6, h: 5, settings: ['launchId', 'branch', 'environment', 'groupBy', 'view'], group: 'Tests' },
   'pass-rate-trend': { type: 'pass-rate-trend', title: 'Pass rate trend', description: 'Pass rate per bucket over the range.', w: 6, h: 4, settings: [...TREND_SETTINGS], group: 'Trends' },

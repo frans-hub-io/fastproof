@@ -14,6 +14,9 @@ import type { DefectType, Rule, RuleInput } from '../api/types-next';
 import { DEFECT_GROUPS } from '../api/types-next';
 import { DefectChip } from '../components/Defect';
 import { LaunchSelect } from '../components/LaunchSelect';
+import { useAnalysisCapabilities } from '../api/analysis';
+import { LogConditions, PatternAction, PhaseBadge } from './rules/LogConditions';
+import { hasLogCondition, isAfterLaunch, logDraftOf, type LogDraft, logMatchOf, logTextError, patternError } from './rules/logDraft';
 import { PageHeader } from '../components/PageHeader';
 import { QueryState } from '../components/QueryState';
 import { StatusDot } from '../components/Status';
@@ -35,7 +38,7 @@ function regexError(src: string): string | null {
   }
 }
 
-interface Draft {
+interface Draft extends LogDraft {
   name: string;
   enabled: boolean;
   messageRegex: string;
@@ -68,6 +71,7 @@ function draftOf(r?: Rule): Draft {
     issueKey: r?.action.issue?.key ?? '',
     muteDays: r?.action.mute?.days ?? '',
     accept: r?.action.accept ?? false,
+    ...logDraftOf(r?.match, r?.action.pattern),
   };
 }
 
@@ -84,6 +88,7 @@ function ruleOf(d: Draft, order: number): RuleInput {
       environment: t(d.environment),
       fingerprint: t(d.fingerprint),
       testCaseId: t(d.testCaseId),
+      ...logMatchOf(d),
     },
     action: {
       defectTypeId: d.defectTypeId ?? undefined,
@@ -91,6 +96,7 @@ function ruleOf(d: Draft, order: number): RuleInput {
       issue: t(d.issueUrl) ? { url: d.issueUrl.trim(), key: t(d.issueKey) } : undefined,
       mute: d.muteDays !== '' && d.muteDays > 0 ? { days: d.muteDays } : undefined,
       accept: d.accept || undefined,
+      pattern: t(d.pattern),
     },
   };
 }
@@ -110,11 +116,11 @@ function DryRun({ project, draft }: { project: string; draft: Draft }) {
         Dry run
       </Text>
       <Text size="xs" c="dimmed">
-        Shows which results of a launch the rule would match. Nothing is changed.
+        {isAfterLaunch(draft) ? 'Shows which results of a launch the rule would match, reading the logs of their failed attempts. Nothing is changed.' : 'Shows which results of a launch the rule would match. Nothing is changed.'}
       </Text>
       <Group gap="xs" align="flex-end" wrap="wrap">
         <LaunchSelect project={project} value={launchId} onChange={(v) => { setPicked(v); test.reset(); }} label="Launch" style={{ flex: '1 1 240px' }} data-testid="dry-run-launch" />
-        <Button variant="light" leftSection={<IconFlask size={14} />} disabled={!launchId || !!regexError(draft.messageRegex) || !!regexError(draft.traceRegex)} loading={test.isPending} onClick={() => launchId && test.mutate({ rule: ruleOf(draft, 0), launchId })} data-testid="dry-run">
+        <Button variant="light" leftSection={<IconFlask size={14} />} disabled={!launchId || !!regexError(draft.messageRegex) || !!regexError(draft.traceRegex) || !!logTextError(draft, regexError) || !!patternError(draft.pattern)} loading={test.isPending} onClick={() => launchId && test.mutate({ rule: ruleOf(draft, 0), launchId })} data-testid="dry-run">
           Test
         </Button>
       </Group>
@@ -153,18 +159,24 @@ function DryRun({ project, draft }: { project: string; draft: Draft }) {
 function RuleEditor({ project, rule, nextOrder, onClose }: { project: string; rule: Rule | null; nextOrder: number; onClose: () => void }) {
   const [d, setD] = useState<Draft>(() => draftOf(rule ?? undefined));
   const set = <K extends keyof Draft>(k: K, v: Draft[K]) => setD((p) => ({ ...p, [k]: v }));
+  const setLog = <K extends keyof LogDraft>(k: K, v: LogDraft[K]) => setD((p) => ({ ...p, [k]: v }));
   const types = useDefectTypes(project);
   const save = useSaveRule(project);
   const grouped = useMemo(
     () => DEFECT_GROUPS.map((g) => ({ group: GROUP_LABEL[g], items: (types.data ?? []).filter((t) => t.group === g).map((t) => ({ value: t.id, label: t.name })) })).filter((g) => g.items.length),
     [types.data],
   );
+  const caps = useAnalysisCapabilities(project);
   const msgErr = regexError(d.messageRegex);
   const traceErr = regexError(d.traceRegex);
+  const logErr = logTextError(d, regexError);
+  const patErr = patternError(d.pattern);
   const issueErr = d.issueUrl.trim() && !/^https?:\/\//i.test(d.issueUrl.trim()) ? 'Must be an http(s) link' : null;
-  const hasMatch = !!(d.messageRegex.trim() || d.traceRegex.trim() || d.fingerprint.trim() || d.testCaseId.trim() || d.environment.trim());
-  const hasAction = !!(d.defectTypeId || d.comment.trim() || d.issueUrl.trim() || d.muteDays || d.accept);
-  const valid = !!d.name.trim() && !msgErr && !traceErr && !issueErr && hasMatch && hasAction;
+  const hasMatch = !!(d.messageRegex.trim() || d.traceRegex.trim() || d.fingerprint.trim() || d.testCaseId.trim() || d.environment.trim()) || hasLogCondition(d);
+  const hasAction = !!(d.defectTypeId || d.comment.trim() || d.issueUrl.trim() || d.muteDays || d.accept || d.pattern.trim());
+  const valid = !!d.name.trim() && !msgErr && !traceErr && !logErr && !patErr && !issueErr && hasMatch && hasAction;
+  const after = isAfterLaunch(d);
+  const analysisOff = after && caps.data && !caps.data.instanceEnabled;
   const submit = () =>
     save.mutate(
       { id: rule?.id, body: ruleOf(d, rule?.order ?? nextOrder) },
@@ -178,7 +190,16 @@ function RuleEditor({ project, rule, nextOrder, onClose }: { project: string; ru
   return (
     <Stack gap="md" data-testid="rule-editor">
       <TextInput label="Name" required maxLength={120} value={d.name} onChange={(e) => set('name', e.currentTarget.value)} data-testid="rule-name" />
-      <Switch label="Enabled: apply to new results on ingest" checked={d.enabled} onChange={(e) => set('enabled', e.currentTarget.checked)} />
+      <Switch label={after ? 'Enabled: apply to every launch once it has finished' : 'Enabled: apply to new results on ingest'} checked={d.enabled} onChange={(e) => set('enabled', e.currentTarget.checked)} />
+      {after && (
+        <Alert color={analysisOff ? 'yellow' : 'gray'} variant="light" p="xs" data-testid="rule-after-launch">
+          <Text size="xs">
+            {analysisOff
+              ? 'This rule reads logs or marks a pattern, so it runs in FastProof Analysis after each launch. Analysis is off on this server: the rule is saved but does not run until it is on.'
+              : 'This rule reads logs or marks a pattern, so it runs after each launch has finished (not at ingest), on the failed and broken attempts, newest first, within a time budget per launch. Its triage changes are undoable.'}
+          </Text>
+        </Alert>
+      )}
       <Divider label="Match" labelPosition="left" />
       <Textarea label="Error message regex" description="Rust regex syntax; size and time limited on the server" autosize minRows={1} maxRows={4} value={d.messageRegex} onChange={(e) => set('messageRegex', e.currentTarget.value)} error={msgErr} classNames={{ input: 'fp-mono' }} data-testid="rule-message-regex" />
       <Textarea label="Stack trace regex" autosize minRows={1} maxRows={4} value={d.traceRegex} onChange={(e) => set('traceRegex', e.currentTarget.value)} error={traceErr} classNames={{ input: 'fp-mono' }} />
@@ -188,6 +209,7 @@ function RuleEditor({ project, rule, nextOrder, onClose }: { project: string; ru
         <TextInput label="Fingerprint" placeholder="any" maxLength={64} value={d.fingerprint} onChange={(e) => set('fingerprint', e.currentTarget.value)} classNames={{ input: 'fp-mono' }} miw={160} />
       </Group>
       <TextInput label="Test case id" placeholder="any" maxLength={64} value={d.testCaseId} onChange={(e) => set('testCaseId', e.currentTarget.value)} classNames={{ input: 'fp-mono' }} />
+      <LogConditions d={d} set={setLog} regexError={regexError} />
       {!hasMatch && (
         <Text size="xs" c="var(--fh-semantic-warning-fg)">
           Give at least one condition besides statuses.
@@ -200,6 +222,7 @@ function RuleEditor({ project, rule, nextOrder, onClose }: { project: string; ru
         <TextInput label="Issue link" placeholder="https://…" maxLength={500} value={d.issueUrl} onChange={(e) => set('issueUrl', e.currentTarget.value)} error={issueErr} miw={200} />
         <TextInput label="Issue key" placeholder="SHOP-123" maxLength={64} value={d.issueKey} onChange={(e) => set('issueKey', e.currentTarget.value)} miw={120} />
       </Group>
+      <PatternAction d={d} set={setLog} />
       <Group gap="md" align="flex-end" wrap="wrap">
         <NumberInput label="Mute for days" placeholder="no mute" min={1} max={365} value={d.muteDays} onChange={(v) => set('muteDays', typeof v === 'number' ? v : '')} w={160} />
         <Switch label="Accept (counts as passed for gates)" checked={d.accept} onChange={(e) => set('accept', e.currentTarget.checked)} mb={6} />
@@ -235,7 +258,9 @@ function ApplyModal({ project, rule, onClose }: { project: string; rule: Rule; o
     <Modal opened onClose={onClose} title={`Apply "${rule.name}" to a launch`} styles={{ title: { fontWeight: 700 } }}>
       <Stack gap="md" data-testid="rule-apply">
         <Text size="sm" c="dimmed">
-          Applies the rule to results that were already ingested. Results triaged by hand keep their triage only if the rule does not match them.
+          {rule.phase === 'afterLaunch'
+            ? 'Queues a background task that reads the logs of the launch\'s failed attempts (within the raw retention) and applies the rule. Results a person triaged keep their triage; the changes can be undone from the result\'s triage history.'
+            : 'Applies the rule to results that were already ingested. Results triaged by hand keep their triage only if the rule does not match them.'}
         </Text>
         <LaunchSelect project={project} value={launchId} onChange={setLaunchId} label="Launch" data-testid="apply-launch" />
         {apply.isError && (
@@ -245,7 +270,7 @@ function ApplyModal({ project, rule, onClose }: { project: string; rule: Rule; o
         )}
         {apply.isSuccess && (
           <Alert color="green" variant="light" data-testid="rule-apply-result">
-            {apply.data?.updated ?? apply.data?.matched ?? 0} results updated.
+            {rule.phase === 'afterLaunch' ? 'Queued. The rule is applied in the background; its hits and the triage history show the outcome.' : `${String(apply.data?.updated ?? apply.data?.matched ?? 0)} results updated.`}
           </Alert>
         )}
         <Group justify="flex-end" gap="xs">
@@ -269,6 +294,12 @@ function MatchSummary({ r }: { r: Rule }) {
   if (m.environment) parts.push(`env = ${m.environment}`);
   if (m.fingerprint) parts.push(`fingerprint = ${m.fingerprint}`);
   if (m.testCaseId) parts.push(`test case = ${m.testCaseId.slice(0, 12)}`);
+  if (m.log?.regex) parts.push(`log ~ /${m.log.regex}/`);
+  if (m.log?.contains) parts.push(`log contains "${m.log.contains}"`);
+  if (m.log?.levels?.length) parts.push(`levels ${m.log.levels.join(', ')}`);
+  if (m.log?.streams?.length) parts.push(`streams ${m.log.streams.join(', ')}`);
+  if (m.log?.lastBytes) parts.push(`last ${String(Math.round(m.log.lastBytes / 1024))} KiB`);
+  for (const sig of m.signals ?? []) parts.push(`signal ${sig.source}${sig.kind ? `:${sig.kind}` : ''}`);
   return (
     <Group gap={6} wrap="wrap">
       {(m.statuses ?? []).map((s) => (
@@ -299,6 +330,11 @@ function ActionSummary({ r, types }: { r: Rule; types: Map<string, DefectType> }
       {a.accept && (
         <Badge size="xs" variant="outline" color="green" style={{ textTransform: 'none' }}>
           accept
+        </Badge>
+      )}
+      {a.pattern && (
+        <Badge size="xs" variant="light" color="fhPurple" className="fp-mono" style={{ textTransform: 'none' }} data-testid="rule-pattern-badge">
+          pattern {a.pattern}
         </Badge>
       )}
       {a.issue && (
@@ -342,7 +378,7 @@ export default function RulesPage() {
       <PageHeader
         crumbs={[{ label: 'Projects', to: '/' }, { label: project.data?.name ?? key, to: `/p/${key}` }, { label: 'Rules' }]}
         title="Rules"
-        subtitle="Rules triage known failures automatically when results are ingested, in the order shown. A matching rule sets the defect type, comment, issue or mute."
+        subtitle="Rules triage known failures automatically, in the order shown: on ingest, or after the launch when they read logs or mark a log pattern. A matching rule sets the defect type, comment, issue or mute, or marks a pattern."
         actions={
           canWrite ? (
             <Button leftSection={<IconPlus size={16} />} onClick={() => setEditing('new')} data-testid="rule-new">
@@ -366,12 +402,18 @@ export default function RulesPage() {
                           {i + 1}
                         </Badge>
                         <Text fw={700}>{r.name}</Text>
+                        <PhaseBadge phase={r.phase} />
                         {!r.enabled && (
                           <Badge size="xs" color="gray" variant="light">
                             disabled
                           </Badge>
                         )}
                       </Group>
+                      {r.note && (
+                        <Text size="xs" c="var(--fh-semantic-warning-fg)" data-testid="rule-note">
+                          {r.note}
+                        </Text>
+                      )}
                       <MatchSummary r={r} />
                       <ActionSummary r={r} types={types} />
                       <Text size="xs" c="dimmed">

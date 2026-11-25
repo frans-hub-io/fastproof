@@ -41,6 +41,28 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(clone_board))
         .routes(routes!(board_data))
         .routes(routes!(preview))
+        .routes(routes!(super::results::patterns))
+}
+
+/// A dashboard with `settings.patterns` waits for the analysis gate (older replicas refuse the
+/// key).
+async fn patterns_gate(s: &AppState, widgets: &[BoardWidget]) -> ApiResult<()> {
+    if !fastproof_store::analysis::boards::uses_analysis_formats(widgets) {
+        return Ok(());
+    }
+    let mut conn = s
+        .store
+        .pool()
+        .acquire()
+        .await
+        .map_err(anyhow::Error::from)?;
+    fastproof_store::analysis::gate::require(
+        &mut conn,
+        &s.cfg.analysis.limits,
+        "dashboards.patterns",
+    )
+    .await
+    .map_err(super::tm_error)
 }
 
 fn board_error(e: BoardError) -> ApiError {
@@ -144,6 +166,7 @@ pub async fn create_board(
     let p = s
         .project_for(&auth, &key, &s.perms.dashboards_write)
         .await?;
+    patterns_gate(&s, &body.widgets).await?;
     let me = caller_key(&auth);
     let mgr = manager(&s, &auth, &key).await;
     let b = s
@@ -212,6 +235,7 @@ pub async fn update_board(
         .project_for(&auth, &key, &s.perms.dashboards_write)
         .await?;
     let revision = if_match(&headers)?;
+    patterns_gate(&s, &body.widgets).await?;
     let mgr = manager(&s, &auth, &key).await;
     let me = caller_key(&auth);
     let b = s
@@ -377,6 +401,7 @@ pub async fn clone_board(
             w.settings.launch_id = None;
         }
     }
+    patterns_gate(&s, &widgets).await?;
     let name = body
         .name
         .unwrap_or_else(|| format!("{} (copy)", src.name).chars().take(120).collect());

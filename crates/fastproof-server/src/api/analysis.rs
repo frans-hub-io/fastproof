@@ -16,7 +16,10 @@ use fastproof_store::analysis::flaky::{FlakyFilter, FlakyItem};
 use fastproof_store::analysis::launches::LaunchPatch;
 use fastproof_store::analysis::plans::{NewTestPlan, PlanRefusal, TestPlanCreated, TestPlanJson};
 use fastproof_store::analysis::rollup::RetentionPreview;
-use fastproof_store::analysis::rules::{NewRule, Rule, RuleChange, RulePatch, validate_rule};
+use fastproof_store::analysis::rules::{
+    AfterLaunchLimit, NewRule, Rule, RuleAction, RuleChange, RuleMatch, RulePatch, RulePhase,
+    after_launch_format, validate_rule,
+};
 use fastproof_store::analysis::settings::ProjectSettings;
 use fastproof_store::analysis::tasks::{ApplyParams, DryRun, Task};
 use fastproof_store::analysis::triage::{TriageOutcome, TriageRefusal, TriageRequest};
@@ -247,6 +250,36 @@ pub async fn apply_triage(
     }
 }
 
+/// A rule evaluated after the launch (`match.log`, `match.signals`, `action.pattern`) is a
+/// format older replicas misread: every write of one waits for the analysis gate.
+async fn after_launch_gate(s: &AppState, m: &RuleMatch, a: &RuleAction) -> ApiResult<()> {
+    let Some(what) = after_launch_format(m, a) else {
+        return Ok(());
+    };
+    let mut conn = s
+        .store
+        .pool()
+        .acquire()
+        .await
+        .map_err(anyhow::Error::from)?;
+    fastproof_store::analysis::gate::require(&mut conn, &s.cfg.analysis.limits, what)
+        .await
+        .map_err(tm_error)
+}
+
+/// 409 `limit_reached {limit: "maxLogRules", max}`.
+fn after_launch_limit(l: AfterLaunchLimit) -> ApiError {
+    ApiError::new(
+        StatusCode::CONFLICT,
+        "limit_reached",
+        format!(
+            "a project has at most {} enabled rules that read logs, signals or mark patterns",
+            l.0
+        ),
+    )
+    .with_details(serde_json::json!({"limit": "maxLogRules", "max": l.0}))
+}
+
 /// Creates a disabled rule from a `NewRule` document (for review before it is enabled); the
 /// rule-draft operation of the MCP tools calls this for a principal that holds `rules:write`.
 pub async fn create_rule_draft(
@@ -261,7 +294,18 @@ pub async fn create_rule_draft(
     validate_rule(&r.name, &r.matcher, &r.action).map_err(ApiError::bad_request)?;
     check_order(r.order)?;
     defect_type_ok(s, project, r.action.defect_type_id).await?;
-    match s.store.create_rule(project.id, &r, by).await? {
+    after_launch_gate(s, &r.matcher, &r.action).await?;
+    match s
+        .store
+        .create_rule_limited(
+            project.id,
+            &r,
+            by,
+            Some(s.cfg.analysis.limits.max_log_rules),
+        )
+        .await?
+        .map_err(after_launch_limit)?
+    {
         RuleChange::Done(r) => Ok(*r),
         RuleChange::Conflict(m) => Err(ApiError::conflict(m)),
         RuleChange::NotFound => Err(ApiError::not_found("rule")),
@@ -326,10 +370,17 @@ pub async fn create_rule(
     validate_rule(&body.name, &body.matcher, &body.action).map_err(ApiError::bad_request)?;
     check_order(body.order)?;
     defect_type_ok(&s, &p, body.action.defect_type_id).await?;
+    after_launch_gate(&s, &body.matcher, &body.action).await?;
     match s
         .store
-        .create_rule(p.id, &body, &auth.principal.name)
+        .create_rule_limited(
+            p.id,
+            &body,
+            &auth.principal.name,
+            Some(s.cfg.analysis.limits.max_log_rules),
+        )
         .await?
+        .map_err(after_launch_limit)?
     {
         RuleChange::Done(r) => {
             s.audit(
@@ -349,7 +400,7 @@ pub async fn create_rule(
 #[utoipa::path(patch, path = "/api/v1/projects/{key}/rules/{id}", tag = "analysis", operation_id = "analysis_patch_rule", request_body = RulePatch,
     params(("key" = String, Path), ("id" = Uuid, Path)),
     responses((status = 200, body = Rule), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),
-        (status = 404, body = ErrorBody)))]
+        (status = 404, body = ErrorBody), (status = 409, body = ErrorBody)))]
 pub async fn patch_rule(
     State(s): State<AppState>,
     auth: Auth,
@@ -363,6 +414,11 @@ pub async fn patch_rule(
         .await?
         .ok_or_else(|| ApiError::not_found("rule"))?;
     check_order(body.order)?;
+    if !rule.readable() && (body.matcher.is_none() || body.action.is_none()) {
+        return Err(ApiError::conflict(
+            "the stored conditions or action are not readable by this version; send both match and action to replace them",
+        ));
+    }
     if let Some(n) = body.name {
         rule.name = n;
     }
@@ -380,7 +436,14 @@ pub async fn patch_rule(
     }
     validate_rule(&rule.name, &rule.matcher, &rule.action).map_err(ApiError::bad_request)?;
     defect_type_ok(&s, &p, rule.action.defect_type_id).await?;
-    match s.store.update_rule(p.id, &rule).await? {
+    after_launch_gate(&s, &rule.matcher, &rule.action).await?;
+    rule.note = None;
+    match s
+        .store
+        .update_rule_limited(p.id, &rule, Some(s.cfg.analysis.limits.max_log_rules))
+        .await?
+        .map_err(after_launch_limit)?
+    {
         RuleChange::Done(r) => {
             s.audit(
                 &auth,
@@ -454,12 +517,14 @@ pub async fn test_rule(
         phase: Default::default(),
         note: None,
     };
-    match s
-        .store
-        .rule_dry_run(p.id, body.launch_id, rule)
-        .await
-        .map_err(crate::limits::heavy_error)?
-    {
+    let dry = if rule.phase() == RulePhase::AfterLaunch {
+        s.store
+            .log_rule_dry_run(p.id, body.launch_id, rule, &s.cfg.analysis.limits)
+            .await
+    } else {
+        s.store.rule_dry_run(p.id, body.launch_id, rule).await
+    };
+    match dry.map_err(crate::limits::heavy_error)? {
         None => Err(ApiError::not_found("launch")),
         Some(Err(e)) => Err(ApiError::bad_request(e)),
         Some(Ok(d)) => Ok(Json(d)),
@@ -476,9 +541,11 @@ pub struct ApplyQuery {
 }
 
 #[utoipa::path(post, path = "/api/v1/projects/{key}/rules/{id}/apply", tag = "analysis", operation_id = "analysis_apply_rule",
+    description = "Queues the rule's retroactive application: task `rule.apply`, or `log_rule.apply` for a rule that \
+        reads logs or signals or marks a pattern (run by the analysis role, within the raw retention).",
     params(("key" = String, Path), ("id" = Uuid, Path), ApplyQuery),
     responses((status = 202, body = Task), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody),
-        (status = 429, body = ErrorBody)))]
+        (status = 409, body = ErrorBody), (status = 429, body = ErrorBody)))]
 pub async fn apply_rule(
     State(s): State<AppState>,
     auth: Auth,
@@ -486,10 +553,39 @@ pub async fn apply_rule(
     Q(q): Q<ApplyQuery>,
 ) -> ApiResult<(StatusCode, Json<Task>)> {
     let p = s.project_for(&auth, &key, &s.perms.rules_write).await?;
-    s.store
+    let rule = s
+        .store
         .rule(p.id, id)
         .await?
         .ok_or_else(|| ApiError::not_found("rule"))?;
+    if !rule.readable() {
+        return Err(ApiError::conflict(
+            fastproof_store::analysis::rules::UNREADABLE_RULE,
+        ));
+    }
+    let after_launch = rule.phase() == RulePhase::AfterLaunch;
+    if after_launch {
+        if !s.cfg.analysis.enabled {
+            return Err(ApiError::new(
+                StatusCode::CONFLICT,
+                "analysis_disabled",
+                "rules that read logs are applied by the analysis role; FastProof Analysis is off on this server",
+            ));
+        }
+        let mut conn = s
+            .store
+            .pool()
+            .acquire()
+            .await
+            .map_err(anyhow::Error::from)?;
+        fastproof_store::analysis::gate::require(
+            &mut conn,
+            &s.cfg.analysis.limits,
+            "tasks.log_rule.apply",
+        )
+        .await
+        .map_err(tm_error)?;
+    }
     let launches = s.store.apply_targets(p.id, q.launch_id).await?;
     if q.launch_id.is_some() && launches.is_empty() {
         return Err(ApiError::not_found("launch"));
@@ -499,16 +595,21 @@ pub async fn apply_rule(
         launch_ids: launches.clone(),
     })
     .map_err(anyhow::Error::from)?;
+    let kind = if after_launch {
+        "log_rule.apply"
+    } else {
+        "rule.apply"
+    };
     let task = s
         .store
-        .enqueue_task(p.id, "rule.apply", params, &auth.principal.name)
+        .enqueue_task(p.id, kind, params, &auth.principal.name)
         .await?
         .ok_or_else(|| ApiError::too_many_requests("too many queued tasks in this project"))?;
     s.audit(
         &auth,
         "rule.apply",
         Some(&p.key),
-        serde_json::json!({"ruleId": id, "launches": launches.len(), "taskId": task.id}),
+        serde_json::json!({"ruleId": id, "launches": launches.len(), "taskId": task.id, "kind": kind}),
     )
     .await;
     Ok((StatusCode::ACCEPTED, Json(task)))

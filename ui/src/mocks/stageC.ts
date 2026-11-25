@@ -24,7 +24,7 @@ import type {
   TriageRequest,
 } from '../api/types-next';
 import { LOG_LEVELS } from '../api/types-next';
-import { clientIdOf, launchDef, launchResults, launchView, NOW, projectLaunches, resultDetail, resultEnv, testKind } from './fixtures';
+import { clientIdOf, launchDef, launchResults, launchView, NOW, patternsOf, projectLaunches, resultDetail, resultEnv, testKind } from './fixtures';
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
@@ -441,6 +441,12 @@ function compile(src: string | undefined): RegExp | null {
 export function ruleMatches(launchId: string, match: RuleMatch): string[] {
   const def = launchDef(launchId);
   if (!def) return [];
+  if (match.log) {
+    const needle = (match.log.contains ?? match.log.regex ?? '').toLowerCase();
+    return launchResults(launchId)
+      .filter((r) => failing(r.status) && patternsOf(r.id).some((p) => p.excerpt.toLowerCase().includes(needle)))
+      .map((r) => r.id);
+  }
   const msg = compile(match.messageRegex ?? undefined);
   const trace = compile(match.traceRegex ?? undefined);
   const out: string[] = [];
@@ -460,6 +466,10 @@ export function ruleMatches(launchId: string, match: RuleMatch): string[] {
   return out;
 }
 
+function phaseOf(r: Pick<Rule, 'match' | 'action'>): Rule['phase'] {
+  return r.match.log || r.match.signals || r.action.pattern ? 'afterLaunch' : 'ingest';
+}
+
 export function createRule(body: Partial<Rule>): Rule {
   const now = new Date().toISOString();
   const rule: Rule = {
@@ -473,6 +483,7 @@ export function createRule(body: Partial<Rule>): Rule {
     updatedAt: now,
     hits: 0,
   };
+  rule.phase = phaseOf(rule);
   compile(rule.match.messageRegex ?? undefined);
   compile(rule.match.traceRegex ?? undefined);
   state.rules.push(rule);
@@ -487,6 +498,7 @@ export function patchRule(id: string, body: Partial<Rule>): Rule | null {
     compile(body.match.traceRegex ?? undefined);
   }
   Object.assign(r, { ...body, id: r.id, createdAt: r.createdAt, hits: r.hits, updatedAt: new Date().toISOString() });
+  r.phase = phaseOf(r);
   return r;
 }
 

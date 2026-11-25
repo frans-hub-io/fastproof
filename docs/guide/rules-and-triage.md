@@ -102,8 +102,9 @@ page or through the API (needs `rules:write`).
 | `fingerprint` | One cluster (16 hex digits) |
 | `environment` | Environment key of the launch |
 | `statuses` | Result statuses; `failed` and `broken` by default |
+| `log`, `signals` | Log lines and signals of failed attempts: see [Log patterns](#log-patterns) |
 
-At least one of the first five is required; every given condition must hold.
+At least one condition besides `statuses` is required; every given condition must hold.
 
 | Action | Meaning |
 |---|---|
@@ -112,6 +113,7 @@ At least one of the first five is required; every given condition must hold.
 | `issue` | `{url, key?}` |
 | `mute` | `{days?}`: mute the test for 1 to 365 days, or without an end |
 | `accept` | Mark the failure as accepted: a known, tolerated failure |
+| `pattern` | Mark the result with a log pattern: see [Log patterns](#log-patterns) |
 
 How rules run:
 
@@ -130,6 +132,83 @@ Patterns use the Rust `regex` syntax, which matches in linear time: no backrefer
 Patterns have at most 1 KiB and a bounded compiled size, a project has at most 100 rules, and each evaluation
 pass has a work budget; when it runs out, the remaining results get the default defect and the server counts
 it in `fastproof_rule_budget_exhausted_total`.
+
+## Log patterns
+
+A rule can also look at the **logs** of failed attempts, at **signals** about them, and can **mark** results
+with a named log pattern (like ReportPortal's pattern analysis). These rules belong to
+[FastProof Analysis](analysis.md): they run in the analysis role (`FASTPROOF_ANALYSIS=on`) once a launch has
+finished and settled, never on ingest, because log lines often arrive after the result (agents that batch
+them, live log streams). The **Rules** page shows when each rule runs: *on ingest* or *after launch*.
+
+```json
+{
+  "name": "Out of memory",
+  "match": {
+    "log": {"contains": "OutOfMemoryError", "levels": ["error"], "lastBytes": 262144}
+  },
+  "action": {"defectTypeId": "0193a5b2-...", "pattern": "oom"}
+}
+```
+
+| Condition | Meaning |
+|---|---|
+| `log.regex` or `log.contains` | Exactly one: a regular expression on each log line (Rust syntax), or a case-insensitive text |
+| `log.levels` | Only lines of these levels (`trace`, `debug`, `info`, `warn`, `error`) |
+| `log.streams` | Only lines of these streams (`stdout`, `stderr`, `log`, `step`) |
+| `log.lastBytes` | Read only the last bytes of each attempt's log: 1024 to 1048576 (default 256 KiB, `FASTPROOF_ANALYSIS_LOG_LAST_BYTES`) |
+| `signals` | 1 to 5 `{source, kind?}`: the result has a stored [signal](signals.md) of that source (`mock`, `grid`, `ci`, `k8s`) and kind |
+
+| Action | Meaning |
+|---|---|
+| `pattern` | Mark the result with this pattern (`^[a-z0-9][a-z0-9._-]{0,63}$`); only a mark, the defect stays. Combinable with the other actions |
+
+`log` and `signals` add to the other conditions (all must hold). A rule needs at least one condition and one
+action; `log` or `signals` alone is enough, and so is `pattern` alone as the action.
+
+What the rule reads, per launch:
+
+- the **failed and broken attempts**, newest first, at most `FASTPROOF_ANALYSIS_LOG_ATTEMPTS` (2000);
+- of each, the **last `lastBytes`** of its live log (the lines reporters stream to
+  `POST .../launches/{id}/logs`, decompressed one chunk at a time), or, when the attempt has no live log, of the
+  `stdout` and `stderr` captured in its uploaded result. Captured output has no levels: a rule that names
+  `levels` skips it;
+- every line cut to 16 KiB; patterns compiled with the same limits as the other rules (linear time, no
+  backreferences or lookaround, bounded size); the time spent decoding and matching is at most
+  `FASTPROOF_ANALYSIS_LOG_CPU_MS` (2 s) per launch.
+
+When a budget runs out, the launch's `logRules` step (`GET .../launches/{id}/analysis`) is `partial` and its
+`detail.reason` says which: `attempts`, `log_cpu` or `regex`; the server counts it in
+`fastproof_analysis_budget_exhausted_total{kind}`.
+
+Effects:
+
+- **Pattern marks** appear on the result (tab **Triage**, with the matching line, at most 300 characters,
+  control characters and colour codes removed; lines are shown as the reporter sent them, so mask secrets at
+  the source), in `GET .../results/{id}` as `patterns`, as a filter `GET .../launches/{id}/results?pattern=oom`,
+  in `GET .../analysis/patterns?days=30&limit=20` (results and launches per pattern) and in the dashboard widget
+  **Most popular error patterns** with its setting *Count: log patterns marked by rules*
+  (`settings.patterns: "logPatterns"`). A new analysis of a launch replaces the marks these rules made there.
+- **Other actions** (defect, comment, issue, mute, accept) are applied like a retroactive application: the
+  first matching rule in `order` per result, results a person or an agent triaged are left alone, and the
+  changes of each rule are one batch in the triage history (`via: retro`, by `rule:<id>`).
+
+**Undo.** A batch of a rule that ran after the launch, or of an application to past launches, is undoable:
+**Undo** in the result's triage history or `POST .../triage/undo {"batchId": "..."}`. Only the results that
+still have the rule's decision are restored. (Batches of rules applied on ingest are not undoable: the next
+ingest would apply them again; change the rule instead.)
+
+**Dry run** of such a rule (`POST .../rules/test`) reads the logs of the chosen launch the same way and writes
+nothing. **Apply to past launches** queues the task `log_rule.apply` for the analysis role: it reads the
+launches within the project's raw retention (`retention.rawDays`), each within the per-launch budget and the
+whole task within 5 minutes; `GET .../tasks/{id}` shows `matched`, `marked`, `updated` and whether it was
+`partial`. Applying needs FastProof Analysis on (409 `analysis_disabled` otherwise).
+
+Limits: at most `FASTPROOF_ANALYSIS_MAX_LOG_RULES` (100) enabled after-launch rules per project (409
+`limit_reached`, `details {limit: "maxLogRules", max}`). During an upgrade from a version without these rules,
+writing one (create, change, agent draft, apply, and a dashboard with `settings.patterns`) answers 409
+`upgrade_in_progress` until every replica runs this version: an older replica would read such a rule as one
+that matches every failure.
 
 ## Flaky tests and mutes
 

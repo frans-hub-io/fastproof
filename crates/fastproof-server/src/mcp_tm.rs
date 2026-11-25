@@ -13,10 +13,14 @@ use std::io::Read;
 
 use fastproof_store::tm::cases::{CaseCtx, CaseQuery, HistoryQuery};
 use fastproof_store::tm::plans::{PlanItemFilter, PlanListFilter};
+use fastproof_store::tm::query::QueryCtx;
+use fastproof_store::tm::review::ReviewQueueQuery;
 use fastproof_store::tm::runs::RunItemFilter;
+use fastproof_store::tm::shared_steps::SharedStepQuery;
 use fastproof_store::tm::{
     CaseBody, CaseFilter, CaseLink, CaseLinkType, CasePatch, CaseProposal, CaseStatus, CaseStep,
-    CaseWrite, ResultSource, RunStatus, StepStatus, TestPlanItemsChange, TmError,
+    CaseWrite, QueryEntity, ResultSource, ReviewKind, ReviewState, RunStatus, SharedStepOrigin,
+    SharedStepRef, SharedStepWrite, StepStatus, TestPlanItemsChange, TmError,
 };
 use franshub_auth::Auth;
 use schemars::JsonSchema;
@@ -50,6 +54,9 @@ pub struct SearchCasesArgs {
     /// Field key → accepted values.
     fields: Option<BTreeMap<String, Vec<String>>>,
     ai_unreviewed: Option<bool>,
+    /// An FPQL query (at most 4096 bytes) ANDed with the other filters, e.g.
+    /// `status = active and tag = smoke`; see `validate_query`.
+    query: Option<String>,
     /// 1 to 100 (default 20).
     limit: Option<i64>,
 }
@@ -119,6 +126,11 @@ pub struct DraftStep {
     data: String,
     #[serde(default)]
     steps: Vec<DraftStep>,
+    /// Number of a shared step (`SS-<n>`) this top-level step references; action, expected, data
+    /// and steps must then stay empty. Only in `propose_case_update`; the shared step must be
+    /// reviewed (not an AI draft) and not archived.
+    #[serde(default)]
+    shared_step: Option<i64>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -175,6 +187,76 @@ pub struct ProposeArgs {
     fields: Option<BTreeMap<String, Value>>,
     /// Why the change is proposed.
     rationale: String,
+    agent: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ValidateQueryArgs {
+    project: String,
+    /// The FPQL query.
+    query: String,
+    /// `cases` (default).
+    entity: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ListSharedStepsArgs {
+    project: String,
+    /// Words of the name, or `SS-12`.
+    q: Option<String>,
+    archived: Option<bool>,
+    /// 1 to 100 (default 20).
+    limit: Option<i64>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SharedStepArgs {
+    project: String,
+    /// Shared step number (`12` for SS-12).
+    number: i64,
+    /// Cases listed under `usages`, 1 to 100 (default 20).
+    usages_limit: Option<i64>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReviewQueueArgs {
+    project: String,
+    /// `case` or `sharedStep`.
+    kind: Option<String>,
+    /// `pending` or `changes_requested`.
+    state: Option<String>,
+    /// Only objects the caller may approve and has not voted on.
+    waiting_for_me: Option<bool>,
+    /// Only objects whose head the caller made.
+    mine: Option<bool>,
+    /// Cases of this folder and its subfolders.
+    folder_id: Option<Uuid>,
+    /// 1 to 100 (default 20).
+    limit: Option<i64>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PlanDispatchesArgs {
+    project: String,
+    plan_id: Uuid,
+    /// 1 to 100 (default 20).
+    limit: Option<i64>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SharedStepDraftArgs {
+    project: String,
+    name: String,
+    #[serde(default)]
+    description: String,
+    /// Steps (at most two levels; no shared steps inside).
+    steps: Vec<DraftStep>,
     agent: Option<String>,
 }
 
@@ -251,6 +333,42 @@ pub(crate) const TOOLS: &[ToolSpec] = &[
         write: true,
     },
     ToolSpec {
+        name: "validate_query",
+        description: "Checks an FPQL query: ok with the normalized text and the number of matching cases (capped at 10000), or the error with its position. Runs with a statement timeout.",
+        schema: schema::<ValidateQueryArgs>,
+        write: false,
+    },
+    ToolSpec {
+        name: "list_shared_steps",
+        description: "Shared steps (reusable step blocks, SS-n) of a project with their version, review state and usage counts, at most 100.",
+        schema: schema::<ListSharedStepsArgs>,
+        write: false,
+    },
+    ToolSpec {
+        name: "get_shared_step",
+        description: "A shared step with its steps, version, review state and the cases that use it.",
+        schema: schema::<SharedStepArgs>,
+        write: false,
+    },
+    ToolSpec {
+        name: "review_queue",
+        description: "Cases and shared steps waiting for review (pending or changes requested). An agent reads the queue; it never votes.",
+        schema: schema::<ReviewQueueArgs>,
+        write: false,
+    },
+    ToolSpec {
+        name: "plan_dispatches",
+        description: "CI runs started from a test plan: status, environment, ref, variables and pipeline reference, newest first. An agent never starts CI.",
+        schema: schema::<PlanDispatchesArgs>,
+        write: false,
+    },
+    ToolSpec {
+        name: "create_shared_step_draft",
+        description: "Create a shared step as an AI draft (origin ai, aiUnreviewed). Cases cannot reference it until a person other than the creator reviews it. Needs cases:write or ai:propose (the agent role).",
+        schema: schema::<SharedStepDraftArgs>,
+        write: true,
+    },
+    ToolSpec {
         name: "add_cases_to_plan",
         description: "Add cases to a managed test plan. Needs plans:write.",
         schema: schema::<AddToPlanArgs>,
@@ -298,6 +416,37 @@ fn steps_of(s: &[DraftStep], depth: usize) -> Vec<CaseStep> {
             shared: None,
         })
         .collect()
+}
+
+/// Steps of a proposal: like [`steps_of`], and top-level `sharedStep` numbers become references
+/// to shared steps of the project (an unknown number is a refusal; archived and unreviewed AI
+/// drafts are refused by the store's reference check).
+async fn proposal_steps(
+    s: &AppState,
+    project_id: Uuid,
+    steps: &[DraftStep],
+) -> Result<Vec<CaseStep>, ToolError> {
+    let mut out = steps_of(steps, 1);
+    for (o, d) in out.iter_mut().zip(steps) {
+        if let Some(n) = d.shared_step {
+            if !(d.action.is_empty()
+                && d.expected.is_empty()
+                && d.data.is_empty()
+                && d.steps.is_empty())
+            {
+                return Err(ToolError(
+                    "a sharedStep reference has no action, expected, data or steps".into(),
+                ));
+            }
+            let row = s.store.shared_step_view(project_id, n).await.map_err(tm)?;
+            o.shared = Some(SharedStepRef {
+                id: row.id,
+                number: row.number,
+                version: None,
+            });
+        }
+    }
+    Ok(out)
 }
 
 fn field_values(
@@ -426,7 +575,14 @@ async fn run_tool(s: &AppState, name: &str, a: &Value, auth: &Auth) -> ToolResul
                 },
                 ai_unreviewed: x.ai_unreviewed,
                 limit: limit(x.limit, 20, 100)?,
+                query: x.query.clone(),
+                me: auth.principal.name.clone(),
+                owner: crate::limits::caller_key(auth),
                 ..Default::default()
+            };
+            let _permit = match q.query.as_deref().map(str::trim) {
+                Some(src) if !src.is_empty() => Some(s.guards.heavy(auth).await?),
+                _ => None,
             };
             let l = s.store.list_cases(p.id, &q).await.map_err(tm)?;
             Ok(json!({"items": l.items, "more": l.next.is_some()}))
@@ -696,7 +852,7 @@ async fn run_tool(s: &AppState, name: &str, a: &Value, auth: &Auth) -> ToolResul
                         .clone()
                         .unwrap_or_else(|| cur.body.preconditions.clone()),
                     steps: match &x.steps {
-                        Some(st) => steps_of(st, 1),
+                        Some(st) => proposal_steps(s, p.id, st).await?,
                         None => cur.body.steps.clone(),
                     },
                     links: cur.body.links.clone(),
@@ -742,6 +898,141 @@ async fn run_tool(s: &AppState, name: &str, a: &Value, auth: &Auth) -> ToolResul
             .await;
             Ok(
                 json!({"suggestionId": id, "status": "pending", "caseNumber": cur.number, "baseRevision": cur.revision}),
+            )
+        }
+        "validate_query" => {
+            let x: ValidateQueryArgs = args(a)?;
+            let p = project(s, auth, &x.project, &s.perms.cases_read).await?;
+            let entity = match x.entity.as_deref() {
+                None | Some("") => QueryEntity::Cases,
+                Some(e) => QueryEntity::parse(e)
+                    .ok_or_else(|| ToolError("entity must be cases or requirements".into()))?,
+            };
+            let _permit = s.guards.heavy(auth).await?;
+            let ctx = QueryCtx::caller(&auth.principal.name, &crate::limits::caller_key(auth));
+            let v = s
+                .store
+                .validate_query(p.id, entity, &x.query, &ctx)
+                .await
+                .map_err(tm)?;
+            Ok(serde_json::to_value(v).unwrap_or_default())
+        }
+        "list_shared_steps" => {
+            let x: ListSharedStepsArgs = args(a)?;
+            let p = project(s, auth, &x.project, &s.perms.cases_read).await?;
+            let q = SharedStepQuery {
+                q: x.q,
+                archived: x.archived.unwrap_or(false),
+                before: None,
+                limit: limit(x.limit, 20, 100)?,
+            };
+            let l = s.store.list_shared_steps(p.id, &q).await.map_err(tm)?;
+            Ok(json!({"items": l.items, "more": l.next.is_some()}))
+        }
+        "get_shared_step" => {
+            let x: SharedStepArgs = args(a)?;
+            let p = project(s, auth, &x.project, &s.perms.cases_read).await?;
+            let v = s.store.shared_step_view(p.id, x.number).await.map_err(tm)?;
+            let u = s
+                .store
+                .shared_step_usages(p.id, x.number, None, limit(x.usages_limit, 20, 100)?)
+                .await
+                .map_err(tm)?;
+            let mut v = serde_json::to_value(&v).unwrap_or_default();
+            if let Some(o) = v.as_object_mut() {
+                o.remove("html");
+                o.insert("key".into(), json!(format!("SS-{}", x.number)));
+                o.insert(
+                    "usages".into(),
+                    json!({"items": u.items, "more": u.next.is_some(), "openRuns": u.open_runs}),
+                );
+            }
+            Ok(v)
+        }
+        "review_queue" => {
+            let x: ReviewQueueArgs = args(a)?;
+            let p = project(s, auth, &x.project, &s.perms.cases_read).await?;
+            let q = ReviewQueueQuery {
+                kind: x
+                    .kind
+                    .as_deref()
+                    .map(|k| {
+                        ReviewKind::parse(k)
+                            .ok_or_else(|| ToolError("kind must be case or sharedStep".into()))
+                    })
+                    .transpose()?,
+                state: x
+                    .state
+                    .as_deref()
+                    .map(|k| {
+                        ReviewState::parse(k).ok_or_else(|| {
+                            ToolError("state must be pending or changes_requested".into())
+                        })
+                    })
+                    .transpose()?,
+                reviewer_me: x.waiting_for_me.unwrap_or(false),
+                author_me: x.mine.unwrap_or(false),
+                folder: x.folder_id,
+                before: None,
+                limit: limit(x.limit, 20, 100)?,
+            };
+            let l = s
+                .store
+                .review_queue(p.id, &q, &auth.principal.name, s.can_review(auth, &p.key))
+                .await
+                .map_err(tm)?;
+            Ok(json!({"items": l.items, "more": l.next.is_some()}))
+        }
+        "plan_dispatches" => {
+            let x: PlanDispatchesArgs = args(a)?;
+            let p = project(s, auth, &x.project, &s.perms.cases_read).await?;
+            let mut l = s
+                .store
+                .plan_dispatches(p.id, x.plan_id, None, limit(x.limit, 20, 100)?)
+                .await
+                .map_err(tm)?;
+            let admin = auth
+                .principal
+                .denial(&s.perms.settings_write, Some(&p.key))
+                .is_none();
+            l.items = l
+                .items
+                .into_iter()
+                .map(|d| crate::api::plans::shown(d, admin))
+                .collect();
+            Ok(json!({"items": l.items, "more": l.next.is_some()}))
+        }
+        "create_shared_step_draft" => {
+            let x: SharedStepDraftArgs = args(a)?;
+            let p = draft_project(s, auth, &x.project).await?;
+            crate::tm_rate::admit(s, auth)?;
+            let agent = agent_of(&x.agent)?;
+            if x.steps.iter().any(|d| d.shared_step.is_some()) {
+                return Err(ToolError(
+                    "a shared step cannot contain shared steps".into(),
+                ));
+            }
+            let w = SharedStepWrite {
+                name: x.name.clone(),
+                description: Some(x.description.clone()),
+                steps: steps_of(&x.steps, 1),
+            };
+            let row = s
+                .store
+                .create_shared_step(&ctx(s, &p, auth), &w, SharedStepOrigin::Ai)
+                .await
+                .map_err(tm)?;
+            s.audit(
+                auth,
+                "sharedStep.create",
+                Some(&p.key),
+                json!({"number": row.number, "name": row.name, "via": "mcp", "source": "ai",
+                "agent": agent}),
+            )
+            .await;
+            Ok(
+                json!({"number": row.number, "key": row.key(), "aiUnreviewed": true,
+                "url": format!("/p/{}/shared-steps/{}", p.key, row.number)}),
             )
         }
         "add_cases_to_plan" => {

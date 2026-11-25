@@ -537,7 +537,7 @@ fn can_see_ci(s: &AppState, auth: &Auth, project: &str) -> bool {
 
 /// What callers without `settings:write` may see of a dispatch: generic error texts and only the
 /// pipeline id in `ciRef`, as the CI host and the secret names are settings details.
-fn shown(mut d: PlanDispatch, admin: bool) -> PlanDispatch {
+pub(crate) fn shown(mut d: PlanDispatch, admin: bool) -> PlanDispatch {
     if !admin {
         d.error = d.error.as_deref().map(generic_error);
         d.ci_ref = d.ci_ref.as_deref().map(generic_ci_ref);

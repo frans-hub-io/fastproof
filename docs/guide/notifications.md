@@ -17,6 +17,7 @@ default; email needs `FASTPROOF_SMTP_URL`. See [Configuration](../operations/con
 | `newFailures` | The launch has failures that the previous launch of the branch did not have |
 | `manualRunClosed` | The [manual run](manual-runs.md#combined-launches-and-closing-a-run) of the launch was closed and the gate evaluated again with its results |
 | `caseReviewRequested` | Case or shared step versions started to wait for [review](workflows-and-review.md#version-review) (see [Review requests](#review-requests)) |
+| `errorRegressed` | [Unique errors](unique-errors.md) that were resolved occurred again in the launch (see [Regressed errors](#regressed-errors)) |
 
 Closing the manual run of a launch that CI has already finished evaluates its gate again and sends only
 `manualRunClosed`, with the new gate result and counts; `launchFinished`, `gateFailed` and `newFailures` are
@@ -220,6 +221,24 @@ its next window are reported in the next message. The first message of a channel
   "key", "name", "author", "url"}], "url", "deliveryId"}` with the same headers and signature as launch
   events; Slack, email and Telegram get the same as plain text, Teams a short card with an **Open reviews**
   button.
+- Subscribing a channel to this event is refused with 409 `upgrade_in_progress` while a replica older than this
+  version still runs (see [Upgrading](../operations/upgrading.md)).
+
+### Regressed errors
+
+`errorRegressed` needs [FastProof Analysis](analysis.md). When the analysis of a finished launch finds
+[unique errors](unique-errors.md) that were `resolved` and occur again, it sends one message per channel: the
+launch (number, name, branch, commit), how many errors regressed and the first 10 of them (fingerprint and
+message), with links to each error and to the project's **Errors** page filtered to regressed errors when
+`FASTPROOF_PUBLIC_URL` is set.
+
+- At most one message per channel and project every 10 minutes: errors that regress while a channel waits are
+  not sent again; they are on the **Errors** page.
+- Launch `filter`s apply as for launch events. Debug launches and `ignored` errors never send it.
+- The webhook body is `{"project", "event": "errorRegressed", "launch": {"id", "number", "name", "branch",
+  "commit", "url"}, "count", "items": [{"fingerprint", "message", "url"}], "url", "deliveryId"}` with the same
+  headers and signature as launch events; Slack, email and Telegram get the same as plain text, Teams a short
+  card with an **Open errors** button.
 - Subscribing a channel to this event is refused with 409 `upgrade_in_progress` while a replica older than this
   version still runs (see [Upgrading](../operations/upgrading.md)).
 

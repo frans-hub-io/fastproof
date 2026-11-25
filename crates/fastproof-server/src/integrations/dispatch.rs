@@ -262,6 +262,15 @@ async fn send(s: &AppState, job: &DeliveryJob) -> Outcome {
         };
         return notify::send_review(s, job.project_id, job.id, &n, &d).await;
     }
+    if let Some(errors) = job.payload.get("errors") {
+        let (Ok(d), Ok(n)) = (
+            serde_json::from_value::<notify::ErrorDigest>(errors.clone()),
+            serde_json::from_value::<Notification>(job.payload["notification"].clone()),
+        ) else {
+            return Outcome::Fail("the delivery payload is unreadable".into(), None);
+        };
+        return notify::send_errors(s, job.project_id, job.id, &n, &d).await;
+    }
     let Ok(sm) = serde_json::from_value::<Summary>(job.payload["summary"].clone()) else {
         return Outcome::Fail("the delivery payload is unreadable".into(), None);
     };

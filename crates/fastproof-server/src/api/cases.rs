@@ -93,6 +93,7 @@ type CaseReply = ([(header::HeaderName, HeaderValue); 1], Json<Case>);
 async fn reply(s: &AppState, p: &Project, row: &CaseRow) -> ApiResult<CaseReply> {
     let mut c = s.store.case_view_of(p.id, row).await.map_err(tm_error)?;
     c.html = markdown::render_body(&c.body, &p.key);
+    super::shared_steps::render_briefs(&mut c.shared_steps, &p.key);
     Ok((etag(c.revision), Json(c)))
 }
 
@@ -321,6 +322,7 @@ pub async fn get_case(
     let n = case_number(&n)?;
     let mut c = s.store.case_view(p.id, n).await.map_err(tm_error)?;
     c.html = markdown::render_body(&c.body, &p.key);
+    super::shared_steps::render_briefs(&mut c.shared_steps, &p.key);
     Ok((etag(c.revision), Json(c)))
 }
 

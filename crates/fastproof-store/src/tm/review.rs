@@ -867,15 +867,16 @@ async fn apply_votes(
     Ok(out)
 }
 
-/// Call point for cases whose `approved_version` a vote moved, in the vote's transaction.
-/// TODO(merge with shared steps): call `super::shared_steps::resync_case_usages(conn, project_id,
-/// case_id)` for each id, so shared step usages follow the runnable version; S's function is on
-/// its branch and not in this tree yet.
+/// Cases whose `approved_version` a vote moved, in the vote's transaction: shared step usages
+/// follow the runnable version.
 async fn approved_version_moved(
-    _conn: &mut PgConnection,
-    _project_id: Uuid,
-    _case_ids: &[Uuid],
+    conn: &mut PgConnection,
+    project_id: Uuid,
+    case_ids: &[Uuid],
 ) -> TmResult<()> {
+    for id in case_ids {
+        super::shared_steps::resync_case_usages(conn, project_id, *id).await?;
+    }
     Ok(())
 }
 

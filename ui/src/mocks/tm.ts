@@ -57,6 +57,7 @@ import {
   type TmState,
 } from './tmFixtures';
 import { matchesQuery, queryProblem } from './queries';
+import { sharedBriefsFor, sharedPinsOf } from './sharedStepsState';
 import { renderMarkdown } from './tmMarkdown';
 
 const API = '/api/v1';
@@ -183,7 +184,7 @@ function caseView(c: MockCase, key: string): Case {
     updatedAt: c.updatedAt,
     archivedAt: c.archivedAt,
     ...(reviewHooks.caseExtras ? reviewHooks.caseExtras(c) : { state: null, approvedVersion: null, reviewState: null }),
-    sharedSteps: [],
+    sharedSteps: sharedBriefsFor(c.body.steps, key),
   };
 }
 
@@ -454,7 +455,7 @@ function runItemView(r: MockRunItem, key: string): RunItem {
     finishedAt: r.finishedAt,
     revision: r.revision,
     iterationCount: 0,
-    sharedPins: [],
+    sharedPins: sharedPinsOf(r.steps),
     iterations: [],
     parameterColumns: [],
   };

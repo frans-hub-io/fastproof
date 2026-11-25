@@ -896,33 +896,3 @@ async fn insert_remap_job(
     .await?;
     Ok(id)
 }
-
-/// Ends a claimed job of a kind this build cannot run yet as `failed` ("not available").
-pub(crate) async fn fail_job(store: &Store, job_id: Uuid, owner: &str, kind: &str) -> TmResult<()> {
-    let key: Option<String> = sqlx::query_scalar(
-        "select p.key from tm_jobs j join projects p on p.id = j.project_id where j.id = $1",
-    )
-    .bind(job_id)
-    .fetch_optional(&store.pool)
-    .await?;
-    let report = super::ImportReport {
-        errors: vec![super::ImportRowError {
-            row: 0,
-            code: "not_available".into(),
-            message: format!("{kind} jobs are not available"),
-        }],
-        ..Default::default()
-    };
-    store
-        .finish_tm_job(
-            job_id,
-            owner,
-            key.as_deref().unwrap_or_default(),
-            TmJobStatus::Failed,
-            TmJobProgress::default(),
-            Some(&report),
-            Some(json!({})),
-        )
-        .await?;
-    Ok(())
-}

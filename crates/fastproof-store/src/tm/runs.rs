@@ -1265,6 +1265,13 @@ impl Store {
         let pins = pins_of(r.try_get("shared_pins")?);
         let snapshot =
             executed_snapshot(&mut conn, project_id, case_id, case_version, pins.as_ref()).await?;
+        let shared_pins = match pins.as_ref().filter(|p| !p.is_empty()) {
+            Some(p) => {
+                let review = super::review::review_settings(&mut conn, project_id).await?;
+                super::expand::pin_views(&mut conn, project_id, p, &review).await?
+            }
+            None => Vec::new(),
+        };
         let mut steps = step_rows(&mut conn, item_id).await?;
         steps.sort_by_key(|s| path_key(&s.0));
         let att_ids: Vec<Uuid> = steps.iter().flat_map(|s| s.4.iter().copied()).collect();
@@ -1289,7 +1296,7 @@ impl Store {
             started_at: r.try_get("started_at")?,
             finished_at: r.try_get("finished_at")?,
             revision: r.try_get("revision")?,
-            shared_pins: Vec::new(),
+            shared_pins,
             iterations: Vec::new(),
             parameter_columns: Vec::new(),
         })
@@ -1983,14 +1990,17 @@ impl Store {
     }
 
     /// A page of the manual report of a launch: items after case number `after`, with their
-    /// steps from the executed snapshot and the step results.
+    /// steps from the executed snapshot and the step results. The page ends early after the
+    /// item whose step text takes it over `max_bytes` (then `true`: more items may follow), so
+    /// expanded shared steps never hold a page of `limit` large snapshots in memory.
     pub async fn manual_report_page(
         &self,
         project_id: Uuid,
         launch_id: Uuid,
         after: i64,
         limit: i64,
-    ) -> anyhow::Result<Vec<ManualReportItem>> {
+        max_bytes: usize,
+    ) -> anyhow::Result<(Vec<ManualReportItem>, bool)> {
         let mut conn = self.pool.acquire().await?;
         let rows = sqlx::query(
             "select ri.id, ri.case_id, c.number, coalesce(ri.case_name, c.name) as name, ri.case_version, ri.status, \
@@ -2021,21 +2031,18 @@ impl Store {
         for (i, p, s, a, c) in srows {
             steps.entry(i).or_default().push((p, s, a, c));
         }
-        let mut snapshots: HashMap<SnapshotKey, CaseSnapshot> = HashMap::new();
         let mut out = Vec::with_capacity(rows.len());
+        let mut bytes = 0usize;
         for r in &rows {
+            if bytes > max_bytes {
+                return Ok((out, true));
+            }
             let id: Uuid = r.try_get("id")?;
             let case_id: Uuid = r.try_get("case_id")?;
             let version: i32 = r.try_get("case_version")?;
             let pins = pins_of(r.try_get("shared_pins")?);
-            let key = snapshot_key(case_id, version, pins.as_ref());
-            if let std::collections::hash_map::Entry::Vacant(e) = snapshots.entry(key.clone()) {
-                e.insert(
-                    executed_snapshot(&mut conn, project_id, case_id, version, pins.as_ref())
-                        .await?,
-                );
-            }
-            let snap = &snapshots[&key];
+            let snap =
+                &executed_snapshot(&mut conn, project_id, case_id, version, pins.as_ref()).await?;
             let results: HashMap<String, (String, String, String)> = steps
                 .remove(&id)
                 .unwrap_or_default()
@@ -2047,7 +2054,7 @@ impl Store {
                 .filter_map(|(p, (s, _, _))| StepStatus::parse(s).map(|s| (p.clone(), s)))
                 .collect();
             let effective = effective_statuses(&snap.body.steps, &recorded);
-            let report_steps = step_paths(&snap.body.steps)
+            let report_steps: Vec<ManualReportStep> = step_paths(&snap.body.steps)
                 .into_iter()
                 .map(|sp| {
                     let step = step_at(&snap.body.steps, &sp.path);
@@ -2066,6 +2073,16 @@ impl Store {
                 })
                 .collect();
             let status: String = r.try_get("status")?;
+            bytes += report_steps
+                .iter()
+                .map(|s| {
+                    s.action.len()
+                        + s.expected.len()
+                        + s.actual.len()
+                        + s.comment.len()
+                        + s.path.len()
+                })
+                .sum::<usize>();
             out.push(ManualReportItem {
                 case_number: r.try_get("number")?,
                 name: r.try_get("name")?,
@@ -2081,7 +2098,7 @@ impl Store {
                 steps: report_steps,
             });
         }
-        Ok(out)
+        Ok((out, false))
     }
 }
 

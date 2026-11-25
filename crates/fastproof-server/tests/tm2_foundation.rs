@@ -310,8 +310,7 @@ async fn formats_of_later_areas_are_refused_until_built() {
                 "shared": {"id": "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b", "number": 1}}]}}),
         )
         .await;
-    assert_eq!(st, StatusCode::BAD_REQUEST, "{b}");
-    assert_eq!(b["code"], "invalid_case");
+    assert_eq!(st, StatusCode::NOT_FOUND, "{b}");
     let (st, b) = s
         .post(
             "/api/v1/projects/later/cases",

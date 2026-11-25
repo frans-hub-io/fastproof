@@ -264,7 +264,7 @@ pub fn render(md: &str, project_key: &str) -> String {
     sanitizer().clean(&html).to_string()
 }
 
-fn render_steps(steps: &[CaseStep], project_key: &str) -> Vec<CaseStepHtml> {
+pub fn render_steps(steps: &[CaseStep], project_key: &str) -> Vec<CaseStepHtml> {
     steps
         .iter()
         .map(|s| CaseStepHtml {

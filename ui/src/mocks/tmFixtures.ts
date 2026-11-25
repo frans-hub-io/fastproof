@@ -20,6 +20,7 @@ import type {
   RunItemExecution,
 } from '../api/tm';
 import { CATALOG, launchResults, launchView, NOW, projectLaunches } from './fixtures';
+import { expandSharedForRun } from './sharedStepsState';
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
@@ -628,7 +629,7 @@ export function runItemFor(state: TmState, launchId: string, c: MockCase, assign
     executionNo: 1,
     updatedAt: iso(NOW - DAY),
     preconditions: c.body.preconditions,
-    steps: structuredClone(c.body.steps),
+    steps: expandSharedForRun(structuredClone(c.body.steps)),
     stepResults: [],
     comment: '',
     defect: null,

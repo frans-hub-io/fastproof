@@ -65,6 +65,9 @@ pub struct GateCounts {
     pub broken: i64,
     pub skipped: i64,
     pub flaky: i64,
+    /// Failed or broken results, not muted, without a defect or with one of group
+    /// `toInvestigate`.
+    pub to_investigate: i64,
 }
 
 /// A delivery to queue.
@@ -433,11 +436,13 @@ impl Store {
 
     /// Result counts of a launch; muted results count as neither failed nor broken.
     pub async fn gate_counts(&self, launch: &Launch) -> anyhow::Result<GateCounts> {
-        let r: (i64, i64, i64, i64, i64, i64) = sqlx::query_as(
+        let r: (i64, i64, i64, i64, i64, i64, i64) = sqlx::query_as(
             "select count(*), count(*) filter (where status = 'passed'), \
              count(*) filter (where status = 'failed' and not muted), \
              count(*) filter (where status = 'broken' and not muted), \
-             count(*) filter (where status = 'skipped'), count(*) filter (where flaky_in_run) \
+             count(*) filter (where status = 'skipped'), count(*) filter (where flaky_in_run), \
+             count(*) filter (where status in ('failed', 'broken') and not muted \
+               and coalesce(defect->>'group', 'toInvestigate') = 'toInvestigate') \
              from results where launch_id = $1 and launch_created_at = $2",
         )
         .bind(launch.id)
@@ -451,6 +456,7 @@ impl Store {
             broken: r.3,
             skipped: r.4,
             flaky: r.5,
+            to_investigate: r.6,
         })
     }
 
@@ -516,10 +522,11 @@ impl Store {
         ))
     }
 
-    /// Reads `launch.finished` outbox events after the consumer's cursor (older than
-    /// `settle`, so that transactions that started earlier have committed) and queues a gate
-    /// evaluation for each launch. Only one replica consumes at a time; returns how many
-    /// launches were queued, or `None` when another replica holds the cursor.
+    /// Reads at most `batch` `launch.finished` outbox events after the consumer's cursor (older
+    /// than `settle`, so that transactions that started earlier have committed; other events
+    /// are skipped by an index, not read) and queues a gate evaluation for each launch. Only
+    /// one replica consumes at a time; returns how many launches were queued, or `None` when
+    /// another replica holds the cursor.
     ///
     /// A gate row references its launch, so queueing it share-locks the launch row. The rows
     /// are locked with `skip locked`: a launch whose row another transaction holds exclusively
@@ -582,8 +589,13 @@ impl Store {
             tx.rollback().await?;
             return Ok((None, created));
         };
-        let rows: Vec<(i64, String, serde_json::Value)> = sqlx::query_as(
-            "select id, type, payload from events where id > $1 \
+        // Only `launch.finished` rows, through their partial index (`events_launch_finished`):
+        // a launch writes thousands of other events, and reading those too limited the
+        // consumer to `batch` events of any kind per round, minutes behind under ingest. The
+        // cursor moves to the last `launch.finished` read; the other events after it are never
+        // looked at, so leaving them behind costs nothing.
+        let rows: Vec<(i64, Option<String>)> = sqlx::query_as(
+            "select id, payload->>'id' from events where id > $1 and type = 'launch.finished' \
              and created_at < now() - make_interval(secs => $2) order by id limit $3",
         )
         .bind(cursor)
@@ -599,12 +611,8 @@ impl Store {
         // The first event of each launch, so a launch that cannot wait in `pending` is read
         // again from its event.
         let mut event_of: HashMap<Uuid, i64> = HashMap::new();
-        for (event, _, payload) in rows.iter().filter(|r| r.1 == "launch.finished") {
-            if let Some(id) = payload
-                .get("id")
-                .and_then(|v| v.as_str())
-                .and_then(|s| s.parse::<Uuid>().ok())
-            {
+        for (event, launch) in &rows {
+            if let Some(id) = launch.as_deref().and_then(|s| s.parse::<Uuid>().ok()) {
                 event_of.entry(id).or_insert(*event);
             }
         }

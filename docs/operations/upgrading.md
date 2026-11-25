@@ -9,12 +9,18 @@ This page lists what needs attention per release.
 
 ## Next release: FastProof Analysis foundation
 
-- **Migrations `1000` to `1011`.** New tables for the triage journal, memory, suggestions, unique errors,
+- **Migrations `1000` to `1012`.** New tables for the triage journal, memory, suggestions, unique errors,
   signals, flaky hints, log patterns and the analysis queue; new columns of `failure_fingerprints`
-  (`state` defaults to `active` for existing errors) and `replica_levels.analysis_level`. Three indexes on
-  existing tables are built concurrently in their own migrations (`1004`, `1005`, `1008`). The index of
+  (`state` defaults to `active` for existing errors) and `replica_levels.analysis_level`. Four indexes on
+  existing tables are built concurrently in their own migrations (`1004`, `1005`, `1008`, `1012`). The index of
   attempts by trace id and the trigram index of the triage memory are built in the background by the
   `analysis.indexes` job, like the result indexes.
+- **Gates and Analysis no longer fall behind ingest.** Their consumers of finished launches read up to 500
+  outbox rows every 2 seconds, and used to count every event (results, log chunks) in them: a launch with
+  thousands of results delayed the gates and the analysis of launches finished after it by minutes. They now
+  read only `launch.finished` events, through the partial index of migration `1012`, so a finished launch is
+  queued at the next round whatever else is in the outbox. Replicas of the previous version keep the old read
+  during the rolling update; both share the consumer position safely.
 - **The triage journal starts at the upgrade.** From this version on, every change of a defect or mute is
   recorded with its path (REST, MCP, ReportPortal, a rule at ingest, a retroactive rule, suggestions, undo), so
   `POST /api/v1/projects/{key}/triage/undo` can take a batch back. Triage made before the upgrade has no

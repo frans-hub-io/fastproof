@@ -6032,6 +6032,213 @@
         }
       }
     },
+    "/api/v1/projects/{key}/gates/history": {
+      "get": {
+        "tags": [
+          "analysis"
+        ],
+        "description": "The stored quality gate evaluations of the project, newest first: status and failed rules per launch, and (on the first page) per gate the evaluations, failures, flips between passed and failed on a branch, the mean time from the first failure of a streak to the next pass, and the metric that failed most, and per branch the evaluations and failures. The window is 30 days by default and at most 365; the aggregates cover the newest 20000 evaluations of it (a heavy read: 429 past the caller's concurrent heavy reads). Needs `launches:read`.",
+        "operationId": "analysis_gate_history",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "gate",
+            "in": "query",
+            "description": "Only this gate (by name): its evaluations, its failed rules, its aggregates.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "branch",
+            "in": "query",
+            "description": "Only launches of this branch (exact name).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "RFC 3339; default 30 days before `to`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "RFC 3339; default now. The window is at most 365 days.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "description": "The `next` of the previous page.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "1 to 500, default 50.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GateHistory"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/gates/simulate": {
+      "post": {
+        "tags": [
+          "analysis"
+        ],
+        "description": "Evaluates a draft gate (validated like the project settings, enabled or not) on the newest finished launches of the project (1 to 200, default 50; optionally of one `branch`) from stored data, without writing anything. Launches on branches the gate does not apply to, with unprocessed uploads, or whose results are gone are counted as `skipped`. Needs `launches:read`.",
+        "operationId": "analysis_simulate_gate",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GateSimulate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GateSimulation"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`timeout`: the simulation took longer than 20 s",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{key}/history-imports": {
       "get": {
         "tags": [

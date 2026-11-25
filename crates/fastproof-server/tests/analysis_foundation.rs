@@ -743,6 +743,72 @@ async fn the_role_analyses_finished_launches() {
     );
 }
 
+/// Launches finished behind a burst of other outbox events (the ingest of other launches writes
+/// thousands) are queued and analysed by the next round of `analysis.consume`, not one round
+/// per 500 events of noise.
+#[tokio::test]
+async fn one_round_queues_launches_finished_behind_a_burst_of_events() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = Server::start_with_paused(
+        &db,
+        &[
+            ("FASTPROOF_ANALYSIS", "on"),
+            ("FASTPROOF_ANALYSIS_WORKERS", "0"),
+            ("FASTPROOF_ANALYSIS_SETTLE_SECONDS", "0"),
+        ],
+        ROLE_JOBS,
+    )
+    .await;
+    let state = s.running.as_ref().unwrap().state.clone();
+    s.project("bu").await;
+    let first = fastproof_server::analysis::run_once(&state).await.unwrap();
+    assert_eq!(first.consumed, Some(0));
+    let noise = |n: i64| {
+        sqlx::query(
+            "insert into events (type, project, payload) \
+             select case when i % 2 = 0 then 'results.created' else 'log.chunk' end, 'bu', \
+               jsonb_build_object('n', i) from generate_series(1, $1::bigint) as i",
+        )
+        .bind(n)
+        .execute(&db.pool)
+    };
+    let mut launches = Vec::new();
+    for _ in 0..2 {
+        let l = launch(&s, "bu").await;
+        noise(12_000).await.unwrap();
+        let (st, _) = s
+            .post(
+                &format!("/api/v1/projects/bu/launches/{l}/finish"),
+                ADMIN_TOKEN,
+                json!({}),
+            )
+            .await;
+        assert!(st.is_success());
+        launches.push(l);
+    }
+    noise(3_000).await.unwrap();
+    let once = fastproof_server::analysis::run_once(&state).await.unwrap();
+    assert_eq!(
+        once,
+        fastproof_server::analysis::RunOnce {
+            consumed: Some(2),
+            processed: 2
+        }
+    );
+    for l in &launches {
+        let (st, a) = s
+            .get(
+                &format!("/api/v1/projects/bu/launches/{l}/analysis"),
+                ADMIN_TOKEN,
+            )
+            .await;
+        assert_eq!(st, StatusCode::OK);
+        assert_eq!(a["state"], "done", "{a}");
+    }
+}
+
 async fn put(s: &Server, body: Value) -> (StatusCode, Value) {
     s.call(
         Method::PUT,
@@ -862,4 +928,180 @@ async fn a_stored_rule_this_version_cannot_read_is_not_applied_at_ingest() {
             .unwrap()
             .contains("not readable")
     );
+}
+
+async fn panicking_run() -> anyhow::Result<fastproof_store::analysis::types::LaunchSteps> {
+    panic!("a step blew up")
+}
+
+/// A run that panics is recorded like a failed one: the launch is queued again with the error,
+/// its lease is released and no renewal keeps it `running`.
+#[tokio::test]
+async fn a_panicking_analysis_is_recorded_as_failed() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = Server::start_with_paused(
+        &db,
+        &[
+            ("FASTPROOF_ANALYSIS", "on"),
+            ("FASTPROOF_ANALYSIS_WORKERS", "0"),
+            ("FASTPROOF_ANALYSIS_SETTLE_SECONDS", "0"),
+        ],
+        ROLE_JOBS,
+    )
+    .await;
+    let state = s.running.as_ref().unwrap().state.clone();
+    s.project("pa").await;
+    fastproof_server::analysis::consume(&state).await.unwrap();
+    let l = launch(&s, "pa").await;
+    post_results(&s, "pa", &l, vec![res("1", "A", "boom")]).await;
+    let (st, _) = s
+        .post(
+            &format!("/api/v1/projects/pa/launches/{l}/finish"),
+            ADMIN_TOKEN,
+            json!({}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK);
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let row = loop {
+        fastproof_server::analysis::consume(&state).await.unwrap();
+        if let Some(r) = state
+            .store
+            .claim_analysis_launch("t", fastproof_server::analysis::LEASE)
+            .await
+            .unwrap()
+        {
+            break r;
+        }
+        assert!(std::time::Instant::now() < deadline, "never queued");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    assert_eq!(row.launch_id.to_string(), l);
+    fastproof_server::analysis::analyse_with(&state, &row, "t", panicking_run())
+        .await
+        .unwrap();
+    let after = state
+        .store
+        .analysis_launch_row(row.launch_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        after.state,
+        fastproof_store::analysis::types::AnalysisLaunchState::Queued
+    );
+    assert!(after.lease_owner.is_none());
+    assert!(
+        after
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("panicked: a step blew up")),
+        "{:?}",
+        after.error
+    );
+}
+
+async fn series_mute(db: &TestDb, result: &str) -> Option<(String, Option<String>)> {
+    sqlx::query_as(
+        "select m.reason, m.created_by from series_mutes m join results r on r.series_id = m.series_id \
+         where r.id = $1::uuid",
+    )
+    .bind(result)
+    .fetch_optional(&db.pool)
+    .await
+    .unwrap()
+}
+
+/// The retro `rule.apply` of a rule that mutes: the mutes it creates are its author's, so the
+/// undo of its batch removes them; a series a person muted before keeps that mute through the
+/// rule and its undo.
+#[tokio::test]
+async fn retro_rule_mutes_are_undone_and_people_keep_theirs() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = Server::start_paused(&db, &["analysis.tasks", "mutes.expire"]).await;
+    s.project("rm").await;
+    let l0 = launch(&s, "rm").await;
+    post_results(&s, "rm", &l0, vec![res("v0", "Vault", "timeout")]).await;
+    let vault0 = by_name(&s, "rm", &l0).await["Vault"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (st, out) = s
+        .post(
+            "/api/v1/projects/rm/triage",
+            ADMIN_TOKEN,
+            json!({"resultIds": [vault0], "mute": {"reason": "known outage"}}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{out}");
+    let l = launch(&s, "rm").await;
+    post_results(
+        &s,
+        "rm",
+        &l,
+        vec![res("c", "Cart", "timeout"), res("v", "Vault", "timeout")],
+    )
+    .await;
+    let (st, rule) = s
+        .post(
+            "/api/v1/projects/rm/rules",
+            ADMIN_TOKEN,
+            json!({"name": "timeouts", "match": {"messageRegex": "timeout"}, "action": {"mute": {"days": 3}}}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{rule}");
+    let (st, task) = s
+        .post(
+            &format!(
+                "/api/v1/projects/rm/rules/{}/apply?launchId={l}",
+                rule["id"].as_str().unwrap()
+            ),
+            ADMIN_TOKEN,
+            json!({}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::ACCEPTED, "{task}");
+    db.run_scheduled("analysis.tasks").await;
+    let r = by_name(&s, "rm", &l).await;
+    let (cart, vault) = (
+        r["Cart"]["id"].as_str().unwrap().to_string(),
+        r["Vault"]["id"].as_str().unwrap().to_string(),
+    );
+    assert_eq!(r["Cart"]["muted"], true, "{}", r["Cart"]);
+    let rows = journal(&db, &cart).await;
+    let retro = rows.iter().find(|r| r.0 == "retro").expect("a retro row");
+    assert_eq!(
+        series_mute(&db, &cart).await,
+        Some(("rule timeouts".to_string(), Some(retro.2.clone()))),
+        "the mute is created by the batch's author"
+    );
+    assert_eq!(
+        series_mute(&db, &vault).await.map(|m| m.0),
+        Some("known outage".to_string()),
+        "a person's mute keeps its reason"
+    );
+    let batch: String = sqlx::query_scalar(
+        "select batch_id::text from triage_decisions where result_id = $1::uuid and via = 'retro'",
+    )
+    .bind(&cart)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    let (st, u) = undo(&s, "rm", &batch, ADMIN_TOKEN).await;
+    assert_eq!(st, StatusCode::OK, "{u}");
+    assert_eq!(
+        series_mute(&db, &cart).await,
+        None,
+        "the undo removes the rule's mute"
+    );
+    assert_eq!(
+        series_mute(&db, &vault).await.map(|m| m.0),
+        Some("known outage".to_string()),
+        "the undo leaves the person's mute"
+    );
+    assert_eq!(by_name(&s, "rm", &l).await["Cart"]["muted"], false);
 }

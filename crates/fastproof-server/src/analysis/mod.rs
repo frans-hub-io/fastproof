@@ -147,11 +147,36 @@ pub async fn consume(s: &AppState) -> anyhow::Result<Option<u64>> {
 /// Analyses a claimed launch: renews the lease while the steps run, then records them (an
 /// error of the run itself queues the launch again, see `finish_analysis_launch`).
 pub async fn analyse(s: &AppState, row: AnalysisLaunchRow, owner: &str) -> anyhow::Result<()> {
+    analyse_with(s, &row, owner, pipeline::process(s, &row)).await
+}
+
+/// Aborts the lease renewal of a launch when the analysis ends, however it ends.
+struct Renewal(tokio::task::JoinHandle<()>);
+
+impl Drop for Renewal {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// [`analyse`] with the run given (tests run their own): a panic of the run is recorded as
+/// its error like a failed run, so the worker keeps working and the launch is retried and
+/// failed in time, instead of the worker task ending while the lease is still renewed.
+pub async fn analyse_with<F>(
+    s: &AppState,
+    row: &AnalysisLaunchRow,
+    owner: &str,
+    run: F,
+) -> anyhow::Result<()>
+where
+    F: std::future::Future<Output = anyhow::Result<fastproof_store::analysis::types::LaunchSteps>>,
+{
+    use futures::FutureExt;
     let renew = {
         let s = s.clone();
         let owner = owner.to_string();
         let launch = row.launch_id;
-        tokio::spawn(async move {
+        Renewal(tokio::spawn(async move {
             loop {
                 tokio::time::sleep(RENEW).await;
                 match s.store.renew_analysis_launch(launch, &owner, LEASE).await {
@@ -165,11 +190,21 @@ pub async fn analyse(s: &AppState, row: AnalysisLaunchRow, owner: &str) -> anyho
                     }
                 }
             }
-        })
+        }))
     };
     let t = Instant::now();
-    let r = pipeline::process(s, &row).await;
-    renew.abort();
+    let r = match std::panic::AssertUnwindSafe(run).catch_unwind().await {
+        Ok(r) => r,
+        Err(p) => {
+            let what = p
+                .downcast_ref::<&str>()
+                .map(|m| m.to_string())
+                .or_else(|| p.downcast_ref::<String>().cloned())
+                .unwrap_or_default();
+            Err(anyhow::anyhow!("the analysis panicked: {what}"))
+        }
+    };
+    drop(renew);
     timed("analysis.launch", t);
     let (steps, error) = match r {
         Ok(steps) => (steps, None),

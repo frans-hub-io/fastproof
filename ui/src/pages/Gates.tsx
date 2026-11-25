@@ -1,4 +1,4 @@
-import { ActionIcon, Alert, Badge, Button, Card, Code, Group, Modal, NumberInput, Select, SimpleGrid, Stack, Switch, Tabs, TagsInput, Text, TextInput } from '@mantine/core';
+import { ActionIcon, Alert, Badge, Button, Card, Code, Group, Modal, SimpleGrid, Stack, Switch, Tabs, TagsInput, Text, TextInput } from '@mantine/core';
 import { EmptyState, useCan } from '@franshub/ui-shell';
 import { useMediaQuery } from '@mantine/hooks';
 import { notifications } from '@mantine/notifications';
@@ -9,31 +9,20 @@ import { useAnalysisCapabilities } from '../api/analysis';
 import { errorMessage } from '../api/client';
 import { useProject } from '../api/hooks';
 import { useSaveSettings, useSettings } from '../api/stageC';
-import type { Gate, GateRule, ProjectSettings } from '../api/types-next';
-import { METRICS, OPS, metricOf, ruleText } from '../lib/gates';
+import type { Gate, GateMetric, ProjectSettings } from '../api/types-next';
 import { PageHeader } from '../components/PageHeader';
 import { QueryState } from '../components/QueryState';
 import { GateHistory } from './gates/GateHistory';
+import { GLOB, availableMetrics, ruleText, rulesValid } from '../lib/gates';
+import { RuleRows } from './gates/RuleRows';
 import { GateSimulation } from './gates/GateSimulation';
 
-const GLOB = /^[A-Za-z0-9._/*-]{1,200}$/;
-
-function ruleError(r: GateRule): string | null {
-  if (!Number.isFinite(r.value)) return 'Value is required';
-  if (r.metric === 'passRate' && (r.value < 0 || r.value > 100)) return 'Pass rate is 0–100';
-  if (r.value < 0) return 'Value cannot be negative';
-  if (r.baseline && !GLOB.test(r.baseline)) return 'Baseline must be a branch name';
-  return null;
-}
-
-function GateEditor({ initial, taken, onSave, onDelete, onCancel, saving }: { initial: Gate; taken: string[]; onSave: (g: Gate) => void; onDelete?: () => void; onCancel: () => void; saving: boolean }) {
+function GateEditor({ initial, taken, metrics, onSave, onDelete, onCancel, saving }: { initial: Gate; taken: string[]; metrics: GateMetric[]; onSave: (g: Gate) => void; onDelete?: () => void; onCancel: () => void; saving: boolean }) {
   const [g, setG] = useState<Gate>(initial);
   const name = g.name.trim();
   const nameError = !name ? 'Required' : name.length > 100 ? 'At most 100 characters' : taken.includes(name) ? 'Another gate has this name' : null;
   const branchError = (g.branches ?? []).some((b) => !GLOB.test(b)) ? 'Use branch names or globs like release/*' : null;
-  const rErrors = g.rules.map(ruleError);
-  const valid = !nameError && !branchError && g.rules.length > 0 && g.rules.length <= 20 && rErrors.every((e) => e === null);
-  const setRule = (i: number, r: Partial<GateRule>) => setG({ ...g, rules: g.rules.map((x, j) => (j === i ? { ...x, ...r } : x)) });
+  const valid = !nameError && !branchError && rulesValid(g.rules);
   return (
     <Stack gap="sm">
       <TextInput label="Name" value={g.name} onChange={(e) => setG({ ...g, name: e.currentTarget.value })} error={nameError} maxLength={100} data-testid="gate-name" data-autofocus />
@@ -51,49 +40,7 @@ function GateEditor({ initial, taken, onSave, onDelete, onCancel, saving }: { in
       <Text size="sm" fw={600}>
         Rules (all must hold)
       </Text>
-      {g.rules.map((r, i) => {
-        const m = metricOf(r.metric);
-        return (
-          <Card key={i} withBorder radius="sm" padding="xs" data-testid="gate-rule-row">
-            <Stack gap={6}>
-              <SimpleGrid cols={{ base: 2, sm: 4 }} spacing="xs">
-                <Select aria-label="Metric" data={METRICS.map(({ value, label }) => ({ value, label }))} value={r.metric} onChange={(v) => v && setRule(i, { metric: v })} allowDeselect={false} comboboxProps={{ withinPortal: true }} data-testid="gate-rule-metric" />
-                <Select aria-label="Comparison" data={OPS} value={r.op} onChange={(v) => v && setRule(i, { op: v })} allowDeselect={false} comboboxProps={{ withinPortal: true }} />
-                <NumberInput
-                  aria-label="Value"
-                  value={r.value}
-                  onChange={(v) => setRule(i, { value: typeof v === 'number' ? v : Number.NaN })}
-                  min={0}
-                  max={r.metric === 'passRate' ? 100 : undefined}
-                  decimalScale={r.metric === 'passRate' ? 1 : 0}
-                  rightSection={
-                    <Text size="xs" c="dimmed">
-                      {m.unit === 'results' ? '' : m.unit === 'seconds' ? 's' : m.unit}
-                    </Text>
-                  }
-                  data-testid="gate-rule-value"
-                />
-                <TextInput aria-label="Baseline branch" placeholder="baseline (optional)" value={r.baseline ?? ''} onChange={(e) => setRule(i, { baseline: e.currentTarget.value || null })} />
-              </SimpleGrid>
-              <Group justify="space-between" wrap="nowrap" gap="xs">
-                <Text size="xs" c={rErrors[i] ? 'red' : 'dimmed'}>
-                  {rErrors[i] ?? (r.baseline ? `Compared with the last finished launch on ${r.baseline}` : (m.unit === 'results' ? 'Number of results' : m.unit === 'seconds' ? 'Launch duration in seconds' : 'Percent of executed (non-skipped) results'))}
-                </Text>
-                <ActionIcon variant="subtle" color="red" aria-label="Remove the rule" onClick={() => setG({ ...g, rules: g.rules.filter((_, j) => j !== i) })} disabled={g.rules.length === 1}>
-                  <IconTrash size={16} />
-                </ActionIcon>
-              </Group>
-            </Stack>
-          </Card>
-        );
-      })}
-      {g.rules.length < 20 && (
-        <Group>
-          <Button size="xs" variant="light" leftSection={<IconPlus size={14} />} onClick={() => setG({ ...g, rules: [...g.rules, { metric: 'failed', op: 'lte', value: 0 }] })} data-testid="gate-add-rule">
-            Add rule
-          </Button>
-        </Group>
-      )}
+      <RuleRows rules={g.rules} onChange={(rules) => setG({ ...g, rules })} metrics={metrics} />
       <Group justify="space-between" mt="xs">
         {onDelete ? (
           <Button variant="subtle" color="red" leftSection={<IconTrash size={16} />} onClick={onDelete} loading={saving}>
@@ -174,7 +121,8 @@ export default function GatesPage() {
   const save = useSaveSettings(key);
   const phone = useMediaQuery('(max-width: 48em)');
   const [editing, setEditing] = useState<{ index: number | null; gate: Gate } | null>(null);
-  const analytics = !!useAnalysisCapabilities(key).data?.features.gateAnalytics;
+  const caps = useAnalysisCapabilities(key).data;
+  const analytics = caps?.features.gateAnalytics === true;
   const [tab, setTab] = useState('gates');
 
   const persist = (settings: ProjectSettings, gates: Gate[], message: string, after?: () => void) =>
@@ -268,6 +216,7 @@ export default function GatesPage() {
           return (
           <GateEditor
             initial={editing.gate}
+            metrics={availableMetrics(analytics, editing.gate.rules)}
             taken={q.data.gates.filter((_, j) => j !== editing.index).map((g) => g.name)}
             saving={save.isPending}
             onCancel={() => setEditing(null)}

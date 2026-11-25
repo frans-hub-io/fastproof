@@ -350,6 +350,26 @@ pub fn valid_git_ref(r: &str) -> bool {
             .all(|seg| !seg.starts_with('.') && !seg.ends_with(".lock"))
 }
 
+/// A value the caller typed (not one of the admin's `values`) and an `externalId` sent to the
+/// CI: no `$`, which GitLab expands to the CI project's own variables (`$DEPLOY_TOKEN`), and
+/// no invisible format characters (bidi overrides, zero-width) that make the dispatch list show
+/// something other than what was sent.
+pub fn plain_value(v: &str) -> bool {
+    !v.chars().any(|c| {
+        matches!(c, '$' | '\u{00AD}' | '\u{061C}' | '\u{180E}' | '\u{200B}'..='\u{200F}'
+            | '\u{2028}'..='\u{202E}' | '\u{2060}'..='\u{206F}' | '\u{FEFF}' | '\u{FFF9}'..='\u{FFFB}')
+    })
+}
+
+/// An `externalId` of a plan start sent to the CI (`fastproof_launch`, `FASTPROOF_LAUNCH`):
+/// 1 to 128 letters, digits, `.`, `_` and `-`, as the start dialog makes them.
+pub fn valid_ci_external_id(v: &str) -> bool {
+    !v.is_empty()
+        && v.len() <= 128
+        && v.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+}
+
 fn valid_environment(n: &str) -> bool {
     let b = n.as_bytes();
     !b.is_empty()
@@ -378,9 +398,9 @@ fn checked(
             Some(list) if !list.contains(value) => {
                 return Err(not_allowed(name, "has a value that is not listed"));
             }
-            None if !valid_variable_value(value) => {
+            None if !valid_variable_value(value) || !plain_value(value) => {
                 return Err(ApiError::bad_request(format!(
-                    "the value of {name} has 1 to {MAX_VARIABLE_VALUE_BYTES} bytes without control characters"
+                    "the value of {name} has 1 to {MAX_VARIABLE_VALUE_BYTES} bytes without control or invisible characters and without $"
                 )));
             }
             _ => {}
@@ -541,6 +561,33 @@ mod tests {
     }
 
     #[test]
+    fn typed_values_cannot_reference_ci_variables_or_hide_text() {
+        for ok in [
+            "smoke",
+            "https://shop.example.com/a?b=c&d=e",
+            "a b",
+            "naïve",
+        ] {
+            assert!(plain_value(ok), "{ok}");
+        }
+        for bad in [
+            "$DEPLOY_TOKEN",
+            "${CI_JOB_TOKEN}",
+            "x$y",
+            "ab\u{202E}cd",
+            "a\u{200B}b",
+            "a\u{2066}b",
+            "\u{FEFF}a",
+        ] {
+            assert!(!plain_value(bad), "{bad:?}");
+        }
+        assert!(valid_ci_external_id("plan-0a1b2c3d-123456"));
+        for bad in ["", "a$b", "a b", "a/b", "a\"b", &"x".repeat(129)] {
+            assert!(!valid_ci_external_id(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
     fn reserved_variable_names_are_refused() {
         for n in [
             "CI_DEBUG_TRACE",
@@ -555,6 +602,22 @@ mod tests {
             "ENV",
             "CI",
             "NODE_OPTIONS",
+            "GIT_SSH_COMMAND",
+            "GIT_CONFIG_COUNT",
+            "HTTPS_PROXY",
+            "HTTP_PROXY",
+            "ALL_PROXY",
+            "NO_PROXY",
+            "NPM_CONFIG_REGISTRY",
+            "PERL5OPT",
+            "RUBYOPT",
+            "SSL_CERT_FILE",
+            "DOCKER_HOST",
+            "KUBECONFIG",
+            "MAVEN_OPTS",
+            "GRADLE_OPTS",
+            "GOFLAGS",
+            "TRIGGER_PAYLOAD",
         ] {
             assert!(
                 !crate::integrations::settings::valid_variable_name(n),

@@ -176,9 +176,15 @@ variables or run another branch. Settings › Integrations › Rerun in CI edits
 }
 ```
 
-- `variables` (at most 20): `name` is `^[A-Z][A-Z0-9_]{0,63}$` and does not start with `FASTPROOF_`. With `values` (1 to
-  50) only those values are accepted; without, any text of 1 to 256 bytes without control characters. `default`
-  must be one of `values`; it is sent when the start does not set the variable.
+- `variables` (at most 20): `name` is `^[A-Z][A-Z0-9_]{0,63}$` and does not start with `FASTPROOF_`. Names that
+  change how the CI, the shell or a toolchain behaves are refused (`CI`, `CI_*`, `GITHUB_*`, `GITLAB_*`, `RUNNER_*`,
+  `ACTIONS_*`, `GIT_*`, `LD_*`, `NODE_*`, `JAVA_*`, `PATH`, `HOME`, the `*_PROXY` names and similar). With `values`
+  (1 to 50) only those values are accepted; without, any text of 1 to 256 bytes without control or invisible
+  characters and without `$` (GitLab expands `$NAME` in trigger variables to the CI project's own variables, so a
+  typed `$DEPLOY_TOKEN` would hand a secret to the tests). `default` must be one of `values`; it is sent when the
+  start does not set the variable.
+- Variables are not secrets: everyone who can read the plan sees the values in its list of CI runs. Keep tokens in
+  the CI's own secret variables.
 - `refs` (at most 20 branch patterns, `*` within one path segment, `**` across `/`): the branch or tag a start may
   choose. The configured `ref` (default `main`) is always allowed and is used when the start names none. A
   webhook gets no ref.
@@ -214,8 +220,10 @@ first. Callers without `settings:write` get generic error texts and only the pip
 
 Other answers: `409` `conflict` when the project has no `rerun` settings, `409` `plan_has_no_automated_cases`,
 `403` without `launches:rerun`, and `429` when the project made 60 CI triggers in the last hour (reruns and plan
-dispatches count together; every attempt counts) or the plan was started in CI less than 10 seconds ago. With
-several environments each launch gets its own generated external id, so `externalId` is refused. Every
+dispatches count together; every attempt counts) or the plan was started in CI less than 10 seconds ago
+(`too_many_requests`), and `429` `rate_limited` when the caller started too many plan launches in the last minute
+(a CI start counts once per environment). With several environments each launch gets its own generated external
+id, so `externalId` is refused; with one, it has 1 to 128 letters, digits, `.`, `_` and `-`. Every
 dispatch is written to the audit log as `testPlan.dispatch` with the plan, launch, environment, provider, ref,
 the **names** of the variables (never values) and the target, never a token.
 
@@ -266,7 +274,7 @@ jobs:
       FASTPROOF_TOKEN: ${{ secrets.FASTPROOF_TOKEN }}
     steps:
       - run: |
-          [[ "$LAUNCH" =~ ^plan-[0-9a-f-]{36}$ ]] || exit 1
+          [[ "$LAUNCH" =~ ^[A-Za-z0-9._-]{1,128}$ ]] || exit 1
           BROWSER=$(jq -r '.BROWSER // "chromium"' <<<"$VARIABLES")
           [[ "$BROWSER" =~ ^(chromium|firefox)$ ]] || exit 1
           FASTPROOF_ENVIRONMENT=$(jq -r '.FASTPROOF_ENVIRONMENT // ""' <<<"$VARIABLES")
@@ -291,7 +299,8 @@ plan-tests:
 ```
 
 `FASTPROOF_URL` and `FASTPROOF_TOKEN` come from the project's CI variables, not from the trigger. The `BROWSER`
-and `SUITE` variables of the example above arrive as `$BROWSER` and `$SUITE`.
+and `SUITE` variables of the example above arrive as `$BROWSER` and `$SUITE`; quote them and check them against
+the values you expect before a script uses them, as in the GitHub example.
 
 ### Plan check
 

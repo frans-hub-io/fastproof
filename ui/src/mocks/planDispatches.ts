@@ -4,7 +4,7 @@ import { settingsOf } from './stageC';
 import { tmState } from './tm';
 
 const API = '/api/v1';
-const validValue = (v: string): boolean => v.length >= 1 && v.length <= 256 && Array.from({ length: v.length }, (_, i) => v.charCodeAt(i)).every((c) => c > 31 && c !== 127);
+const validValue = (v: string): boolean => v.length >= 1 && v.length <= 256 && !v.includes('$') && Array.from({ length: v.length }, (_, i) => v.charCodeAt(i)).every((c) => c > 31 && c !== 127);
 const ENV_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
 
 interface Store {
@@ -57,7 +57,7 @@ export function planCiResolve(project: string, ci: PlanCi): CiStart | CiRefusal 
       if (!def || (def.values && def.values.length > 0 && !def.values.includes(value))) {
         return { status: 400, code: 'ci_variable_not_allowed', message: `CI variable ${name} is not allowed`, details: { name } };
       }
-      if (!validValue(value)) return { status: 400, code: 'bad_request', message: `the value of ${name} has 1 to 256 bytes without control characters` };
+      if (!validValue(value)) return { status: 400, code: 'bad_request', message: `the value of ${name} has 1 to 256 bytes without control or invisible characters and without $` };
       into[name] = value;
     }
     return null;

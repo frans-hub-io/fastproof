@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { describe, expect, it } from 'vitest';
 import { ciBody } from '../lib/tm/ci';
-import { cleanRerunPlanFields, rerunPlanErrors } from '../lib/tm/rerunPlan';
+import { cleanRerunPlanFields, rerunPlanErrors, typedValueError } from '../lib/tm/rerunPlan';
 import { server } from '../mocks/node';
 import { putSettings, settingsOf } from '../mocks/stageC';
 import { tmId } from '../mocks/tmFixtures';
@@ -39,7 +39,14 @@ describe('rerun plan fields', () => {
     const e = rerunPlanErrors({ ...base, refs: ['ok/*', 'bad ref'], variables: [{ name: 'lower' }, { name: 'FASTPROOF_X' }, { name: 'A' }, { name: 'A' }, { name: 'B', values: ['x'], default: 'y' }] });
     expect(e.refs).not.toBeNull();
     expect(rerunPlanErrors({ ...base, variables: [{ name: 'CI_DEBUG_TRACE' }, { name: 'LD_PRELOAD' }, { name: 'PATH' }] }).variables.every(Boolean)).toBe(true);
+    expect(rerunPlanErrors({ ...base, variables: [{ name: 'GIT_SSH_COMMAND' }, { name: 'HTTPS_PROXY' }, { name: 'KUBECONFIG' }] }).variables.every(Boolean)).toBe(true);
     expect(e.variables.map((x) => x !== null)).toEqual([true, true, false, true, true]);
+  });
+
+  it('refuses typed values the CI could expand or that hide text', () => {
+    expect(typedValueError('')).toBeNull();
+    expect(typedValueError('smoke & regress')).toBeNull();
+    for (const bad of ['$DEPLOY_TOKEN', 'a${CI_JOB_TOKEN}', 'ab\u202ecd', 'a\u200bb', 'a\nb', 'x'.repeat(257)]) expect(typedValueError(bad), bad).not.toBeNull();
   });
 
   it('sends nothing for empty lists, so the stored document stays as it was', () => {

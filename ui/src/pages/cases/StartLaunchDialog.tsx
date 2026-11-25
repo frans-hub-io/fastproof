@@ -12,6 +12,7 @@ import { pdk, type RerunVariable } from '../../api/planDispatches';
 import { CopyValue } from '../../components/CopyButton';
 import { isHttpUrl } from '../../lib/format';
 import { ENV_NAME, MAX_ENVIRONMENTS, ciBody } from '../../lib/tm/ci';
+import { typedValueError } from '../../lib/tm/rerunPlan';
 
 
 function VariableInput({ v, value, onChange }: { v: RerunVariable; value: string; onChange: (x: string) => void }) {
@@ -21,7 +22,7 @@ function VariableInput({ v, value, onChange }: { v: RerunVariable; value: string
       <Select label={label} description={v.description ?? undefined} data={v.values} value={value || null} onChange={(x) => onChange(x ?? '')} placeholder={v.default ?? 'Not set'} clearable comboboxProps={{ withinPortal: true }} data-testid={`ci-var-${v.name}`} />
     );
   }
-  return <TextInput label={label} description={v.description ?? undefined} value={value} onChange={(e) => onChange(e.currentTarget.value)} placeholder={v.default ?? 'Not set'} maxLength={256} data-testid={`ci-var-${v.name}`} />;
+  return <TextInput label={label} description={v.description ?? undefined} value={value} onChange={(e) => onChange(e.currentTarget.value)} placeholder={v.default ?? 'Not set'} maxLength={256} error={typedValueError(value)} data-testid={`ci-var-${v.name}`} />;
 }
 
 /** Results of the CI dispatches of a start, one row per launch. */
@@ -87,6 +88,7 @@ export function StartLaunchDialog({ project, plan, onClose }: { project: string;
   const useCi = ci && ciAvailable;
   const refChoices = [rerun?.ref ?? 'main', ...(rerun?.refs ?? []).filter((r) => !r.includes('*'))].filter((r, i, all) => all.indexOf(r) === i);
   const envsValid = ciEnvs.length <= MAX_ENVIRONMENTS && ciEnvs.every((e) => ENV_NAME.test(e));
+  const varsValid = (rerun?.variables ?? []).every((v) => (v.values && v.values.length > 0) || !typedValueError(ciVars[v.name] ?? ''));
   const command = `fastproof testplan --launch ${externalId} > testplan.json\nexport ALLURE_TESTPLAN_PATH="$PWD/testplan.json"`;
 
   if (result) {
@@ -226,7 +228,7 @@ export function StartLaunchDialog({ project, plan, onClose }: { project: string;
             <Button variant="default" onClick={onClose}>
               Cancel
             </Button>
-            <Button type="submit" loading={start.isPending} disabled={!name.trim() || (useCi && !envsValid)} leftSection={<IconPlayerPlay size={14} />} data-testid="start-submit">
+            <Button type="submit" loading={start.isPending} disabled={!name.trim() || (useCi && (!envsValid || !varsValid))} leftSection={<IconPlayerPlay size={14} />} data-testid="start-submit">
               Start
             </Button>
           </Group>

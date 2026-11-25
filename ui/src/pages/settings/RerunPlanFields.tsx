@@ -25,7 +25,7 @@ export function RerunPlanFields({ rr, onChange }: { rr: RerunSettings; onChange:
         Variables a plan run may set
       </Text>
       <Text size="xs" c="dimmed">
-        Only these names reach the CI, by name; a variable with values accepts only those, one without accepts any text of 1 to 256 bytes. The default is sent when a run does not set the variable. FASTPROOF_ names are reserved.
+        Only these names reach the CI, by name; a variable with values accepts only those, one without accepts any text of 1 to 256 bytes without $. Values show in the plan's list of CI runs, so never use them for secrets. The default is sent when a run does not set the variable. FASTPROOF_ names are reserved.
       </Text>
       {vars.map((v, i) => (
         <Stack key={i} gap={4} data-testid="rerun-variable">

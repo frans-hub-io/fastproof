@@ -12619,6 +12619,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description too many concurrent heavy reads of the caller */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
         };
     };
     integrations_rerun: {
@@ -15721,7 +15730,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
-            /** @description CI start limits */
+            /** @description CI start limits (`too_many_requests`), or the caller's rate of plan launches (`rate_limited`; a CI start counts once per environment) */
             429: {
                 headers: {
                     [name: string]: unknown;

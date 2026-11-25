@@ -35,6 +35,12 @@ pub struct WriteRate {
 impl WriteRate {
     /// Takes one request of `key` at `now` with `per_minute` allowed; `Err` holds the wait.
     pub fn take(&self, key: &str, per_minute: u32, now: Instant) -> Result<(), Duration> {
+        self.take_n(key, per_minute, 1, now)
+    }
+
+    /// Takes `n` requests of `key` at once, or none of them; `Err` holds the wait.
+    pub fn take_n(&self, key: &str, per_minute: u32, n: u32, now: Instant) -> Result<(), Duration> {
+        let need = f64::from(n.max(1));
         let cap = f64::from(per_minute.max(1));
         let per_sec = cap / 60.0;
         let mut m = self.buckets.lock().unwrap_or_else(|e| e.into_inner());
@@ -53,21 +59,26 @@ impl WriteRate {
         });
         b.tokens = (b.tokens + now.duration_since(b.at).as_secs_f64() * per_sec).min(cap);
         b.at = now;
-        if b.tokens >= 1.0 {
-            b.tokens -= 1.0;
+        if b.tokens >= need {
+            b.tokens -= need;
             Ok(())
         } else {
-            Err(Duration::from_secs_f64((1.0 - b.tokens) / per_sec))
+            Err(Duration::from_secs_f64((need - b.tokens) / per_sec))
         }
     }
 }
 
 /// Admits one multiplying write of the caller, or answers 429 `rate_limited`.
 pub fn admit(s: &AppState, auth: &Auth) -> ApiResult<()> {
+    admit_n(s, auth, 1)
+}
+
+/// Admits `n` multiplying writes of the caller at once (a request that fans out), or none.
+pub fn admit_n(s: &AppState, auth: &Auth, n: u32) -> ApiResult<()> {
     let per_minute = s.cfg.tm.multiplying_writes_per_minute as u32;
     s.guards
         .tm_writes
-        .take(&caller_key(auth), per_minute, Instant::now())
+        .take_n(&caller_key(auth), per_minute, n, Instant::now())
         .map_err(|wait| {
             metrics::counter!("fastproof_guard_rejections_total", "guard" => "tm_writes")
                 .increment(1);
@@ -102,6 +113,19 @@ mod tests {
         assert!(r.take("b", 3, t).is_ok(), "callers are separate");
         assert!(r.take("a", 3, t + Duration::from_secs(21)).is_ok());
         assert!(r.take("a", 3, t + Duration::from_secs(21)).is_err());
+    }
+
+    #[test]
+    fn several_requests_are_taken_together_or_not_at_all() {
+        let r = WriteRate::default();
+        let t = Instant::now();
+        assert!(r.take_n("a", 5, 4, t).is_ok());
+        assert!(r.take_n("a", 5, 2, t).is_err(), "one token is left");
+        assert!(r.take("a", 5, t).is_ok(), "the refused pair took nothing");
+        assert!(
+            r.take_n("b", 5, 6, t).is_err(),
+            "more than the bucket holds"
+        );
     }
 
     #[test]

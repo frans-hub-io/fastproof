@@ -5,8 +5,22 @@ export const MAX_VARIABLES = 20;
 export const MAX_VALUES = 50;
 const NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
 const GLOB = /^[A-Za-z0-9_./*-]{1,200}$/;
-const RESERVED_PREFIXES = ['CI_', 'GITLAB_', 'GITHUB_', 'RUNNER_', 'ACTIONS_', 'LD_', 'DYLD_', 'BASH_', 'NODE_', 'PYTHON', 'JAVA_', 'JDK_'];
-const RESERVED = ['CI', 'PATH', 'ENV', 'IFS', 'HOME', 'SHELL', 'USER', 'PS4', 'PROMPT_COMMAND', 'SHELLOPTS', 'TMPDIR', 'OPTIONS', 'JAVA_TOOL_OPTIONS', '_JAVA_OPTIONS'];
+const RESERVED_PREFIXES = ['CI_', 'GITLAB_', 'GITHUB_', 'RUNNER_', 'ACTIONS_', 'LD_', 'DYLD_', 'BASH_', 'NODE_', 'PYTHON', 'JAVA_', 'JDK_', 'GIT_', 'NPM_CONFIG_', 'PERL5', 'RUBY', 'SSL_CERT_', 'DOCKER_', 'KUBE'];
+const RESERVED = [
+  'CI', 'PATH', 'ENV', 'IFS', 'HOME', 'SHELL', 'USER', 'PS4', 'PROMPT_COMMAND', 'SHELLOPTS', 'TMPDIR', 'OPTIONS', 'JAVA_TOOL_OPTIONS', '_JAVA_OPTIONS',
+  'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY', 'FTP_PROXY', 'CURL_CA_BUNDLE', 'REQUESTS_CA_BUNDLE', 'MAVEN_OPTS', 'GRADLE_OPTS', 'GOFLAGS', 'GOPROXY',
+  'TRIGGER_PAYLOAD', 'TRIGGER_TOKEN', 'PROXY',
+];
+/** What a typed value may not hold: `$` (GitLab expands it to the CI project's variables) and invisible format characters. */
+const NOT_PLAIN = /[$\u00ad\u061c\u180e\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff\ufff9-\ufffb]/;
+
+/** Whether a value typed for a variable without `values` is accepted by the server. */
+export function typedValueError(v: string): string | null {
+  if (v === '') return null;
+  if (valueError(v)) return '1 to 256 bytes, no control characters';
+  if (NOT_PLAIN.test(v)) return 'No $ and no invisible characters';
+  return null;
+}
 const encoder = new TextEncoder();
 
 export type Variable = NonNullable<RerunSettings['variables']>[number];

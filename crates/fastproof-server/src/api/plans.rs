@@ -396,7 +396,7 @@ pub async fn list_plan_launches(
     params(("key" = String, Path), ("id" = Uuid, Path)),
     responses((status = 201, body = PlanLaunch), (status = 200, body = PlanLaunch), (status = 400, body = ErrorBody),
         (status = 403, body = ErrorBody), (status = 404, body = ErrorBody),
-        (status = 429, body = ErrorBody, description = "CI start limits"),
+        (status = 429, body = ErrorBody, description = "CI start limits (`too_many_requests`), or the caller's rate of plan launches (`rate_limited`; a CI start counts once per environment)"),
         (status = 409, body = ErrorBody, description = "`launch_exists`, `plan_archived`, `plan_not_managed`, `limit_reached`, `plan_has_no_automated_cases` and `conflict` (no `rerun` settings) with `ci`")))]
 pub async fn start_plan_launch(
     State(s): State<AppState>,
@@ -406,7 +406,7 @@ pub async fn start_plan_launch(
 ) -> ApiResult<(StatusCode, Json<PlanLaunch>)> {
     let p = s.project_for(&auth, &key, &s.perms.runs_execute).await?;
     crate::tm_rate::admit(&s, &auth)?;
-    let _permit = s.guards.heavy(&auth).await?;
+    let permit = s.guards.heavy(&auth).await?;
     if let Some(env) = &body.environment
         && (env.len() > MAX_ENVIRONMENT_VALUES
             || env
@@ -451,7 +451,7 @@ pub async fn start_plan_launch(
     };
     super::launches::validate_start(&start)?;
     if let Some(ci) = ci {
-        return start_in_ci(&s, &auth, &p, id, &body, ci, start).await;
+        return start_in_ci(&s, &auth, &p, id, &body, ci, start, permit).await;
     }
     let can_sync = auth.principal.allowed(&s.perms.cases_sync, Some(&p.key));
     let started = s
@@ -563,7 +563,10 @@ fn environment_name(name: &str, env: &str) -> String {
     format!("{}{suffix}", &name[..room.min(name.len())])
 }
 
-/// Starts one launch per environment and dispatches each to the project's CI (§7.4).
+/// Starts one launch per environment and dispatches each to the project's CI (§7.4). `permit`
+/// (the heavy slot of the start) is given back before the CI is called, so a slow CI does not
+/// hold the replica's heavy slots.
+#[allow(clippy::too_many_arguments)]
 async fn start_in_ci(
     s: &AppState,
     auth: &Auth,
@@ -572,6 +575,7 @@ async fn start_in_ci(
     body: &StartPlanLaunch,
     ci: &PlanCi,
     start: LaunchStart,
+    permit: crate::limits::HeavyPermit,
 ) -> ApiResult<(StatusCode, Json<PlanLaunch>)> {
     franshub_auth::require(auth, &s.perms.launches_rerun, Some(&p.key))?;
     let admin = can_see_ci(s, auth, &p.key);
@@ -612,6 +616,23 @@ async fn start_in_ci(
         return Err(ApiError::bad_request(
             "externalId is for a start with one environment; with several each launch gets its own",
         ));
+    }
+    if body
+        .external_id
+        .as_deref()
+        .is_some_and(|e| !rerun::valid_ci_external_id(e))
+    {
+        return Err(ApiError::bad_request(
+            "externalId of a CI start has 1 to 128 letters, digits, . _ and -",
+        ));
+    }
+    if let Some(extra) = resolved
+        .environments
+        .len()
+        .checked_sub(1)
+        .filter(|n| *n > 0)
+    {
+        crate::tm_rate::admit_n(s, auth, extra as u32)?;
     }
     if let Some(r) = s
         .store
@@ -723,6 +744,7 @@ async fn start_in_ci(
     };
     let first = first.ok_or_else(ApiError::internal)?;
     let testplan = s.store.launch_testplan(p.id, launches[0].id).await;
+    drop(permit);
     let target = rerun::target(&cfg);
     let calls = launches.iter().zip(&begun).zip(&rows).map(|((l, d), row)| {
         let (cfg, target, testplan) = (&cfg, &target, &testplan);
@@ -819,7 +841,8 @@ pub async fn list_plan_dispatches(
 #[utoipa::path(get, path = "/api/v1/projects/{key}/launches/{id}/plan-check", tag = "plans", operation_id = "launch_plan_check",
     description = "What a finished launch started from a plan ran compared to the plan: results that are not linked to an automated case of the plan (`extra`) and automated plan cases without a result (`missing`). 404 for a launch without a plan or one that is not finished.",
     params(("key" = String, Path), ("id" = Uuid, Path)),
-    responses((status = 200, body = PlanCheck), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
+    responses((status = 200, body = PlanCheck), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody),
+        (status = 429, body = ErrorBody, description = "too many concurrent heavy reads of the caller")))]
 pub async fn launch_plan_check(
     State(s): State<AppState>,
     auth: Auth,
@@ -827,6 +850,7 @@ pub async fn launch_plan_check(
 ) -> ApiResult<Json<PlanCheck>> {
     let p = s.project_for(&auth, &key, &s.perms.launches_read).await?;
     let launch = s.launch_of(&p, id).await?;
+    let _permit = s.guards.heavy(&auth).await?;
     s.store
         .plan_check_of(launch.id)
         .await?

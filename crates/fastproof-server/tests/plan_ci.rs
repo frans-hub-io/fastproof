@@ -6,7 +6,7 @@
 mod common;
 
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use axum::body::Bytes;
@@ -35,6 +35,7 @@ struct FakeState {
     log: Mutex<Vec<Rec>>,
     force_status: AtomicU16,
     redirect: AtomicBool,
+    hold_ms: AtomicU64,
 }
 
 struct Ci {
@@ -87,6 +88,10 @@ async fn handle(
         event: h("x-fastproof-event"),
         body: String::from_utf8_lossy(&body).to_string(),
     });
+    let hold = st.hold_ms.load(Ordering::SeqCst);
+    if hold > 0 {
+        tokio::time::sleep(std::time::Duration::from_millis(hold)).await;
+    }
     if st.redirect.load(Ordering::SeqCst) {
         return (
             AxStatus::TEMPORARY_REDIRECT,
@@ -116,20 +121,22 @@ async fn handle(
 }
 
 async fn start(db: &TestDb) -> (Server, tempfile::TempDir) {
+    start_env(db, &[]).await
+}
+
+async fn start_env(db: &TestDb, extra: &[(&str, &str)]) -> (Server, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let key = dir.path().join("secrets.key");
     std::fs::write(&key, format!("{KEY_HEX}\n")).unwrap();
     let k = key.to_string_lossy().to_string();
-    let s = Server::start_with(
-        db,
-        &[
-            ("FASTPROOF_EGRESS_ALLOW", "127.0.0.1"),
-            ("FASTPROOF_SECRETS_KEY_FILE", &k),
-            ("FASTPROOF_TM_GATE", "open"),
-            ("FASTPROOF_PUBLIC_URL", "https://fastproof.example.com"),
-        ],
-    )
-    .await;
+    let mut env = vec![
+        ("FASTPROOF_EGRESS_ALLOW", "127.0.0.1"),
+        ("FASTPROOF_SECRETS_KEY_FILE", k.as_str()),
+        ("FASTPROOF_TM_GATE", "open"),
+        ("FASTPROOF_PUBLIC_URL", "https://fastproof.example.com"),
+    ];
+    env.extend_from_slice(extra);
+    let s = Server::start_with(db, &env).await;
     (s, dir)
 }
 
@@ -1271,6 +1278,10 @@ async fn reserved_variable_names_cannot_be_allowlisted() {
         "PATH",
         "BASH_ENV",
         "ENV",
+        "GIT_SSH_COMMAND",
+        "HTTPS_PROXY",
+        "NPM_CONFIG_REGISTRY",
+        "KUBECONFIG",
     ] {
         let (st, b) = put_rerun(
             &s,
@@ -1281,4 +1292,163 @@ async fn reserved_variable_names_cannot_be_allowlisted() {
         .await;
         assert_eq!(st, StatusCode::BAD_REQUEST, "{name}: {b}");
     }
+}
+
+#[tokio::test]
+async fn gitlab_never_receives_a_variable_reference_or_hidden_text() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let ci = Ci::start().await;
+    let (s, _d) = start(&db).await;
+    let plan = plan_project(&db, &s).await;
+    gitlab(&s, &ci, "shop").await;
+    for (what, body) in [
+        (
+            "a variable reference",
+            json!({"name": "x", "includeManual": false,
+                "ci": {"dispatch": true, "variables": {"SUITE": "$DEPLOY_TOKEN"}}}),
+        ),
+        (
+            "a braced reference in an environment",
+            json!({"name": "x", "includeManual": false, "ci": {"dispatch": true,
+                "environments": [{"name": "stage", "variables": {"SUITE": "a${CI_JOB_TOKEN}"}}]}}),
+        ),
+        (
+            "a bidi override",
+            json!({"name": "x", "includeManual": false,
+                "ci": {"dispatch": true, "variables": {"SUITE": "smoke\u{202E}gol"}}}),
+        ),
+        (
+            "a reference in the external id",
+            json!({"name": "x", "includeManual": false, "externalId": "run-$CI_JOB_TOKEN",
+                "ci": {"dispatch": true}}),
+        ),
+        (
+            "a space in the external id",
+            json!({"name": "x", "includeManual": false, "externalId": "run 1",
+                "ci": {"dispatch": true}}),
+        ),
+    ] {
+        let (st, b) = s.post(&launches_path(&plan), ADMIN_TOKEN, body).await;
+        assert_eq!(st, StatusCode::BAD_REQUEST, "{what}: {b}");
+    }
+    assert!(ci.requests().is_empty(), "nothing reached the CI");
+    assert_eq!(launch_count(&s, &plan).await, 0, "no launch was started");
+
+    let (st, b) = s
+        .post(
+            &launches_path(&plan),
+            ADMIN_TOKEN,
+            json!({"name": "x", "includeManual": false, "externalId": "run-1.a_b",
+                "ci": {"dispatch": true, "variables": {"SUITE": "smoke & regress"}}}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{b}");
+    let f = form(&ci.requests()[0].body);
+    let get = |k: &str| f.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
+    assert_eq!(get("variables[SUITE]").as_deref(), Some("smoke & regress"));
+    assert_eq!(
+        get("variables[FASTPROOF_LAUNCH]").as_deref(),
+        Some("run-1.a_b")
+    );
+    assert!(
+        f.iter().all(|(_, v)| !v.contains('$')),
+        "no value the CI could expand: {f:?}"
+    );
+}
+
+#[tokio::test]
+async fn every_environment_of_a_start_counts_against_the_callers_rate() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let ci = Ci::start().await;
+    let (s, _d) = start_env(&db, &[("FASTPROOF_TM_MULTIPLYING_WRITES_PER_MINUTE", "5")]).await;
+    let plan = plan_project(&db, &s).await;
+    github(&s, &ci, "shop").await;
+    let envs = |n: usize| {
+        (0..n)
+            .map(|i| json!({"name": format!("e{i}")}))
+            .collect::<Vec<_>>()
+    };
+
+    let (st, b) = run_ci(
+        &s,
+        ADMIN_TOKEN,
+        &plan,
+        json!({"dispatch": true, "environments": envs(6)}),
+    )
+    .await;
+    assert_eq!(st, StatusCode::TOO_MANY_REQUESTS, "{b}");
+    assert_eq!(b["code"], "rate_limited", "{b}");
+    assert!(ci.requests().is_empty(), "nothing reached the CI");
+    assert_eq!(launch_count(&s, &plan).await, 0, "no launch was started");
+
+    let (st, b) = run_ci(
+        &s,
+        ADMIN_TOKEN,
+        &plan,
+        json!({"dispatch": true, "environments": envs(3)}),
+    )
+    .await;
+    assert_eq!(
+        st,
+        StatusCode::CREATED,
+        "the refused start took only its first token: {b}"
+    );
+    assert_eq!(b["dispatches"].as_array().unwrap().len(), 3);
+    backdate(&db).await;
+    let (st, b) = run_ci(
+        &s,
+        ADMIN_TOKEN,
+        &plan,
+        json!({"dispatch": true, "environments": envs(2)}),
+    )
+    .await;
+    assert_eq!(st, StatusCode::TOO_MANY_REQUESTS, "one token is left: {b}");
+    assert_eq!(b["code"], "rate_limited", "{b}");
+}
+
+#[tokio::test]
+async fn a_slow_ci_does_not_hold_the_heavy_slot() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let ci = Ci::start().await;
+    let (s, _d) = start_env(&db, &[("FASTPROOF_HEAVY_QUERIES_PER_CALLER", "1")]).await;
+    let plan = plan_project(&db, &s).await;
+    github(&s, &ci, "shop").await;
+    ci.st.hold_ms.store(3000, Ordering::SeqCst);
+    let slow = run_ci(&s, ADMIN_TOKEN, &plan, json!({"dispatch": true}));
+    let other = async {
+        for _ in 0..200 {
+            if !ci.requests().is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(!ci.requests().is_empty(), "the CI was called");
+        s.post(
+            &launches_path(&plan),
+            ADMIN_TOKEN,
+            json!({"name": "manual meanwhile", "includeAutomated": false}),
+        )
+        .await
+    };
+    let ((st, b), (st2, b2)) = tokio::join!(slow, other);
+    assert_eq!(st, StatusCode::CREATED, "{b}");
+    assert_eq!(
+        st2,
+        StatusCode::CREATED,
+        "a start while the CI is still answering: {b2}"
+    );
+    let launch = b["launch"]["id"].as_str().unwrap();
+    let (st, b) = s
+        .get(
+            &format!("/api/v1/projects/shop/launches/{launch}/plan-check"),
+            ADMIN_TOKEN,
+        )
+        .await;
+    assert_eq!(st, StatusCode::NOT_FOUND, "not finished yet: {b}");
 }

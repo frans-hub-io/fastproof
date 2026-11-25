@@ -7697,6 +7697,16 @@
                 }
               }
             }
+          },
+          "429": {
+            "description": "too many concurrent heavy reads of the caller",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         }
       }
@@ -12639,7 +12649,7 @@
             }
           },
           "429": {
-            "description": "CI start limits",
+            "description": "CI start limits (`too_many_requests`), or the caller's rate of plan launches (`rate_limited`; a CI start counts once per environment)",
             "content": {
               "application/json": {
                 "schema": {

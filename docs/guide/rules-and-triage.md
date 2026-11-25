@@ -172,10 +172,10 @@ What the rule reads, per launch:
 - of each, the **last `lastBytes`** of its live log (the lines reporters stream to
   `POST .../launches/{id}/logs`, decompressed one chunk at a time), or, when the attempt has no live log, of the
   `stdout` and `stderr` captured in its uploaded result. Captured output has no levels: a rule that names
-  `levels` skips it;
-- every line cut to 16 KiB; patterns compiled with the same limits as the other rules (linear time, no
+  `levels` skips it. Each line counts its bytes and one for its end; a tail holds at most 131072 lines;
+- every line cut to 16 KiB; `contains` is a case-insensitive literal search; patterns compiled with the same limits as the other rules (linear time, no
   backreferences or lookaround, bounded size); the time spent decoding and matching is at most
-  `FASTPROOF_ANALYSIS_LOG_CPU_MS` (2 s) per launch.
+  `FASTPROOF_ANALYSIS_LOG_CPU_MS` (2 s) per launch, checked line by line.
 
 When a budget runs out, the launch's `logRules` step (`GET .../launches/{id}/analysis`) is `partial` and its
 `detail.reason` says which: `attempts`, `log_cpu` or `regex`; the server counts it in
@@ -184,7 +184,7 @@ When a budget runs out, the launch's `logRules` step (`GET .../launches/{id}/ana
 Effects:
 
 - **Pattern marks** appear on the result (tab **Triage**, with the matching line, at most 300 characters,
-  control characters and colour codes removed; lines are shown as the reporter sent them, so mask secrets at
+  control characters, colour codes and invisible bidirectional and zero-width characters removed; lines are shown as the reporter sent them, so mask secrets at
   the source), in `GET .../results/{id}` as `patterns`, as a filter `GET .../launches/{id}/results?pattern=oom`,
   in `GET .../analysis/patterns?days=30&limit=20` (results and launches per pattern) and in the dashboard widget
   **Most popular error patterns** with its setting *Count: log patterns marked by rules*
@@ -195,14 +195,17 @@ Effects:
 
 **Undo.** A batch of a rule that ran after the launch, or of an application to past launches, is undoable:
 **Undo** in the result's triage history or `POST .../triage/undo {"batchId": "..."}`. Only the results that
-still have the rule's decision are restored. (Batches of rules applied on ingest are not undoable: the next
+still have the rule's decision are restored; mutes the batch created are removed, and a series that was muted
+before keeps its mute as it was (a rule never changes an existing mute when it runs after the launch). An
+undone batch comes back when the launch is analysed again, so disable or change the rule too. (Batches of rules applied on ingest are not undoable: the next
 ingest would apply them again; change the rule instead.)
 
 **Dry run** of such a rule (`POST .../rules/test`) reads the logs of the chosen launch the same way and writes
 nothing. **Apply to past launches** queues the task `log_rule.apply` for the analysis role: it reads the
 launches within the project's raw retention (`retention.rawDays`), each within the per-launch budget and the
 whole task within 5 minutes; `GET .../tasks/{id}` shows `matched`, `marked`, `updated` and whether it was
-`partial`. Applying needs FastProof Analysis on (409 `analysis_disabled` otherwise).
+`partial`. Applying needs FastProof Analysis on (409 `analysis_disabled` otherwise); at most two such
+applications wait or run per project (429 for a third).
 
 Limits: at most `FASTPROOF_ANALYSIS_MAX_LOG_RULES` (100) enabled after-launch rules per project (409
 `limit_reached`, `details {limit: "maxLogRules", max}`). During an upgrade from a version without these rules,

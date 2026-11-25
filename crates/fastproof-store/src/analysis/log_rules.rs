@@ -25,7 +25,7 @@ use serde::Deserialize;
 use sqlx::{Postgres, QueryBuilder};
 use uuid::Uuid;
 
-use super::hook::{is_protected, rule_defect, type_refs, upsert_mutes};
+use super::hook::{add_retro_mutes, is_protected, rule_defect, type_refs};
 use super::rules::{self, Budget, BudgetExhausted, CompiledRule, MATCH_INPUT_BYTES, Rule, Subject};
 use super::tasks::{DryRun, MAX_DRY_RUN_IDS};
 use super::triage::recount_muted;
@@ -48,6 +48,8 @@ const ATTEMPT_BATCH: usize = 20;
 const MAX_RESULT_PATTERNS: i64 = 100;
 /// Signals of a launch read for `match.signals`, at most.
 const MAX_LAUNCH_SIGNALS: i64 = 200_000;
+/// Lines of one attempt's tail, at most (a log of very short lines is cut to its newest ones).
+pub const MAX_TAIL_LINES: usize = 131_072;
 
 /// Narrows a results query (alias `r`) to results marked with `pattern`.
 pub fn result_pattern_filter(qb: &mut QueryBuilder<Postgres>, pattern: &str) {
@@ -109,8 +111,9 @@ pub struct TailLine {
 }
 
 /// The tail of an attempt's log: lines newest first, `bytes` counting the text and step name
-/// of each (as the chunks count them), at most the size it was built for. The oldest line kept
-/// is cut to fit (its last bytes).
+/// of each plus one byte for its end (an empty line costs a byte too, so a log of empty lines
+/// cannot grow a tail without bound), at most the size it was built for and at most
+/// [`MAX_TAIL_LINES`] lines. The oldest line kept is cut to fit (its last bytes).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Tail {
     pub lines: Vec<TailLine>,
@@ -120,13 +123,13 @@ pub struct Tail {
 impl Tail {
     /// Adds the next older line; false once the tail is full.
     fn push_older(&mut self, mut line: TailLine, step_bytes: usize, max: usize) -> bool {
-        if self.bytes >= max {
+        if self.bytes >= max || self.lines.len() >= MAX_TAIL_LINES {
             return false;
         }
         let left = max - self.bytes;
-        let size = line.text.len() + step_bytes;
+        let size = line.text.len() + step_bytes + 1;
         if size > left {
-            let keep = left.saturating_sub(step_bytes).min(line.text.len());
+            let keep = left.saturating_sub(step_bytes + 1).min(line.text.len());
             let mut start = line.text.len() - keep;
             while !line.text.is_char_boundary(start) {
                 start += 1;
@@ -151,7 +154,7 @@ impl Tail {
                 stream,
                 text: l.strip_suffix('\r').unwrap_or(l).to_string(),
             };
-            if !t.push_older(line, 1, max) {
+            if !t.push_older(line, 0, max) {
                 break;
             }
         }
@@ -191,9 +194,9 @@ pub fn excerpt(line: &str, at: Option<usize>) -> String {
             }
             continue;
         }
-        if c == '\t' {
+        if c == '\t' || c == '\u{2028}' || c == '\u{2029}' {
             out.push(' ');
-        } else if c.is_control() {
+        } else if c.is_control() || invisible(c) {
             continue;
         } else {
             out.push(c);
@@ -201,6 +204,21 @@ pub fn excerpt(line: &str, at: Option<usize>) -> String {
         n += 1;
     }
     out.trim().to_string()
+}
+
+/// Characters that change how text around them is shown without showing themselves: the
+/// bidirectional embeddings, overrides and isolates and the zero-width characters. An excerpt
+/// drops them so a log line cannot reorder or hide what a reader sees.
+fn invisible(c: char) -> bool {
+    matches!(
+        c,
+        '\u{061c}'
+            | '\u{200b}'..='\u{200f}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{feff}'
+    )
 }
 
 /// What a matched result got from a rule.
@@ -219,16 +237,41 @@ pub fn scan_tail(
     last: usize,
     budget: &mut Budget,
 ) -> Result<Option<(usize, Option<usize>)>, BudgetExhausted> {
+    scan_tail_until(log, tail, last, budget, None).map_err(|_| BudgetExhausted)
+}
+
+/// Why a scan of a tail stopped before its end.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScanStop {
+    /// The regex budget ran out.
+    Budget,
+    /// The time of the pass ran out (`deadline`).
+    Time,
+}
+
+/// [`scan_tail`] that also stops at `deadline`, checked before every line: one attempt's tail
+/// read by many rules is the largest unit of work of a pass, so the CPU budget of the pass
+/// is enforced inside it, not only between attempts.
+pub fn scan_tail_until(
+    log: &rules::CompiledLog,
+    tail: &Tail,
+    last: usize,
+    budget: &mut Budget,
+    deadline: Option<Instant>,
+) -> Result<Option<(usize, Option<usize>)>, ScanStop> {
     if !log.begin_scan(budget) {
-        return Err(BudgetExhausted);
+        return Err(ScanStop::Budget);
     }
     let mut used = 0usize;
     for (i, l) in tail.lines.iter().enumerate() {
         if used >= last {
             break;
         }
+        if deadline.is_some_and(|d| Instant::now() >= d) {
+            return Err(ScanStop::Time);
+        }
         let room = last - used;
-        used += l.text.len();
+        used += l.text.len() + 1;
         if !log.wants(l.level, l.stream) {
             continue;
         }
@@ -242,7 +285,7 @@ pub fn scan_tail(
             &l.text[..]
         };
         match log.line_matches(text, budget) {
-            None => return Err(BudgetExhausted),
+            None => return Err(ScanStop::Budget),
             Some(false) => {}
             Some(true) => {
                 let at = log.find(rules::match_input(text));
@@ -419,6 +462,7 @@ fn match_batch(
     cpu_left: Duration,
 ) -> BatchOutcome {
     let started = Instant::now();
+    let deadline = started.checked_add(cpu_left);
     let mut out = BatchOutcome {
         hits: Vec::new(),
         skipped_large: 0,
@@ -473,9 +517,12 @@ fn match_batch(
             let Some(log) = rules[i].log() else { continue };
             let last = last_of(i);
             for t in &tails {
-                match scan_tail(log, t, last, budget) {
-                    Err(BudgetExhausted) => {
-                        out.stopped = Some(Stop::Regex);
+                match scan_tail_until(log, t, last, budget, deadline) {
+                    Err(stop) => {
+                        out.stopped = Some(match stop {
+                            ScanStop::Budget => Stop::Regex,
+                            ScanStop::Time => Stop::Cpu,
+                        });
                         out.cpu = started.elapsed();
                         return out;
                     }
@@ -699,8 +746,8 @@ impl Store {
             let rows: Vec<(String, i32, Vec<u8>)> = sqlx::query_as(
                 "select k.key, c.attempt, c.lines_z from unnest($2::text[], $3::bigint[]) as k(key, lim) \
                  cross join lateral (select x.attempt, x.first_seq, x.lines_z from (select c.attempt, c.first_seq, \
-                     c.lines_z, greatest(c.bytes - c.line_count * (32 + octet_length(c.result_key)), 0)::bigint as est, \
-                     sum(greatest(c.bytes - c.line_count * (32 + octet_length(c.result_key)), 0)) \
+                     c.lines_z, (greatest(c.bytes - c.line_count * (32 + octet_length(c.result_key)), 0) + c.line_count)::bigint as est, \
+                     sum((greatest(c.bytes - c.line_count * (32 + octet_length(c.result_key)), 0) + c.line_count)) \
                        over (order by c.attempt desc, c.first_seq desc) as acc \
                    from attempt_log_chunks c where c.launch_id = $1 and c.result_key = k.key) x \
                    where x.acc - x.est < k.lim order by x.attempt desc, x.first_seq desc) c",
@@ -946,14 +993,7 @@ impl Store {
                 .iter()
                 .map(|s| (*s, (until, format!("rule {}", rule.rule.name))))
                 .collect();
-            upsert_mutes(
-                &mut tx,
-                scope.project_id,
-                &mutes,
-                super::hook::SYSTEM,
-                false,
-            )
-            .await?;
+            add_retro_mutes(&mut tx, scope.project_id, &mutes, by).await?;
             sqlx::query(
                 "update results r set muted = true, \
                    mute_until = (select m.until from series_mutes m where m.series_id = r.series_id), updated_at = now() \
@@ -1170,6 +1210,18 @@ impl Store {
         })))
     }
 
+    /// Queued or running tasks of a kind in a project.
+    pub async fn open_tasks_of_kind(&self, project_id: Uuid, kind: &str) -> anyhow::Result<i64> {
+        Ok(sqlx::query_scalar(
+            "select count(*) from analysis_tasks where project_id = $1 and kind = $2 \
+             and status in ('queued', 'running')",
+        )
+        .bind(project_id)
+        .bind(kind)
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
     /// Pattern marks of a result.
     pub async fn result_patterns(&self, result_id: Uuid) -> anyhow::Result<Vec<ResultPattern>> {
         let rows: Vec<(String, Uuid, i32, String)> = sqlx::query_as(
@@ -1372,7 +1424,8 @@ mod tests {
             7,
         );
         assert_eq!(t.bytes, 7);
-        assert_eq!(t.lines[1].text, "ghij");
+        // "klm" and its line end take 4 bytes, the older line keeps 2 and its end.
+        assert_eq!(t.lines[1].text, "ij");
     }
 
     #[test]
@@ -1453,6 +1506,119 @@ mod tests {
         assert!(e.contains("needle"), "{e}");
         let e = excerpt(&"é".repeat(1000), None);
         assert_eq!(e.chars().count(), EXCERPT_CHARS);
+    }
+
+    fn zstd_json(v: &serde_json::Value) -> Vec<u8> {
+        zstd::encode_all(serde_json::to_vec(v).unwrap().as_slice(), 3).unwrap()
+    }
+
+    #[test]
+    fn empty_lines_do_not_grow_a_tail_without_bound() {
+        // Each line costs a byte at least: 50 chunks of 1000 empty lines fill a 1024-byte tail
+        // with 1024 lines, not 50 000.
+        let chunk: Vec<serde_json::Value> = (0..1000)
+            .map(|q| serde_json::json!({"q": q, "l": "info", "s": "stdout", "m": ""}))
+            .collect();
+        let z = zstd_json(&serde_json::Value::Array(chunk));
+        let chunks: Vec<(i32, Vec<u8>)> = (0..50).map(|_| (0, z.clone())).collect();
+        let tails = build_tail(&chunks, None, 1024).unwrap();
+        assert_eq!(tails[0].lines.len(), 1024);
+        assert_eq!(tails[0].bytes, 1024);
+        // Captured output of empty lines is capped by lines too.
+        let t = Tail::of_captured(&"x\n".repeat(1 << 20), LogStream::Stdout, 1 << 20);
+        assert!(t.lines.len() <= MAX_TAIL_LINES, "{}", t.lines.len());
+        assert!(t.bytes <= 1 << 20);
+    }
+
+    #[test]
+    fn the_cpu_budget_holds_inside_one_attempt() {
+        // One attempt read by many rules: the pass stops at its time even though the time is
+        // checked between attempts too.
+        let text = format!("{}\n", "abcdefghij ".repeat(1400)).repeat(64);
+        let captured = zstd_json(&serde_json::json!({"stdout": {"text": text}}));
+        let rules: Vec<Arc<CompiledRule>> = (0..10)
+            .map(|i| {
+                Arc::new(compiled(RuleLogMatch {
+                    regex: Some(format!("[a-z]+ never{i}$")),
+                    last_bytes: Some(1 << 20),
+                    ..Default::default()
+                }))
+            })
+            .collect();
+        let row = AttemptRow {
+            id: Uuid::now_v7(),
+            result_id: Uuid::now_v7(),
+            client_key: "x".into(),
+            attempt_no: 0,
+            has_logs: true,
+            trace: None,
+            status: "failed".into(),
+            test_case_id: Uuid::now_v7(),
+            message: None,
+            fingerprint: None,
+        };
+        let work = || {
+            vec![AttemptWork {
+                row: row.clone(),
+                rules: (0..rules.len()).collect(),
+                chunks: Vec::new(),
+                captured: Some(captured.clone()),
+            }]
+        };
+        let mut b = Budget::launch();
+        let out = match_batch(&rules, work(), 1 << 20, &mut b, Duration::from_millis(1));
+        assert_eq!(out.stopped, Some(Stop::Cpu));
+        assert!(out.hits.is_empty());
+        let mut b = Budget::launch();
+        let out = match_batch(&rules, work(), 1 << 20, &mut b, Duration::from_secs(600));
+        assert_eq!(
+            out.stopped, None,
+            "with time enough every rule reads the tail"
+        );
+    }
+
+    #[test]
+    fn contains_is_a_linear_case_insensitive_search() {
+        let needle = format!("{}b", "a".repeat(rules::MAX_CONTAINS_BYTES - 1));
+        let r = compiled(RuleLogMatch {
+            contains: Some(needle.to_uppercase()),
+            ..Default::default()
+        });
+        let log = r.log().unwrap();
+        let line = "a".repeat(MATCH_INPUT_BYTES);
+        let mut b = Budget::launch();
+        let started = Instant::now();
+        for _ in 0..256 {
+            assert_eq!(log.line_matches(&line, &mut b), Some(false));
+        }
+        // Comparing the text at every offset would take 256 × 16 KiB × 1 KiB steps.
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+        let hit = format!("xx{}", needle.to_lowercase());
+        assert_eq!(log.line_matches(&hit, &mut b), Some(true));
+        assert_eq!(log.find(&hit), Some(2));
+        let r = compiled(RuleLogMatch {
+            contains: Some("Größe (x)".into()),
+            ..Default::default()
+        });
+        let log = r.log().unwrap();
+        assert_eq!(log.line_matches("die GRÖSSE (x)", &mut b), Some(false));
+        assert_eq!(log.line_matches("die GRÖßE (X) ist", &mut b), Some(true));
+        assert_eq!(log.find("die GRÖßE (X) ist"), Some(4));
+        assert_eq!(log.line_matches("Größe x", &mut b), Some(false));
+    }
+
+    #[test]
+    fn excerpts_drop_bidi_controls_and_invisible_characters() {
+        let e = excerpt(
+            "user\u{202e}gnp.exe\u{202c} ok\u{200b}\u{2066}x\u{2069}\u{feff}\u{2028}end",
+            None,
+        );
+        assert_eq!(e, "usergnp.exe okx end");
+        assert!(e.chars().all(|c| !invisible(c) && !c.is_control()));
     }
 
     #[test]

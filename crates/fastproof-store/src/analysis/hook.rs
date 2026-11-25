@@ -744,6 +744,35 @@ async fn recheck(
     Ok(())
 }
 
+/// Mutes series for a rule applied retroactively by `by` (a journal batch an undo can
+/// revert): a series without a mute gets one created by `by` in this transaction, which the
+/// undo of the batch finds by its author and time and removes; a series muted already keeps
+/// its mute as it is (author, reason and end), so undoing the batch never removes or changes
+/// a mute it did not create. Rows are written in series order.
+pub(crate) async fn add_retro_mutes(
+    conn: &mut PgConnection,
+    project_id: Uuid,
+    mutes: &BTreeMap<Uuid, (Option<DateTime<Utc>>, String)>,
+    by: &str,
+) -> anyhow::Result<()> {
+    let ids: Vec<Uuid> = mutes.keys().copied().collect();
+    let until: Vec<Option<DateTime<Utc>>> = mutes.values().map(|v| v.0).collect();
+    let reasons: Vec<String> = mutes.values().map(|v| crate::no_nul(&v.1)).collect();
+    sqlx::query(
+        "insert into series_mutes (series_id, project_id, until, reason, created_by) \
+         select s, $1, u, r, $5 from unnest($2::uuid[], $3::timestamptz[], $4::text[]) as t(s, u, r) \
+         on conflict (series_id) do nothing",
+    )
+    .bind(project_id)
+    .bind(&ids)
+    .bind(&until)
+    .bind(&reasons)
+    .bind(crate::no_nul(by))
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
 /// Adds or extends series mutes (`None` until = no end). Rows are written in series order.
 pub(crate) async fn upsert_mutes(
     conn: &mut PgConnection,

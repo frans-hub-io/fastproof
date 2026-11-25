@@ -19,6 +19,10 @@ pub const AVAILABLE: bool = true;
 /// Wall time one `log_rule.apply` task spends, at most; the launches it did not reach are
 /// reported (`partial`).
 pub const RETRO_TASK_BUDGET: Duration = Duration::from_secs(300);
+/// Queued or running `log_rule.apply` tasks of one project, at most: the analysis role runs
+/// the tasks of every project one after another, so one project cannot fill its queue with
+/// long log reads.
+pub const MAX_OPEN_RETRO_TASKS: i64 = 2;
 /// Log lines asked from ClickHouse for one retroactive application, at most.
 pub const RETRO_CLICKHOUSE_MATCHES: usize = 50_000;
 

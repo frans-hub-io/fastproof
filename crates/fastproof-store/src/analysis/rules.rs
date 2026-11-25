@@ -375,6 +375,7 @@ pub fn validate_log_match(l: &RuleLogMatch) -> Result<(), String> {
                     "match.log.contains must have 1 to {MAX_CONTAINS_BYTES} bytes"
                 ));
             }
+            compile_contains(c).map_err(|e| format!("match.log.contains: {e}"))?;
         }
     }
     if let Some(v) = &l.levels {
@@ -488,12 +489,24 @@ pub struct Subject<'a> {
     pub environment: Option<&'a str>,
 }
 
+/// A `match.log.contains` text as a case-insensitive literal search. The regex engine finds a
+/// literal in time linear in the line; comparing the text at every offset of the line would
+/// cost the line's length times the text's (16 KiB × 1 KiB per line).
+pub fn compile_contains(c: &str) -> Result<Regex, String> {
+    RegexBuilder::new(&regex::escape(c))
+        .case_insensitive(true)
+        .size_limit(REGEX_SIZE_LIMIT)
+        .dfa_size_limit(REGEX_DFA_LIMIT)
+        .build()
+        .map_err(|_| "the text is too long to search for".to_string())
+}
+
 /// `match.log` of a rule, compiled.
 #[derive(Debug)]
 pub struct CompiledLog {
     regex: Option<Regex>,
-    /// Lower case; matched case-insensitively like the log search.
-    contains: Option<String>,
+    /// `contains`, matched case-insensitively like the log search ([`compile_contains`]).
+    contains: Option<Regex>,
     levels: Option<Vec<LogLevel>>,
     streams: Option<Vec<LogStream>>,
     /// The tail of each attempt's log the rule reads; `None` for the instance default.
@@ -504,7 +517,7 @@ impl CompiledLog {
     fn compile(l: &RuleLogMatch) -> Result<Self, String> {
         Ok(Self {
             regex: l.regex.as_deref().map(compile_regex).transpose()?,
-            contains: l.contains.as_ref().map(|c| c.to_lowercase()),
+            contains: l.contains.as_deref().map(compile_contains).transpose()?,
             levels: l.levels.clone(),
             streams: l.streams.as_ref().map(|v| {
                 v.iter()
@@ -547,25 +560,16 @@ impl CompiledLog {
             return None;
         }
         Some(match (&self.regex, &self.contains) {
-            (Some(re), _) => re.is_match(input),
-            (None, Some(c)) => crate::logs::contains_ci(input, c),
+            (Some(re), _) | (None, Some(re)) => re.is_match(input),
             (None, None) => false,
         })
     }
 
-    /// The byte offset of the first match in a line that matched (for its excerpt); `None`
-    /// when it cannot be told cheaply (a case-insensitive search in non-ASCII text).
+    /// The byte offset of the first match in a line that matched (for its excerpt).
     pub fn find(&self, text: &str) -> Option<usize> {
         match (&self.regex, &self.contains) {
-            (Some(re), _) => re.find(text).map(|m| m.start()),
-            (None, Some(c)) if text.is_ascii() && c.is_ascii() && !c.is_empty() => {
-                text.as_bytes().windows(c.len()).position(|w| {
-                    w.iter()
-                        .zip(c.as_bytes())
-                        .all(|(a, b)| a.to_ascii_lowercase() == *b)
-                })
-            }
-            _ => None,
+            (Some(re), _) | (None, Some(re)) => re.find(text).map(|m| m.start()),
+            (None, None) => None,
         }
     }
 }

@@ -585,6 +585,14 @@ pub async fn apply_rule(
         )
         .await
         .map_err(tm_error)?;
+        if s.store.open_tasks_of_kind(p.id, "log_rule.apply").await?
+            >= crate::analysis::log_rules::MAX_OPEN_RETRO_TASKS
+        {
+            return Err(ApiError::too_many_requests(format!(
+                "at most {} applications of rules that read logs are queued per project; wait for them to finish",
+                crate::analysis::log_rules::MAX_OPEN_RETRO_TASKS
+            )));
+        }
     }
     let launches = s.store.apply_targets(p.id, q.launch_id).await?;
     if q.launch_id.is_some() && launches.is_empty() {

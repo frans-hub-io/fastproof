@@ -1318,3 +1318,131 @@ async fn log_rules_target_300_attempts_of_256_kib() {
     assert_eq!(step["detail"]["marked"], 30);
     assert!(step["detail"]["cpuMs"].as_u64().unwrap() < 2000, "{step}");
 }
+
+async fn series_mute(db: &TestDb, result: &str) -> Option<(String, Option<String>)> {
+    sqlx::query_as(
+        "select m.reason, m.created_by from series_mutes m join results r on r.series_id = m.series_id \
+         where r.id = $1::uuid",
+    )
+    .bind(result)
+    .fetch_optional(&db.pool)
+    .await
+    .unwrap()
+}
+
+/// A log rule that mutes: undoing its retro batch removes the mutes the batch created and
+/// leaves a mute a person had set before as it was; retro applications of log rules are
+/// capped per project.
+#[tokio::test]
+async fn retro_mutes_are_undone_and_retro_tasks_are_capped() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = start(&db, &[]).await;
+    s.project("mu").await;
+    // A person mutes the series of Vault first.
+    let l0 = new_launch(&s, "mu").await;
+    post_results(&s, "mu", &l0, vec![failed("v0", "Vault", "sealed")]).await;
+    finish(&s, "mu", &l0).await;
+    analyse(&s).await;
+    let vault0 = by_name(&s, "mu", &l0, "").await["Vault"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (st, out) = s
+        .post(
+            "/api/v1/projects/mu/triage",
+            ADMIN_TOKEN,
+            json!({"resultIds": [vault0], "mute": {"reason": "known outage"}}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{out}");
+
+    let r = created_rule(
+        &s,
+        "mu",
+        json!({"name": "OOM mutes", "match": {"log": {"contains": "OutOfMemoryError"}},
+            "action": {"pattern": "oom", "mute": {"days": 7}}}),
+    )
+    .await;
+    let rid = r["id"].as_str().unwrap().to_string();
+    let l = new_launch(&s, "mu").await;
+    post_results(
+        &s,
+        "mu",
+        &l,
+        vec![failed("a", "Cart", "boom"), failed("v", "Vault", "sealed")],
+    )
+    .await;
+    for c in ["a", "v"] {
+        post_logs(
+            &s,
+            "mu",
+            &l,
+            c,
+            &[("error", "stderr", "java.lang.OutOfMemoryError: heap")],
+        )
+        .await;
+    }
+    finish(&s, "mu", &l).await;
+    analyse(&s).await;
+    let rs = by_name(&s, "mu", &l, "").await;
+    let cart = rs["Cart"]["id"].as_str().unwrap().to_string();
+    let vault = rs["Vault"]["id"].as_str().unwrap().to_string();
+    assert_eq!(rs["Cart"]["muted"], true, "{}", rs["Cart"]);
+    let by = format!("rule:{rid}");
+    assert_eq!(
+        series_mute(&db, &cart).await,
+        Some(("rule OOM mutes".to_string(), Some(by.clone()))),
+        "the mute is created by the batch's author"
+    );
+    assert_eq!(
+        series_mute(&db, &vault).await.map(|m| m.0),
+        Some("known outage".to_string()),
+        "a person's mute keeps its reason and author"
+    );
+    let rows = journal(&db, &cart).await;
+    let batch = rows
+        .iter()
+        .find(|r| r.0 == "retro")
+        .expect("a retro batch")
+        .3
+        .clone();
+    let (st, u) = s
+        .post(
+            "/api/v1/projects/mu/triage/undo",
+            ADMIN_TOKEN,
+            json!({"batchId": batch}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{u}");
+    assert_eq!(
+        series_mute(&db, &cart).await,
+        None,
+        "the undo removes the mute the batch created"
+    );
+    assert_eq!(
+        series_mute(&db, &vault).await.map(|m| m.0),
+        Some("known outage".to_string()),
+        "the undo leaves the person's mute"
+    );
+    let back = by_name(&s, "mu", &l, "").await;
+    assert_eq!(back["Cart"]["muted"], false, "{}", back["Cart"]);
+
+    // At most MAX_OPEN_RETRO_TASKS applications of log rules wait per project.
+    let max = fastproof_server::analysis::log_rules::MAX_OPEN_RETRO_TASKS;
+    for i in 0..=max {
+        let (st, t) = s
+            .post(
+                &format!("/api/v1/projects/mu/rules/{rid}/apply?launchId={l}"),
+                ADMIN_TOKEN,
+                json!({}),
+            )
+            .await;
+        if i < max {
+            assert_eq!(st, StatusCode::ACCEPTED, "{t}");
+        } else {
+            assert_eq!(st, StatusCode::TOO_MANY_REQUESTS, "{t}");
+        }
+    }
+}

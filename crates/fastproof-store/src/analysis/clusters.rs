@@ -92,6 +92,13 @@ type ScoredRow = (
     Option<serde_json::Value>,
 );
 type ClusterRow = (String, i64, i64, i64, Uuid, Option<serde_json::Value>);
+type KnownRow = (
+    String,
+    DateTime<Utc>,
+    Option<Uuid>,
+    String,
+    Option<DateTime<Utc>>,
+);
 type SimilarRow = (
     Uuid,
     Uuid,
@@ -111,7 +118,8 @@ impl Store {
         .await?)
     }
 
-    /// Failed and broken results of a launch grouped by fingerprint, largest first.
+    /// Failed and broken results of a launch grouped by canonical fingerprint (the alias target
+    /// when one is set), largest first, with the state of each error (contract §7.4).
     pub async fn clusters(
         &self,
         launch: &Launch,
@@ -119,14 +127,19 @@ impl Store {
     ) -> anyhow::Result<Vec<Cluster>> {
         let (mode, key) = crate::results::EnvFilter::args(env);
         let rows: Vec<ClusterRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "select fingerprint, count(*)::bigint, count(*) filter (where status = 'failed')::bigint, \
-               count(*) filter (where status = 'broken')::bigint, (array_agg(id order by full_name, id))[1], \
-               (array_agg(defect order by (defect->>'source' in ('user', 'ai')) desc, \
-                 (defect->>'ruleId') is not null desc, full_name, id) filter (where defect is not null))[1] \
-             from results where launch_id = $1 and launch_created_at = $2 and status in ('failed', 'broken') \
-               and fingerprint is not null \
+            "select coalesce(ff.alias_of, results.fingerprint), count(*)::bigint, \
+               count(*) filter (where results.status = 'failed')::bigint, \
+               count(*) filter (where results.status = 'broken')::bigint, \
+               (array_agg(results.id order by results.full_name, results.id))[1], \
+               (array_agg(results.defect order by (results.defect->>'source' in ('user', 'ai')) desc, \
+                 (results.defect->>'ruleId') is not null desc, results.full_name, results.id) \
+                 filter (where results.defect is not null))[1] \
+             from results left join failure_fingerprints ff \
+               on ff.project_id = results.project_id and ff.fingerprint = results.fingerprint \
+             where results.launch_id = $1 and results.launch_created_at = $2 \
+               and results.status in ('failed', 'broken') and results.fingerprint is not null \
                and ($4::int = 0 or exists (select 1 from series se where se.id = results.series_id and {})) \
-             group by fingerprint order by 2 desc, 1 limit $3",
+             group by 1 order by 2 desc, 1 limit $3",
             crate::results::ENV_MATCH
                 .replace("$m", "$4")
                 .replace("$k", "$5::text")
@@ -152,36 +165,60 @@ impl Store {
         .into_iter()
         .collect();
         let fps: Vec<String> = rows.iter().map(|r| r.0.clone()).collect();
-        let known: HashMap<String, (DateTime<Utc>, Option<Uuid>)> =
-            sqlx::query_as::<_, (String, DateTime<Utc>, Option<Uuid>)>(
-                "select fingerprint, first_seen_at, first_launch_id from failure_fingerprints \
-                 where project_id = $1 and fingerprint = any($2)",
-            )
-            .bind(launch.project_id)
-            .bind(&fps)
-            .fetch_all(&self.pool)
-            .await?
-            .into_iter()
-            .map(|(f, at, l)| (f, (at, l)))
-            .collect();
+        let known: HashMap<String, KnownRow> = sqlx::query_as::<_, KnownRow>(
+            "select fingerprint, first_seen_at, first_launch_id, state, state_at from failure_fingerprints \
+             where project_id = $1 and fingerprint = any($2)",
+        )
+        .bind(launch.project_id)
+        .bind(&fps)
+        .fetch_all(&self.pool)
+        .await?
+        .into_iter()
+        .map(|r| (r.0.clone(), r))
+        .collect();
+        let on_branch: std::collections::HashSet<String> = sqlx::query_scalar::<_, String>(
+            "select distinct coalesce(f.alias_of, b.fingerprint) from fingerprint_branches b \
+             join failure_fingerprints f on f.project_id = b.project_id and f.fingerprint = b.fingerprint \
+             where b.project_id = $1 and b.first_launch_id = $2 \
+               and (b.fingerprint = any($3) or f.alias_of = any($3))",
+        )
+        .bind(launch.project_id)
+        .bind(launch.id)
+        .bind(&fps)
+        .fetch_all(&self.pool)
+        .await?
+        .into_iter()
+        .collect();
         Ok(rows
             .into_iter()
             .map(|(fp, count, failed, broken, sample, defect)| {
-                let known_since = known
-                    .get(&fp)
-                    .filter(|(at, l)| *l != Some(launch.id) && *at < launch.created_at)
-                    .map(|(at, _)| at.date_naive());
+                let row = known.get(&fp);
+                let known_since = row
+                    .filter(|r| r.2 != Some(launch.id) && r.1 < launch.created_at)
+                    .map(|r| r.1.date_naive());
+                // Once the errors step evaluated the error its state decides; before that (or
+                // with Analysis off) an error is new when the catalog first saw it here.
+                let error_state = row
+                    .filter(|r| r.4.is_some())
+                    .and_then(|r| super::types::ErrorState::parse(&r.3));
+                let is_new = match error_state {
+                    Some(s) => {
+                        s == super::types::ErrorState::New
+                            && row.is_some_and(|r| r.2 == Some(launch.id))
+                    }
+                    None => known_since.is_none(),
+                };
                 Cluster {
                     message: short(messages.get(&sample).cloned().flatten()),
                     count,
                     statuses: ClusterStatuses { failed, broken },
                     sample_result_id: sample,
                     defect: defect_of(defect),
-                    is_new: known_since.is_none(),
+                    is_new,
                     known_since,
+                    new_on_branch: on_branch.contains(&fp),
+                    error_state,
                     fingerprint: fp,
-                    new_on_branch: false,
-                    error_state: None,
                 }
             })
             .collect())

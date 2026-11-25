@@ -893,6 +893,58 @@ export interface paths {
         patch: operations["analysis_patch_defect_type"];
         trace?: never;
     };
+    "/api/v1/projects/{key}/errors": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description The unique errors of the project (canonical fingerprints; aliases are counted in their error) with their state (`new`, `active`, `resolved`, `regressed`, `ignored`), branches, first and last occurrence, launches, tests, linked issue and a 14-day sparkline. Filters: `state`, `branch`, `q` (a substring of the message, at least 3 characters); `sort`; paged with `before`. Needs `launches:read`. */
+        get: operations["analysis_errors"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/errors/{fingerprint}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description One unique error: its summary, aliases, branches (with the launches since it was last seen on each), the commit range it appeared in (with a compare link for GitHub and GitLab), the time to resolve, the triage decisions people made for it, the tests it occurs in and the timeline of the last 30 days. Needs `launches:read`. */
+        get: operations["analysis_error"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** @description Changes an error: `state: ignored` (left out of `newErrors` and of notifications, never changes by itself) or `active` (computed again from its occurrences); `aliasOf` makes it an alias of another error of the project (its occurrences count there; an alias of an alias points at the canonical error), `null` splits it again. A cycle or an error of another project answers 409 `alias_cycle`; an alias has no state of its own (400). Needs `results:triage`. */
+        patch: operations["analysis_patch_error"];
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/errors/{fingerprint}/timeline": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Daily occurrences and launches of an error between `from` and `to` (default the last 30 days, at most 365). Answered from ClickHouse when it is configured, else from PostgreSQL, which keeps 30 days here (`window.partial` when the window was cut). Needs `launches:read`. */
+        get: operations["analysis_error_timeline"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{key}/events": {
         parameters: {
             query?: never;
@@ -8790,7 +8842,10 @@ export interface components {
             comment?: string | null;
             /** Format: uuid */
             defectTypeId?: string | null;
-            /** @description With `launchId`: every result of the launch with this fingerprint. */
+            /**
+             * @description With `launchId`: every result of the launch with this fingerprint or one of its aliases
+             *     (the fingerprint of a cluster is its canonical error).
+             */
             fingerprint?: string | null;
             issue?: components["schemas"]["TriageIssue"] | null;
             /** Format: uuid */
@@ -12904,6 +12959,243 @@ export interface operations {
             };
         };
     };
+    analysis_errors: {
+        parameters: {
+            query?: {
+                /** @description Only errors in this state. */
+                state?: components["schemas"]["ErrorState"];
+                /** @description Only errors seen on this branch (`*` for the untracked branches). */
+                branch?: string;
+                /** @description A substring of the message, at least 3 characters. */
+                q?: string;
+                /** @description `lastSeen` (default), `firstSeen`, `occurrences` or `launches`, newest or largest first. */
+                sort?: components["schemas"]["ErrorSort"];
+                /** @description The `next` of the previous page. */
+                before?: string;
+                /** @description 1 to 500, default 50. */
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorList"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    analysis_error: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                fingerprint: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    analysis_patch_error: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                fingerprint: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ErrorPatch"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorDetail"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    analysis_error_timeline: {
+        parameters: {
+            query?: {
+                /** @description RFC 3339; default 30 days before `to`. */
+                from?: string;
+                /** @description RFC 3339; default now. */
+                to?: string;
+            };
+            header?: never;
+            path: {
+                key: string;
+                fingerprint: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorTimeline"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     events_stream: {
         parameters: {
             query?: never;
@@ -15210,6 +15502,7 @@ export interface operations {
                 /** @description `name:value` label. */
                 label?: string;
                 flaky?: boolean;
+                /** @description Results with this fingerprint or one of its aliases (a unique error). */
                 fingerprint?: string;
                 /** @description `manual` (projected from run items) or `automated`. */
                 source?: components["schemas"]["ResultSource"];

@@ -896,17 +896,340 @@ async fn send_email_text(
     Outcome::Retry(last, None)
 }
 
-/// Queues the `errorRegressed` deliveries of the error-state changes of a launch (at most one
-/// per channel and project every 10 minutes, listing up to 10 errors); returns how many were
-/// queued. Owner: E. Stub until it fills it: none.
+/// The event of regressed unique errors.
+pub const ERROR_EVENT: &str = "errorRegressed";
+
+/// One regressed error in an [`ErrorDigest`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ErrorDigestItem {
+    pub fingerprint: String,
+    pub message: String,
+    /// The error page, when `FASTPROOF_PUBLIC_URL` is set.
+    pub url: Option<String>,
+}
+
+/// The launch an [`ErrorDigest`] is about.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ErrorDigestLaunch {
+    pub id: Uuid,
+    pub number: i64,
+    pub name: String,
+    pub branch: Option<String>,
+    pub commit: Option<String>,
+    /// The launch page, when `FASTPROOF_PUBLIC_URL` is set.
+    pub url: Option<String>,
+}
+
+/// What an `errorRegressed` message says: errors that came back after they were resolved.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ErrorDigest {
+    pub project: String,
+    pub event: String,
+    pub launch: ErrorDigestLaunch,
+    /// Errors that regressed in the launch.
+    pub count: i64,
+    /// The first of them (at most 10).
+    pub items: Vec<ErrorDigestItem>,
+    /// The unique errors page filtered to regressed errors, when `FASTPROOF_PUBLIC_URL` is set.
+    pub url: Option<String>,
+}
+
+/// The headline of an `errorRegressed` message.
+pub fn error_headline(d: &ErrorDigest) -> String {
+    let branch = d
+        .launch
+        .branch
+        .as_deref()
+        .map(|b| format!(" on {}", one_line(b, 100)))
+        .unwrap_or_default();
+    let what = if d.count == 1 {
+        "1 error regressed".to_string()
+    } else {
+        format!("{} errors regressed", d.count)
+    };
+    one_line(
+        &format!(
+            "FastProof {}: {what} in launch #{}{branch}",
+            d.project, d.launch.number
+        ),
+        300,
+    )
+}
+
+/// The plain-text message of regressed errors.
+pub fn error_text(d: &ErrorDigest) -> String {
+    let mut out = vec![error_headline(d)];
+    for i in &d.items {
+        out.push(format!("{} {}", i.fingerprint, one_line(&i.message, 200)));
+    }
+    if d.count > d.items.len() as i64 {
+        out.push(format!("and {} more", d.count - d.items.len() as i64));
+    }
+    if let Some(u) = d.url.as_ref().or(d.launch.url.as_ref()) {
+        out.push(u.clone());
+    }
+    out.join("\n")
+}
+
+/// The Teams card of regressed errors (plain text runs only).
+pub fn error_card(d: &ErrorDigest) -> serde_json::Value {
+    use super::teams::plain;
+    let mut body = vec![serde_json::json!({"type": "RichTextBlock", "inlines": [
+        {"type": "TextRun", "text": plain(&error_headline(d), 300), "weight": "Bolder", "size": "Medium"}]})];
+    for i in &d.items {
+        body.push(
+            serde_json::json!({"type": "RichTextBlock", "spacing": "Small", "inlines": [
+            {"type": "TextRun", "text": format!("{} ", i.fingerprint), "fontType": "Monospace"},
+            {"type": "TextRun", "text": plain(&i.message, 200)}]}),
+        );
+    }
+    let mut card = serde_json::json!({"type": "AdaptiveCard",
+        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json", "version": "1.5", "body": body});
+    if let Some(u) = d.url.as_ref().or(d.launch.url.as_ref()) {
+        card["actions"] =
+            serde_json::json!([{"type": "Action.OpenUrl", "title": "Open errors", "url": u}]);
+    }
+    super::teams::message(card)
+}
+
+/// The JSON body of an `errorRegressed` webhook.
+pub fn error_webhook_body(delivery: Uuid, d: &ErrorDigest) -> Vec<u8> {
+    let mut v = serde_json::to_value(d).unwrap_or_default();
+    if let Some(o) = v.as_object_mut() {
+        o.insert("deliveryId".into(), serde_json::json!(delivery));
+    }
+    serde_json::to_vec(&v).unwrap_or_default()
+}
+
+/// Sends one `errorRegressed` message.
+pub async fn send_errors(
+    st: &AppState,
+    project_id: Uuid,
+    delivery: Uuid,
+    n: &Notification,
+    d: &ErrorDigest,
+) -> Outcome {
+    match n.kind.as_str() {
+        "webhook" => {
+            let url = match target_url(st, project_id, n, SecretPurpose::Webhook).await {
+                Ok(u) => u,
+                Err(o) => return o,
+            };
+            let key = match secret(
+                st,
+                project_id,
+                &n.secret_ref,
+                SecretPurpose::Webhook,
+                Some(&url),
+            )
+            .await
+            {
+                Ok(k) => k,
+                Err(o) => return o,
+            };
+            let body = error_webhook_body(delivery, d);
+            let ts = chrono::Utc::now().timestamp();
+            let mut headers = vec![
+                ("X-FastProof-Event", ERROR_EVENT.to_string()),
+                ("X-FastProof-Delivery", delivery.to_string()),
+                ("X-FastProof-Timestamp", ts.to_string()),
+            ];
+            if let Some(k) = &key {
+                headers.push((
+                    "X-FastProof-Signature",
+                    signature(k.expose().as_bytes(), ts, &body),
+                ));
+            }
+            post_json(st, &url, body, &headers).await
+        }
+        "teams" => {
+            if n.target_secret_ref.is_none() {
+                return Outcome::Fail("teams needs targetSecretRef".into(), None);
+            }
+            let url = match target_url(st, project_id, n, SecretPurpose::Teams).await {
+                Ok(u) => u,
+                Err(o) => return o,
+            };
+            if let Err(e) = super::secrets::check_teams_url(&url) {
+                return Outcome::Fail(e, None);
+            }
+            post_teams(
+                st,
+                &url,
+                serde_json::to_vec(&error_card(d)).unwrap_or_default(),
+            )
+            .await
+        }
+        "slack" => {
+            let url = match target_url(st, project_id, n, SecretPurpose::Slack).await {
+                Ok(u) => u,
+                Err(o) => return o,
+            };
+            let body =
+                serde_json::to_vec(&serde_json::json!({"text": slack_escape(&error_text(d))}))
+                    .unwrap_or_default();
+            post_json(st, &url, body, &[]).await
+        }
+        "telegram" => {
+            let base = st
+                .cfg
+                .integrations
+                .telegram_api
+                .as_str()
+                .trim_end_matches('/');
+            let token = match secret(
+                st,
+                project_id,
+                &n.secret_ref,
+                SecretPurpose::Telegram,
+                Some(base),
+            )
+            .await
+            {
+                Ok(Some(t)) => t,
+                Ok(None) => return Outcome::Fail("telegram needs secretRef".into(), None),
+                Err(o) => return o,
+            };
+            let t = token.expose().trim();
+            if t.is_empty()
+                || t.len() > 128
+                || !t
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b':' | b'_' | b'-'))
+            {
+                return Outcome::Fail("the telegram bot token is malformed".into(), None);
+            }
+            let url = format!("{base}/bot{t}/sendMessage");
+            let body = serde_json::to_vec(&serde_json::json!({
+                "chat_id": n.target.trim(),
+                "text": error_text(d),
+                "disable_web_page_preview": true,
+            }))
+            .unwrap_or_default();
+            post_json(st, &url, body, &[]).await
+        }
+        "email" => match &st.cfg.integrations.smtp {
+            None => Outcome::Fail("email needs FASTPROOF_SMTP_URL".into(), None),
+            Some(smtp) => {
+                send_email_text(st, smtp, &n.target, error_headline(d), error_text(d)).await
+            }
+        },
+        other => Outcome::Fail(format!("unknown notification kind {other}"), None),
+    }
+}
+
+/// The `errorRegressed` message of a launch's changes; `None` without regressions. Only
+/// transitions from an evaluated state count (a first evaluation after Analysis is turned on
+/// is not news).
+pub fn error_digest(
+    s: &AppState,
+    project: &fastproof_store::Project,
+    launch: &fastproof_store::Launch,
+    changes: &[fastproof_store::analysis::types::ErrorStateChange],
+) -> Option<ErrorDigest> {
+    use fastproof_store::analysis::types::ErrorState;
+    let regressed: Vec<&fastproof_store::analysis::types::ErrorStateChange> = changes
+        .iter()
+        .filter(|c| {
+            c.to == ErrorState::Regressed && c.from.is_some_and(|f| f != ErrorState::Regressed)
+        })
+        .collect();
+    if regressed.is_empty() {
+        return None;
+    }
+    let key = &project.key;
+    let vcs = launch.vcs.clone().unwrap_or_default();
+    Some(ErrorDigest {
+        project: key.clone(),
+        event: ERROR_EVENT.into(),
+        launch: ErrorDigestLaunch {
+            id: launch.id,
+            number: launch.number,
+            name: launch.name.clone(),
+            branch: vcs.branch,
+            commit: vcs.commit,
+            url: super::dispatch::launch_url(s, key, launch.id),
+        },
+        count: regressed.len() as i64,
+        items: regressed
+            .iter()
+            .take(fastproof_store::analysis::errors::EVENT_ITEMS)
+            .map(|c| ErrorDigestItem {
+                fingerprint: c.fingerprint.clone(),
+                message: one_line(&c.message, 500),
+                url: super::dispatch::page_url(s, &format!("p/{key}/errors/{}", c.fingerprint)),
+            })
+            .collect(),
+        url: super::dispatch::page_url(s, &format!("p/{key}/errors?state=regressed")),
+    })
+}
+
+/// Queues the `errorRegressed` deliveries of the error-state changes of a launch: one per
+/// channel that has the event and whose filter matches the launch, at most one per channel and
+/// project every 10 minutes (a regression inside that window is on the errors page, not in a
+/// second message), listing up to 10 errors. Returns how many were queued.
 pub async fn error_events(
     s: &AppState,
     project: &fastproof_store::Project,
     launch: &fastproof_store::Launch,
     changes: &[fastproof_store::analysis::types::ErrorStateChange],
 ) -> anyhow::Result<u64> {
-    let _ = (s, project, launch, changes);
-    Ok(0)
+    if launch.debug {
+        return Ok(0);
+    }
+    let Some(digest) = error_digest(s, project, launch, changes) else {
+        return Ok(0);
+    };
+    let doc = s.store.project_settings_json(project.id).await?;
+    let Ok(settings) = super::settings::IntegrationSettings::parse(&doc) else {
+        return Ok(0);
+    };
+    let attributes: Vec<(String, String)> = launch
+        .attributes
+        .iter()
+        .map(|a| (a.key.clone(), a.value.clone()))
+        .collect();
+    let mut queued = 0;
+    for n in settings
+        .notifications
+        .iter()
+        .filter(|n| n.on.iter().any(|e| e == ERROR_EVENT))
+    {
+        if let Some(f) = &n.filter
+            && !f.matches(
+                super::gates::branch_of(launch),
+                super::gates::env_of(launch),
+                &launch.name,
+                &attributes,
+            )
+        {
+            continue;
+        }
+        let sent = s
+            .store
+            .queue_error_delivery(
+                &fastproof_store::analysis::errors::ErrorDelivery {
+                    project_id: project.id,
+                    launch_id: launch.id,
+                    channel: &n.kind,
+                    target_id: &n.id,
+                    payload: &serde_json::json!({"errors": digest, "notification": n}),
+                    max_attempts: s.cfg.integrations.delivery_max_attempts,
+                },
+                fastproof_store::analysis::errors::EVENT_THROTTLE,
+            )
+            .await?;
+        if sent {
+            queued += 1;
+        } else {
+            metrics::counter!("fastproof_deliveries_throttled_total", "event" => ERROR_EVENT)
+                .increment(1);
+        }
+    }
+    Ok(queued)
 }
 
 #[cfg(test)]
@@ -1175,5 +1498,65 @@ mod tests {
         assert!(matches!(Outcome::of_status(503), Outcome::Retry(..)));
         assert!(matches!(Outcome::of_status(429), Outcome::Retry(..)));
         assert!(matches!(Outcome::of_status(404), Outcome::Fail(..)));
+    }
+
+    #[test]
+    fn error_digests_read_well_everywhere() {
+        let d = ErrorDigest {
+            project: "shop".into(),
+            event: ERROR_EVENT.into(),
+            launch: ErrorDigestLaunch {
+                id: Uuid::nil(),
+                number: 42,
+                name: "nightly".into(),
+                branch: Some("main".into()),
+                commit: Some("d4e5f6".into()),
+                url: Some("https://fastproof.example.com/p/shop/launches/x".into()),
+            },
+            count: 12,
+            items: (0..10)
+                .map(|i| ErrorDigestItem {
+                    fingerprint: format!("{i:016x}"),
+                    message: "Connection <refused>\nagain".into(),
+                    url: None,
+                })
+                .collect(),
+            url: Some("https://fastproof.example.com/p/shop/errors?state=regressed".into()),
+        };
+        assert_eq!(
+            error_headline(&d),
+            "FastProof shop: 12 errors regressed in launch #42 on main"
+        );
+        let t = error_text(&d);
+        assert!(
+            t.contains("0000000000000000 Connection <refused> again"),
+            "{t}"
+        );
+        assert!(t.contains("and 2 more"));
+        assert!(t.ends_with("errors?state=regressed"));
+        let card = serde_json::to_string(&error_card(&d)).unwrap();
+        assert!(card.contains("Open errors"));
+        // Launch text (the branch is in the headline) is never in a Markdown TextBlock.
+        let mut md = d.clone();
+        md.launch.branch = Some("**x** [y](https://evil.example)".into());
+        let card = error_card(&md);
+        let blocks = card["attachments"][0]["content"]["body"]
+            .as_array()
+            .unwrap();
+        assert!(
+            blocks.iter().all(|b| b["type"] == "RichTextBlock"),
+            "{card}"
+        );
+        assert!(
+            blocks[0]["inlines"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("**x**")
+        );
+        let body: serde_json::Value =
+            serde_json::from_slice(&error_webhook_body(Uuid::nil(), &d)).unwrap();
+        assert_eq!(body["event"], ERROR_EVENT);
+        assert_eq!(body["items"].as_array().unwrap().len(), 10);
+        assert!(body["deliveryId"].is_string());
     }
 }

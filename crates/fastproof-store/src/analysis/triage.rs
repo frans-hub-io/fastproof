@@ -44,7 +44,8 @@ pub struct TriageIssue {
 pub struct TriageRequest {
     pub result_ids: Option<Vec<Uuid>>,
     pub launch_id: Option<Uuid>,
-    /// With `launchId`: every result of the launch with this fingerprint.
+    /// With `launchId`: every result of the launch with this fingerprint or one of its aliases
+    /// (the fingerprint of a cluster is its canonical error).
     pub fingerprint: Option<String>,
     pub defect_type_id: Option<Uuid>,
     /// Empty string removes the comment.
@@ -256,7 +257,9 @@ impl Store {
                 "select id, launch_created_at, launch_id, series_id, status, defect, \
                    run_item_id is not null from results \
                  where project_id = $1 and id = any($2) and ($3::uuid is null or launch_id = $3) \
-                   and ($4::text is null or fingerprint = $4) order by id limit $5",
+                   and ($4::text is null or fingerprint = $4 or fingerprint in (select a.fingerprint \
+                     from failure_fingerprints a where a.project_id = $1 and a.alias_of = $4)) \
+                 order by id limit $5",
             )
             .bind(project_id)
             .bind(ids)
@@ -280,11 +283,14 @@ impl Store {
             sqlx::query_as(
                 "select id, launch_created_at, launch_id, series_id, status, defect, \
                    run_item_id is not null from results \
-                 where launch_id = $1 and launch_created_at = $2 and fingerprint = $3 order by id",
+                 where launch_id = $1 and launch_created_at = $2 and fingerprint = any(array( \
+                   select $3::text union all select a.fingerprint from failure_fingerprints a \
+                   where a.project_id = $4 and a.alias_of = $3)) order by id",
             )
             .bind(launch)
             .bind(created)
             .bind(req.fingerprint.as_deref())
+            .bind(project_id)
             .fetch_all(&mut *tx)
             .await?
         };

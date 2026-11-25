@@ -16,6 +16,7 @@ default; email needs `FASTPROOF_SMTP_URL`. See [Configuration](../operations/con
 | `gateFailed` | The [quality gate](quality-gates.md) of the launch failed |
 | `newFailures` | The launch has failures that the previous launch of the branch did not have |
 | `manualRunClosed` | The [manual run](manual-runs.md#combined-launches-and-closing-a-run) of the launch was closed and the gate evaluated again with its results |
+| `caseReviewRequested` | Case or shared step versions started to wait for [review](workflows-and-review.md#version-review) (see [Review requests](#review-requests)) |
 
 Closing the manual run of a launch that CI has already finished evaluates its gate again and sends only
 `manualRunClosed`, with the new gate result and counts; `launchFinished`, `gateFailed` and `newFailures` are
@@ -202,6 +203,25 @@ These channels get a short text: project, launch and outcome, branch and environ
 did not hold, new failures and the link to the launch. Slack uses an incoming webhook (keep its URL in a
 secret with purpose `slack` and refer to it with `targetSecretRef`); email goes through the server's SMTP relay
 (`FASTPROOF_SMTP_*`); Telegram uses the Bot API (`FASTPROOF_TELEGRAM_API_URL` for a proxy).
+
+### Review requests
+
+`caseReviewRequested` is about test cases, not launches. While [version review](workflows-and-review.md#version-review)
+is on, FastProof checks every minute which case and shared step versions became `pending` since the channel's
+previous review message and sends one message per channel and project at most every 5 minutes: how many items
+wait now, how many are new, and the newest 10 (`TC-12`, `SS-3`, name and author), with a link to the project's
+**Reviews** page and to each item when `FASTPROOF_PUBLIC_URL` is set. Changes made while the channel waits for
+its next window are reported in the next message. The first message of a channel covers the last hour.
+
+- Launch `filter`s do not apply to this event.
+- An email notification whose recipients are all authors of the new versions is not sent, so a message never
+  reaches only the person who made the change (author names are compared with the addresses, ignoring case).
+- The webhook body is `{"project", "event": "caseReviewRequested", "waiting", "new", "items": [{"kind",
+  "key", "name", "author", "url"}], "url", "deliveryId"}` with the same headers and signature as launch
+  events; Slack, email and Telegram get the same as plain text, Teams a short card with an **Open reviews**
+  button.
+- Subscribing a channel to this event is refused with 409 `upgrade_in_progress` while a replica older than this
+  version still runs (see [Upgrading](../operations/upgrading.md)).
 
 ## Merge request comments and commit statuses
 

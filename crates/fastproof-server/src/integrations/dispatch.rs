@@ -14,7 +14,10 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use super::gates::{self, Evaluation, GateStatus};
-use super::notify::{self, NewFailure, NewFailures, Outcome, Summary, SummaryLaunch};
+use super::notify::{
+    self, NewFailure, NewFailures, Outcome, REVIEW_EVENT, REVIEW_THROTTLE, ReviewDigest,
+    ReviewDigestItem, Summary, SummaryLaunch,
+};
 use super::settings::{IntegrationSettings, Notification, VcsSettings};
 use super::{quality, vcs};
 use crate::state::AppState;
@@ -250,6 +253,15 @@ async fn process_launch(
 }
 
 async fn send(s: &AppState, job: &DeliveryJob) -> Outcome {
+    if let Some(review) = job.payload.get("review") {
+        let (Ok(d), Ok(n)) = (
+            serde_json::from_value::<ReviewDigest>(review.clone()),
+            serde_json::from_value::<Notification>(job.payload["notification"].clone()),
+        ) else {
+            return Outcome::Fail("the delivery payload is unreadable".into(), None);
+        };
+        return notify::send_review(s, job.project_id, job.id, &n, &d).await;
+    }
     let Ok(sm) = serde_json::from_value::<Summary>(job.payload["summary"].clone()) else {
         return Outcome::Fail("the delivery payload is unreadable".into(), None);
     };
@@ -324,6 +336,104 @@ async fn deliver(s: &AppState, job: DeliveryJob) {
     {
         tracing::error!(error = %format!("{e:#}"), "recording a delivery failed");
     }
+}
+
+/// How often projects are checked for new review requests: 30 polls, 1 to 60 seconds.
+pub fn review_interval(poll: Duration) -> Duration {
+    poll.saturating_mul(30)
+        .clamp(Duration::from_secs(1), Duration::from_secs(60))
+}
+/// How far back the first review request of a notification looks.
+pub const REVIEW_LOOKBACK: Duration = Duration::from_secs(3600);
+
+/// The `caseReviewRequested` message of a notification, when objects became pending since its
+/// previous one and that one is at least [`REVIEW_THROTTLE`] old.
+pub async fn review_digest(
+    s: &AppState,
+    project_id: Uuid,
+    key: &str,
+    n: &Notification,
+) -> anyhow::Result<Option<ReviewDigest>> {
+    let now = Utc::now();
+    let last = s.store.last_review_delivery(project_id, &n.id).await?;
+    let throttle = chrono::Duration::from_std(REVIEW_THROTTLE).unwrap_or_default();
+    if last.is_some_and(|t| t > now - throttle) {
+        return Ok(None);
+    }
+    let lookback = chrono::Duration::from_std(REVIEW_LOOKBACK).unwrap_or_default();
+    let since = last.unwrap_or(now - lookback).max(now - lookback * 24);
+    let r = s
+        .store
+        .review_requests(project_id, since)
+        .await
+        .map_err(anyhow::Error::from)?;
+    if r.fresh == 0 || notify::only_actors(n, &r.authors) {
+        return Ok(None);
+    }
+    Ok(Some(ReviewDigest {
+        project: key.to_string(),
+        event: REVIEW_EVENT.into(),
+        waiting: r.waiting,
+        new: r.fresh,
+        items: r
+            .items
+            .iter()
+            .map(|i| {
+                let path = match i.kind {
+                    fastproof_store::tm::ReviewKind::Case => {
+                        format!("p/{key}/cases/{}?tab=review", i.number)
+                    }
+                    fastproof_store::tm::ReviewKind::SharedStep => {
+                        format!("p/{key}/shared-steps/{}", i.number)
+                    }
+                };
+                ReviewDigestItem {
+                    kind: i.kind.as_str().to_string(),
+                    key: i.key.clone(),
+                    name: i.name.clone(),
+                    author: i.author.clone(),
+                    url: page_url(s, &path),
+                }
+            })
+            .collect(),
+        url: page_url(s, &format!("p/{key}/reviews")),
+    }))
+}
+
+/// Queues `caseReviewRequested` deliveries: one per notification and project at most every
+/// [`REVIEW_THROTTLE`], summarizing the objects that became pending since the previous one,
+/// never to an email list made only of their authors. Launch filters do not apply.
+pub async fn review_round(s: &AppState) -> anyhow::Result<u64> {
+    let mut queued = 0;
+    for (project_id, key) in s.store.review_notify_projects().await? {
+        let doc = s.store.project_settings_json(project_id).await?;
+        let Ok(settings) = IntegrationSettings::parse(&doc) else {
+            continue;
+        };
+        for n in settings
+            .notifications
+            .iter()
+            .filter(|n| n.on.iter().any(|e| e == REVIEW_EVENT))
+        {
+            let Some(d) = review_digest(s, project_id, &key, n).await? else {
+                continue;
+            };
+            if s.store
+                .queue_review_delivery(
+                    project_id,
+                    &n.kind,
+                    &n.id,
+                    json!({"review": d, "notification": n}),
+                    s.cfg.integrations.delivery_max_attempts,
+                    REVIEW_THROTTLE,
+                )
+                .await?
+            {
+                queued += 1;
+            }
+        }
+    }
+    Ok(queued)
 }
 
 /// One round: outbox, waiting launches, due deliveries.
@@ -411,7 +521,14 @@ pub async fn run(s: AppState, stop: CancellationToken) {
     reseal(&s).await;
     let mut last_metrics: Option<Instant> = None;
     let mut last_prune: Option<Instant> = None;
+    let mut last_reviews: Option<Instant> = None;
     loop {
+        if last_reviews.is_none_or(|t| t.elapsed() >= review_interval(s.cfg.integrations.poll)) {
+            last_reviews = Some(Instant::now());
+            if let Err(e) = review_round(&s).await {
+                tracing::warn!(error = %format!("{e:#}"), "queueing review requests failed");
+            }
+        }
         if let Err(e) = tick(&s).await {
             tracing::warn!(error = %format!("{e:#}"), "integrations round failed");
         }

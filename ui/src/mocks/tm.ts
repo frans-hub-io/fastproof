@@ -65,8 +65,12 @@ const P = `${API}/projects/:key`;
 let st: TmState = buildTmState();
 let failSteps = 0;
 
+/** Extension points of the review mock (`reviews.ts`): it resets with the TM state and adds its fields to a case. */
+export const reviewHooks: { reset: (() => void)[]; caseExtras?: (c: MockCase) => Pick<Case, 'state' | 'reviewState' | 'approvedVersion'>} = { reset: [] };
+
 export function resetTm(): void {
   st = buildTmState();
+  for (const r of reviewHooks.reset) r();
 }
 
 /** Test access to the mock state (vitest). */
@@ -178,11 +182,14 @@ function caseView(c: MockCase, key: string): Case {
     updatedBy: c.updatedBy,
     updatedAt: c.updatedAt,
     archivedAt: c.archivedAt,
-    state: null,
-    approvedVersion: null,
-    reviewState: null,
+    ...(reviewHooks.caseExtras ? reviewHooks.caseExtras(c) : { state: null, approvedVersion: null, reviewState: null }),
     sharedSteps: [],
   };
+}
+
+/** The API view of a case (for the review mock). */
+export function mockCaseView(c: MockCase, key: string): Case {
+  return caseView(c, key);
 }
 
 function lastManual(c: MockCase): CaseSummary['lastResult'] | undefined {

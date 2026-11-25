@@ -240,7 +240,7 @@ impl Store {
             super::cases::keep_code_owned(&cur, &mut snap, &owned);
         }
         let state =
-            super::cases::state_for_status(&mut tx, ctx, &cur, snap.status, VersionSource::Restore)
+            super::cases::state_for_write(&mut tx, ctx, &cur, &snap, VersionSource::Restore)
                 .await?;
         super::cases::write_state(&mut tx, cur.id, state.as_deref()).await?;
         let row = commit(
@@ -262,9 +262,11 @@ impl Store {
     /// Deletes case versions beyond each project's retention (`retention.caseVersionsKeep`,
     /// `retention.caseVersionsDays`; projects with neither are skipped), walking cases by id
     /// in chunks of 500 and deleting at most `batch` versions per statement, until `budget`
-    /// is spent (the next run goes on). Never deleted: the current version of a case, versions
-    /// a run item or an earlier execution was run against, and on cases made from code the
-    /// newest version that was not written by code (code sync checks for it), and a version
+    /// is spent (the next run goes on). Never deleted: the current and the approved version of a
+    /// case, the versions after the approved one while a change waits for review (their authors
+    /// may not approve it), versions a run item or an earlier execution was run against, and on
+    /// cases made from code the newest version that was not written by code (code sync checks
+    /// for it), and a version
     /// replaced less than an hour ago (a launch that is being started may still record it for
     /// its run items). Projects are visited starting at `start` (modulo their number), so a
     /// run that spends its budget on the first projects does not starve the others. Returns
@@ -334,6 +336,8 @@ impl Store {
 const PRUNE_SQL: &str = "with d as (\
        select v.case_id, v.version from cases c join case_versions v on v.case_id = c.id \
        where c.id = any($1) and c.project_id = $2 and v.version < c.version \
+         and v.version is distinct from c.approved_version \
+         and (c.review_state is null or c.review_state = 'approved' or v.version < coalesce(c.approved_version, 0)) \
          and ($3 = 0 or v.version <= c.version - $3) \
          and ($4 = 0 or v.created_at < now() - make_interval(days => $4)) \
          and not exists (select 1 from run_items r where r.case_id = v.case_id and r.case_version = v.version) \

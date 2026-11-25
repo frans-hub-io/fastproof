@@ -1383,6 +1383,13 @@ async fn bulk_create(
     .bind(&states)
     .execute(&mut *conn)
     .await?;
+    super::super::review::on_bulk_create(
+        conn,
+        ctx.project_id,
+        &ids,
+        super::super::VersionSource::Import,
+    )
+    .await?;
     let all: Vec<String> = super::super::versions::CONTENT_KEYS
         .iter()
         .filter(|k| **k != "parameters")

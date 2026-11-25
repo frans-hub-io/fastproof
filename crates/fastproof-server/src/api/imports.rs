@@ -447,9 +447,15 @@ pub async fn apply_import(
         .apply_tm_job(p.id, &p.key, id)
         .await
         .map_err(tm_error)?;
-    s.audit(&auth, "import.apply", Some(&p.key), serde_json::json!({"jobId": id, "report": job.report.as_ref().map(|r|
-        serde_json::json!({"create": r.create, "update": r.update, "skip": r.skip, "folders": r.folders, "errors": r.errors.len()}))}))
-        .await;
+    let review = s.store.project_settings(p.id).await?.case_review;
+    let bypassed = review.mode != fastproof_store::tm::ReviewMode::Off
+        && review.imports == fastproof_store::tm::ReviewImports::Bypass;
+    let mut detail = serde_json::json!({"jobId": id, "report": job.report.as_ref().map(|r|
+        serde_json::json!({"create": r.create, "update": r.update, "skip": r.skip, "folders": r.folders, "errors": r.errors.len()}))});
+    if bypassed {
+        detail["reviewBypassed"] = serde_json::json!(true);
+    }
+    s.audit(&auth, "import.apply", Some(&p.key), detail).await;
     tm_jobs::kick(&s);
     Ok((StatusCode::ACCEPTED, Json(job)))
 }

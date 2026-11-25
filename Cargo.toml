@@ -10,6 +10,7 @@ members = [
     "crates/fastproof-tm-import",
     "crates/fastproof-media",
     "crates/fastproof-rp",
+    "crates/fastproof-analysis",
 ]
 
 [workspace.package]
@@ -27,6 +28,7 @@ fastproof-stream = { path = "crates/fastproof-stream" }
 fastproof-tm-import = { path = "crates/fastproof-tm-import" }
 fastproof-media = { path = "crates/fastproof-media" }
 fastproof-rp = { path = "crates/fastproof-rp" }
+fastproof-analysis = { path = "crates/fastproof-analysis" }
 franshub-access = { path = "../franshub-platform/crates/franshub-access" }
 franshub-auth = { path = "../franshub-platform/crates/franshub-auth" }
 franshub-oidc = { path = "../franshub-platform/crates/franshub-oidc" }

@@ -9,6 +9,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
+use fastproof_store::analysis::decisions;
+use fastproof_store::analysis::types::{DecisionCtx, DecisionSource, DecisionVia};
+
 use crate::state::AppState;
 
 /// Largest number of results one triage call changes by id.
@@ -276,7 +279,7 @@ impl AnalysisOps for Fallback {
         let ids: Vec<Uuid> = req.result_ids.clone().unwrap_or_default();
         let mut attempt = 1;
         loop {
-            match fallback_triage(s, project, &ids, req, &defect, muted).await {
+            match fallback_triage(s, project, by, &ids, req, &defect, muted).await {
                 Err(e)
                     if attempt < fastproof_store::ingest::TX_ATTEMPTS
                         && fastproof_store::ingest::retryable(&e).is_some() =>
@@ -284,7 +287,7 @@ impl AnalysisOps for Fallback {
                     fastproof_store::ingest::retry_pause("triage", &e, attempt).await;
                     attempt += 1;
                 }
-                r => return r.map(|n| json!({"updated": n})),
+                r => return r.map(|(n, b)| json!({"updated": n, "batchId": b})),
             }
         }
     }
@@ -301,36 +304,69 @@ impl AnalysisOps for Fallback {
 }
 
 /// One transaction of [`Fallback::triage`]: the results, then `count_muted` of their launches
-/// recounted (as every change of the `muted` flag does), so the counter never drifts.
+/// recounted (as every change of the `muted` flag does), so the counter never drifts; the
+/// changes are journaled like every other defect write (`via = mcp`).
 async fn fallback_triage(
     s: &AppState,
     project: &Project,
+    by: &str,
     ids: &[Uuid],
     req: &TriageRequest,
     defect: &Value,
     muted: Option<bool>,
-) -> anyhow::Result<u64> {
+) -> anyhow::Result<(u64, Option<Uuid>)> {
     let mut tx = s.store.pool().begin().await?;
-    let launches: Vec<Uuid> = sqlx::query_scalar(
-        "update results set defect = $4, muted = coalesce($5, muted), updated_at = now() \
+    let mut keys: Vec<(Uuid, chrono::DateTime<Utc>)> = sqlx::query_as(
+        "select id, launch_created_at from results \
          where project_id = $1 and ((cardinality($2::uuid[]) > 0 and id = any($2)) or \
-         ($3::uuid is not null and $6::text is not null and launch_id = $3 and fingerprint = $6)) \
-         returning launch_id",
+         ($3::uuid is not null and $4::text is not null and launch_id = $3 and fingerprint = $4)) \
+         order by id for no key update",
     )
     .bind(project.id)
     .bind(ids)
     .bind(req.launch_id)
+    .bind(req.fingerprint.as_deref())
+    .fetch_all(&mut *tx)
+    .await?;
+    keys.sort();
+    let before = decisions::read_states(&mut tx, &keys).await?;
+    let launches: Vec<Uuid> = sqlx::query_scalar(
+        "update results r set defect = $3, muted = coalesce($4, r.muted), updated_at = now() \
+         from unnest($1::uuid[], $2::timestamptz[]) as t(i, c) \
+         where r.id = t.i and r.launch_created_at = t.c returning r.launch_id",
+    )
+    .bind(keys.iter().map(|k| k.0).collect::<Vec<_>>())
+    .bind(keys.iter().map(|k| k.1).collect::<Vec<_>>())
     .bind(defect)
     .bind(muted)
-    .bind(req.fingerprint.as_deref())
     .fetch_all(&mut *tx)
     .await?;
     let updated = launches.len() as u64;
     if muted.is_some() {
         fastproof_store::analysis::triage::recount_muted(&mut tx, &launches).await?;
     }
+    let after = decisions::read_states(&mut tx, &keys).await?;
+    let source = match req.source.as_deref() {
+        Some("ai") => DecisionSource::Ai,
+        _ => DecisionSource::User,
+    };
+    let batch = decisions::record(
+        &mut tx,
+        &decisions::Batch {
+            project_id: project.id,
+            project_key: &project.key,
+            via: DecisionVia::Mcp,
+            source,
+            by,
+            suggestion_id: None,
+            reverts: None,
+        },
+        &before,
+        &after,
+    )
+    .await?;
     tx.commit().await?;
-    Ok(updated)
+    Ok((updated, batch))
 }
 
 /// The analysis module of the server: the same functions the HTTP API uses.
@@ -398,8 +434,15 @@ impl AnalysisOps for Full {
     ) -> anyhow::Result<Value> {
         let req: fastproof_store::analysis::triage::TriageRequest =
             serde_json::from_value(serde_json::to_value(req)?)?;
-        let (out, _) = crate::api::analysis::apply_triage(s, project, by, req).await?;
-        Ok(json!({ "updated": out.updated }))
+        let (out, _) = crate::api::analysis::apply_triage(
+            s,
+            project,
+            by,
+            req,
+            DecisionCtx::new(DecisionVia::Mcp),
+        )
+        .await?;
+        Ok(json!({ "updated": out.updated, "batchId": out.batch_id }))
     }
 
     async fn create_rule_draft(

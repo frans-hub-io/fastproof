@@ -507,6 +507,9 @@ pub struct ProjectSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(value_type = Option<Object>)]
     pub fastmock: Option<serde_json::Value>,
+    /// FastProof Analysis of the project (skipped when the default).
+    #[serde(skip_serializing_if = "super::types::AnalysisSettings::is_default")]
+    pub analysis: super::types::AnalysisSettings,
     /// Other parts of the document (e.g. `vcs`), kept unchanged.
     #[serde(flatten)]
     #[schema(ignore)]
@@ -596,6 +599,7 @@ impl ProjectSettings {
         {
             return Err("issueTrackers and fastmock are objects".into());
         }
+        self.analysis.validate()?;
         let size = serde_json::to_vec(self)
             .map(|v| v.len())
             .unwrap_or(usize::MAX);
@@ -619,6 +623,7 @@ impl ProjectSettings {
                     ("caseSync", 3),
                     ("caseWorkflow", 4),
                     ("caseReview", 5),
+                    ("analysis", 6),
                 ] {
                     if let Some(x) = o.get(k) {
                         match slot {
@@ -631,10 +636,11 @@ impl ProjectSettings {
                                 d.case_sync = serde_json::from_value(x.clone()).unwrap_or_default()
                             }
                             4 => d.case_workflow = serde_json::from_value(x.clone()).ok(),
-                            _ => {
+                            5 => {
                                 d.case_review =
                                     serde_json::from_value(x.clone()).unwrap_or_default()
                             }
+                            _ => d.analysis = serde_json::from_value(x.clone()).unwrap_or_default(),
                         }
                     }
                 }

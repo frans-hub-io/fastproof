@@ -1,10 +1,11 @@
-import { ActionIcon, Alert, Badge, Button, Card, Code, Group, Modal, NumberInput, Select, SimpleGrid, Stack, Switch, TagsInput, Text, TextInput } from '@mantine/core';
+import { ActionIcon, Alert, Badge, Button, Card, Code, Group, Modal, NumberInput, Select, SimpleGrid, Stack, Switch, Tabs, TagsInput, Text, TextInput } from '@mantine/core';
 import { EmptyState, useCan } from '@franshub/ui-shell';
 import { useMediaQuery } from '@mantine/hooks';
 import { notifications } from '@mantine/notifications';
 import { IconEdit, IconInfoCircle, IconPlus, IconShieldCheck, IconTrash } from '@tabler/icons-react';
 import { useState } from 'react';
 import { useParams } from 'react-router';
+import { useAnalysisCapabilities } from '../api/analysis';
 import { errorMessage } from '../api/client';
 import { useProject } from '../api/hooks';
 import { useSaveSettings, useSettings } from '../api/stageC';
@@ -12,6 +13,8 @@ import type { Gate, GateRule, ProjectSettings } from '../api/types-next';
 import { METRICS, OPS, metricOf, ruleText } from '../lib/gates';
 import { PageHeader } from '../components/PageHeader';
 import { QueryState } from '../components/QueryState';
+import { GateHistory } from './gates/GateHistory';
+import { GateSimulation } from './gates/GateSimulation';
 
 const GLOB = /^[A-Za-z0-9._/*-]{1,200}$/;
 
@@ -171,6 +174,8 @@ export default function GatesPage() {
   const save = useSaveSettings(key);
   const phone = useMediaQuery('(max-width: 48em)');
   const [editing, setEditing] = useState<{ index: number | null; gate: Gate } | null>(null);
+  const analytics = !!useAnalysisCapabilities(key).data?.features.gateAnalytics;
+  const [tab, setTab] = useState('gates');
 
   const persist = (settings: ProjectSettings, gates: Gate[], message: string, after?: () => void) =>
     save.mutate(
@@ -183,6 +188,43 @@ export default function GatesPage() {
         onError: (e) => notifications.show({ color: 'red', title: 'Gates not saved', message: errorMessage(e) }),
       },
     );
+
+  const list = (
+    <Stack gap="md">
+          <Alert variant="light" color="gray" icon={<IconInfoCircle size={18} />} title="How gates are evaluated">
+            <Stack gap={6}>
+              <Text size="sm">
+                When a launch finishes, every enabled gate whose branch globs match the launch branch is checked; a gate passes when all its rules hold, and the launch passes when every matching gate does.
+                The launch page shows the result next to its status; it stays pending while the launch runs.
+              </Text>
+              <Text size="sm">
+                In CI, <Code>fastproof gate --launch &lt;externalId&gt; --wait 10m</Code> prints the summary and exits 0 when the gates pass, 1 when they fail and 2 on errors.
+              </Text>
+            </Stack>
+          </Alert>
+          <QueryState query={q}>
+            {() => {
+              const settings = q.data;
+              if (!settings) return null;
+              const gates = settings.gates;
+              if (!gates.length) return <EmptyState title="No gates yet" description={canWrite ? 'Add a gate to fail launches that break your quality bar.' : 'Project admins can add gates.'} />;
+              return (
+                <SimpleGrid cols={{ base: 1, md: 2 }} spacing="md" data-testid="gates-list">
+                  {gates.map((g, i) => (
+                    <GateCard
+                      key={`${g.name}:${String(i)}`}
+                      gate={g}
+                      canWrite={canWrite}
+                      onEdit={() => setEditing({ index: i, gate: structuredClone(g) })}
+                      onToggle={(v) => persist(settings, gates.map((x, j) => (j === i ? { ...x, enabled: v } : x)), `${g.name} ${v ? 'enabled' : 'disabled'}`)}
+                    />
+                  ))}
+                </SimpleGrid>
+              );
+            }}
+          </QueryState>
+        </Stack>
+  );
 
   return (
     <>
@@ -198,40 +240,28 @@ export default function GatesPage() {
           ) : undefined
         }
       />
-      <Stack gap="md">
-        <Alert variant="light" color="gray" icon={<IconInfoCircle size={18} />} title="How gates are evaluated">
-          <Stack gap={6}>
-            <Text size="sm">
-              When a launch finishes, every enabled gate whose branch globs match the launch branch is checked; a gate passes when all its rules hold, and the launch passes when every matching gate does.
-              The launch page shows the result next to its status; it stays pending while the launch runs.
-            </Text>
-            <Text size="sm">
-              In CI, <Code>fastproof gate --launch &lt;externalId&gt; --wait 10m</Code> prints the summary and exits 0 when the gates pass, 1 when they fail and 2 on errors.
-            </Text>
-          </Stack>
-        </Alert>
-        <QueryState query={q}>
-          {() => {
-            const settings = q.data;
-            if (!settings) return null;
-            const gates = settings.gates;
-            if (!gates.length) return <EmptyState title="No gates yet" description={canWrite ? 'Add a gate to fail launches that break your quality bar.' : 'Project admins can add gates.'} />;
-            return (
-              <SimpleGrid cols={{ base: 1, md: 2 }} spacing="md" data-testid="gates-list">
-                {gates.map((g, i) => (
-                  <GateCard
-                    key={`${g.name}:${String(i)}`}
-                    gate={g}
-                    canWrite={canWrite}
-                    onEdit={() => setEditing({ index: i, gate: structuredClone(g) })}
-                    onToggle={(v) => persist(settings, gates.map((x, j) => (j === i ? { ...x, enabled: v } : x)), `${g.name} ${v ? 'enabled' : 'disabled'}`)}
-                  />
-                ))}
-              </SimpleGrid>
-            );
-          }}
-        </QueryState>
-      </Stack>
+      {analytics ? (
+        <Tabs value={tab} onChange={(v) => setTab(v ?? 'gates')} keepMounted={false}>
+          <Tabs.List mb="md">
+            <Tabs.Tab value="gates">Gates</Tabs.Tab>
+            <Tabs.Tab value="history" data-testid="tab-gate-history">
+              History
+            </Tabs.Tab>
+            <Tabs.Tab value="simulation" data-testid="tab-gate-simulation">
+              Simulation
+            </Tabs.Tab>
+          </Tabs.List>
+          <Tabs.Panel value="gates">{list}</Tabs.Panel>
+          <Tabs.Panel value="history">
+            <GateHistory project={key} />
+          </Tabs.Panel>
+          <Tabs.Panel value="simulation">
+            <GateSimulation project={key} />
+          </Tabs.Panel>
+        </Tabs>
+      ) : (
+        list
+      )}
       <Modal opened={!!editing} onClose={() => setEditing(null)} title={editing?.index === null ? 'New gate' : 'Edit gate'} size="lg" fullScreen={phone}>
         {editing && q.data && (() => {
           const settings = q.data;

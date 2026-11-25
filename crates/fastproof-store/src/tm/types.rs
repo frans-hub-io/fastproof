@@ -2688,6 +2688,8 @@ pub struct CoverageExportRequest {
 pub struct ReplicaLevel {
     pub instance: String,
     pub tm_level: i32,
+    /// The analysis level (0 for builds before FastProof Analysis).
+    pub analysis_level: i32,
     pub version: String,
     pub started_at: DateTime<Utc>,
     pub seen_at: DateTime<Utc>,
@@ -2702,6 +2704,8 @@ pub struct ReplicaLevels {
     pub mode: TmGateMode,
     pub settle_until: Option<DateTime<Utc>>,
     pub replicas: Vec<ReplicaLevel>,
+    /// The analysis gate (`FASTPROOF_ANALYSIS_GATE*`).
+    pub analysis: crate::analysis::types::GateView,
 }
 
 /// A row of `shared_steps` (without `search_text`).

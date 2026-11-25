@@ -38,6 +38,13 @@ import { planDispatchesHandlers } from './planDispatches';
 import { parametersHandlers } from './parameters';
 import { requirementsHandlers } from './requirements';
 import { resetTm, subscribeTmEvents, tmHandlers, tmLaunchList } from './tm';
+import { analysisHandlers, resetAnalysis } from './analysis';
+import { resetSuggestions, suggestionsHandlers } from './suggestions';
+import { errorsHandlers } from './errors';
+import { gatesHistoryHandlers } from './gatesHistory';
+import { analyticsHandlers } from './analytics';
+import { flakyHintsHandlers } from './flakyHints';
+import { signalsHandlers } from './signals';
 
 const API = '/api/v1';
 const EXPORT_JOB_ID = '0198aaaa-0000-7000-8000-00000000e001';
@@ -80,6 +87,8 @@ export function resetMockState(): void {
   resetMerges();
   resetHistoryImports();
   resetTrackers();
+  resetAnalysis();
+  resetSuggestions();
 }
 
 function error(status: number, code: string, message: string, details?: unknown) {
@@ -568,6 +577,13 @@ export const handlers = [
   ...planDispatchesHandlers,
   ...parametersHandlers,
   ...requirementsHandlers,
+  ...analysisHandlers,
+  ...suggestionsHandlers,
+  ...errorsHandlers,
+  ...gatesHistoryHandlers,
+  ...analyticsHandlers,
+  ...flakyHintsHandlers,
+  ...signalsHandlers,
 
   http.all(`${API}/*`, () => error(404, 'not_found', 'no such endpoint')),
 ];

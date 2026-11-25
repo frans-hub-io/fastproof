@@ -1602,6 +1602,111 @@
         }
       }
     },
+    "analysis": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "workers": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 16
+        },
+        "settleSeconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 600
+        },
+        "clickhouse": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "off"
+          ]
+        },
+        "gate": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "open",
+            "closed"
+          ]
+        },
+        "gateSettleSeconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2592000
+        },
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "launchTimeoutSeconds": {
+              "type": "integer",
+              "minimum": 10,
+              "maximum": 3600
+            },
+            "maxClusters": {
+              "type": "integer",
+              "minimum": 10,
+              "maximum": 100000
+            },
+            "candidateRows": {
+              "type": "integer",
+              "minimum": 100,
+              "maximum": 100000
+            },
+            "memoryMaxRows": {
+              "type": "integer",
+              "minimum": 1000,
+              "maximum": 10000000
+            },
+            "logCpuMs": {
+              "type": "integer",
+              "minimum": 100,
+              "maximum": 60000
+            },
+            "logLastBytes": {
+              "type": "integer",
+              "minimum": 1024,
+              "maximum": 1048576
+            },
+            "logAttempts": {
+              "type": "integer",
+              "minimum": 10,
+              "maximum": 100000
+            },
+            "maxLogRules": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000
+            },
+            "recomputeSeconds": {
+              "type": "integer",
+              "minimum": 5,
+              "maximum": 3600
+            },
+            "backtestMaxEvents": {
+              "type": "integer",
+              "minimum": 1000,
+              "maximum": 10000000
+            },
+            "signalsPerMinute": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100000
+            },
+            "fastmockAttempts": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 2000
+            }
+          }
+        }
+      }
+    },
     "search": {
       "type": "object",
       "additionalProperties": false,
@@ -1632,6 +1737,9 @@
           "$ref": "#/definitions/role"
         },
         "sink": {
+          "$ref": "#/definitions/role"
+        },
+        "analysis": {
           "$ref": "#/definitions/role"
         }
       }
@@ -1921,6 +2029,11 @@
                   }
                 }
               }
+            },
+            "aggTtlDays": {
+              "type": "integer",
+              "minimum": 30,
+              "maximum": 3650
             }
           }
         },

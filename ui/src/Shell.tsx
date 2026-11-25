@@ -1,9 +1,10 @@
 import { AppShellLayout, useCan, type CommandItem, type NavItem } from '@franshub/ui-shell';
-import { IconAdjustments, IconChecks, IconLink, IconPuzzle, IconTargetArrow, IconBell, IconBug, IconChartLine, IconChecklist, IconClipboardList, IconClockCog, IconFlask2, IconGitCompare, IconKey, IconLayoutDashboard, IconListCheck, IconListDetails, IconShieldCheck, IconShieldSearch, IconWand, IconWaveSine } from '@tabler/icons-react';
+import { IconAdjustments, IconAlertOctagon, IconChartHistogram, IconChecks, IconLink, IconPuzzle, IconTargetArrow, IconBell, IconBug, IconChartLine, IconChecklist, IconClipboardList, IconClockCog, IconFlask2, IconGitCompare, IconKey, IconLayoutDashboard, IconListCheck, IconListDetails, IconShieldCheck, IconShieldSearch, IconWand, IconWaveSine } from '@tabler/icons-react';
 import { useQueryClient, type InfiniteData } from '@tanstack/react-query';
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { matchPath, useLocation, useNavigate } from 'react-router';
 import { useProjects, useServerVersion } from './api/hooks';
+import { useAnalysisCapabilities } from './api/analysis';
 import { useCaseIndex } from './api/tm';
 import type { Launch, Page } from './api/types';
 import { FEATURES } from './features';
@@ -52,6 +53,9 @@ export function Shell({ children }: { children: ReactNode }) {
   const path = location.pathname;
   const canReadCases = useCan('cases:read', projectKey);
   const caseIndex = useCaseIndex(projectKey, canReadCases);
+  const analysis = useAnalysisCapabilities(projectKey).data;
+  const showErrors = !!analysis?.features.errors;
+  const showAnalytics = !!analysis?.features.analytics;
 
   const navItems = useMemo<NavItem[]>(() => {
     const items: NavItem[] = [{ label: 'Projects', href: '/', icon: <IconFlask2 size={18} />, active: path === '/' }];
@@ -59,7 +63,7 @@ export function Shell({ children }: { children: ReactNode }) {
       const name = projects.data?.find((p) => p.key === projectKey)?.name ?? projectKey;
       const base = `/p/${projectKey}`;
       const section = (s: string) => path === `${base}/${s}` || path.startsWith(`${base}/${s}/`);
-      const sections = ['dashboard', 'dashboards', 'flaky', 'compare', 'rules', 'gates', 'notifications', 'settings', 'issues'];
+      const sections = ['dashboard', 'dashboards', 'flaky', 'compare', 'rules', 'gates', 'notifications', 'settings', 'issues', 'errors', 'analytics'];
       sections.push('cases', 'plans', 'my-runs', 'shared-steps', 'reviews', 'requirements', 'coverage');
       items.push({ label: `${name}: launches`, href: base, icon: <IconListDetails size={18} />, active: path.startsWith(base) && !sections.some(section) });
       items.push({ label: 'Test cases', href: `${base}/cases`, icon: <IconClipboardList size={18} />, active: section('cases'), permission: 'cases:read', scope: projectKey });
@@ -73,7 +77,9 @@ export function Shell({ children }: { children: ReactNode }) {
       items.push({ label: 'My runs', href: `${base}/my-runs`, icon: <IconListCheck size={18} />, active: section('my-runs'), permission: 'runs:execute', scope: projectKey });
       items.push({ label: 'Dashboard', href: `${base}/dashboard`, icon: <IconChartLine size={18} />, active: section('dashboard') });
       items.push({ label: 'Dashboards', href: `${base}/dashboards`, icon: <IconLayoutDashboard size={18} />, active: section('dashboards') });
+      if (showAnalytics) items.push({ label: 'Analytics', href: `${base}/analytics`, icon: <IconChartHistogram size={18} />, active: section('analytics') });
       items.push({ label: 'Flaky tests', href: `${base}/flaky`, icon: <IconWaveSine size={18} />, active: section('flaky') });
+      if (showErrors) items.push({ label: 'Errors', href: `${base}/errors`, icon: <IconAlertOctagon size={18} />, active: section('errors') });
       items.push({ label: 'Compare launches', href: `${base}/compare`, icon: <IconGitCompare size={18} />, active: section('compare') });
       items.push({ label: 'Issues', href: `${base}/issues`, icon: <IconBug size={18} />, active: section('issues') });
       items.push({ label: 'Rules', href: `${base}/rules`, icon: <IconWand size={18} />, active: section('rules') });
@@ -85,7 +91,7 @@ export function Shell({ children }: { children: ReactNode }) {
     items.push({ label: 'Audit log', href: '/settings/audit', icon: <IconShieldSearch size={18} />, active: path === '/settings/audit', permission: 'audit:read' });
     items.push({ label: 'Scheduler jobs', href: '/admin/jobs', icon: <IconClockCog size={18} />, active: path === '/admin/jobs', permission: 'settings:write' });
     return items;
-  }, [path, projectKey, projects.data]);
+  }, [path, projectKey, projects.data, showErrors, showAnalytics]);
 
   const commands = useMemo<CommandItem[]>(() => {
     const out: CommandItem[] = [];

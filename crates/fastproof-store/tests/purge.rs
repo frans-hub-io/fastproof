@@ -127,7 +127,28 @@ begin
         insert into launch_attr_index (project_id, launch_id, key, value, launch_created_at) values (p, l, 'build', '1', t0);
         insert into launch_reruns (id, project_id, source_launch_id, external_id, provider, mode, requested_by)
             values (gen_random_uuid(), p, l, 'rerun-' || l::text, 'webhook', 'failed', 'seed');
+        insert into triage_decisions (project_id, launch_id, launch_created_at, result_id, series_id, batch_id,
+            via, source, by, before, after)
+            select p, l, t0, r.id, r.series_id, l, 'api', 'user', 'seed', '{}', '{}' from results r where r.launch_id = l;
+        insert into triage_suggestions (id, project_id, launch_id, fingerprint, rank, band, score, defect_type_id, grp, why, signal)
+            values (gen_random_uuid(), p, l, 'f1', 1, 'same', 0.9, gen_random_uuid(), 'productBug', '[]', 'memory');
+        insert into result_patterns (result_id, launch_id, launch_created_at, project_id, pattern, rule_id, attempt)
+            select r.id, l, t0, p, 'oom', gen_random_uuid(), 1 from results r where r.launch_id = l;
+        insert into analysis_launches (launch_id, project_id) values (l, p);
+        insert into attempt_signals (project_id, launch_id, launch_created_at, source, kind, at, confidence, dedup_key)
+            values (p, l, t0, 'grid', 'node_lost', t0, 'exact', l::text);
     end loop;
+    insert into attempt_signals (project_id, source, kind, at, confidence, dedup_key)
+        values (p, 'ci', 'runner_oom', t0, 'exact', k || '-unmatched');
+    insert into analysis_backtests (id, project_id, source, report, decisions, created_by)
+        values (gen_random_uuid(), p, 'synthetic', '{}', 0, 'seed');
+    insert into triage_memory (project_id, fingerprint, defect_type_id, grp, first_decided_at, last_decided_at, last_decided_by)
+        values (p, 'f1', gen_random_uuid(), 'productBug', t0, t0, 'seed');
+    insert into triage_memory_events (project_id, decided_at, batch_id, fingerprint, defect_type_id, grp, results, by, via)
+        values (p, t0, gen_random_uuid(), 'f1', gen_random_uuid(), 'productBug', 1, 'seed', 'api');
+    insert into fingerprint_branches (project_id, fingerprint, branch, first_seen_at, last_seen_at)
+        values (p, 'f1', 'main', t0, t0);
+    insert into flaky_hints (series_id, project_id, window_runs) select s.id, p, 10 from series s where s.project_id = p;
     insert into launch_merges (id, project_id, target_id, target_created, sources, source_seqs, created_by, undo_until)
         values (l, p, l, false, array[l], array[0::bigint], 'seed', now());
     insert into launch_merge_work (merge_id, project_id, series_id) select l, p, s.id from series s where s.project_id = p;

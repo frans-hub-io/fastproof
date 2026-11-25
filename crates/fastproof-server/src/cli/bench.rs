@@ -37,6 +37,10 @@ pub enum BenchCommand {
     /// testers, export and a TestRail CSV import) and print p50/p95/max per operation against
     /// the lab targets. Exits 1 when requests failed (not on missed targets).
     Tm(super::bench_tm::TmBenchArgs),
+    /// Load FastProof Analysis (synthetic launches, triage decisions, a measured launch) and
+    /// print the suggestion step time and the read and accept latencies against the targets.
+    /// Exits 1 when requests failed (not on missed targets).
+    Analysis(super::bench_analysis::AnalysisBenchArgs),
 }
 
 /// Server connection of the ingest bench (required there, checked at run time so that

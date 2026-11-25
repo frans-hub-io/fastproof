@@ -18,6 +18,8 @@ import { WorkflowSettings } from './settings/WorkflowSettings';
 import { RerunPlanFields } from './settings/RerunPlanFields';
 import { cleanRerunPlanFields, rerunPlanErrors } from '../lib/tm/rerunPlan';
 import { PageHeader } from '../components/PageHeader';
+import { useAnalysisCapabilities } from '../api/analysis';
+import { AnalysisSettings } from './settings/AnalysisSettings';
 import { QueryState } from '../components/QueryState';
 import { GROUP_COLOR, GROUP_LABEL, issueUrlFor } from '../lib/defects';
 import { formatDateTime, formatRelative } from '../lib/format';
@@ -690,6 +692,7 @@ export default function SettingsPage() {
   const canWrite = useCan('settings:write', key);
   const canReadCases = useCan('cases:read', key);
   const settings = useSettings(key);
+  const analysisOn = !!useAnalysisCapabilities(key).data?.instanceEnabled;
   const [sp, setSp] = useSearchParams();
   const tab = sp.get('tab') ?? 'general';
   const setTab = (t: string | null) =>
@@ -731,6 +734,11 @@ export default function SettingsPage() {
           <Tabs.Tab value="secrets">Secrets</Tabs.Tab>
           <Tabs.Tab value="history">History import</Tabs.Tab>
           <Tabs.Tab value="workflow">Workflow</Tabs.Tab>
+          {analysisOn && (
+            <Tabs.Tab value="analysis" data-testid="tab-settings-analysis">
+              Analysis
+            </Tabs.Tab>
+          )}
         </Tabs.List>
         <Tabs.Panel value="general" pt="md">
           <QueryState query={settings}>{() => settings.data && <GeneralForm key={JSON.stringify(settings.data)} project={key} settings={settings.data} canWrite={canWrite} />}</QueryState>
@@ -750,6 +758,11 @@ export default function SettingsPage() {
         <Tabs.Panel value="workflow" pt="md">
           <WorkflowSettings projectKey={key} />
         </Tabs.Panel>
+        {analysisOn && (
+          <Tabs.Panel value="analysis" pt="md">
+            <AnalysisSettings project={key} canWrite={canWrite} />
+          </Tabs.Panel>
+        )}
       </Tabs>
     </>
   );

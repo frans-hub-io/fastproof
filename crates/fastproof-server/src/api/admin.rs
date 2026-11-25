@@ -125,8 +125,9 @@ pub async fn jobs(State(s): State<AppState>, auth: Auth) -> ApiResult<Json<JobLi
 }
 
 #[utoipa::path(get, path = "/api/v1/admin/replicas", tag = "admin", operation_id = "admin_replicas",
-    description = "Replicas seen within a day with their test-management level, and whether new data formats may be \
-        written (`FASTPROOF_TM_GATE`, `FASTPROOF_TM_GATE_SETTLE_SECONDS`). Needs `settings:write` without a project scope.",
+    description = "Replicas seen within a day with their test-management and analysis levels, and whether new data \
+        formats may be written (`FASTPROOF_TM_GATE`, `FASTPROOF_TM_GATE_SETTLE_SECONDS`; `analysis`: \
+        `FASTPROOF_ANALYSIS_GATE`, `FASTPROOF_ANALYSIS_GATE_SETTLE_SECONDS`). Needs `settings:write` without a project scope.",
     responses((status = 200, body = fastproof_store::tm::ReplicaLevels), (status = 401, body = ErrorBody),
         (status = 403, body = ErrorBody)))]
 pub async fn replicas(
@@ -144,11 +145,26 @@ pub async fn replicas(
         fastproof_store::tm::TmGateMode::Closed => false,
         fastproof_store::tm::TmGateMode::Auto => g.open,
     };
+    let al = &s.cfg.analysis.limits;
+    let a = s
+        .store
+        .analysis_gate(std::time::Duration::from_secs(al.gate_settle_seconds))
+        .await?;
+    let analysis = fastproof_store::analysis::types::GateView {
+        gate_open: match al.gate_mode {
+            fastproof_store::tm::TmGateMode::Open => true,
+            fastproof_store::tm::TmGateMode::Closed => false,
+            fastproof_store::tm::TmGateMode::Auto => a.open,
+        },
+        mode: al.gate_mode,
+        settle_until: a.settle_until,
+    };
     Ok(Json(fastproof_store::tm::ReplicaLevels {
         gate_open,
         mode: tm.gate_mode,
         settle_until: g.settle_until,
         replicas: s.store.replica_levels().await?,
+        analysis,
     }))
 }
 

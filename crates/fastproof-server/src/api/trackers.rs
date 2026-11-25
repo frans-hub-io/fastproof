@@ -31,6 +31,7 @@ use crate::integrations::trackers::{
     Client, Image, MAX_IMAGE_BYTES, MAX_IMAGES, TrackerError, image_matches, parse_key,
 };
 use crate::state::AppState;
+use fastproof_store::analysis::types::DecisionCtx;
 
 /// Results listed in one create or link request, at most.
 pub const MAX_TARGET_RESULTS: usize = 100;
@@ -551,7 +552,8 @@ async fn link_defects(
         source: Some(source_of(s, auth, &p.key).into()),
         ..Default::default()
     };
-    let (out, _) = super::analysis::apply_triage(s, p, &auth.principal.name, req).await?;
+    let (out, _) =
+        super::analysis::apply_triage(s, p, &auth.principal.name, req, DecisionCtx::api()).await?;
     Ok(out.updated)
 }
 
@@ -1031,10 +1033,11 @@ pub async fn unmute(
             source: Some(source.into()),
             ..Default::default()
         };
-        results += super::analysis::apply_triage(&s, &p, &auth.principal.name, req)
-            .await?
-            .0
-            .updated;
+        results +=
+            super::analysis::apply_triage(&s, &p, &auth.principal.name, req, DecisionCtx::api())
+                .await?
+                .0
+                .updated;
     }
     for l in links.iter().filter(|l| l.result_id.is_none()) {
         if let (Some(launch), Some(f)) = (l.launch_id, l.fingerprint.clone())
@@ -1047,10 +1050,16 @@ pub async fn unmute(
                 source: Some(source.into()),
                 ..Default::default()
             };
-            results += super::analysis::apply_triage(&s, &p, &auth.principal.name, req)
-                .await?
-                .0
-                .updated;
+            results += super::analysis::apply_triage(
+                &s,
+                &p,
+                &auth.principal.name,
+                req,
+                DecisionCtx::api(),
+            )
+            .await?
+            .0
+            .updated;
         }
     }
     s.store.delete_series_mutes(p.id, &muted).await?;

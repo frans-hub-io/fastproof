@@ -55,6 +55,15 @@ server:
 ingest:
   mode: direct
 
+analysis:
+  enabled: false
+  workers: 2
+  settleSeconds: 30
+  clickhouse: auto
+  gate: auto
+  gateSettleSeconds: 600
+  limits: {}
+
 search:
   backend: postgres
 
@@ -146,6 +155,36 @@ roles:
       limits:
         cpu: "1"
         memory: 512Mi
+        ephemeral-storage: 1Gi
+    startupProbe: {}
+    readinessProbe: {}
+    livenessProbe: {}
+    autoscaling:
+      enabled: false
+      minReplicas: 1
+      maxReplicas: 3
+      targetCPUUtilizationPercentage: 70
+      targetMemoryUtilizationPercentage: 0
+    pdb:
+      enabled: true
+      maxUnavailable: 1
+    podAnnotations: {}
+    podLabels: {}
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+    topologySpreadConstraints: []
+  analysis:
+    replicaCount: 1
+    extraRoles: []
+    resources:
+      requests:
+        cpu: 100m
+        memory: 192Mi
+        ephemeral-storage: 64Mi
+      limits:
+        cpu: "2"
+        memory: 768Mi
         ephemeral-storage: 1Gi
     startupProbe: {}
     readinessProbe: {}
@@ -687,6 +726,7 @@ sinks:
     enabled: false
     database: fastproof
     rawTtlDays: 90
+    aggTtlDays: 730
     external:
       url: ""
       user: ""

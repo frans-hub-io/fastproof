@@ -714,6 +714,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "fastproof-analysis"
+version = "0.2.0-dev2"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "fastproof-model",
+ "serde",
+ "serde_json",
+ "utoipa",
+ "uuid",
+]
+
+[[package]]
 name = "fastproof-blob"
 version = "0.2.0-dev2"
 dependencies = [
@@ -805,6 +818,7 @@ dependencies = [
  "bytes",
  "chrono",
  "clap",
+ "fastproof-analysis",
  "fastproof-blob",
  "fastproof-ingest",
  "fastproof-media",
@@ -861,6 +875,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "chrono",
+ "fastproof-analysis",
  "fastproof-model",
  "fastproof-store",
  "fastproof-tm-import",

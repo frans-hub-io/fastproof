@@ -30,6 +30,8 @@ pub struct ResultFilter {
     pub label: Option<(String, String)>,
     pub flaky: Option<bool>,
     pub fingerprint: Option<String>,
+    /// Only results marked with this log pattern (`result_patterns`).
+    pub pattern: Option<String>,
     /// Only manual (projected from run items) or only automated results.
     pub source: Option<crate::tm::ResultSource>,
     /// The explorer filters the list shares with the tree (their `statuses`, `q`, `flaky` and
@@ -1385,6 +1387,9 @@ impl Store {
         if let Some(fp) = &f.fingerprint {
             qb.push(" and r.fingerprint = ").push_bind(no_nul(fp));
         }
+        if let Some(p) = &f.pattern {
+            crate::analysis::log_rules::result_pattern_filter(&mut qb, p);
+        }
         match f.source {
             Some(crate::tm::ResultSource::Manual) => {
                 qb.push(" and r.run_item_id is not null");
@@ -2091,9 +2096,11 @@ impl Store {
         } else {
             None
         };
+        let patterns = self.result_patterns(summary.id).await?;
         Ok(Some(ResultDetail {
             launch_number,
             mute_reason,
+            patterns,
             description: latest_detail.description.html.clone(),
             description_text: latest_detail.description.text.clone(),
             parameters: parameter_views(&latest_detail.parameters),

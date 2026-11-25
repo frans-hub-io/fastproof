@@ -45,6 +45,7 @@ impl Facts {
             Metric::PassRate => self.pass_rate(),
             Metric::Duration => self.duration_s,
             Metric::NewFailures => None,
+            Metric::NewErrors | Metric::ToInvestigate | Metric::Total => None,
         }
     }
 }

@@ -403,6 +403,9 @@ pub struct ResultDetail {
     pub mute_reason: Option<String>,
     pub attempts: Vec<AttemptView>,
     pub history: Vec<SeriesPoint>,
+    /// Log pattern marks of the result.
+    #[serde(default)]
+    pub patterns: Vec<crate::analysis::types::ResultPattern>,
 }
 
 /// A test case (logical identity across parameters and environments).

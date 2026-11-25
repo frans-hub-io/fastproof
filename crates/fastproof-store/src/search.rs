@@ -51,6 +51,7 @@ async fn try_ensure(pool: &PgPool) -> anyhow::Result<Trigram> {
             "create index concurrently if not exists test_cases_full_name_trgm on test_cases using gin (full_name gin_trgm_ops)",
             "create index concurrently if not exists test_cases_display_name_trgm on test_cases using gin (display_name gin_trgm_ops)",
             "create index concurrently if not exists cases_name_trgm on cases using gin (name gin_trgm_ops)",
+            "create index concurrently if not exists triage_memory_message_trgm on triage_memory using gin (message_norm gin_trgm_ops)",
         ] {
             sqlx::query(sql).execute(&mut *conn).await?;
         }

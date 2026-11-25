@@ -28,6 +28,7 @@ use super::plans::{assignee_filter, etag, if_match};
 use super::{ErrorBody, P, Q, page_limit, tm_error};
 use crate::integrations::settings::IntegrationSettings;
 use crate::state::AppState;
+use fastproof_store::analysis::types::DecisionCtx;
 
 /// Bytes of a manual report, at most.
 pub const MAX_REPORT_BYTES: usize = 64 * 1024 * 1024;
@@ -399,7 +400,7 @@ pub async fn run_item_defect(
         ),
         ..Default::default()
     };
-    let (out, req) = super::analysis::apply_triage(&s, &p, me, req).await?;
+    let (out, req) = super::analysis::apply_triage(&s, &p, me, req, DecisionCtx::api()).await?;
     if out.updated > 0 {
         s.store
             .sync_run_item_defect(&p, id)

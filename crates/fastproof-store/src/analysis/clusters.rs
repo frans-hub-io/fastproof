@@ -2,7 +2,7 @@
 //! the same fingerprint first, then fingerprints whose normalized messages are similar by
 //! trigrams (`pg_trgm` when installed, the same measure computed here otherwise).
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
@@ -42,6 +42,12 @@ pub struct Cluster {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub known_since: Option<NaiveDate>,
     pub is_new: bool,
+    /// First seen on the launch's branch in this launch.
+    #[serde(default)]
+    pub new_on_branch: bool,
+    /// The state of the unique error.
+    #[serde(default)]
+    pub error_state: Option<super::types::ErrorState>,
 }
 
 /// A similar failure.
@@ -59,34 +65,9 @@ pub struct SimilarItem {
     pub defect: Option<Defect>,
 }
 
-fn trigrams(s: &str) -> BTreeSet<[char; 3]> {
-    let mut out = BTreeSet::new();
-    for word in s
-        .to_lowercase()
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|w| !w.is_empty())
-    {
-        let chars: Vec<char> = "  "
-            .chars()
-            .chain(word.chars())
-            .chain(std::iter::once(' '))
-            .collect();
-        for w in chars.windows(3) {
-            out.insert([w[0], w[1], w[2]]);
-        }
-    }
-    out
-}
-
-/// `pg_trgm` `similarity()`: shared trigrams over all trigrams of both strings.
-pub fn trigram_similarity(a: &str, b: &str) -> f64 {
-    let (x, y) = (trigrams(a), trigrams(b));
-    if x.is_empty() || y.is_empty() {
-        return 0.0;
-    }
-    let shared = x.intersection(&y).count();
-    shared as f64 / (x.len() + y.len() - shared) as f64
-}
+/// `pg_trgm` `similarity()`: shared trigrams over all trigrams of both strings (moved to
+/// [`fastproof_analysis::trigram::similarity`]; kept here under its old name).
+pub use fastproof_analysis::trigram::similarity as trigram_similarity;
 
 fn short(m: Option<String>) -> Option<String> {
     m.map(
@@ -199,6 +180,8 @@ impl Store {
                     is_new: known_since.is_none(),
                     known_since,
                     fingerprint: fp,
+                    new_on_branch: false,
+                    error_state: None,
                 }
             })
             .collect())

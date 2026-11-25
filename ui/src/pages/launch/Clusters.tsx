@@ -16,6 +16,7 @@ import { resultTarget, type TriageTarget } from '../../lib/triage';
 import { groupFailures } from '../../lib/errorGroups';
 import { formatDate } from '../../lib/format';
 import { stripAnsi } from '../../lib/ansi';
+import { ClusterSuggestion, ClusterSuggestionChip } from './ClusterSuggestion';
 import { TransitionBadge } from './TransitionBadge';
 
 function ClusterResults({ project, launch, env, cluster, types, canTriage, onTriage }: { project: string; launch: Launch; env?: string; cluster: Cluster; types: Map<string, DefectType>; canTriage: boolean; onTriage: (t: TriageTarget) => void }) {
@@ -157,6 +158,7 @@ export function Clusters({ project, launch, env }: { project: string; launch: La
                           </Badge>
                         )}
                         {c.defect && <DefectChip defect={c.defect} types={types} size="xs" />}
+                        {!c.defect || c.defect.source !== 'user' ? <ClusterSuggestionChip project={project} launch={launch} cluster={c} /> : null}
                         <Text size="xs" c="dimmed">
                           {c.statuses.failed} failed · {c.statuses.broken} broken
                         </Text>
@@ -168,6 +170,12 @@ export function Clusters({ project, launch, env }: { project: string; launch: La
                   </Accordion.Control>
                   <Accordion.Panel>
                     <Stack gap="xs">
+                      <ClusterSuggestion
+                        project={project}
+                        launch={launch}
+                        cluster={c}
+                        onOther={() => setTarget({ label: `${String(c.count)} result${c.count === 1 ? '' : 's'} with: ${c.message ? stripAnsi(c.message) : '(no message)'}`, count: c.count, launchId: launch.id, fingerprint: c.fingerprint, defect: c.defect })}
+                      />
                       {canTriage && (
                         <Group justify="flex-end">
                           <Button

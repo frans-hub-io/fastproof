@@ -1,8 +1,11 @@
 //! Command line: `serve`, `migrate`, `upload`, `watch`, `launch start|finish`, `testplan`, `rerun`, `plan run`,
-//! `cases export|import`, `import allure-history`, `rp import`, `export`, `bench [tm]`, `version`.
+//! `cases export|import`, `import allure-history`, `rp import`, `export`, `analysis backtest`,
+//! `bench [tm|analysis]`, `version`.
 
+pub mod analysis;
 pub mod archive;
 pub mod bench;
+pub mod bench_analysis;
 pub mod bench_tm;
 pub mod cases;
 pub mod ci;
@@ -91,8 +94,13 @@ pub enum Command {
     /// Export a launch as a self-contained HTML report, an XLSX workbook or a PDF (printed by a
     /// local Chromium).
     Export(export::ExportArgs),
+    /// FastProof Analysis tools: `analysis backtest` measures triage suggestions on history.
+    Analysis {
+        #[command(subcommand)]
+        command: analysis::AnalysisCommand,
+    },
     /// Generate launches, results and log lines and measure throughput and end-to-end lag;
-    /// `bench tm` loads test management.
+    /// `bench tm` loads test management, `bench analysis` FastProof Analysis.
     Bench(bench::BenchCli),
     /// Print the version.
     Version,
@@ -464,6 +472,15 @@ pub async fn run(cli: Cli) -> anyhow::Result<i32> {
         Command::Export(e) => export::run(e).await,
         Command::Import { command } => import::run(command).await,
         Command::Rp { command } => rp::run(command).await,
+        Command::Analysis { command } => analysis::run(command).await,
+        Command::Bench(bench::BenchCli {
+            command: Some(bench::BenchCommand::Analysis(t)),
+            ..
+        }) => {
+            let r = bench_analysis::run(t).await?;
+            bench_analysis::print(&r)?;
+            Ok(if r.errors > 0 { 1 } else { 0 })
+        }
         Command::Watch(w) => watch::run(w).await,
         Command::Bench(bench::BenchCli {
             command: Some(bench::BenchCommand::Tm(t)),

@@ -1,0 +1,16 @@
+[package]
+name = "fastproof-analysis"
+description = "Pure logic of FastProof Analysis shared by the live path and the backtest"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+fastproof-model.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+utoipa.workspace = true
+uuid.workspace = true

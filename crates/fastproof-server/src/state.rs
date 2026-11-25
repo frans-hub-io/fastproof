@@ -241,6 +241,9 @@ pub struct Inner {
     pub direct: crate::direct_uploads::DirectState,
     /// The ReportPortal endpoint of this replica (`crate::rp`).
     pub rp: crate::rp::RpState,
+    /// ClickHouse for Analysis: `FASTPROOF_ANALYSIS_CLICKHOUSE=auto` with
+    /// `FASTPROOF_CLICKHOUSE_URL` set and `clickhouse` in `FASTPROOF_SINKS`.
+    pub clickhouse: Option<Arc<fastproof_stream::clickhouse::ClickHouse>>,
 }
 
 /// The axum state.

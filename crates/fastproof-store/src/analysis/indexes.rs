@@ -1,7 +1,8 @@
 //! Indexes that must not block writes while they are built: the fingerprint and suite indexes
-//! of the partitioned `results` (parent `ON ONLY`, then each partition `CONCURRENTLY` and
-//! attached; partitions created later get them from the parent) and the trigram index of the
-//! fingerprint catalog.
+//! of the partitioned `results` and the trace index of the partitioned `attempts` (parent
+//! `ON ONLY`, then each partition `CONCURRENTLY` and attached; partitions created later get
+//! them from the parent) and the trigram indexes of the fingerprint catalog and the triage
+//! memory.
 
 use sqlx::PgPool;
 
@@ -48,6 +49,24 @@ fn results_indexes() -> [(&'static str, String, &'static str); 4] {
     ]
 }
 
+/// The index of attempts by trace id (signals of grids and CI resolve to attempts with it).
+pub const TRACE_INDEX: &str = "attempts_trace_id";
+const TRACE_DEF: &str = "(trace_id) where trace_id is not null";
+
+/// Trigram indexes built when `pg_trgm` is installed: name, table and column.
+const TRIGRAM_INDEXES: [(&str, &str, &str); 2] = [
+    (
+        "failure_fingerprints_message_trgm",
+        "failure_fingerprints",
+        "message",
+    ),
+    (
+        "triage_memory_message_trgm",
+        "triage_memory",
+        "message_norm",
+    ),
+];
+
 /// Indexes of `results` dropped once their replacement is valid: old name, replacement.
 const RETIRED: [(&str, &str); 2] = [
     ("results_launch_name", NAME_INDEX),
@@ -77,24 +96,28 @@ pub async fn ensure_analysis_indexes(pool: &PgPool) -> anyhow::Result<u32> {
     let r = async {
         let mut built = 0;
         for (index, def, suffix) in results_indexes() {
-            built += ensure_partitioned(&mut conn, index, &def, suffix).await?;
+            built += ensure_partitioned(&mut conn, "results", index, &def, suffix).await?;
         }
+        built += ensure_partitioned(&mut conn, "attempts", TRACE_INDEX, TRACE_DEF, "trace").await?;
         for (old, new) in RETIRED {
             retire(&mut conn, old, new).await?;
         }
-        let trgm: bool = sqlx::query_scalar(
-            "select exists(select 1 from pg_extension where extname = 'pg_trgm') \
-               and to_regclass('failure_fingerprints_message_trgm') is null",
-        )
-        .fetch_one(&mut *conn)
-        .await?;
-        if trgm {
-            sqlx::query(
-                "create index concurrently if not exists failure_fingerprints_message_trgm \
-                 on failure_fingerprints using gin (message gin_trgm_ops)",
+        for (index, table, column) in TRIGRAM_INDEXES {
+            let trgm: bool = sqlx::query_scalar(
+                "select exists(select 1 from pg_extension where extname = 'pg_trgm') \
+                   and to_regclass($1) is null",
             )
-            .execute(&mut *conn)
+            .bind(index)
+            .fetch_one(&mut *conn)
             .await?;
+            if trgm {
+                sqlx::query(sqlx::AssertSqlSafe(format!(
+                    "create index concurrently if not exists {index} \
+                     on {table} using gin ({column} gin_trgm_ops)"
+                )))
+                .execute(&mut *conn)
+                .await?;
+            }
         }
         rebuild_invalid_migration_indexes(&mut conn).await?;
         Ok::<_, anyhow::Error>(built)
@@ -150,13 +173,15 @@ fn gave_up(e: &anyhow::Error) -> bool {
     })
 }
 
-/// Builds the partitioned index `index` of `results`: the parent `ON ONLY` (only when it is
-/// missing: the statement locks `results` even when the index exists), then the index of every
+/// Builds the partitioned index `index` of `table` (`results` or `attempts`): the parent
+/// `ON ONLY` (only when it is missing: the statement locks the table even when the index
+/// exists), then the index of every
 /// partition that has none attached (an invalid one left by an interrupted build is dropped
 /// first), each attached with a short lock wait. Returns how many partition indexes were
 /// built and attached.
 async fn ensure_partitioned(
     conn: &mut sqlx::PgConnection,
+    table: &'static str,
     index: &str,
     def: &str,
     suffix: &str,
@@ -169,13 +194,14 @@ async fn ensure_partitioned(
     if !exists
         && !short_ddl(
             conn,
-            format!("create index if not exists {index} on only results {def}"),
+            format!("create index if not exists {index} on only {table} {def}"),
         )
         .await?
     {
         tracing::info!(
             index,
-            "creating an index of results waits for a quieter moment"
+            table,
+            "creating a partitioned index waits for a quieter moment"
         );
         return Ok(0);
     }
@@ -184,9 +210,10 @@ async fn ensure_partitioned(
            join pg_class ci on ci.oid = ii.inhrelid join pg_index ix on ix.indexrelid = ci.oid \
            where ii.inhparent = to_regclass($1) and ix.indrelid = c.oid limit 1) \
          from pg_inherits i join pg_class c on c.oid = i.inhrelid join pg_class p on p.oid = i.inhparent \
-         where p.relname = 'results' order by 1",
+         where p.relname = $2 order by 1",
     )
     .bind(index)
+    .bind(table)
     .fetch_all(&mut *conn)
     .await?;
     for (part, attached) in parts {

@@ -96,6 +96,16 @@ data:
   FASTPROOF_INGEST_MODE: {{ .Values.ingest.mode | quote }}
   FASTPROOF_SEARCH_BACKEND: {{ .Values.search.backend | quote }}
   FASTPROOF_SINKS: {{ include "fastproof.sinks" . | quote }}
+  {{- $an := .Values.analysis }}
+  FASTPROOF_ANALYSIS: {{ ternary "on" "off" $an.enabled | quote }}
+  FASTPROOF_ANALYSIS_WORKERS: {{ $an.workers | int64 | quote }}
+  FASTPROOF_ANALYSIS_SETTLE_SECONDS: {{ $an.settleSeconds | int64 | quote }}
+  FASTPROOF_ANALYSIS_CLICKHOUSE: {{ $an.clickhouse | quote }}
+  FASTPROOF_ANALYSIS_GATE: {{ $an.gate | quote }}
+  FASTPROOF_ANALYSIS_GATE_SETTLE_SECONDS: {{ $an.gateSettleSeconds | int64 | quote }}
+  {{- range $k, $v := $an.limits }}
+  {{ include "fastproof.analysisLimitEnv" $k }}: {{ $v | int64 | quote }}
+  {{- end }}
   {{- if include "fastproof.kafkaMode" . }}
   FASTPROOF_KAFKA_BROKERS: {{ include "fastproof.kafkaBrokers" . | quote }}
   FASTPROOF_KAFKA_TLS: {{ ternary "true" "false" (not (empty (include "fastproof.kafkaTls" .))) | quote }}

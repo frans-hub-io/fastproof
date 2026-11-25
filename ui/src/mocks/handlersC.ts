@@ -2,8 +2,10 @@ import { http, HttpResponse } from 'msw';
 import type { DefectGroup, LogLevel, ProjectSettings, RerunRequest, Rule, TestPlanCreate, TriageRequest } from '../api/types-next';
 import { DEFECT_GROUPS } from '../api/types-next';
 import { launchDef, launchResults, launchView, projects, RUNNING_LAUNCH_ID, type MockRole } from './fixtures';
+import { journalTriage } from './analysis';
 import {
   addDefectType,
+  analyze,
   applyRule,
   clustersOf,
   compare,
@@ -37,6 +39,7 @@ import {
   similarTo,
   storedLogs,
   triage,
+  triageTargets,
   writeSecret,
 } from './stageC';
 
@@ -112,9 +115,13 @@ export function stageCHandlers({ role, error, audit }: Helpers) {
       if (body.issue && !/^https?:\/\//.test(body.issue.url ?? '')) return error(400, 'invalid_body', 'issue url must be http(s)', { field: 'issue.url' });
       if (body.defectTypeId && !defectTypes().some((t) => t.id === body.defectTypeId)) return error(400, 'invalid_body', 'unknown defect type', { field: 'defectTypeId' });
       if (body.mute && !body.mute.reason.trim()) return error(400, 'invalid_body', 'a mute needs a reason', { field: 'mute.reason' });
-      const updated = triage(String(params.key), body);
-      audit('result.triage', String(params.key), { updated, fingerprint: body.fingerprint, defectTypeId: body.defectTypeId, mute: !!body.mute, unmute: !!body.unmute });
-      return HttpResponse.json({ updated });
+      const project = String(params.key);
+      const targets = triageTargets(body);
+      const before = targets.map((r) => analyze(project, r));
+      const updated = triage(project, body);
+      const batchId = journalTriage(project, before, targets.map((r) => analyze(project, r)), role(), 'api', body.source === 'ai' ? 'ai' : 'user');
+      audit('result.triage', project, { updated, batchId, via: 'api', fingerprint: body.fingerprint, defectTypeId: body.defectTypeId, mute: !!body.mute, unmute: !!body.unmute });
+      return HttpResponse.json({ updated, batchId });
     }),
 
     http.get(`${API}/projects/:key/launches/:id/clusters`, ({ params, request }) => {

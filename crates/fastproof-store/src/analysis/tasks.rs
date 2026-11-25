@@ -23,6 +23,9 @@ pub const MAX_APPLY_LAUNCHES: i64 = 500;
 pub const MAX_DRY_RUN_IDS: usize = 1000;
 /// Queued or running tasks per project, at most.
 pub const MAX_OPEN_TASKS: i64 = 20;
+/// Task kinds the standard `analysis.tasks` job runs (an older replica claimed every kind and
+/// failed the ones it did not know).
+pub const STANDARD_TASK_KINDS: [&str; 1] = ["rule.apply"];
 
 /// A background task.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
@@ -257,13 +260,33 @@ impl Store {
     }
 
     /// Applies a rule to the results of one launch that no person triaged; returns how many
-    /// results it changed.
+    /// results it changed. Journaled as a `retro` batch by [`super::hook::SYSTEM`].
     pub async fn apply_rule_to_launch(
         &self,
         project_id: Uuid,
         project_key: &str,
         launch_id: Uuid,
         rule: &Arc<CompiledRule>,
+    ) -> anyhow::Result<u64> {
+        self.apply_rule_to_launch_by(
+            project_id,
+            project_key,
+            launch_id,
+            rule,
+            super::hook::SYSTEM,
+        )
+        .await
+    }
+
+    /// [`Self::apply_rule_to_launch`] for the task created by `by`: the changes are one
+    /// journal batch (`via = retro`, `source = rule`, `by`) with a `triage.decided` event.
+    pub async fn apply_rule_to_launch_by(
+        &self,
+        project_id: Uuid,
+        project_key: &str,
+        launch_id: Uuid,
+        rule: &Arc<CompiledRule>,
+        by: &str,
     ) -> anyhow::Result<u64> {
         let Some(ev) = self
             .evaluate_rule_on_launch(project_id, launch_id, rule)
@@ -320,6 +343,7 @@ impl Store {
         .bind(order.iter().map(|o| o.1).collect::<Vec<_>>())
         .execute(&mut *tx)
         .await?;
+        let before = super::decisions::read_states(&mut tx, &order).await?;
         sqlx::query(
             "update results r set defect = t.d, updated_at = now() \
              from unnest($1::uuid[], $2::timestamptz[], $3::jsonb[]) as t(i, c, d) \
@@ -349,6 +373,22 @@ impl Store {
             .await?;
             recount_muted(&mut tx, &[launch_id]).await?;
         }
+        let after = super::decisions::read_states(&mut tx, &order).await?;
+        super::decisions::record(
+            &mut tx,
+            &super::decisions::Batch {
+                project_id,
+                project_key,
+                via: super::types::DecisionVia::Retro,
+                source: super::types::DecisionSource::Rule,
+                by,
+                suggestion_id: None,
+                reverts: None,
+            },
+            &before,
+            &after,
+        )
+        .await?;
         let mut hits = HashMap::new();
         hits.insert(rule.rule.id, ids.len() as i64);
         rules::add_hits(&mut tx, &hits).await?;
@@ -408,26 +448,30 @@ impl Store {
         }))
     }
 
-    /// Runs queued tasks (one at a time, leased) until none is left or `budget` is spent.
+    /// Runs queued tasks of the kinds of [`STANDARD_TASK_KINDS`] (one at a time, leased) until
+    /// none is left or `budget` is spent. Other kinds (`backtest`, `log_rule.apply`) belong to
+    /// the analysis role.
     pub async fn run_tasks(&self, owner: &str, budget: Duration) -> anyhow::Result<u64> {
         let started = Instant::now();
         let mut n = 0;
         while started.elapsed() < budget {
-            let claimed: Option<(Uuid, Uuid, String, serde_json::Value)> = sqlx::query_as(
+            let claimed: Option<(Uuid, Uuid, String, serde_json::Value, Option<String>)> = sqlx::query_as(
                 "update analysis_tasks set status = 'running', lease_owner = $1, \
                    lease_until = now() + interval '10 minutes', started_at = coalesce(started_at, now()) \
-                 where id = (select id from analysis_tasks where status = 'queued' \
-                   or (status = 'running' and lease_until < now()) order by created_at limit 1 for update skip locked) \
-                 returning id, project_id, kind, params",
+                 where id = (select id from analysis_tasks where kind = any($2) and (status = 'queued' \
+                   or (status = 'running' and lease_until < now())) order by created_at limit 1 for update skip locked) \
+                 returning id, project_id, kind, params, created_by",
             )
             .bind(owner)
+            .bind(STANDARD_TASK_KINDS.map(String::from).to_vec())
             .fetch_optional(&self.pool)
             .await?;
-            let Some((id, project_id, kind, params)) = claimed else {
+            let Some((id, project_id, kind, params, created_by)) = claimed else {
                 break;
             };
+            let by = created_by.unwrap_or_else(|| super::hook::SYSTEM.to_string());
             let r = match kind.as_str() {
-                "rule.apply" => self.run_rule_apply(id, project_id, params).await,
+                "rule.apply" => self.run_rule_apply(id, project_id, params, &by).await,
                 other => Err(anyhow::anyhow!("unknown task kind {other}")),
             };
             let (status, error, progress) = match r {
@@ -455,6 +499,7 @@ impl Store {
         task_id: Uuid,
         project_id: Uuid,
         params: serde_json::Value,
+        by: &str,
     ) -> anyhow::Result<serde_json::Value> {
         let p: ApplyParams = serde_json::from_value(params)?;
         let key: String = sqlx::query_scalar("select key from projects where id = $1")
@@ -464,11 +509,14 @@ impl Store {
         let Some(rule) = self.rule(project_id, p.rule_id).await? else {
             anyhow::bail!("the rule was deleted");
         };
+        if !rule.readable() {
+            anyhow::bail!("{}", rules::UNREADABLE_RULE);
+        }
         let compiled = Arc::new(CompiledRule::compile(rule).map_err(|e| anyhow::anyhow!(e))?);
         let mut updated = 0u64;
         for (i, l) in p.launch_ids.iter().enumerate() {
             updated += self
-                .apply_rule_to_launch(project_id, &key, *l, &compiled)
+                .apply_rule_to_launch_by(project_id, &key, *l, &compiled, by)
                 .await?;
             sqlx::query(
                 "update analysis_tasks set progress = $2, lease_until = now() + interval '10 minutes' where id = $1",

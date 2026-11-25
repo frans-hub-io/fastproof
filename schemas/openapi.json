@@ -42,7 +42,7 @@
         "tags": [
           "admin"
         ],
-        "description": "Replicas seen within a day with their test-management level, and whether new data formats may be written (`FASTPROOF_TM_GATE`, `FASTPROOF_TM_GATE_SETTLE_SECONDS`). Needs `settings:write` without a project scope.",
+        "description": "Replicas seen within a day with their test-management and analysis levels, and whether new data formats may be written (`FASTPROOF_TM_GATE`, `FASTPROOF_TM_GATE_SETTLE_SECONDS`; `analysis`: `FASTPROOF_ANALYSIS_GATE`, `FASTPROOF_ANALYSIS_GATE_SETTLE_SECONDS`). Needs `settings:write` without a project scope.",
         "operationId": "admin_replicas",
         "responses": {
           "200": {
@@ -519,6 +519,358 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Project"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/analysis/backtest": {
+      "post": {
+        "tags": [
+          "analysis"
+        ],
+        "description": "Queues a backtest of the project's decision history of the last `days` (1 to 730, default 180): every person's decision is replayed in time order against the memory folded from the decisions before it, with the live scoring, and the report gives the precision per band and the coverage (`GET .../analysis/backtest/latest`). Answers the task (202). A backtest replays for at most 10 minutes (the report is then `truncated`). 409 `analysis_disabled` while Analysis is off, 409 `upgrade_in_progress` while older replicas run, 409 `limit_reached` while a backtest of the project is queued or running, or with too many open tasks. Needs `settings:write`.",
+        "operationId": "analysis_backtest",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BacktestRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/analysis/backtest/latest": {
+      "get": {
+        "tags": [
+          "analysis"
+        ],
+        "description": "The newest backtest report of the project (404 without one). Needs `projects:read`.",
+        "operationId": "analysis_backtest_latest",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BacktestReport"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/analysis/capabilities": {
+      "get": {
+        "tags": [
+          "analysis"
+        ],
+        "description": "What FastProof Analysis answers for the project: the instance and project switches, ClickHouse, `pg_trgm`, the analysis replica gate, the features and the data windows. Needs `projects:read`.",
+        "operationId": "analysis_capabilities",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalysisCapabilities"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/analysis/decision-events": {
+      "get": {
+        "tags": [
+          "analysis"
+        ],
+        "description": "Exports the project's decision events (what the memory learned, one JSON `DecisionEvent` per line) for an offline backtest (`fastproof analysis backtest --events <file>`). The author is the first 16 hex digits of sha256 of a random secret of the project and the author (stable within the project, not testable without the server's database). A page holds at most `limit` events and 8 MiB; when more are left it carries the `after` of the next one in `x-fastproof-next-after`. 409 `analysis_disabled` while Analysis is off. Needs `settings:write`.",
+        "operationId": "analysis_decision_events",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "description": "The `x-fastproof-next-after` header of the previous page.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "1 to 10000, default 1000.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One DecisionEvent per line",
+            "content": {
+              "application/x-ndjson": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/analysis/memory": {
+      "get": {
+        "tags": [
+          "analysis"
+        ],
+        "description": "What people decided for a fingerprint (its canonical fingerprint and aliases): one entry per defect type with confirmations, overrides, the last comment and issue, the tests, branches and environments and a sample decision. Needs `launches:read`.",
+        "operationId": "analysis_memory",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "fingerprint",
+            "in": "query",
+            "description": "A fingerprint (16 hex digits); its canonical fingerprint and aliases are included.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemoryList"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -6538,6 +6890,63 @@
         }
       }
     },
+    "/api/v1/projects/{key}/launches/{id}/analysis": {
+      "get": {
+        "tags": [
+          "analysis"
+        ],
+        "description": "The analysis of a launch: queued, running, done, failed, or `none` when it was never queued, with the outcome of each step. Needs `launches:read`.",
+        "operationId": "analysis_launch_status",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalysisLaunchStatus"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{key}/launches/{id}/attachments": {
       "post": {
         "tags": [
@@ -9079,6 +9488,138 @@
           },
           "409": {
             "description": "`manual_run_closed`, `limit_reached`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/launches/{id}/suggestions": {
+      "get": {
+        "tags": [
+          "analysis"
+        ],
+        "description": "Triage suggestions of a launch by cluster (launch × canonical fingerprint): for each cluster its decision state, why it has no suggestion, and up to three suggestions ranked by band (`same`, `high`, `low`) and score. A suggestion is a transparent nearest-decision search over what people decided before (each `why` item is one row of the weight table), not a trained model. `precision` is the band's precision in the latest backtest when it had at least 50 decisions in that band. Needs `launches:read`.",
+        "operationId": "analysis_launch_suggestions",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LaunchSuggestions"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/launches/{id}/suggestions/recompute": {
+      "post": {
+        "tags": [
+          "analysis"
+        ],
+        "description": "Queues the analysis of a finished launch again (its suggestions are computed anew from the current memory). A launch is recomputed at most once per `FASTPROOF_ANALYSIS_RECOMPUTE_SECONDS` (429 `rate_limited` with `Retry-After`); a launch still running answers 409 `launch_running`. 409 `analysis_disabled` while Analysis is off. Needs `results:triage`.",
+        "operationId": "analysis_recompute_suggestions",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalysisLaunchStatus"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
             "content": {
               "application/json": {
                 "schema": {
@@ -12846,7 +13387,7 @@
           }
         ],
         "requestBody": {
-          "description": "The areas to change. Each top-level area present in the body (`flaky`, `retention`, `rollup`, `gates`, `notifications`, `issueTrackers`, `fastmock`, `vcs`, `rerun`, `caseWorkflow`, `caseReview`) replaces the stored one as a whole; areas left out are kept; `null` resets an area to its default (removes it). `caseSync` is merged by key instead (and its `fields` by field): keys left out keep their values, a `null` key returns to its default. New formats (`caseSync.requirementLinkTypes` other than the default, `rerun.variables`, `rerun.refs`, the `caseReviewRequested` notification event) answer 409 `upgrade_in_progress` while an older replica runs. The answer is the whole stored document.",
+          "description": "The areas to change. Each top-level area present in the body (`flaky`, `retention`, `rollup`, `gates`, `notifications`, `issueTrackers`, `fastmock`, `vcs`, `rerun`, `caseWorkflow`, `caseReview`, `analysis`) replaces the stored one as a whole; areas left out are kept; `null` resets an area to its default (removes it). `caseSync` is merged by key instead (and its `fields` by field): keys left out keep their values, a `null` key returns to its default. New formats (`caseSync.requirementLinkTypes` other than the default, `rerun.variables`, `rerun.refs`, the `caseReviewRequested` notification event; gate rules with `newErrors`, `toInvestigate` or `total`, the `errorRegressed` event, `analysis.autoApply.enabled` turning on) answer 409 `upgrade_in_progress` while an older replica runs. The answer is the whole stored document.",
           "content": {
             "application/json": {
               "schema": {
@@ -13992,6 +14533,269 @@
             }
           },
           "428": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/suggestions/{id}/accept": {
+      "post": {
+        "tags": [
+          "analysis"
+        ],
+        "description": "Accepts an open suggestion: its defect type (with an optional comment and issue) goes to the cluster's results (`applyTo: cluster`, default) or to listed results of the cluster (`applyTo: results`, at most 1000), leaving results a person or an agent already decided untouched. Journaled as one batch with `via: suggestion` (undo takes it back). A suggestion that is not open answers 409 `suggestion_closed {state}`. Needs `results:triage`; an AI agent accepts as `ai`.",
+        "operationId": "analysis_accept_suggestion",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SuggestionAccept"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuggestionAccepted"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/suggestions/{id}/reject": {
+      "post": {
+        "tags": [
+          "analysis"
+        ],
+        "description": "Rejects an open suggestion with an optional reason (at most 500 bytes). The memory is not changed: only a person's different decision counts against a remembered one. Needs `results:triage`.",
+        "operationId": "analysis_reject_suggestion",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SuggestionReject"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Suggestion"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/suggestions/{id}/rule": {
+      "post": {
+        "tags": [
+          "analysis"
+        ],
+        "description": "Makes a disabled rule from a suggestion for review: `{name: \"Same as <fingerprint>\", match: {fingerprint}, action: {defectTypeId}}`. Needs `rules:write` or `ai:propose` (an agent has at most 20 disabled rules waiting for review: 409 `limit_reached`).",
+        "operationId": "analysis_suggestion_rule",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rule"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
             "content": {
               "application/json": {
                 "schema": {
@@ -16033,6 +16837,187 @@
         }
       }
     },
+    "/api/v1/projects/{key}/triage/history": {
+      "get": {
+        "tags": [
+          "analysis"
+        ],
+        "description": "The decision journal of a result (`resultId`, newest first) or of a batch (`batchId`): every change of a defect or mute with its path (`via`), source, author, the state before and after, and whether the batch can still be undone. Needs `launches:read`.",
+        "operationId": "analysis_triage_history",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "resultId",
+            "in": "query",
+            "description": "The rows of a result, newest first.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "batchId",
+            "in": "query",
+            "description": "The rows of a batch.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "description": "The `next` of the previous page.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "1 to 500, default 50.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TriageHistory"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/triage/undo": {
+      "post": {
+        "tags": [
+          "analysis"
+        ],
+        "description": "Undoes a batch: every result still at the state the batch left is put back to its state before (mutes included); results changed since, gone or merged are skipped. The restore is a new batch (`via: undo`), so an undo can be undone too. Rule batches at ingest are not undoable (409 `batch_not_undoable`; edit the rule); batches above 20000 results answer 409 `batch_too_large`. Needs `results:triage`, and `results:mute` for a batch that changed mutes; an AI agent undoes only its own batches (403 `not_your_batch`).",
+        "operationId": "analysis_triage_undo",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TriageUndo"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TriageUndoResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/tokens": {
       "get": {
         "tags": [
@@ -16411,6 +17396,339 @@
           }
         }
       },
+      "AnalysisAutoApplySettings": {
+        "type": "object",
+        "description": "`analysis.autoApply`: rank-1 suggestions of these bands are applied by themselves.",
+        "properties": {
+          "bands": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SuggestionBand"
+            },
+            "description": "Non-empty, only `same`.",
+            "default": [
+              "same"
+            ]
+          },
+          "enabled": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "AnalysisBacktestSettings": {
+        "type": "object",
+        "description": "`analysis.backtest`.",
+        "properties": {
+          "nightly": {
+            "type": "boolean",
+            "default": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "AnalysisCapabilities": {
+        "type": "object",
+        "description": "`GET .../analysis/capabilities`.",
+        "required": [
+          "enabled",
+          "instanceEnabled",
+          "projectEnabled",
+          "clickhouse",
+          "trigram",
+          "gateOpen",
+          "features",
+          "windows",
+          "withClickHouse"
+        ],
+        "properties": {
+          "clickhouse": {
+            "type": "boolean"
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "The instance and the project have Analysis on."
+          },
+          "features": {
+            "$ref": "#/components/schemas/AnalysisFeatures"
+          },
+          "gateOpen": {
+            "type": "boolean",
+            "description": "Every replica knows the analysis formats."
+          },
+          "instanceEnabled": {
+            "type": "boolean"
+          },
+          "projectEnabled": {
+            "type": "boolean"
+          },
+          "trigram": {
+            "type": "boolean",
+            "description": "`pg_trgm` is installed."
+          },
+          "windows": {
+            "$ref": "#/components/schemas/AnalysisWindows"
+          },
+          "withClickHouse": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Feature names that need ClickHouse."
+          }
+        }
+      },
+      "AnalysisFeatures": {
+        "type": "object",
+        "description": "Which analysis features answer for a project.",
+        "required": [
+          "suggestions",
+          "errors",
+          "logPatterns",
+          "gateAnalytics",
+          "flakyHints",
+          "signals",
+          "analytics",
+          "portfolio",
+          "crossProjectSimilar"
+        ],
+        "properties": {
+          "analytics": {
+            "type": "boolean"
+          },
+          "crossProjectSimilar": {
+            "type": "boolean"
+          },
+          "errors": {
+            "type": "boolean"
+          },
+          "flakyHints": {
+            "type": "boolean"
+          },
+          "gateAnalytics": {
+            "type": "boolean"
+          },
+          "logPatterns": {
+            "type": "boolean"
+          },
+          "portfolio": {
+            "type": "boolean"
+          },
+          "signals": {
+            "type": "boolean"
+          },
+          "suggestions": {
+            "type": "boolean"
+          }
+        }
+      },
+      "AnalysisFlakySettings": {
+        "type": "object",
+        "description": "`analysis.flaky`.",
+        "properties": {
+          "hintMinScore": {
+            "type": "number",
+            "format": "double",
+            "description": "0.05 to 1.0.",
+            "default": 0.2
+          }
+        },
+        "additionalProperties": false
+      },
+      "AnalysisLaunchState": {
+        "type": "string",
+        "description": "State of a launch in the analysis queue (`none`: never queued).",
+        "enum": [
+          "queued",
+          "running",
+          "done",
+          "failed",
+          "none"
+        ]
+      },
+      "AnalysisLaunchStatus": {
+        "type": "object",
+        "description": "`GET .../launches/{id}/analysis`.",
+        "required": [
+          "state",
+          "steps"
+        ],
+        "properties": {
+          "finishedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "queuedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "state": {
+            "$ref": "#/components/schemas/AnalysisLaunchState"
+          },
+          "steps": {
+            "$ref": "#/components/schemas/LaunchSteps"
+          }
+        }
+      },
+      "AnalysisSettings": {
+        "type": "object",
+        "description": "The project's settings area `analysis` (the instance switch is `FASTPROOF_ANALYSIS`).",
+        "properties": {
+          "autoApply": {
+            "$ref": "#/components/schemas/AnalysisAutoApplySettings",
+            "default": {
+              "enabled": false,
+              "bands": [
+                "same"
+              ]
+            }
+          },
+          "backtest": {
+            "$ref": "#/components/schemas/AnalysisBacktestSettings",
+            "default": {
+              "nightly": true
+            }
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "The project's opt-out.",
+            "default": true
+          },
+          "flaky": {
+            "$ref": "#/components/schemas/AnalysisFlakySettings",
+            "default": {
+              "hintMinScore": 0.2
+            }
+          },
+          "memoryDays": {
+            "type": "integer",
+            "format": "int32",
+            "description": "30 to 3650.",
+            "default": 365,
+            "minimum": 0
+          },
+          "resolveAfterLaunches": {
+            "type": "integer",
+            "format": "int32",
+            "description": "1 to 100.",
+            "default": 10,
+            "minimum": 0
+          },
+          "suggest": {
+            "$ref": "#/components/schemas/AnalysisSuggestSettings",
+            "default": {
+              "minScore": 0.4,
+              "maxCandidates": 3
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "AnalysisStepStatus": {
+        "type": "string",
+        "description": "Outcome of a pipeline step.",
+        "enum": [
+          "done",
+          "partial",
+          "skipped",
+          "failed"
+        ]
+      },
+      "AnalysisSuggestSettings": {
+        "type": "object",
+        "description": "`analysis.suggest`.",
+        "properties": {
+          "maxCandidates": {
+            "type": "integer",
+            "format": "int32",
+            "description": "1 to 3.",
+            "default": 3,
+            "minimum": 0
+          },
+          "minScore": {
+            "type": "number",
+            "format": "double",
+            "description": "0.40 to 0.95.",
+            "default": 0.4
+          }
+        },
+        "additionalProperties": false
+      },
+      "AnalysisWindows": {
+        "type": "object",
+        "description": "Data windows of a project's analysis, in days.",
+        "required": [
+          "rawDays",
+          "memoryDays",
+          "analyticsDays"
+        ],
+        "properties": {
+          "analyticsDays": {
+            "type": "integer",
+            "format": "int32",
+            "description": "30 on PostgreSQL, the ClickHouse TTL with ClickHouse.",
+            "minimum": 0
+          },
+          "memoryDays": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "rawDays": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "AnalyticsBackend": {
+        "type": "string",
+        "description": "Backend of an analytics answer.",
+        "enum": [
+          "postgres",
+          "clickhouse"
+        ]
+      },
+      "AnalyticsWindow": {
+        "type": "object",
+        "description": "The window an analytics answer covers.",
+        "required": [
+          "backend",
+          "from",
+          "to",
+          "partial"
+        ],
+        "properties": {
+          "backend": {
+            "$ref": "#/components/schemas/AnalyticsBackend"
+          },
+          "from": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "partial": {
+            "type": "boolean",
+            "description": "Less than asked for (the PostgreSQL fallback covers at most 30 days)."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "to": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
       "AttachmentCreated": {
         "type": "object",
         "description": "A stored attachment.",
@@ -16500,6 +17818,94 @@
             ],
             "format": "int64",
             "minimum": 0
+          }
+        }
+      },
+      "AttemptSignal": {
+        "type": "object",
+        "description": "A stored signal.",
+        "required": [
+          "id",
+          "source",
+          "kind",
+          "at",
+          "confidence",
+          "detail"
+        ],
+        "properties": {
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "attempt": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "confidence": {
+            "$ref": "#/components/schemas/SignalConfidence"
+          },
+          "detail": {
+            "type": "object"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "resultId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "source": {
+            "$ref": "#/components/schemas/SignalSource"
+          }
+        }
+      },
+      "AttemptSignalBrief": {
+        "type": "object",
+        "description": "Signals of a cluster's results, counted.",
+        "required": [
+          "source",
+          "kind",
+          "confidence",
+          "count"
+        ],
+        "properties": {
+          "confidence": {
+            "$ref": "#/components/schemas/SignalConfidence"
+          },
+          "count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/SignalSource"
+          }
+        }
+      },
+      "AttemptSignals": {
+        "type": "object",
+        "description": "`GET .../results/{id}/signals`.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AttemptSignal"
+            }
           }
         }
       },
@@ -16670,6 +18076,170 @@
             ]
           }
         }
+      },
+      "BacktestBand": {
+        "type": "object",
+        "description": "Precision of one band in a backtest.",
+        "required": [
+          "band",
+          "suggested",
+          "correct",
+          "correctGroup",
+          "shown"
+        ],
+        "properties": {
+          "band": {
+            "$ref": "#/components/schemas/SuggestionBand"
+          },
+          "correct": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "correctGroup": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "precision": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "shown": {
+            "type": "boolean",
+            "description": "`suggested` reached 50."
+          },
+          "suggested": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "BacktestConfusion": {
+        "type": "object",
+        "description": "A frequent mistake in a backtest (group names).",
+        "required": [
+          "expected",
+          "suggested",
+          "count"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "expected": {
+            "type": "string"
+          },
+          "suggested": {
+            "type": "string"
+          }
+        }
+      },
+      "BacktestReport": {
+        "type": "object",
+        "description": "A backtest report.",
+        "required": [
+          "id",
+          "source",
+          "decisions",
+          "coverage",
+          "noSuggestion",
+          "bands",
+          "confusions",
+          "truncated",
+          "createdAt",
+          "createdBy"
+        ],
+        "properties": {
+          "bands": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BacktestBand"
+            }
+          },
+          "confusions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BacktestConfusion"
+            }
+          },
+          "coverage": {
+            "type": "number",
+            "format": "double"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "createdBy": {
+            "type": "string"
+          },
+          "decisions": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "from": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "noSuggestion": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "source": {
+            "$ref": "#/components/schemas/BacktestSource"
+          },
+          "to": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        }
+      },
+      "BacktestRequest": {
+        "type": "object",
+        "description": "Body of `POST .../analysis/backtest`.",
+        "properties": {
+          "days": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "1 to 730, default 180.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "BacktestSource": {
+        "type": "string",
+        "description": "Where the events of a backtest came from.",
+        "enum": [
+          "project",
+          "synthetic",
+          "events"
+        ]
       },
       "Board": {
         "type": "object",
@@ -19063,6 +20633,17 @@
               }
             ]
           },
+          "errorState": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ErrorState",
+                "description": "The state of the unique error."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "fingerprint": {
             "type": "string"
           },
@@ -19083,6 +20664,10 @@
               "null"
             ]
           },
+          "newOnBranch": {
+            "type": "boolean",
+            "description": "First seen on the launch's branch in this launch."
+          },
           "sampleResultId": {
             "type": "string",
             "format": "uuid"
@@ -19091,6 +20676,14 @@
             "$ref": "#/components/schemas/ClusterStatuses"
           }
         }
+      },
+      "ClusterDecided": {
+        "type": "string",
+        "description": "Who decided a cluster.",
+        "enum": [
+          "person",
+          "rule"
+        ]
       },
       "ClusterList": {
         "type": "object",
@@ -19122,6 +20715,130 @@
           "failed": {
             "type": "integer",
             "format": "int64"
+          }
+        }
+      },
+      "ClusterSuggestions": {
+        "type": "object",
+        "description": "A cluster of a launch with its suggestions.",
+        "required": [
+          "fingerprint",
+          "count",
+          "sampleResultId",
+          "isNew",
+          "newOnBranch",
+          "signals",
+          "suggestions"
+        ],
+        "properties": {
+          "commits": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CommitRange"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "decided": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ClusterDecided"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "defect": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Defect"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "errorState": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ErrorState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "fingerprint": {
+            "type": "string"
+          },
+          "isNew": {
+            "type": "boolean"
+          },
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "newOnBranch": {
+            "type": "boolean"
+          },
+          "noSuggestion": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/NoSuggestion"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sampleResultId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "signals": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AttemptSignalBrief"
+            }
+          },
+          "suggestions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Suggestion"
+            }
+          }
+        }
+      },
+      "CommitRange": {
+        "type": "object",
+        "description": "The commits between the last good launch and the first failing one.",
+        "properties": {
+          "compareUrl": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "first": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lastGood": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -19548,6 +21265,69 @@
         ],
         "description": "Answer of `POST /api/v1/tokens`: the token metadata and its value, shown only here."
       },
+      "CrossProjectSimilar": {
+        "type": "object",
+        "description": "`GET /api/v1/analytics/similar`.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CrossProjectSimilarItem"
+            }
+          }
+        }
+      },
+      "CrossProjectSimilarItem": {
+        "type": "object",
+        "description": "A similar failure in another readable project.",
+        "required": [
+          "project",
+          "resultId",
+          "launchId",
+          "launchNumber",
+          "name",
+          "score"
+        ],
+        "properties": {
+          "group": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "launchId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "launchNumber": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          },
+          "resultId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "score": {
+            "type": "number",
+            "format": "double"
+          }
+        }
+      },
       "CumulativePoint": {
         "type": "object",
         "description": "The launches of one value of a launch attribute, added up.",
@@ -19723,6 +21503,158 @@
             }
           }
         }
+      },
+      "DecisionEvent": {
+        "type": "object",
+        "description": "A person's triage decision as the memory and the backtest see it (also the line of the\nNDJSON export, where `by` is a hash).",
+        "required": [
+          "v",
+          "at",
+          "fingerprint",
+          "messageNorm",
+          "frames",
+          "defectTypeId",
+          "group",
+          "by",
+          "results"
+        ],
+        "properties": {
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "branch": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "by": {
+            "type": "string"
+          },
+          "defectTypeId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "envKey": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fingerprint": {
+            "type": "string"
+          },
+          "frames": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "group": {
+            "type": "string"
+          },
+          "messageNorm": {
+            "type": "string"
+          },
+          "previousTypeId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "results": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "testCaseId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "v": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Format version, 1.",
+            "minimum": 0
+          }
+        }
+      },
+      "DecisionSample": {
+        "type": "object",
+        "description": "The decision a suggestion learned from.",
+        "required": [
+          "decidedBy",
+          "decidedAt",
+          "confirmed",
+          "overridden"
+        ],
+        "properties": {
+          "confirmed": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "decidedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "decidedBy": {
+            "type": "string"
+          },
+          "launchId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "launchNumber": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "overridden": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "resultId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          }
+        }
+      },
+      "DecisionSource": {
+        "type": "string",
+        "description": "Who made a triage decision: a person, an AI agent, a rule or auto-apply.",
+        "enum": [
+          "user",
+          "ai",
+          "rule",
+          "auto"
+        ]
+      },
+      "DecisionVia": {
+        "type": "string",
+        "description": "The path a triage decision came through.",
+        "enum": [
+          "api",
+          "mcp",
+          "rp",
+          "rule",
+          "retro",
+          "suggestion",
+          "auto",
+          "undo"
+        ]
       },
       "Defect": {
         "type": "object",
@@ -20263,6 +22195,67 @@
           }
         }
       },
+      "DurationRegression": {
+        "type": "object",
+        "description": "A test that became slower.",
+        "required": [
+          "seriesId",
+          "testCaseId",
+          "name",
+          "p50RecentMs",
+          "p50BeforeMs",
+          "ratio",
+          "runs"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "p50BeforeMs": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "p50RecentMs": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "ratio": {
+            "type": "number",
+            "format": "double"
+          },
+          "runs": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "seriesId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "testCaseId": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "DurationRegressions": {
+        "type": "object",
+        "description": "`GET .../analytics/durations`.",
+        "required": [
+          "window",
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DurationRegression"
+            }
+          },
+          "window": {
+            "$ref": "#/components/schemas/AnalyticsWindow"
+          }
+        }
+      },
       "EnvironmentCounts": {
         "type": "object",
         "description": "The results of one environment of a launch.",
@@ -20312,6 +22305,385 @@
           "details": {},
           "message": {
             "type": "string"
+          }
+        }
+      },
+      "ErrorBranch": {
+        "type": "object",
+        "description": "An error on one branch.",
+        "required": [
+          "branch",
+          "firstSeenAt",
+          "lastSeenAt",
+          "occurrences",
+          "launchesSince"
+        ],
+        "properties": {
+          "branch": {
+            "type": "string"
+          },
+          "firstSeenAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lastLaunchId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "lastSeenAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "launchesSince": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "occurrences": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "ErrorDetail": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/ErrorSummary"
+          },
+          {
+            "type": "object",
+            "required": [
+              "aliasList",
+              "branchList",
+              "decisions",
+              "testList",
+              "timeline",
+              "window"
+            ],
+            "properties": {
+              "aliasList": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "branchList": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ErrorBranch"
+                }
+              },
+              "commits": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/CommitRange"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "decisions": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/MemoryEntry"
+                }
+              },
+              "mttrSeconds": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int64"
+              },
+              "testList": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ErrorTest"
+                }
+              },
+              "timeline": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ErrorTimelinePoint"
+                }
+              },
+              "window": {
+                "$ref": "#/components/schemas/AnalyticsWindow"
+              }
+            }
+          }
+        ],
+        "description": "`GET .../errors/{fingerprint}`."
+      },
+      "ErrorIssue": {
+        "type": "object",
+        "description": "The issue linked to an error.",
+        "required": [
+          "url",
+          "state"
+        ],
+        "properties": {
+          "key": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "$ref": "#/components/schemas/ErrorIssueState"
+          },
+          "url": {
+            "type": "string"
+          }
+        }
+      },
+      "ErrorIssueState": {
+        "type": "string",
+        "description": "State of the issue linked to an error.",
+        "enum": [
+          "open",
+          "closed",
+          "creating"
+        ]
+      },
+      "ErrorList": {
+        "type": "object",
+        "description": "`GET .../errors`.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ErrorSummary"
+            }
+          },
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "ErrorPatch": {
+        "type": "object",
+        "description": "Body of `PATCH .../errors/{fingerprint}`.",
+        "properties": {
+          "aliasOf": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The canonical error this one is an alias of; `null` splits it."
+          },
+          "state": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ErrorPatchState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "ErrorPatchState": {
+        "type": "string",
+        "description": "State a person may set on an error.",
+        "enum": [
+          "ignored",
+          "active"
+        ]
+      },
+      "ErrorSort": {
+        "type": "string",
+        "description": "Order of the errors list.",
+        "enum": [
+          "lastSeen",
+          "firstSeen",
+          "occurrences",
+          "launches"
+        ]
+      },
+      "ErrorState": {
+        "type": "string",
+        "description": "State of a unique error.",
+        "enum": [
+          "new",
+          "active",
+          "resolved",
+          "regressed",
+          "ignored"
+        ]
+      },
+      "ErrorSummary": {
+        "type": "object",
+        "description": "A unique error in a list.",
+        "required": [
+          "fingerprint",
+          "message",
+          "state",
+          "firstSeenAt",
+          "lastSeenAt",
+          "occurrences",
+          "tests",
+          "launches",
+          "branches",
+          "regressedCount",
+          "aliases",
+          "spark"
+        ],
+        "properties": {
+          "aliasOf": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "aliases": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "branches": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "fingerprint": {
+            "type": "string"
+          },
+          "firstSeenAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "group": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "issue": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ErrorIssue"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "lastSeenAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "launches": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "message": {
+            "type": "string"
+          },
+          "occurrences": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "regressedCount": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "spark": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "description": "14 daily counts, oldest first."
+          },
+          "state": {
+            "$ref": "#/components/schemas/ErrorState"
+          },
+          "stateAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "tests": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "ErrorTest": {
+        "type": "object",
+        "description": "A test an error occurs in.",
+        "required": [
+          "testCaseId",
+          "name",
+          "occurrences"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "occurrences": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "testCaseId": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "ErrorTimeline": {
+        "type": "object",
+        "description": "`GET .../errors/{fingerprint}/timeline`.",
+        "required": [
+          "window",
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ErrorTimelinePoint"
+            }
+          },
+          "window": {
+            "$ref": "#/components/schemas/AnalyticsWindow"
+          }
+        }
+      },
+      "ErrorTimelinePoint": {
+        "type": "object",
+        "description": "Occurrences of an error on one day.",
+        "required": [
+          "day",
+          "occurrences",
+          "launches"
+        ],
+        "properties": {
+          "day": {
+            "type": "string",
+            "format": "date"
+          },
+          "launches": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "occurrences": {
+            "type": "integer",
+            "format": "int64"
           }
         }
       },
@@ -20407,6 +22779,88 @@
             "format": "uuid"
           }
         }
+      },
+      "FailureAnalytics": {
+        "type": "object",
+        "description": "`GET .../analytics/failures`.",
+        "required": [
+          "window",
+          "groupBy",
+          "total",
+          "items"
+        ],
+        "properties": {
+          "groupBy": {
+            "$ref": "#/components/schemas/FailureGroupBy"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FailureGroup"
+            }
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "window": {
+            "$ref": "#/components/schemas/AnalyticsWindow"
+          }
+        }
+      },
+      "FailureGroup": {
+        "type": "object",
+        "description": "One group of failures.",
+        "required": [
+          "key",
+          "label",
+          "failures",
+          "tests",
+          "launches",
+          "share",
+          "trend"
+        ],
+        "properties": {
+          "failures": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "key": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "launches": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "share": {
+            "type": "number",
+            "format": "double"
+          },
+          "tests": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "trend": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        }
+      },
+      "FailureGroupBy": {
+        "type": "string",
+        "description": "Grouping of the failure analytics.",
+        "enum": [
+          "fingerprint",
+          "defectGroup",
+          "suite",
+          "env"
+        ]
       },
       "FastMockSettings": {
         "type": "object",
@@ -20507,6 +22961,124 @@
         },
         "additionalProperties": false
       },
+      "FlakyHint": {
+        "type": "object",
+        "description": "A likely cause of a flaky test.",
+        "required": [
+          "kind",
+          "confidence",
+          "summary",
+          "evidence",
+          "sample",
+          "actions"
+        ],
+        "properties": {
+          "actions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HintAction"
+            }
+          },
+          "confidence": {
+            "$ref": "#/components/schemas/HintConfidence"
+          },
+          "evidence": {
+            "type": "object"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/FlakyHintKind"
+          },
+          "sample": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "summary": {
+            "type": "string"
+          }
+        }
+      },
+      "FlakyHintBrief": {
+        "type": "object",
+        "description": "A hint in the flaky list.",
+        "required": [
+          "kind",
+          "confidence"
+        ],
+        "properties": {
+          "confidence": {
+            "$ref": "#/components/schemas/HintConfidence"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/FlakyHintKind"
+          }
+        }
+      },
+      "FlakyHintKind": {
+        "type": "string",
+        "description": "Kind of a flaky-cause hint.",
+        "enum": [
+          "timing",
+          "environment",
+          "order",
+          "retry",
+          "infra",
+          "time"
+        ]
+      },
+      "FlakyHints": {
+        "type": "object",
+        "description": "`GET .../flaky/{seriesId}/hints`.",
+        "required": [
+          "seriesId",
+          "windowRuns",
+          "failures",
+          "infraFailures",
+          "backend",
+          "hints"
+        ],
+        "properties": {
+          "backend": {
+            "$ref": "#/components/schemas/AnalyticsBackend"
+          },
+          "computedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "failures": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "hints": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FlakyHint"
+            }
+          },
+          "infraFailures": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "infraShare": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "seriesId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "windowRuns": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
       "FlakyItem": {
         "type": "object",
         "description": "A flaky test.",
@@ -20588,6 +23160,48 @@
           }
         }
       },
+      "FlakyTrend": {
+        "type": "object",
+        "description": "`GET .../analytics/flaky-trend`.",
+        "required": [
+          "window",
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FlakyTrendPoint"
+            }
+          },
+          "window": {
+            "$ref": "#/components/schemas/AnalyticsWindow"
+          }
+        }
+      },
+      "FlakyTrendPoint": {
+        "type": "object",
+        "description": "Flaky results on one day.",
+        "required": [
+          "day",
+          "flaky",
+          "runs"
+        ],
+        "properties": {
+          "day": {
+            "type": "string",
+            "format": "date"
+          },
+          "flaky": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "runs": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
       "FolderCounts": {
         "type": "object",
         "description": "Cases in a folder and its subfolders (not archived).",
@@ -20661,6 +23275,140 @@
         },
         "additionalProperties": false
       },
+      "GateHistory": {
+        "type": "object",
+        "description": "`GET .../gates/history`.",
+        "required": [
+          "items",
+          "gates",
+          "branches"
+        ],
+        "properties": {
+          "branches": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GateHistoryBranch"
+            }
+          },
+          "gates": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GateHistoryGate"
+            }
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GateHistoryItem"
+            }
+          },
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "GateHistoryBranch": {
+        "type": "object",
+        "description": "Evaluations per branch.",
+        "required": [
+          "branch",
+          "evaluations",
+          "failed"
+        ],
+        "properties": {
+          "branch": {
+            "type": "string"
+          },
+          "evaluations": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "failed": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "GateHistoryGate": {
+        "type": "object",
+        "description": "Aggregates of one gate over the window.",
+        "required": [
+          "gate",
+          "evaluations",
+          "failed",
+          "flips"
+        ],
+        "properties": {
+          "evaluations": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "failed": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "flips": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "gate": {
+            "type": "string"
+          },
+          "meanSecondsToGreen": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "topFailingMetric": {
+            "$ref": "#/components/schemas/Metric"
+          }
+        }
+      },
+      "GateHistoryItem": {
+        "type": "object",
+        "description": "One gate evaluation in the history.",
+        "required": [
+          "launchId",
+          "launchNumber",
+          "evaluatedAt",
+          "status",
+          "failed"
+        ],
+        "properties": {
+          "branch": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "evaluatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "failed": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GateRuleOutcome"
+            }
+          },
+          "launchId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "launchNumber": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "status": {
+            "$ref": "#/components/schemas/GateStatus"
+          }
+        }
+      },
       "GateReport": {
         "type": "object",
         "description": "The gate result of a launch: `pending` while the launch runs or uploads are processed,\notherwise `failed` when a rule of an enabled gate that applies to the branch does not hold.",
@@ -20718,6 +23466,135 @@
         },
         "additionalProperties": false
       },
+      "GateRuleOutcome": {
+        "type": "object",
+        "description": "A failed rule of a gate evaluation.",
+        "required": [
+          "gate",
+          "metric",
+          "expected"
+        ],
+        "properties": {
+          "actual": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "expected": {
+            "type": "number",
+            "format": "double"
+          },
+          "gate": {
+            "type": "string"
+          },
+          "metric": {
+            "$ref": "#/components/schemas/Metric"
+          }
+        }
+      },
+      "GateSimulate": {
+        "type": "object",
+        "description": "Body of `POST .../gates/simulate`.",
+        "required": [
+          "gate"
+        ],
+        "properties": {
+          "branch": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "gate": {
+            "$ref": "#/components/schemas/Gate"
+          },
+          "launches": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "1 to 200, default 50.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "GateSimulation": {
+        "type": "object",
+        "description": "`POST .../gates/simulate`.",
+        "required": [
+          "evaluated",
+          "failed",
+          "skipped",
+          "items"
+        ],
+        "properties": {
+          "evaluated": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "failed": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GateSimulationItem"
+            }
+          },
+          "skipped": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "GateSimulationItem": {
+        "type": "object",
+        "description": "A simulated evaluation of one launch.",
+        "required": [
+          "launchId",
+          "launchNumber",
+          "createdAt",
+          "status",
+          "results"
+        ],
+        "properties": {
+          "branch": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "launchId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "launchNumber": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RuleResult"
+            }
+          },
+          "status": {
+            "$ref": "#/components/schemas/GateStatus"
+          }
+        }
+      },
       "GateStatus": {
         "type": "string",
         "description": "`passed`, `failed` or `pending`.",
@@ -20726,6 +23603,29 @@
           "failed",
           "pending"
         ]
+      },
+      "GateView": {
+        "type": "object",
+        "description": "State of the analysis replica gate.",
+        "required": [
+          "gateOpen",
+          "mode"
+        ],
+        "properties": {
+          "gateOpen": {
+            "type": "boolean"
+          },
+          "mode": {
+            "$ref": "#/components/schemas/TmGateMode"
+          },
+          "settleUntil": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        }
       },
       "GrantableRole": {
         "type": "object",
@@ -20825,6 +23725,24 @@
             "format": "date"
           }
         }
+      },
+      "HintAction": {
+        "type": "string",
+        "description": "What a hint suggests doing.",
+        "enum": [
+          "mute",
+          "issue",
+          "rule"
+        ]
+      },
+      "HintConfidence": {
+        "type": "string",
+        "description": "Confidence of a flaky-cause hint.",
+        "enum": [
+          "low",
+          "medium",
+          "high"
+        ]
       },
       "HistoryEntry": {
         "type": "object",
@@ -22411,6 +25329,107 @@
         },
         "additionalProperties": false
       },
+      "LaunchSteps": {
+        "type": "object",
+        "description": "The steps of the analysis of a launch, as recorded.",
+        "properties": {
+          "errors": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/StepOutcome"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "flakyHints": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/StepOutcome"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "logRules": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/StepOutcome"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "signals": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/StepOutcome"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "suggestions": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/StepOutcome"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "LaunchSuggestions": {
+        "type": "object",
+        "description": "`GET .../launches/{id}/suggestions`.",
+        "required": [
+          "launchId",
+          "state",
+          "clusters",
+          "truncated"
+        ],
+        "properties": {
+          "clusters": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ClusterSuggestions"
+            }
+          },
+          "computedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "launchId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "state": {
+            "$ref": "#/components/schemas/LaunchSuggestionsState"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        }
+      },
+      "LaunchSuggestionsState": {
+        "type": "string",
+        "description": "State of the suggestions of a launch.",
+        "enum": [
+          "disabled",
+          "pending",
+          "ready",
+          "partial"
+        ]
+      },
       "LaunchVcs": {
         "type": "object",
         "description": "Version control metadata of a launch.",
@@ -22717,6 +25736,16 @@
           }
         }
       },
+      "LogStreamName": {
+        "type": "string",
+        "description": "A log stream.",
+        "enum": [
+          "stdout",
+          "stderr",
+          "log",
+          "step"
+        ]
+      },
       "ManualClose": {
         "type": "object",
         "description": "Body of `POST /launches/{id}/manual/close`.",
@@ -22966,6 +25995,128 @@
           }
         }
       },
+      "MemoryEntry": {
+        "type": "object",
+        "description": "A memory entry as the API shows it.",
+        "required": [
+          "fingerprint",
+          "defectTypeId",
+          "group",
+          "defectName",
+          "messageNorm",
+          "frames",
+          "confirmed",
+          "overridden",
+          "testCases",
+          "branches",
+          "environments",
+          "firstDecidedAt",
+          "lastDecidedAt",
+          "lastDecidedBy"
+        ],
+        "properties": {
+          "branches": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "comment": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "confirmed": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "defectName": {
+            "type": "string"
+          },
+          "defectTypeId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "environments": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "fingerprint": {
+            "type": "string"
+          },
+          "firstDecidedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "frames": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "group": {
+            "type": "string"
+          },
+          "issueKey": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "issueUrl": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lastDecidedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lastDecidedBy": {
+            "type": "string"
+          },
+          "messageNorm": {
+            "type": "string"
+          },
+          "overridden": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "sample": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/DecisionSample"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "testCases": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "MemoryList": {
+        "type": "object",
+        "description": "`GET .../analysis/memory`.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MemoryEntry"
+            }
+          }
+        }
+      },
       "MergeCounts": {
         "type": "object",
         "description": "What a merge did.",
@@ -23059,7 +26210,10 @@
           "newFailures",
           "passRate",
           "flaky",
-          "duration"
+          "duration",
+          "newErrors",
+          "toInvestigate",
+          "total"
         ]
       },
       "MockInteraction": {
@@ -23168,6 +26322,62 @@
           "truncated": {
             "type": "boolean",
             "description": "More journal entries than were read could belong to the window."
+          }
+        }
+      },
+      "MttrBucket": {
+        "type": "object",
+        "description": "Resolved errors up to `le` seconds.",
+        "required": [
+          "le",
+          "count"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "le": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "MttrStats": {
+        "type": "object",
+        "description": "`GET .../analytics/mttr`.",
+        "required": [
+          "window",
+          "resolved",
+          "buckets"
+        ],
+        "properties": {
+          "buckets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MttrBucket"
+            }
+          },
+          "p50Seconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "p90Seconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "resolved": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "window": {
+            "$ref": "#/components/schemas/AnalyticsWindow"
           }
         }
       },
@@ -23507,6 +26717,16 @@
             "description": "Project keys, or `[\"*\"]` for every project including later ones."
           }
         }
+      },
+      "NoSuggestion": {
+        "type": "string",
+        "description": "Why a cluster has no suggestion.",
+        "enum": [
+          "newError",
+          "noHistory",
+          "belowThreshold",
+          "decided"
+        ]
       },
       "Notification": {
         "type": "object",
@@ -24773,6 +27993,48 @@
         },
         "additionalProperties": false
       },
+      "PatternCount": {
+        "type": "object",
+        "description": "Results and launches marked with a pattern.",
+        "required": [
+          "pattern",
+          "results",
+          "launches",
+          "lastSeenAt"
+        ],
+        "properties": {
+          "lastSeenAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "launches": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "pattern": {
+            "type": "string"
+          },
+          "results": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "PatternCounts": {
+        "type": "object",
+        "description": "`GET .../analysis/patterns`.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PatternCount"
+            }
+          }
+        }
+      },
       "PatternPoint": {
         "type": "object",
         "required": [
@@ -25155,6 +28417,80 @@
           }
         }
       },
+      "Portfolio": {
+        "type": "object",
+        "description": "`GET /api/v1/analytics/portfolio`.",
+        "required": [
+          "window",
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PortfolioProject"
+            }
+          },
+          "window": {
+            "$ref": "#/components/schemas/AnalyticsWindow"
+          }
+        }
+      },
+      "PortfolioProject": {
+        "type": "object",
+        "description": "A project in the portfolio.",
+        "required": [
+          "key",
+          "name",
+          "launches",
+          "failures",
+          "newErrors",
+          "regressedErrors",
+          "flakyTests"
+        ],
+        "properties": {
+          "failures": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "flakyTests": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "key": {
+            "type": "string"
+          },
+          "launches": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "mttrP50Seconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "name": {
+            "type": "string"
+          },
+          "newErrors": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "passRate": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "regressedErrors": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
       "PreviewBody": {
         "type": "object",
         "required": [
@@ -25237,6 +28573,31 @@
         "type": "object",
         "description": "Settings of a project. The analysis parts (`flaky`, `retention`, `rollup`) are typed here;\nthe integration parts (`gates`, `notifications`, `issueTrackers`, `fastmock`, and any other\nkey such as `vcs`) are kept as given and validated by the integrations feature.",
         "properties": {
+          "analysis": {
+            "$ref": "#/components/schemas/AnalysisSettings",
+            "description": "FastProof Analysis of the project (skipped when the default).",
+            "default": {
+              "enabled": true,
+              "memoryDays": 365,
+              "resolveAfterLaunches": 10,
+              "suggest": {
+                "minScore": 0.4,
+                "maxCandidates": 3
+              },
+              "autoApply": {
+                "enabled": false,
+                "bands": [
+                  "same"
+                ]
+              },
+              "backtest": {
+                "nightly": true
+              },
+              "flaky": {
+                "hintMinScore": 0.2
+              }
+            }
+          },
           "caseReview": {
             "$ref": "#/components/schemas/CaseReviewSettings",
             "description": "Version review of cases and shared steps (skipped when the default, review off).",
@@ -25611,6 +28972,15 @@
           }
         }
       },
+      "QueueReason": {
+        "type": "string",
+        "description": "Why a launch is in the analysis queue.",
+        "enum": [
+          "finished",
+          "recompute",
+          "backfill"
+        ]
+      },
       "Rejected": {
         "type": "object",
         "description": "A result that was not accepted.",
@@ -25636,11 +29006,17 @@
         "required": [
           "instance",
           "tmLevel",
+          "analysisLevel",
           "version",
           "startedAt",
           "seenAt"
         ],
         "properties": {
+          "analysisLevel": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The analysis level (0 for builds before FastProof Analysis)."
+          },
           "instance": {
             "type": "string"
           },
@@ -25667,9 +29043,14 @@
         "required": [
           "gateOpen",
           "mode",
-          "replicas"
+          "replicas",
+          "analysis"
         ],
         "properties": {
+          "analysis": {
+            "$ref": "#/components/schemas/GateView",
+            "description": "The analysis gate (`FASTPROOF_ANALYSIS_GATE*`)."
+          },
           "gateOpen": {
             "type": "boolean"
           },
@@ -26945,11 +30326,45 @@
                 "items": {
                   "$ref": "#/components/schemas/ParameterView"
                 }
+              },
+              "patterns": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ResultPattern"
+                },
+                "description": "Log pattern marks of the result."
               }
             }
           }
         ],
         "description": "A result with its attempts, steps and history."
+      },
+      "ResultPattern": {
+        "type": "object",
+        "description": "A pattern mark on a result.",
+        "required": [
+          "pattern",
+          "ruleId",
+          "attempt",
+          "excerpt"
+        ],
+        "properties": {
+          "attempt": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "excerpt": {
+            "type": "string",
+            "description": "At most 300 characters."
+          },
+          "pattern": {
+            "type": "string"
+          },
+          "ruleId": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
       },
       "ResultSource": {
         "type": "string",
@@ -27195,6 +30610,57 @@
             "description": "Launches older than this many days are deleted (after their history is rolled up).",
             "default": 90,
             "minimum": 0
+          }
+        }
+      },
+      "RetryCost": {
+        "type": "object",
+        "description": "Time spent on attempts that did not become final, per suite.",
+        "required": [
+          "suite",
+          "wastedMs",
+          "retries",
+          "tests"
+        ],
+        "properties": {
+          "retries": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "suite": {
+            "type": "string"
+          },
+          "tests": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "wastedMs": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "RetryCosts": {
+        "type": "object",
+        "description": "`GET .../analytics/retries`.",
+        "required": [
+          "window",
+          "totalWastedMs",
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RetryCost"
+            }
+          },
+          "totalWastedMs": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "window": {
+            "$ref": "#/components/schemas/AnalyticsWindow"
           }
         }
       },
@@ -27619,9 +31085,20 @@
           "name": {
             "type": "string"
           },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the rule is not evaluated (its stored conditions or action are not readable by\nthis version)."
+          },
           "order": {
             "type": "integer",
             "format": "int32"
+          },
+          "phase": {
+            "$ref": "#/components/schemas/RulePhase",
+            "description": "When the rule is evaluated (read only, derived from `match` and `action`)."
           },
           "updatedAt": {
             "type": "string",
@@ -27672,6 +31149,13 @@
                 "type": "null"
               }
             ]
+          },
+          "pattern": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Mark the result with this log pattern (`^[a-z0-9][a-z0-9._-]{0,63}$`; evaluated after\nthe launch, combinable with the other effects)."
           }
         },
         "additionalProperties": false
@@ -27691,6 +31175,52 @@
           }
         }
       },
+      "RuleLogMatch": {
+        "type": "object",
+        "description": "`match.log` of a rule: a pattern on the tail of failed attempts' logs.",
+        "properties": {
+          "contains": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lastBytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "1024 to 1048576.",
+            "minimum": 0
+          },
+          "levels": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/LogLevel"
+            }
+          },
+          "regex": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "streams": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/LogStreamName"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
       "RuleMatch": {
         "type": "object",
         "description": "Conditions of a rule; all given ones must hold.",
@@ -27708,11 +31238,32 @@
               "null"
             ]
           },
+          "log": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RuleLogMatch",
+                "description": "A pattern on the tail of the logs of failed attempts (evaluated after the launch)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "messageRegex": {
             "type": [
               "string",
               "null"
             ]
+          },
+          "signals": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/RuleSignalMatch"
+            },
+            "description": "Signals the result must have (1 to 5; evaluated after the launch)."
           },
           "statuses": {
             "type": [
@@ -27786,6 +31337,14 @@
         },
         "additionalProperties": false
       },
+      "RulePhase": {
+        "type": "string",
+        "description": "When a rule is evaluated.",
+        "enum": [
+          "ingest",
+          "afterLaunch"
+        ]
+      },
       "RuleResult": {
         "type": "object",
         "description": "Outcome of one rule.",
@@ -27832,6 +31391,25 @@
             "$ref": "#/components/schemas/GateRule"
           }
         }
+      },
+      "RuleSignalMatch": {
+        "type": "object",
+        "description": "`match.signals[]` of a rule: a stored signal of this source (and kind) on the result.",
+        "required": [
+          "source"
+        ],
+        "properties": {
+          "kind": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "$ref": "#/components/schemas/SignalSource"
+          }
+        },
+        "additionalProperties": false
       },
       "RuleTest": {
         "type": "object",
@@ -29451,6 +33029,140 @@
         },
         "additionalProperties": false
       },
+      "SignalConfidence": {
+        "type": "string",
+        "description": "How a signal was matched to its attempt.",
+        "enum": [
+          "exact",
+          "window"
+        ]
+      },
+      "SignalItem": {
+        "type": "object",
+        "description": "One pushed signal (`source` is `grid`, `ci` or `k8s`; `mock` signals are written by the\nserver only).",
+        "required": [
+          "source",
+          "kind",
+          "at"
+        ],
+        "properties": {
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "detail": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Flat string, number or boolean values; at most 4 KiB serialized."
+          },
+          "kind": {
+            "type": "string"
+          },
+          "launchId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "resultClientId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "$ref": "#/components/schemas/SignalSource"
+          },
+          "traceId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "SignalPush": {
+        "type": "object",
+        "description": "Body of `POST .../signals`.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SignalItem"
+            },
+            "description": "1 to 1000."
+          }
+        },
+        "additionalProperties": false
+      },
+      "SignalRejection": {
+        "type": "object",
+        "description": "A refused item of a push.",
+        "required": [
+          "index",
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "index": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "SignalSource": {
+        "type": "string",
+        "description": "Where a signal about a test attempt comes from.",
+        "enum": [
+          "mock",
+          "grid",
+          "ci",
+          "k8s"
+        ]
+      },
+      "SignalsAccepted": {
+        "type": "object",
+        "description": "`POST .../signals`.",
+        "required": [
+          "accepted",
+          "matched",
+          "pending",
+          "rejected"
+        ],
+        "properties": {
+          "accepted": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "matched": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "pending": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "rejected": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SignalRejection"
+            }
+          }
+        }
+      },
       "SimilarList": {
         "type": "object",
         "description": "Similar failures of a result.",
@@ -29503,6 +33215,52 @@
             "type": "number",
             "format": "double",
             "description": "1 for the same fingerprint, else the text similarity of the messages (0..1)."
+          }
+        }
+      },
+      "SlowStep": {
+        "type": "object",
+        "description": "A slow step name.",
+        "required": [
+          "name",
+          "p50Ms",
+          "p95Ms",
+          "count"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "name": {
+            "type": "string"
+          },
+          "p50Ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "p95Ms": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "SlowSteps": {
+        "type": "object",
+        "description": "`GET .../analytics/slow-steps`.",
+        "required": [
+          "window",
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SlowStep"
+            }
+          },
+          "window": {
+            "$ref": "#/components/schemas/AnalyticsWindow"
           }
         }
       },
@@ -29586,6 +33344,28 @@
           "skipped",
           "unknown"
         ]
+      },
+      "StepOutcome": {
+        "type": "object",
+        "description": "What one step of the analysis of a launch did.",
+        "required": [
+          "status",
+          "millis",
+          "detail"
+        ],
+        "properties": {
+          "detail": {
+            "type": "object"
+          },
+          "millis": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "status": {
+            "$ref": "#/components/schemas/AnalysisStepStatus"
+          }
+        }
       },
       "StepStatus": {
         "type": "string",
@@ -29677,6 +33457,237 @@
         "enum": [
           "rows",
           "cells"
+        ]
+      },
+      "Suggestion": {
+        "type": "object",
+        "description": "A triage suggestion for a cluster.",
+        "required": [
+          "id",
+          "rank",
+          "band",
+          "score",
+          "defectTypeId",
+          "group",
+          "defectName",
+          "signal",
+          "why",
+          "state",
+          "ruleDraftOffered"
+        ],
+        "properties": {
+          "band": {
+            "$ref": "#/components/schemas/SuggestionBand"
+          },
+          "comment": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "defectName": {
+            "type": "string"
+          },
+          "defectTypeId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "group": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "issueKey": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "issueUrl": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "precision": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "The band's precision in the latest backtest with at least 50 decisions in it."
+          },
+          "rank": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "ruleDraftOffered": {
+            "type": "boolean"
+          },
+          "ruleId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "sample": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/DecisionSample"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "score": {
+            "type": "number",
+            "format": "double"
+          },
+          "signal": {
+            "$ref": "#/components/schemas/SuggestionSignal"
+          },
+          "state": {
+            "$ref": "#/components/schemas/SuggestionState"
+          },
+          "why": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WhyItem"
+            }
+          }
+        }
+      },
+      "SuggestionAccept": {
+        "type": "object",
+        "description": "Body of `POST .../suggestions/{id}/accept`.",
+        "properties": {
+          "applyTo": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SuggestionApplyTo"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "comment": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "issue": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TriageIssue"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "resultIds": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "With `applyTo: results`, at most 1000 of the cluster."
+          }
+        },
+        "additionalProperties": false
+      },
+      "SuggestionAccepted": {
+        "type": "object",
+        "description": "Outcome of an accepted suggestion.",
+        "required": [
+          "suggestionId",
+          "updated",
+          "skipped"
+        ],
+        "properties": {
+          "batchId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "skipped": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "suggestionId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "updated": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "SuggestionApplyTo": {
+        "type": "string",
+        "description": "What an accepted suggestion applies to.",
+        "enum": [
+          "cluster",
+          "results"
+        ]
+      },
+      "SuggestionBand": {
+        "type": "string",
+        "description": "Band of a suggestion: `same` (the same error decided the same way before), `high`, `low`.",
+        "enum": [
+          "same",
+          "high",
+          "low"
+        ]
+      },
+      "SuggestionReject": {
+        "type": "object",
+        "description": "Body of `POST .../suggestions/{id}/reject`.",
+        "properties": {
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "At most 500 bytes."
+          }
+        },
+        "additionalProperties": false
+      },
+      "SuggestionSignal": {
+        "type": "string",
+        "description": "The family of the largest contribution to a suggestion's score.",
+        "enum": [
+          "memory",
+          "similar",
+          "rule",
+          "history",
+          "signal"
+        ]
+      },
+      "SuggestionState": {
+        "type": "string",
+        "description": "State of a suggestion.",
+        "enum": [
+          "open",
+          "accepted",
+          "rejected",
+          "superseded",
+          "expired"
         ]
       },
       "SuggestionStatus": {
@@ -30990,6 +35001,105 @@
           }
         }
       },
+      "TriageDecision": {
+        "type": "object",
+        "description": "A row of the decision journal.",
+        "required": [
+          "id",
+          "batchId",
+          "resultId",
+          "launchId",
+          "via",
+          "source",
+          "by",
+          "at",
+          "before",
+          "after",
+          "undoable"
+        ],
+        "properties": {
+          "after": {
+            "$ref": "#/components/schemas/TriageState"
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "batchId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "before": {
+            "$ref": "#/components/schemas/TriageState"
+          },
+          "by": {
+            "type": "string"
+          },
+          "fingerprint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "launchId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "resultId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "revertsBatch": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "source": {
+            "$ref": "#/components/schemas/DecisionSource"
+          },
+          "suggestionId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "undoable": {
+            "type": "boolean",
+            "description": "The batch is not a rule batch and at least one of its results is still at its `after`."
+          },
+          "via": {
+            "$ref": "#/components/schemas/DecisionVia"
+          }
+        }
+      },
+      "TriageHistory": {
+        "type": "object",
+        "description": "`GET .../triage/history`: rows of a result (newest first) or of a batch.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TriageDecision"
+            }
+          },
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
       "TriageIssue": {
         "type": "object",
         "description": "Issue of a triage: a URL, or a key that a project issue tracker turns into one.",
@@ -31016,6 +35126,14 @@
           "updated"
         ],
         "properties": {
+          "batchId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "The journal batch of the changes (`null` when nothing changed); `POST .../triage/undo`\ntakes it."
+          },
           "updated": {
             "type": "integer",
             "format": "int64",
@@ -31100,6 +35218,108 @@
           }
         },
         "additionalProperties": false
+      },
+      "TriageState": {
+        "type": "object",
+        "description": "The triage state of a result before or after a decision.",
+        "required": [
+          "muted"
+        ],
+        "properties": {
+          "defect": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Defect"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "muteUntil": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "muted": {
+            "type": "boolean"
+          }
+        }
+      },
+      "TriageUndo": {
+        "type": "object",
+        "description": "Body of `POST .../triage/undo`.",
+        "required": [
+          "batchId"
+        ],
+        "properties": {
+          "batchId": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "additionalProperties": false
+      },
+      "TriageUndoResult": {
+        "type": "object",
+        "description": "Outcome of an undo: the new batch (none when nothing was restored).",
+        "required": [
+          "reverts",
+          "restored",
+          "skipped"
+        ],
+        "properties": {
+          "batchId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "restored": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "reverts": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "skipped": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TriageUndoSkip"
+            }
+          }
+        }
+      },
+      "TriageUndoSkip": {
+        "type": "object",
+        "description": "A result an undo left as it is.",
+        "required": [
+          "resultId",
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/TriageUndoSkipCode"
+          },
+          "resultId": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "TriageUndoSkipCode": {
+        "type": "string",
+        "description": "Why a result of an undone batch was left as it is.",
+        "enum": [
+          "changed_since",
+          "result_gone",
+          "launch_merged"
+        ]
       },
       "UnknownFieldValues": {
         "type": "string",
@@ -31373,6 +35593,49 @@
           "bulk"
         ]
       },
+      "WhyItem": {
+        "type": "object",
+        "description": "A contribution to a suggestion's score.",
+        "required": [
+          "signal",
+          "weight",
+          "detail"
+        ],
+        "properties": {
+          "detail": {
+            "type": "string"
+          },
+          "signal": {
+            "$ref": "#/components/schemas/WhySignal"
+          },
+          "weight": {
+            "type": "number",
+            "format": "double",
+            "description": "The added score; for `age` the factor minus 1."
+          }
+        }
+      },
+      "WhySignal": {
+        "type": "string",
+        "description": "One reason in the \"why\" of a suggestion.",
+        "enum": [
+          "sameFingerprint",
+          "message",
+          "frames",
+          "testCase",
+          "environment",
+          "branch",
+          "confirmed",
+          "overridden",
+          "age",
+          "conflict",
+          "rule",
+          "history",
+          "mock",
+          "grid",
+          "infra"
+        ]
+      },
       "WidgetBucket": {
         "type": "string",
         "enum": [
@@ -31579,6 +35842,14 @@
           }
         ]
       },
+      "WidgetPatterns": {
+        "type": "string",
+        "description": "What the `PopularPatterns` widget counts.",
+        "enum": [
+          "fingerprints",
+          "logPatterns"
+        ]
+      },
       "WidgetResult": {
         "oneOf": [
           {
@@ -31694,6 +35965,17 @@
             "format": "int32",
             "description": "Launches or list items, 1 to 50 (default 10; lists of tests hold at most 10).",
             "minimum": 0
+          },
+          "patterns": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/WidgetPatterns",
+                "description": "What the popular-patterns widget counts (fingerprints by default)."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "view": {
             "oneOf": [
@@ -31835,6 +36117,14 @@
     {
       "name": "requirements",
       "description": "Requirements, their links to cases, and coverage"
+    },
+    {
+      "name": "analytics",
+      "description": "Failure trends and portfolio, on ClickHouse with a PostgreSQL fallback"
+    },
+    {
+      "name": "signals",
+      "description": "Signals from grids, CI and Kubernetes about test attempts"
     }
   ]
 }

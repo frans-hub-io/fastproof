@@ -309,13 +309,20 @@ export function analyzeDetail(project: string, r: ResultDetail): ResultDetail {
   return { ...a, muteReason: a.muted ? reason : null };
 }
 
+/** The results a triage request names. */
+export function triageTargets(body: TriageRequest): ResultSummary[] {
+  if (body.resultIds?.length) return body.resultIds.map((id) => resultDetail(id)).filter((r): r is ResultDetail => !!r);
+  if (body.launchId && body.fingerprint) return launchResults(body.launchId).filter((r) => r.fingerprint === body.fingerprint);
+  return [];
+}
+
+/** Puts back the triage state of a result (the mock undo). */
+export function restoreTriage(id: string, s: { defect: DefectInfo | null; muted: boolean; muteUntil: string | null }): void {
+  state.triage.set(id, { defect: s.defect, muted: s.muted, muteUntil: s.muteUntil, muteReason: s.muted ? 'restored by undo' : null });
+}
+
 export function triage(project: string, body: TriageRequest): number {
-  let targets: ResultSummary[] = [];
-  if (body.resultIds?.length) {
-    targets = body.resultIds.map((id) => resultDetail(id)).filter((r): r is ResultDetail => !!r);
-  } else if (body.launchId && body.fingerprint) {
-    targets = launchResults(body.launchId).filter((r) => r.fingerprint === body.fingerprint);
-  }
+  const targets = triageTargets(body);
   for (const r of targets) {
     const cur = analyze(project, r);
     const next: TriageState = { ...state.triage.get(r.id) };
@@ -649,11 +656,15 @@ export function gateOf(project: string, launch: Launch): GateResult {
           ? executed > 0
             ? Math.round((launch.counts.passed / executed) * 1000) / 10
             : 0
-          : r.metric === 'newFailures'
+          : r.metric === 'newFailures' || r.metric === 'newErrors'
             ? newFailures
             : r.metric === 'duration'
               ? Math.round((launch.durationMs ?? 0) / 1000)
-              : launch.counts[r.metric];
+              : r.metric === 'toInvestigate'
+                ? launch.counts.failed + launch.counts.broken
+                : r.metric === 'total'
+                  ? launch.counts.total - launch.counts.skipped
+                  : launch.counts[r.metric];
       const ok = r.op === 'gt' ? actual > r.value : r.op === 'gte' ? actual >= r.value : r.op === 'lt' ? actual < r.value : actual <= r.value;
       results.push({ gate: g.name, rule: r, actual, expected: r.value, ok });
     }

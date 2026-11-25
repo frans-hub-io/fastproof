@@ -12,9 +12,12 @@
 //!   head with requested changes waits for votes again (`pending`);
 //! - an import with `imports: bypass` approves the new head;
 //! - votes are on the head only: any `request_changes` → `changes_requested`, else `approvals`
-//!   distinct approvers → `approved` (`approved_version` = head), else `pending`.
+//!   distinct approvers → `approved` (`approved_version` = head), else `pending`;
+//! - a change that contains AI content its AI creator wrote (an AI draft's own versions) needs
+//!   one approval more unless `allowSelfApproval`: the creator is an agent, and the person who
+//!   runs the agent may be one of the approvers ([`required_approvals`]).
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use base64::Engine;
 use chrono::{DateTime, Utc};
@@ -572,6 +575,45 @@ fn versions_table(kind: ReviewKind) -> (&'static str, &'static str) {
     }
 }
 
+/// Approvals a head needs: the policy's count, one more when the change under review holds AI
+/// content written by the draft's AI creator ([`ai_written`]) and self approval is not allowed.
+/// An agent token's name says nothing about the person who runs the agent, so that person may
+/// approve as a second identity; the extra approval keeps two people other than the agent.
+pub fn required_approvals(policy: &CaseReviewSettings, ai_written: bool) -> i32 {
+    if ai_written && !policy.allow_self_approval {
+        policy.approvals + 1
+    } else {
+        policy.approvals
+    }
+}
+
+/// The objects among `ids` whose change under review (after the approved version, the head
+/// always) contains a version with source `ai` written by the creator of an AI-origin object:
+/// the AI draft's own content. Versions of an accepted suggestion are written by the person
+/// who accepted it and do not count.
+async fn ai_written(
+    conn: &mut PgConnection,
+    kind: ReviewKind,
+    ids: &[Uuid],
+) -> sqlx::Result<HashSet<Uuid>> {
+    if ids.is_empty() {
+        return Ok(HashSet::new());
+    }
+    let (versions, col) = versions_table(kind);
+    let rows: Vec<Uuid> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "select o.id from {} o where o.id = any($1) and o.origin = 'ai' and exists ( \
+           select 1 from {versions} v where v.{col} = o.id \
+             and v.version > least(coalesce(o.approved_version, 0), o.version - 1) \
+             and v.version <= o.version and v.source = 'ai' \
+             and lower(v.created_by) = lower(o.created_by))",
+        table(kind)
+    )))
+    .bind(ids)
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(rows.into_iter().collect())
+}
+
 /// The state the votes on a head give it.
 fn decide(votes: &HashMap<String, ReviewDecision>, required: i32) -> ReviewState {
     if votes.values().any(|d| *d == ReviewDecision::RequestChanges) {
@@ -767,6 +809,12 @@ async fn apply_votes(
     if subjects.is_empty() {
         return Ok(Vec::new());
     }
+    let ai = ai_written(
+        conn,
+        kind,
+        &subjects.iter().map(|s| s.id).collect::<Vec<_>>(),
+    )
+    .await?;
     let heads: Vec<(Uuid, i32)> = subjects.iter().map(|s| (s.id, s.version)).collect();
     let (ids, versions): (Vec<Uuid>, Vec<i32>) = heads.iter().copied().unzip();
     sqlx::query(
@@ -789,7 +837,7 @@ async fn apply_votes(
     for s in subjects {
         let state = decide(
             votes.get(&s.id).unwrap_or(&HashMap::new()),
-            policy.approvals,
+            required_approvals(policy, ai.contains(&s.id)),
         );
         let approved = if state == ReviewState::Approved {
             Some(s.version)
@@ -1123,6 +1171,10 @@ impl Store {
                     .count() as i64
             })
             .unwrap_or(0);
+        let required = required_approvals(
+            &policy,
+            ai_written(&mut conn, kind, &[s.id]).await?.contains(&s.id),
+        );
         let why_not = if can_review {
             refusal(&policy, &s, &changed_by, me, s.version).map(|r| r.code().to_string())
         } else {
@@ -1145,7 +1197,7 @@ impl Store {
                 review_state: s.review_state,
                 author,
                 approvals,
-                required: policy.approvals,
+                required,
                 votes,
                 can_vote: why_not.is_none(),
                 why_not,
@@ -1401,6 +1453,8 @@ impl Store {
                 .map(|r| (r.id, r.item.head_version))
                 .collect();
             let votes = head_votes(&mut conn, kind, &heads).await?;
+            let ids: Vec<Uuid> = heads.iter().map(|h| h.0).collect();
+            let ai = ai_written(&mut conn, kind, &ids).await?;
             for r in rows.iter_mut().filter(|r| r.item.kind == kind) {
                 r.item.approvals = votes
                     .get(&r.id)
@@ -1410,7 +1464,7 @@ impl Store {
                             .count() as i64
                     })
                     .unwrap_or(0);
-                r.item.required = policy.approvals;
+                r.item.required = required_approvals(&policy, ai.contains(&r.id));
             }
         }
         Ok(ReviewQueue {
@@ -1624,6 +1678,20 @@ mod tests {
             next_state(Some((None, None, 5)), 6, true, true),
             (Some(Approved), Some(6))
         );
+    }
+
+    #[test]
+    fn ai_written_changes_need_one_more_approval() {
+        let mut p = CaseReviewSettings {
+            approvals: 1,
+            ..Default::default()
+        };
+        assert_eq!(required_approvals(&p, false), 1);
+        assert_eq!(required_approvals(&p, true), 2);
+        p.approvals = 3;
+        assert_eq!(required_approvals(&p, true), 4);
+        p.allow_self_approval = true;
+        assert_eq!(required_approvals(&p, true), 3);
     }
 
     #[test]

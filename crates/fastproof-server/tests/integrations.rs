@@ -1498,26 +1498,32 @@ async fn mcp_tools_over_http() {
             "compare_launches",
             "create_case_draft",
             "create_rule_draft",
+            "create_shared_step_draft",
             "draft_case_from_result",
             "fastmock_interactions",
             "flaky_tests",
             "get_case",
             "get_launch",
             "get_result",
+            "get_shared_step",
             "get_test_plan",
             "launch_failures",
             "list_defect_types",
             "list_launches",
             "list_projects",
+            "list_shared_steps",
             "list_test_plans",
             "manual_run_progress",
+            "plan_dispatches",
             "propose_case_update",
             "result_logs",
+            "review_queue",
             "search_cases",
             "similar_failures",
             "test_history",
             "trace_actions",
-            "triage"
+            "triage",
+            "validate_query"
         ]
     );
 

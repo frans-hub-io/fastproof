@@ -90,7 +90,7 @@ people decide.
 
 | Tool | Does | Needs |
 |---|---|---|
-| `search_cases` | Cases matching `q`, `folderId` (with subfolders), `statuses`, `automation`, `tags`, `fields`, `aiUnreviewed`; `limit` 1–100 (20); answers `{items, more}` | `cases:read` |
+| `search_cases` | Cases matching `q`, `folderId` (with subfolders), `statuses`, `automation`, `tags`, `fields`, `aiUnreviewed` and an [FPQL](query-language.md) `query` (ANDed with the rest, at most 4096 bytes); `limit` 1–100 (20); answers `{items, more}` | `cases:read` |
 | `get_case` | A case by `number`: steps (Markdown), fields, tags, keys, code identities, `revision`, `key` (`TC-n`) and the 10 latest results | `cases:read` |
 | `case_history` | Manual and automated results of a case (`branch`, `environment`, `source`, `limit` 1–100) | `cases:read` |
 | `list_test_plans`, `get_test_plan` | Managed test plans (`q`, `limit` 1–100); one plan by `planId` with its cases (`limit` 1–500) | `cases:read` |
@@ -98,10 +98,40 @@ people decide.
 | `trace_actions` | The actions of the Playwright trace of an attempt (`resultId`, `attempt`): `apiName`, `selector`, `url`, `status`, `error`, `durationMs`, at most 500 (`truncated` beyond); traces up to 256 MiB | `launches:read` |
 | `draft_case_from_result` | A draft case from a result (`resultId`, `attempt`): its name, preconditions from fixtures, steps from the step tree (3 levels), the failure message, a link to the result; the agent may give `name`, `notes`, `steps`, `folderId`, `tags` | `cases:write` or `ai:propose`, and `launches:read` |
 | `create_case_draft` | A draft case from the agent's `name`, `description`, `preconditions`, `steps`, `folderId`, `tags`, `fields` | `cases:write` or `ai:propose` |
-| `propose_case_update` | A suggestion for case `number` against `baseRevision` (`name`, `description`, `preconditions`, `steps`, `status`, `tags`, `fields`, a required `rationale`); validated like a case save, stored as pending, nothing applied; a moved revision answers `suggestion_stale` | `cases:write` or `ai:propose` |
+| `propose_case_update` | A suggestion for case `number` against `baseRevision` (`name`, `description`, `preconditions`, `steps` (a top-level step may be `{"sharedStep": 12}`, see below), `status`, `tags`, `fields`, a required `rationale`); validated like a case save, stored as pending, nothing applied; a moved revision answers `suggestion_stale` | `cases:write` or `ai:propose` |
 | `add_cases_to_plan` | Add case `numbers` (1–1000) to a managed plan (`planId`) | `plans:write` |
+| `validate_query` | Checks an [FPQL](query-language.md) `query`: `ok` with the normalized text and the number of matching cases (capped at 10000), or `ok: false` with the error and its position; `entity` is `cases`; runs with a 5 s statement timeout and takes a heavy slot | `cases:read` |
+| `list_shared_steps` | [Shared steps](shared-steps.md) (`q`, `archived`, `limit` 1–100 (20)) with version, review state and usage counts | `cases:read` |
+| `get_shared_step` | A shared step by `number` (`SS-n`): steps, version, review state, `origin`, `aiUnreviewed` and the cases that use it (`usagesLimit`) | `cases:read` |
+| `review_queue` | Cases and shared steps waiting for [review](workflows-and-review.md): `kind` (`case`, `sharedStep`), `state` (`pending`, `changes_requested`), `waitingForMe`, `mine`, `folderId`, `limit` | `cases:read` |
+| `plan_dispatches` | CI runs started from a plan (`planId`): status, environment, ref, variables, pipeline reference; callers without `settings:write` get generic errors and the pipeline id only (see [Run a plan in CI](rerun.md#run-a-plan-in-ci)) | `cases:read` |
+| `create_shared_step_draft` | A shared step as an AI draft (`name`, `description`, `steps`, at most two levels, no shared steps inside) | `cases:write` or `ai:propose` |
 
-Every write tool takes an optional `agent` (the agent's name, up to 100 bytes, recorded in the audit log).
+### Shared steps and agents
+
+`create_shared_step_draft` makes a shared step with `origin = ai` and `aiUnreviewed`. A case cannot reference it
+until a principal other than its creator has saved or reviewed it; before that `propose_case_update` with
+`{"sharedStep": <n>}` is refused. A reference step carries no `action`, `expected`, `data` or `steps`; an unknown,
+archived or unreviewed shared step is refused like on the REST API. Only top-level steps of `propose_case_update`
+reference shared steps (at most `maxSharedRefs` references, 50 by default, counted before any is looked up); the
+draft tools refuse `sharedStep`. A proposal that references a shared step is a gated write while old replicas run
+(`upgrade_in_progress`).
+
+With version review on, a change that holds content an agent wrote as an AI draft needs one approval more than the
+policy's `approvals` (unless `allowSelfApproval`): an agent token's name says nothing about the person who runs the
+agent, so that person may approve, and another one must too. See
+[Workflows and review](workflows-and-review.md#how-a-version-is-reviewed).
+
+### What an agent never does
+
+There is no tool to vote on or approve a case or shared step, to move a case through the workflow, to change the
+workflow or review policy, to start a plan in CI, to inline or purge shared steps, or to write iterations. The
+same holds on the REST API for an agent token: it has none of `cases:review`, `launches:rerun`, `runs:execute`
+or `settings:write`. `review_queue` and `plan_dispatches` only read. The write tools of this section take the
+per-caller write rate (`rate_limited`), as the other TM writes do.
+
+Every write tool takes an optional `agent` (the agent's name, up to 100 bytes without control or invisible
+characters or `$`, recorded in the audit log).
 Errors come back as tool errors whose text starts with the API error code (`forbidden`, `not_found`,
 `invalid_case`, `suggestion_stale`, …).
 
@@ -126,15 +156,16 @@ below goes:
   name, selector, URL, status, error and duration;
 - the tool for drafts has no status argument, and there is no tool that edits or accepts;
 - every write is in the audit log with `source: ai` and the agent's name (`case.create`,
-  `caseSuggestion.create`, `testPlan.items`).
+  `caseSuggestion.create`, `sharedStep.create`, `testPlan.items`).
 
 ## Agent tokens
 
 An agent with a terminal can call the REST API with the token it has, so the rules above hold for the REST API
 only when the token itself cannot change cases. The built-in role `agent` is made for that: it can read
 projects, launches and test cases, triage results (`results:triage`), and create work for people to review
-(`ai:propose`: `create_case_draft`, `draft_case_from_result`, `propose_case_update` and `create_rule_draft`). It
-has no `cases:write`, `rules:write`, `plans:write` or `runs:execute`, so over REST an agent token answers `403`
+(`ai:propose`: `create_case_draft`, `draft_case_from_result`, `propose_case_update`, `create_shared_step_draft`
+and `create_rule_draft`). It has no `cases:write`, `cases:review`, `rules:write`, `plans:write` or `runs:execute`,
+so over REST an agent token answers `403`
 to creating, changing, reviewing, activating or archiving cases, to accepting or rejecting suggestions, to bulk
 changes and to enabling rules, and over MCP it cannot call `add_cases_to_plan`. People review its drafts and
 suggestions with their own accounts. More limits of agent tokens:
@@ -144,9 +175,9 @@ suggestions with their own accounts. More limits of agent tokens:
   and enables. `triage` with `mute` or `unmute` answers `403` with `details.required: results:mute`.
 - **AI triage.** Triage by a principal with `ai:propose` and without `cases:write` (the `agent` role) is always
   recorded with `source: ai`, on MCP and on `POST /triage` and run item defects alike, whatever `source` it sends.
-- **Draft caps.** One principal has at most 200 unreviewed AI draft cases (`409 limit_reached`,
-  `maxUnreviewedAiDrafts`) and 20 disabled rules (`maxRuleDrafts`) per project; people review, archive or delete
-  some to make room.
+- **Draft caps.** One principal has at most 200 unreviewed AI draft cases and 200 unreviewed AI shared steps
+  (`409 limit_reached`, `maxUnreviewedAiDrafts`) and 20 disabled rules (`maxRuleDrafts`) per project; people
+  review, archive or delete some to make room.
 - **Rate.** MCP write tools count against the same per-caller rate as other writes that multiply work
   (`FASTPROOF_TM_MULTIPLYING_WRITES_PER_MINUTE`).
 

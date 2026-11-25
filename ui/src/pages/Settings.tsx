@@ -15,6 +15,8 @@ import { CopyValue } from '../components/CopyButton';
 import { HistoryImport } from '../components/HistoryImport';
 import { DefectChip } from '../components/Defect';
 import { WorkflowSettings } from './settings/WorkflowSettings';
+import { RerunPlanFields } from './settings/RerunPlanFields';
+import { cleanRerunPlanFields, rerunPlanErrors } from '../lib/tm/rerunPlan';
 import { PageHeader } from '../components/PageHeader';
 import { QueryState } from '../components/QueryState';
 import { GROUP_COLOR, GROUP_LABEL, issueUrlFor } from '../lib/defects';
@@ -393,8 +395,10 @@ function IntegrationsForm({ project, settings, canWrite }: { project: string; se
   const rrRepoError = rr && rr.provider !== 'webhook' && !REPO_PATH.test(rr.repository ?? '') ? (rr.provider === 'github' ? 'owner/repo' : 'group/project, subgroups allowed') : null;
   const rrWorkflowError = rr?.provider === 'github' && !rr.workflow ? 'The workflow file, for example tests.yml' : null;
   const rrTokenError = rr && rr.provider !== 'webhook' && !rr.tokenSecretRef ? 'Choose the secret with the token' : null;
+  const rrPlanErrors = rerunPlanErrors(rr);
+  const rrPlanInvalid = !!rrPlanErrors.refs || rrPlanErrors.variables.some(Boolean);
   const fmUrlError = fm && !HTTP_URL.test(fm.url) ? 'Must be an http(s) URL' : null;
-  const valid = tErrors.every((e) => !e.url && !e.regex) && trackers.every((t) => t.type !== 'jira' || ((!t.projectId || JIRA_ID.test(t.projectId)) && (!t.issueTypeId || JIRA_ID.test(t.issueTypeId)))) && !vcsUrlError && !vcsTokenError && !vcsRepoError && !fmUrlError && !rrUrlError && !rrRepoError && !rrWorkflowError && !rrTokenError && trackers.length <= 10 && trackers.every((t) => Object.keys(trackerApiErrors(t)).length === 0);
+  const valid = tErrors.every((e) => !e.url && !e.regex) && trackers.every((t) => t.type !== 'jira' || ((!t.projectId || JIRA_ID.test(t.projectId)) && (!t.issueTypeId || JIRA_ID.test(t.issueTypeId)))) && !vcsUrlError && !vcsTokenError && !vcsRepoError && !fmUrlError && !rrUrlError && !rrRepoError && !rrWorkflowError && !rrTokenError && !rrPlanInvalid && trackers.length <= 10 && trackers.every((t) => Object.keys(trackerApiErrors(t)).length === 0);
 
   const setTracker = (i: number, t: Partial<IssueTracker>) => setTrackers(trackers.map((x, j) => (j === i ? { ...x, ...t } : x)));
 
@@ -520,7 +524,7 @@ function IntegrationsForm({ project, settings, canWrite }: { project: string; se
             </SimpleGrid>
           )}
         </Section>
-        <Section title="Rerun in CI" description="Adds Rerun failed and Rerun selected to a launch: FastProof makes a testplan.json and triggers the CI once. The token secret needs purpose ci, the origin of the URL and a scope naming the provider, repository and workflow: changing any of them means writing the secret again. The signing secret (webhook) signs the body with HMAC-SHA256.">
+        <Section title="Rerun in CI" description="Adds Rerun failed and Rerun selected to a launch, and Run autotests in CI to a plan start: FastProof makes a testplan.json and triggers the CI once per launch. The token secret needs purpose ci, the origin of the URL and a scope naming the provider, repository and workflow: changing any of them means writing the secret again. The signing secret (webhook) signs the body with HMAC-SHA256.">
           <Switch
             label="Enabled"
             checked={!!rr}
@@ -541,7 +545,7 @@ function IntegrationsForm({ project, settings, canWrite }: { project: string; se
                   onChange={(v) => {
                     const provider: RerunProvider | null = v === 'github' || v === 'gitlab' || v === 'webhook' ? v : null;
                     if (!provider) return;
-                    setRr(provider === 'webhook' ? { provider, url: '', tokenSecretRef: rr.tokenSecretRef } : { provider, url: provider === 'github' ? 'https://api.github.com' : 'https://gitlab.example.com', repository: rr.repository ?? '', workflow: provider === 'github' ? 'tests.yml' : undefined, ref: rr.ref ?? 'main', tokenSecretRef: rr.tokenSecretRef });
+                    setRr(provider === 'webhook' ? { provider, url: '', tokenSecretRef: rr.tokenSecretRef, variables: rr.variables } : { provider, url: provider === 'github' ? 'https://api.github.com' : 'https://gitlab.example.com', repository: rr.repository ?? '', workflow: provider === 'github' ? 'tests.yml' : undefined, ref: rr.ref ?? 'main', tokenSecretRef: rr.tokenSecretRef, refs: rr.refs, variables: rr.variables });
                   }}
                   allowDeselect={false}
                   comboboxProps={{ withinPortal: true }}
@@ -560,12 +564,13 @@ function IntegrationsForm({ project, settings, canWrite }: { project: string; se
                   <TextInput label="Branch or tag" description="Empty: main" placeholder="main" value={rr.ref ?? ''} onChange={(e) => setRr({ ...rr, ref: e.currentTarget.value.trim() || undefined })} />
                 </SimpleGrid>
               )}
+              <RerunPlanFields rr={rr} onChange={setRr} />
             </>
           )}
         </Section>
         {canWrite && (
           <Group>
-            <Button onClick={() => run({ ...settings, issueTrackers: trackers.map(cleanTracker), vcs, fastmock: fm, rerun: rr && { ...rr, tokenSecretRef: rr.tokenSecretRef || null, signingSecretRef: rr.signingSecretRef || null } }, 'Integrations')} loading={pending} disabled={!valid} data-testid="integrations-save">
+            <Button onClick={() => run({ ...settings, issueTrackers: trackers.map(cleanTracker), vcs, fastmock: fm, rerun: rr && cleanRerunPlanFields({ ...rr, tokenSecretRef: rr.tokenSecretRef || null, signingSecretRef: rr.signingSecretRef || null }) }, 'Integrations')} loading={pending} disabled={!valid} data-testid="integrations-save">
               Save
             </Button>
           </Group>

@@ -8,10 +8,11 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use fastproof_store::analysis::plans::TestPlanJson;
 use fastproof_store::launches::LaunchStart;
+use fastproof_store::plan_dispatches::{DispatchRefusal, NewPlanDispatch};
 use fastproof_store::tm::plans::{PlanItemFilter, PlanListFilter, TestPlanPatch, shell_quote};
 use fastproof_store::tm::{
-    PlanLaunch, PlanSyncDiff, StartPlanLaunch, TestPlan, TestPlanItem, TestPlanItemsChange,
-    TestPlanWrite,
+    PlanCheck, PlanCi, PlanDispatch, PlanDispatchList, PlanLaunch, PlanSyncDiff, StartPlanLaunch,
+    TestPlan, TestPlanItem, TestPlanItemsChange, TestPlanWrite, TmError,
 };
 use fastproof_store::{Attribute, Launch, LaunchEnvironment, Page, Project};
 use franshub_auth::Auth;
@@ -23,6 +24,8 @@ use utoipa_axum::routes;
 use uuid::Uuid;
 
 use super::{ErrorBody, P, Q, page_limit, tm_error};
+use crate::integrations::rerun::{self, Job, PlanExtras, generic_ci_ref, generic_error};
+use crate::integrations::settings::IntegrationSettings;
 use crate::state::AppState;
 
 /// Entries of `environment` when starting a launch from a plan, at most.
@@ -36,6 +39,8 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(list_test_plan_items, change_test_plan_items))
         .routes(routes!(sync_test_plan))
         .routes(routes!(start_plan_launch, list_plan_launches))
+        .routes(routes!(list_plan_dispatches))
+        .routes(routes!(launch_plan_check))
         .routes(routes!(launch_testplan_json))
 }
 
@@ -59,12 +64,11 @@ pub async fn create_managed(
     p: &Project,
     w: &TestPlanWrite,
 ) -> ApiResult<TestPlan> {
-    let _permit = match &w.filter {
-        Some(Some(_)) => {
-            crate::tm_rate::admit(s, auth)?;
-            Some(s.guards.heavy(auth).await?)
-        }
-        _ => None,
+    let _permit = if matches!(&w.filter, Some(Some(_))) || matches!(&w.query, Some(Some(_))) {
+        crate::tm_rate::admit(s, auth)?;
+        Some(s.guards.heavy(auth).await?)
+    } else {
+        None
     };
     let plan = s
         .store
@@ -76,7 +80,8 @@ pub async fn create_managed(
         "testPlan.create",
         Some(&p.key),
         serde_json::json!({"id": plan.id, "kind": "managed", "name": plan.name,
-            "cases": plan.counts.total, "filter": plan.filter.is_some()}),
+            "cases": plan.counts.total, "filter": plan.filter.is_some(),
+            "query": w.query.as_ref().is_some_and(Option::is_some)}),
     )
     .await;
     Ok(plan)
@@ -161,6 +166,12 @@ pub async fn update_test_plan(
 ) -> ApiResult<Response> {
     let p = s.project_for(&auth, &key, &s.perms.plans_write).await?;
     let revision = if_match(&headers)?;
+    let _permit = if matches!(&body.filter, Some(Some(_))) || matches!(&body.query, Some(Some(_))) {
+        crate::tm_rate::admit(&s, &auth)?;
+        Some(s.guards.heavy(&auth).await?)
+    } else {
+        None
+    };
     let plan = s
         .store
         .update_managed_plan(p.id, id, revision, &body, &auth.principal.name, &s.cfg.tm)
@@ -171,7 +182,8 @@ pub async fn update_test_plan(
         "testPlan.update",
         Some(&p.key),
         serde_json::json!({"id": id, "name": body.name, "description": body.description.is_some(),
-            "filter": body.filter.as_ref().map(|f| f.is_some())}),
+            "filter": body.filter.as_ref().map(|f| f.is_some()),
+            "query": body.query.as_ref().map(|q| q.is_some())}),
     )
     .await;
     Ok(with_etag(plan.revision, plan))
@@ -375,12 +387,17 @@ pub async fn list_plan_launches(
     description = "Starts a launch from a managed plan: run items for its manual cases (assigned per `assign`), \
         `manual.state = open`; automated cases get no run items, CI runs them from `testplanUrl` (see `ciHint`) and \
         uploads into the same launch (`externalId`; generated when absent). An `externalId` of a launch already \
-        started from this plan returns that launch (200).",
+        started from this plan returns that launch (200). With `ci.dispatch` (needs `launches:rerun` and the project's `rerun` settings) \
+        the start makes one launch per `ci.environments` entry (at most 10; none given: one) and triggers the CI once per launch \
+        with the plan, the ref and the variables allowed by `rerun.variables` and `rerun.refs`; the answer is 201 with every dispatch's \
+        status, and a CI refusal keeps the launches. Counts against the 60 CI triggers per project and hour shared with reruns, and \
+        a plan can be started in CI once per 10 seconds.",
     request_body = StartPlanLaunch,
     params(("key" = String, Path), ("id" = Uuid, Path)),
     responses((status = 201, body = PlanLaunch), (status = 200, body = PlanLaunch), (status = 400, body = ErrorBody),
         (status = 403, body = ErrorBody), (status = 404, body = ErrorBody),
-        (status = 409, body = ErrorBody, description = "`launch_exists`, `plan_archived`, `plan_not_managed`, `limit_reached`")))]
+        (status = 429, body = ErrorBody, description = "CI start limits"),
+        (status = 409, body = ErrorBody, description = "`launch_exists`, `plan_archived`, `plan_not_managed`, `limit_reached`, `plan_has_no_automated_cases` and `conflict` (no `rerun` settings) with `ci`")))]
 pub async fn start_plan_launch(
     State(s): State<AppState>,
     auth: Auth,
@@ -399,6 +416,10 @@ pub async fn start_plan_launch(
         return Err(ApiError::bad_request(format!(
             "environment has at most {MAX_ENVIRONMENT_VALUES} entries; keys 1 to 256 bytes, values at most 1024"
         )));
+    }
+    let ci = body.ci.as_ref().filter(|c| c.dispatch);
+    if body.include_unapproved {
+        franshub_auth::require(&auth, &s.perms.cases_review, Some(&p.key))?;
     }
     let external_id = body
         .external_id
@@ -429,13 +450,8 @@ pub async fn start_plan_launch(
         debug: None,
     };
     super::launches::validate_start(&start)?;
-    if body.include_unapproved {
-        franshub_auth::require(&auth, &s.perms.cases_review, Some(&p.key))?;
-    }
-    if body.ci.as_ref().is_some_and(|c| c.dispatch) {
-        return Err(ApiError::bad_request(
-            "CI dispatch from plans is not available",
-        ));
+    if let Some(ci) = ci {
+        return start_in_ci(&s, &auth, &p, id, &body, ci, start).await;
     }
     let can_sync = auth.principal.allowed(&s.perms.cases_sync, Some(&p.key));
     let started = s
@@ -453,27 +469,9 @@ pub async fn start_plan_launch(
         .map_err(tm_error)?;
     let launch = started.launch;
     if started.created {
-        s.audit(
-            &auth,
-            "run.start",
-            Some(&p.key),
-            serde_json::json!({"planId": id, "launchId": launch.id, "number": launch.number,
-                "externalId": launch.external_id, "runItems": started.run_items, "assign": body.assign}),
-        )
-        .await;
+        audit_start(&s, &auth, &p, id, &launch, started.run_items, &body).await;
     }
-    let path = format!(
-        "api/v1/projects/{}/launches/{}/testplan.json",
-        p.key, launch.id
-    );
-    let testplan_url =
-        crate::integrations::dispatch::page_url(&s, &path).unwrap_or_else(|| format!("/{path}"));
-    let ext = launch.external_id.clone().unwrap_or(external_id);
-    let ci_hint = if body.include_automated && started.automated > 0 {
-        ci_hint(&p.key, &ext)
-    } else {
-        String::new()
-    };
+    let ci_hint = hint_of(&p.key, &launch, &external_id, &body, started.automated);
     Ok((
         if started.created {
             StatusCode::CREATED
@@ -482,13 +480,358 @@ pub async fn start_plan_launch(
         },
         Json(PlanLaunch {
             launches: vec![launch.clone()],
+            testplan_url: testplan_url_of(&s, &p.key, launch.id),
             launch,
-            testplan_url,
             ci_hint,
             dispatches: Vec::new(),
             skips: started.skips,
         }),
     ))
+}
+
+async fn audit_start(
+    s: &AppState,
+    auth: &Auth,
+    p: &Project,
+    plan_id: Uuid,
+    launch: &Launch,
+    run_items: i64,
+    body: &StartPlanLaunch,
+) {
+    s.audit(
+        auth,
+        "run.start",
+        Some(&p.key),
+        serde_json::json!({"planId": plan_id, "launchId": launch.id, "number": launch.number,
+            "externalId": launch.external_id, "runItems": run_items, "assign": body.assign}),
+    )
+    .await;
+}
+
+fn testplan_url_of(s: &AppState, project: &str, launch: Uuid) -> String {
+    let path = format!("api/v1/projects/{project}/launches/{launch}/testplan.json");
+    crate::integrations::dispatch::page_url(s, &path).unwrap_or_else(|| format!("/{path}"))
+}
+
+fn hint_of(
+    project: &str,
+    launch: &Launch,
+    external_id: &str,
+    body: &StartPlanLaunch,
+    automated: i64,
+) -> String {
+    if body.include_automated && automated > 0 {
+        ci_hint(
+            project,
+            launch.external_id.as_deref().unwrap_or(external_id),
+        )
+    } else {
+        String::new()
+    }
+}
+
+fn can_see_ci(s: &AppState, auth: &Auth, project: &str) -> bool {
+    auth.principal
+        .denial(&s.perms.settings_write, Some(project))
+        .is_none()
+}
+
+/// What callers without `settings:write` may see of a dispatch: generic error texts and only the
+/// pipeline id in `ciRef`, as the CI host and the secret names are settings details.
+fn shown(mut d: PlanDispatch, admin: bool) -> PlanDispatch {
+    if !admin {
+        d.error = d.error.as_deref().map(generic_error);
+        d.ci_ref = d.ci_ref.as_deref().map(generic_ci_ref);
+    }
+    d
+}
+
+fn refused(r: DispatchRefusal) -> ApiError {
+    ApiError::too_many_requests(match r {
+        DispatchRefusal::Cooldown => "this plan was started in CI less than 10 seconds ago",
+        DispatchRefusal::TooManyInHour => "too many CI starts in this project in the last hour",
+    })
+}
+
+/// Launch name for an environment: the name with the environment in brackets, within 300 bytes.
+fn environment_name(name: &str, env: &str) -> String {
+    let suffix = format!(" [{env}]");
+    let mut room = 300usize.saturating_sub(suffix.len());
+    while !name.is_char_boundary(room.min(name.len())) {
+        room -= 1;
+    }
+    format!("{}{suffix}", &name[..room.min(name.len())])
+}
+
+/// Starts one launch per environment and dispatches each to the project's CI (§7.4).
+async fn start_in_ci(
+    s: &AppState,
+    auth: &Auth,
+    p: &Project,
+    plan_id: Uuid,
+    body: &StartPlanLaunch,
+    ci: &PlanCi,
+    start: LaunchStart,
+) -> ApiResult<(StatusCode, Json<PlanLaunch>)> {
+    franshub_auth::require(auth, &s.perms.launches_rerun, Some(&p.key))?;
+    let admin = can_see_ci(s, auth, &p.key);
+    let plan = s
+        .store
+        .test_plan(p.id, plan_id)
+        .await?
+        .ok_or_else(|| ApiError::not_found("test plan"))?;
+    if plan.kind != fastproof_store::tm::TestPlanKind::Managed {
+        return Err(tm_error(TmError::conflict(
+            "plan_not_managed",
+            "only managed plans start launches",
+        )));
+    }
+    if plan.archived {
+        return Err(tm_error(TmError::conflict(
+            "plan_archived",
+            "the plan is archived",
+        )));
+    }
+    if plan.counts.automated == 0 {
+        return Err(tm_error(TmError::conflict(
+            "plan_has_no_automated_cases",
+            "the plan has no automated cases to run in CI",
+        )));
+    }
+    let doc = s.store.project_settings_json(p.id).await?;
+    let settings = IntegrationSettings::parse(&doc)
+        .map_err(|e| ApiError::conflict(format!("invalid project settings: {e}")))?;
+    let Some(cfg) = settings.rerun else {
+        return Err(ApiError::conflict(
+            "the project has no rerun settings (integrations: rerun)",
+        ));
+    };
+    let resolved = rerun::resolve_plan_ci(&cfg, ci)?;
+    let several = resolved.environments.len() > 1;
+    if several && body.external_id.is_some() {
+        return Err(ApiError::bad_request(
+            "externalId is for a start with one environment; with several each launch gets its own",
+        ));
+    }
+    if let Some(r) = s
+        .store
+        .plan_dispatch_check(p.id, plan_id, resolved.environments.len())
+        .await?
+    {
+        return Err(refused(r));
+    }
+    let can_sync = auth.principal.allowed(&s.perms.cases_sync, Some(&p.key));
+    let mut launches: Vec<Launch> = Vec::new();
+    let mut first: Option<fastproof_store::tm::plans::StartedPlanLaunch> = None;
+    let mut failure: Option<ApiError> = None;
+    for (env, _) in &resolved.environments {
+        let mut st = start.clone();
+        if let Some(e) = env {
+            st.name = environment_name(&start.name, e);
+            st.environment = Some(LaunchEnvironment {
+                key: Some(e.clone()),
+                values: body.environment.clone().unwrap_or_default(),
+            });
+        }
+        if several {
+            st.external_id = Some(format!("plan-{}", Uuid::now_v7()));
+        }
+        if let Err(e) = super::launches::validate_start(&st) {
+            failure = Some(e);
+            break;
+        }
+        match s
+            .store
+            .start_plan_launch(
+                p,
+                plan_id,
+                body,
+                &st,
+                &auth.principal.name,
+                can_sync,
+                &s.cfg.tm,
+            )
+            .await
+        {
+            Ok(started) if !started.created => {
+                failure = Some(tm_error(TmError::conflict(
+                    "launch_exists",
+                    "a launch with this externalId was started from this plan already",
+                )));
+                break;
+            }
+            Ok(started) => {
+                launches.push(started.launch.clone());
+                audit_start(
+                    s,
+                    auth,
+                    p,
+                    plan_id,
+                    &started.launch,
+                    started.run_items,
+                    body,
+                )
+                .await;
+                first.get_or_insert(started);
+            }
+            Err(e) => {
+                failure = Some(tm_error(e));
+                break;
+            }
+        }
+    }
+    let undo = |launches: Vec<Launch>| async move {
+        for l in launches {
+            let _ = s.store.delete_launch(p.id, &p.key, l.id).await;
+        }
+    };
+    if let Some(e) = failure {
+        undo(launches).await;
+        return Err(e);
+    }
+    let rows: Vec<NewPlanDispatch> = launches
+        .iter()
+        .zip(&resolved.environments)
+        .map(|(l, (env, vars))| NewPlanDispatch {
+            launch_id: l.id,
+            environment: env.clone(),
+            git_ref: resolved.git_ref.clone(),
+            variables: vars.clone(),
+        })
+        .collect();
+    let begun = match s
+        .store
+        .plan_dispatch_begin(
+            &p.key,
+            p.id,
+            plan_id,
+            &cfg.provider,
+            &auth.principal.name,
+            &rows,
+        )
+        .await
+    {
+        Ok(Ok(d)) => d,
+        Ok(Err(r)) => {
+            undo(launches).await;
+            return Err(refused(r));
+        }
+        Err(e) => {
+            undo(launches).await;
+            return Err(e.into());
+        }
+    };
+    let first = first.ok_or_else(ApiError::internal)?;
+    let testplan = s.store.launch_testplan(p.id, launches[0].id).await;
+    let target = rerun::target(&cfg);
+    let calls = launches.iter().zip(&begun).zip(&rows).map(|((l, d), row)| {
+        let (cfg, target, testplan) = (&cfg, &target, &testplan);
+        async move {
+            let outcome = match testplan {
+                Ok(t) => {
+                    let job = Job {
+                        project: &p.key,
+                        launch: l,
+                        rerun_id: d.id,
+                        external_id: l.external_id.as_deref().unwrap_or_default(),
+                        plan_id,
+                        mode: "plan",
+                        plan: t,
+                    };
+                    let extras = PlanExtras {
+                        git_ref: &row.git_ref,
+                        variables: &row.variables,
+                        environment: row.environment.as_deref(),
+                    };
+                    rerun::dispatch_plan(s, p.id, cfg, &job, &extras).await
+                }
+                Err(e) => Err(format!("no tests to run: {e}")),
+            };
+            let (error, ci_ref) = match &outcome {
+                Ok(r) => (None, r.as_deref()),
+                Err(e) => (Some(e.as_str()), None),
+            };
+            let done = s
+                .store
+                .plan_dispatch_done(&p.key, d.id, error, ci_ref)
+                .await;
+            let mut audit = serde_json::json!({"planId": plan_id, "launchId": l.id,
+                "environment": row.environment, "provider": cfg.provider, "ref": row.git_ref,
+                "variables": row.variables.keys().collect::<Vec<_>>(), "target": target,
+                "ok": error.is_none()});
+            if let Some(e) = error {
+                audit["detail"] = serde_json::json!(e);
+            }
+            s.audit(auth, "testPlan.dispatch", Some(&p.key), audit)
+                .await;
+            done
+        }
+    });
+    let mut dispatches = Vec::with_capacity(begun.len());
+    for d in futures::future::join_all(calls).await {
+        dispatches.push(shown(d?, admin));
+    }
+    let ext = first.launch.external_id.clone().unwrap_or_default();
+    let ci_hint = hint_of(&p.key, &first.launch, &ext, body, first.automated);
+    Ok((
+        StatusCode::CREATED,
+        Json(PlanLaunch {
+            testplan_url: testplan_url_of(s, &p.key, first.launch.id),
+            launch: first.launch,
+            launches,
+            ci_hint,
+            dispatches,
+            skips: first.skips,
+        }),
+    ))
+}
+
+/// Query of `GET /test-plans/{id}/dispatches`.
+#[derive(Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct PlanDispatchesQuery {
+    pub before: Option<String>,
+    pub limit: Option<i64>,
+}
+
+#[utoipa::path(get, path = "/api/v1/projects/{key}/test-plans/{id}/dispatches", tag = "plans", operation_id = "list_plan_dispatches",
+    description = "CI dispatches of the plan's launches, newest first. Callers without `settings:write` get generic error texts and only the pipeline id in `ciRef`.",
+    params(("key" = String, Path), ("id" = Uuid, Path), PlanDispatchesQuery),
+    responses((status = 200, body = PlanDispatchList), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),
+        (status = 404, body = ErrorBody)))]
+pub async fn list_plan_dispatches(
+    State(s): State<AppState>,
+    auth: Auth,
+    P((key, id)): P<(String, Uuid)>,
+    Q(q): Q<PlanDispatchesQuery>,
+) -> ApiResult<Json<PlanDispatchList>> {
+    let p = s.project_for(&auth, &key, &s.perms.cases_read).await?;
+    let admin = can_see_ci(&s, &auth, &p.key);
+    let mut list = s
+        .store
+        .plan_dispatches(p.id, id, q.before.as_deref(), page_limit(q.limit)?)
+        .await
+        .map_err(tm_error)?;
+    list.items = list.items.into_iter().map(|d| shown(d, admin)).collect();
+    Ok(Json(list))
+}
+
+#[utoipa::path(get, path = "/api/v1/projects/{key}/launches/{id}/plan-check", tag = "plans", operation_id = "launch_plan_check",
+    description = "What a finished launch started from a plan ran compared to the plan: results that are not linked to an automated case of the plan (`extra`) and automated plan cases without a result (`missing`). 404 for a launch without a plan or one that is not finished.",
+    params(("key" = String, Path), ("id" = Uuid, Path)),
+    responses((status = 200, body = PlanCheck), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
+pub async fn launch_plan_check(
+    State(s): State<AppState>,
+    auth: Auth,
+    P((key, id)): P<(String, Uuid)>,
+) -> ApiResult<Json<PlanCheck>> {
+    let p = s.project_for(&auth, &key, &s.perms.launches_read).await?;
+    let launch = s.launch_of(&p, id).await?;
+    s.store
+        .plan_check_of(launch.id)
+        .await?
+        .map(Json)
+        .ok_or_else(|| ApiError::not_found("plan check"))
 }
 
 /// `testplan.json` as a download.

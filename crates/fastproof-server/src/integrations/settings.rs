@@ -478,6 +478,32 @@ pub fn valid_variable_name(n: &str) -> bool {
             .iter()
             .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || *c == b'_')
         && !n.starts_with("FASTPROOF_")
+        && !reserved_variable(n)
+}
+
+/// Names that change how the CI or the shell behaves, or print secrets: never allowlisted.
+pub fn reserved_variable(n: &str) -> bool {
+    const PREFIXES: [&str; 12] = [
+        "CI_", "GITLAB_", "GITHUB_", "RUNNER_", "ACTIONS_", "LD_", "DYLD_", "BASH_", "NODE_",
+        "PYTHON", "JAVA_", "JDK_",
+    ];
+    const NAMES: [&str; 14] = [
+        "CI",
+        "PATH",
+        "ENV",
+        "IFS",
+        "HOME",
+        "SHELL",
+        "USER",
+        "PS4",
+        "PROMPT_COMMAND",
+        "SHELLOPTS",
+        "TMPDIR",
+        "OPTIONS",
+        "JAVA_TOOL_OPTIONS",
+        "_JAVA_OPTIONS",
+    ];
+    NAMES.contains(&n) || PREFIXES.iter().any(|p| n.starts_with(p))
 }
 
 /// The integration keys of the settings document.

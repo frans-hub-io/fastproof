@@ -7644,6 +7644,63 @@
         }
       }
     },
+    "/api/v1/projects/{key}/launches/{id}/plan-check": {
+      "get": {
+        "tags": [
+          "plans"
+        ],
+        "description": "What a finished launch started from a plan ran compared to the plan: results that are not linked to an automated case of the plan (`extra`) and automated plan cases without a result (`missing`). 404 for a launch without a plan or one that is not finished.",
+        "operationId": "launch_plan_check",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanCheck"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{key}/launches/{id}/rerun": {
       "post": {
         "tags": [
@@ -12138,6 +12195,89 @@
         }
       }
     },
+    "/api/v1/projects/{key}/test-plans/{id}/dispatches": {
+      "get": {
+        "tags": [
+          "plans"
+        ],
+        "description": "CI dispatches of the plan's launches, newest first. Callers without `settings:write` get generic error texts and only the pipeline id in `ciRef`.",
+        "operationId": "list_plan_dispatches",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanDispatchList"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{key}/test-plans/{id}/items": {
       "get": {
         "tags": [
@@ -12411,7 +12551,7 @@
         "tags": [
           "plans"
         ],
-        "description": "Starts a launch from a managed plan: run items for its manual cases (assigned per `assign`), `manual.state = open`; automated cases get no run items, CI runs them from `testplanUrl` (see `ciHint`) and uploads into the same launch (`externalId`; generated when absent). An `externalId` of a launch already started from this plan returns that launch (200).",
+        "description": "Starts a launch from a managed plan: run items for its manual cases (assigned per `assign`), `manual.state = open`; automated cases get no run items, CI runs them from `testplanUrl` (see `ciHint`) and uploads into the same launch (`externalId`; generated when absent). An `externalId` of a launch already started from this plan returns that launch (200). With `ci.dispatch` (needs `launches:rerun` and the project's `rerun` settings) the start makes one launch per `ci.environments` entry (at most 10; none given: one) and triggers the CI once per launch with the plan, the ref and the variables allowed by `rerun.variables` and `rerun.refs`; the answer is 201 with every dispatch's status, and a CI refusal keeps the launches. Counts against the 60 CI triggers per project and hour shared with reruns, and a plan can be started in CI once per 10 seconds.",
         "operationId": "start_plan_launch",
         "parameters": [
           {
@@ -12489,7 +12629,17 @@
             }
           },
           "409": {
-            "description": "`launch_exists`, `plan_archived`, `plan_not_managed`, `limit_reached`",
+            "description": "`launch_exists`, `plan_archived`, `plan_not_managed`, `limit_reached`, `plan_has_no_automated_cases` and `conflict` (no `rerun` settings) with `ci`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "CI start limits",
             "content": {
               "application/json": {
                 "schema": {

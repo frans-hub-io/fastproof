@@ -57,6 +57,7 @@ import {
   type TmState,
 } from './tmFixtures';
 import { renderMarkdown } from './tmMarkdown';
+import { planCiDispatch, planCiResolve, resetPlanDispatches } from './planDispatches';
 
 const API = '/api/v1';
 const P = `${API}/projects/:key`;
@@ -66,6 +67,7 @@ let failSteps = 0;
 
 export function resetTm(): void {
   st = buildTmState();
+  resetPlanDispatches();
 }
 
 /** Test access to the mock state (vitest). */
@@ -1537,45 +1539,58 @@ export function tmHandlers({ role, error, audit }: Helpers) {
       if (!writer()) return forbid('runs:execute');
       const b = (await request.json()) as StartPlanLaunch;
       if (!b.name.trim()) return error(400, 'invalid_body', 'name is required', { field: 'name' });
+      const ci = b.ci?.dispatch ? planCiResolve(key, b.ci) : null;
+      if (ci && 'status' in ci) return error(ci.status, ci.code, ci.message, ci.details);
       const defs = projectLaunches(key);
       const template = defs[defs.length - 1];
       if (!template) return notFound('project');
-      const number = Math.max(...defs.map((d) => d.launch.number), ...[...st.createdLaunches.values()].map((l) => l.number)) + 1;
-      const id = tmId(`launch:created:${String(number)}`);
-      const base = launchView(template);
-      const empty = { total: 0, passed: 0, failed: 0, broken: 0, skipped: 0, unknown: 0, flaky: 0, muted: 0 };
-      const launch = {
-        ...base,
-        id,
-        number,
-        name: b.name.trim(),
-        status: 'running' as const,
-        startedAt: now(),
-        finishedAt: null,
-        durationMs: null,
-        counts: { ...base.counts, ...empty },
-        environment: b.environment ? { key: Object.values(b.environment)[0] ?? 'manual', values: b.environment } : base.environment,
-        attributes: [...(b.attributes ?? []), ...(b.externalId ? [{ key: 'externalId', value: b.externalId }] : [])],
-        uploads: { queued: 0, processing: 0, failed: 0 },
-        important: false,
-        debug: false,
+      const createLaunch = (envName: string | null) => {
+        const number = Math.max(...defs.map((d) => d.launch.number), ...[...st.createdLaunches.values()].map((l) => l.number)) + 1;
+        const id = tmId(`launch:created:${String(number)}`);
+        const base = launchView(template);
+        const empty = { total: 0, passed: 0, failed: 0, broken: 0, skipped: 0, unknown: 0, flaky: 0, muted: 0 };
+        const launch = {
+          ...base,
+          id,
+          number,
+          name: envName ? `${b.name.trim()} [${envName}]` : b.name.trim(),
+          status: ci ? ('finished' as const) : ('running' as const),
+          startedAt: now(),
+          finishedAt: ci ? now() : null,
+          durationMs: null,
+          counts: { ...base.counts, ...empty },
+          environment: envName ? { key: envName, values: b.environment ?? {} } : b.environment ? { key: Object.values(b.environment)[0] ?? 'manual', values: b.environment } : base.environment,
+          attributes: [...(b.attributes ?? []), ...(b.externalId && !envName ? [{ key: 'externalId', value: b.externalId }] : [])],
+          uploads: { queued: 0, processing: 0, failed: 0 },
+          important: false,
+          debug: false,
+        };
+        st.createdLaunches.set(id, launch);
+        st.manual.set(id, { launchId: id, planId: p.id, state: 'open' });
+        let i = 0;
+        for (const it of p.items) {
+          const c = st.cases.get(it.caseNumber);
+          if (!c || isAutomated(c) || b.includeManual === false) continue;
+          st.runItems.push(runItemFor(st, id, c, b.assign === 'plan' ? it.assignee : b.assign === 'me' ? ME : null, i++));
+        }
+        audit('run.start', key, { launchId: id, planId: p.id });
+        return { id, number, view: manualLaunchView(id) ?? launch };
       };
-      st.createdLaunches.set(id, launch);
-      st.manual.set(id, { launchId: id, planId: p.id, state: 'open' });
-      let i = 0;
-      for (const it of p.items) {
+      const automatedItems = p.items.filter((it) => {
         const c = st.cases.get(it.caseNumber);
-        if (!c || isAutomated(c)) continue;
-        st.runItems.push(runItemFor(st, id, c, b.assign === 'plan' ? it.assignee : b.assign === 'me' ? ME : null, i++));
-      }
-      audit('run.start', key, { launchId: id, planId: p.id });
-      const externalId = b.externalId ?? `fastproof-${String(number)}`;
+        return !!c && isAutomated(c);
+      }).length;
+      const made = (ci ? ci.environments.map((e) => e.name) : [null]).map(createLaunch);
+      const first = made[0];
+      if (!first) return notFound('project');
+      const id = first.id;
+      const externalId = b.externalId ?? `fastproof-${String(first.number)}`;
       const body: PlanLaunch = {
-        launch: manualLaunchView(id) ?? launch,
+        launch: first.view,
         testplanUrl: `${API}/projects/${key}/launches/${id}/testplan.json`,
         ciHint: `fastproof testplan --launch ${externalId} > testplan.json\nexport ALLURE_TESTPLAN_PATH="$PWD/testplan.json"`,
-        launches: [manualLaunchView(id) ?? launch],
-        dispatches: [],
+        launches: made.map((m) => m.view),
+        dispatches: ci ? planCiDispatch(key, p.id, automatedItems, ci, made, ME) : [],
         skips: [],
       };
       return HttpResponse.json(body, { status: 201 });

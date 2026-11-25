@@ -4,6 +4,7 @@
 use std::collections::BTreeMap;
 
 use chrono::{DateTime, Utc};
+use fastproof_store::analysis::types::{GateSimulation, GateSimulationItem};
 use fastproof_store::integrations::GateCounts;
 use fastproof_store::{Launch, Project};
 use serde::{Deserialize, Serialize};
@@ -21,6 +22,9 @@ pub const NEW_FAILURE_SAMPLE: i64 = 10;
 pub struct Facts {
     pub counts: GateCounts,
     pub duration_s: Option<f64>,
+    /// Unique errors of the launch that are new on its own branch; filled only when a rule
+    /// needs it (`newErrors` without a baseline).
+    pub new_errors: Option<i64>,
 }
 
 impl Facts {
@@ -28,6 +32,7 @@ impl Facts {
         Self {
             counts,
             duration_s: launch.duration_ms.map(|d| d as f64 / 1000.0),
+            new_errors: None,
         }
     }
 
@@ -45,7 +50,9 @@ impl Facts {
             Metric::PassRate => self.pass_rate(),
             Metric::Duration => self.duration_s,
             Metric::NewFailures => None,
-            Metric::NewErrors | Metric::ToInvestigate | Metric::Total => None,
+            Metric::NewErrors => self.new_errors.map(|n| n as f64),
+            Metric::ToInvestigate => Some(self.counts.to_investigate as f64),
+            Metric::Total => Some((self.counts.total - self.counts.skipped) as f64),
         }
     }
 }
@@ -58,6 +65,9 @@ pub struct Baseline {
     pub facts: Option<Facts>,
     /// New failures of the evaluated launch against this baseline.
     pub new_failures: i64,
+    /// Unique errors of the evaluated launch that are new on this baseline branch; filled only
+    /// for baselines a `newErrors` rule names.
+    pub new_errors: Option<i64>,
 }
 
 /// Outcome of one rule.
@@ -140,6 +150,7 @@ pub fn evaluate(
                     }
                     Some(base.new_failures as f64)
                 }
+                (Metric::NewErrors, Some(_)) => base.new_errors.map(|n| n as f64),
                 (m, None) => current.value(m),
                 (m, Some(_)) => match (&base.facts, current.value(m)) {
                     (Some(bf), Some(c)) => bf.value(m).map(|b| c - b),
@@ -212,6 +223,7 @@ async fn baseline_for(
     launch: &Launch,
     branch: &str,
     sample: i64,
+    errors: bool,
 ) -> anyhow::Result<(Baseline, Vec<(Uuid, String)>)> {
     let b = s
         .store
@@ -228,11 +240,21 @@ async fn baseline_for(
         Some(bl) => Some(Facts::of(s.store.gate_counts(bl).await?, bl)),
         None => None,
     };
+    let new_errors = if errors {
+        Some(
+            s.store
+                .new_error_count(project.id, launch, Some(branch))
+                .await?,
+        )
+    } else {
+        None
+    };
     Ok((
         Baseline {
             launch_id: b.map(|l| l.id),
             facts,
             new_failures: n,
+            new_errors,
         },
         names,
     ))
@@ -245,12 +267,28 @@ pub async fn evaluate_launch(
     launch: &Launch,
     gates: &[Gate],
 ) -> anyhow::Result<Evaluation> {
-    let branch = branch_of(launch);
-    let apply = applicable(gates, branch);
+    let apply = applicable(gates, branch_of(launch));
     let counts = s.store.gate_counts(launch).await?;
-    let facts = Facts::of(counts, launch);
+    evaluate_with(s, project, launch, counts, &apply, is_pending(launch)).await
+}
+
+/// Evaluates the given gates (already filtered for the launch) over known result counts.
+async fn evaluate_with(
+    s: &AppState,
+    project: &Project,
+    launch: &Launch,
+    counts: GateCounts,
+    apply: &[&Gate],
+    pending: bool,
+) -> anyhow::Result<Evaluation> {
+    let branch = branch_of(launch);
+    let rules = || apply.iter().flat_map(|g| g.rules.iter());
+    let mut facts = Facts::of(counts, launch);
+    if rules().any(|r| r.metric == Metric::NewErrors && r.baseline.is_none()) {
+        facts.new_errors = Some(s.store.new_error_count(project.id, launch, None).await?);
+    }
     let (previous, names) = match branch {
-        Some(b) => baseline_for(s, project, launch, b, NEW_FAILURE_SAMPLE).await?,
+        Some(b) => baseline_for(s, project, launch, b, NEW_FAILURE_SAMPLE, false).await?,
         None => {
             let (n, names) = s
                 .store
@@ -261,23 +299,27 @@ pub async fn evaluate_launch(
                     launch_id: None,
                     facts: None,
                     new_failures: n,
+                    new_errors: None,
                 },
                 names,
             )
         }
     };
     let mut baselines = BTreeMap::new();
-    for g in &apply {
+    for g in apply {
         for r in &g.rules {
             if let Some(b) = &r.baseline
                 && !baselines.contains_key(b)
             {
-                let (bl, _) = baseline_for(s, project, launch, b, 0).await?;
+                let errors = rules().any(|x| {
+                    x.metric == Metric::NewErrors && x.baseline.as_deref() == Some(b.as_str())
+                });
+                let (bl, _) = baseline_for(s, project, launch, b, 0, errors).await?;
                 baselines.insert(b.clone(), bl);
             }
         }
     }
-    let (status, results) = evaluate(&apply, is_pending(launch), &facts, &previous, &baselines);
+    let (status, results) = evaluate(apply, pending, &facts, &previous, &baselines);
     Ok(Evaluation {
         report: GateReport {
             status,
@@ -290,6 +332,65 @@ pub async fn evaluate_launch(
         new_failure_sample: names,
         previous_launch_id: previous.launch_id,
     })
+}
+
+/// Most launches a simulation evaluates.
+pub const MAX_SIMULATED_LAUNCHES: u32 = 200;
+
+/// Default number of launches of a simulation.
+pub const DEFAULT_SIMULATED_LAUNCHES: u32 = 50;
+
+/// Evaluates a draft gate on the newest finished launches of a project, from stored data
+/// only (nothing is written). The gate is evaluated whether or not it is enabled; launches on
+/// branches its `branches` do not match, with unprocessed uploads, or whose results are gone
+/// are counted as skipped.
+pub async fn simulate(
+    s: &AppState,
+    project: &Project,
+    gate: &Gate,
+    launches: u32,
+    branch: Option<&str>,
+) -> anyhow::Result<GateSimulation> {
+    let inputs = s
+        .store
+        .simulation_inputs(project.id, branch, i64::from(launches))
+        .await?;
+    let mut sim = GateSimulation {
+        evaluated: 0,
+        failed: 0,
+        skipped: 0,
+        items: Vec::new(),
+    };
+    for input in inputs {
+        let l = &input.launch;
+        let Some(counts) = input.counts else {
+            sim.skipped += 1;
+            continue;
+        };
+        if !matches_any(&gate.branches, branch_of(l)) || is_pending(l) {
+            sim.skipped += 1;
+            continue;
+        }
+        let ev = evaluate_with(s, project, l, counts, &[gate], false).await?;
+        sim.evaluated += 1;
+        if ev.report.status == GateStatus::Failed {
+            sim.failed += 1;
+        }
+        sim.items.push(GateSimulationItem {
+            launch_id: l.id,
+            launch_number: l.number,
+            branch: branch_of(l).map(str::to_string),
+            created_at: l.created_at,
+            status: ev.report.status.as_str().to_string(),
+            results: ev
+                .report
+                .results
+                .iter()
+                .map(serde_json::to_value)
+                .collect::<Result<_, _>>()?,
+        });
+    }
+    Ok(sim)
 }
 
 #[cfg(test)]
@@ -305,6 +406,7 @@ mod tests {
             broken,
             skipped,
             flaky: 1,
+            to_investigate: failed + broken,
         }
     }
 
@@ -331,6 +433,7 @@ mod tests {
         let cur = Facts {
             counts: counts(100, 90, 4, 1, 5),
             duration_s: Some(120.0),
+            new_errors: None,
         };
         assert!((cur.pass_rate().unwrap() - 94.736).abs() < 0.01);
         let prev = Baseline {
@@ -338,8 +441,10 @@ mod tests {
             facts: Some(Facts {
                 counts: counts(100, 95, 0, 0, 5),
                 duration_s: Some(100.0),
+                new_errors: None,
             }),
             new_failures: 3,
+            new_errors: None,
         };
         let mut bl = BTreeMap::new();
         bl.insert("main".to_string(), prev.clone());
@@ -371,6 +476,7 @@ mod tests {
         let empty = Facts {
             counts: counts(3, 0, 0, 0, 3),
             duration_s: None,
+            new_errors: None,
         };
         let none = Baseline::default();
         let g = gate(vec![
@@ -383,6 +489,69 @@ mod tests {
         assert!(!res[0].ok && res[0].actual.is_none());
         assert!(res[1].ok && res[1].note.is_some());
         assert!(res[2].ok && res[2].note.as_deref().unwrap().contains("every failure"));
+    }
+
+    #[test]
+    fn analysis_metrics() {
+        let mut cur = Facts {
+            counts: GateCounts {
+                total: 20,
+                passed: 10,
+                failed: 4,
+                broken: 1,
+                skipped: 5,
+                flaky: 0,
+                to_investigate: 3,
+            },
+            duration_s: None,
+            new_errors: Some(2),
+        };
+        let none = Baseline::default();
+        let main = Baseline {
+            launch_id: Some(Uuid::nil()),
+            facts: Some(Facts {
+                counts: GateCounts {
+                    total: 12,
+                    skipped: 2,
+                    to_investigate: 1,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            new_failures: 0,
+            new_errors: Some(7),
+        };
+        let mut bl = BTreeMap::new();
+        bl.insert("main".to_string(), main);
+        let g = gate(vec![
+            rule(Metric::NewErrors, Op::Lte, 2.0, None),
+            rule(Metric::NewErrors, Op::Lt, 7.0, Some("main")),
+            rule(Metric::ToInvestigate, Op::Lte, 3.0, None),
+            rule(Metric::ToInvestigate, Op::Lte, 2.0, Some("main")),
+            rule(Metric::Total, Op::Gte, 15.0, None),
+            rule(Metric::Total, Op::Gte, 5.0, Some("main")),
+        ]);
+        let (st, res) = evaluate(&[&g], false, &cur, &none, &bl);
+        let actual: Vec<Option<f64>> = res.iter().map(|r| r.actual).collect();
+        assert_eq!(
+            actual,
+            vec![
+                Some(2.0),
+                Some(7.0),
+                Some(3.0),
+                Some(2.0),
+                Some(15.0),
+                Some(5.0)
+            ]
+        );
+        let oks: Vec<bool> = res.iter().map(|r| r.ok).collect();
+        assert_eq!(oks, vec![true, false, true, true, true, true]);
+        assert_eq!(st, GateStatus::Failed);
+
+        cur.new_errors = None;
+        let (st, res) = evaluate(&[&g], false, &cur, &none, &bl);
+        assert!(!res[0].ok && res[0].actual.is_none());
+        assert_eq!(st, GateStatus::Failed);
     }
 
     #[test]

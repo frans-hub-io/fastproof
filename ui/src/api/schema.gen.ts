@@ -857,6 +857,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{key}/gates/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description The stored quality gate evaluations of the project, newest first: status and failed rules per launch, and (on the first page) per gate the evaluations, failures, flips between passed and failed on a branch, the mean time from the first failure of a streak to the next pass, and the metric that failed most, and per branch the evaluations and failures. The window is 30 days by default and at most 365; the aggregates cover the newest 20000 evaluations of it. Needs `launches:read`. */
+        get: operations["analysis_gate_history"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/gates/simulate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Evaluates a draft gate (validated like the project settings, enabled or not) on the newest finished launches of the project (1 to 200, default 50; optionally of one `branch`) from stored data, without writing anything. Launches on branches the gate does not apply to, with unprocessed uploads, or whose results are gone are counted as `skipped`. Needs `launches:read`. */
+        post: operations["analysis_simulate_gate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{key}/history-imports": {
         parameters: {
             query?: never;
@@ -12605,6 +12639,121 @@ export interface operations {
                 };
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    analysis_gate_history: {
+        parameters: {
+            query?: {
+                /** @description Only this gate (by name): its evaluations, its failed rules, its aggregates. */
+                gate?: string;
+                /** @description Only launches of this branch (exact name). */
+                branch?: string;
+                /** @description RFC 3339; default 30 days before `to`. */
+                from?: string;
+                /** @description RFC 3339; default now. The window is at most 365 days. */
+                to?: string;
+                /** @description The `next` of the previous page. */
+                before?: string;
+                /** @description 1 to 500, default 50. */
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GateHistory"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    analysis_simulate_gate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GateSimulate"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GateSimulation"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };

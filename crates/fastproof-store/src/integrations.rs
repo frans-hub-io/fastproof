@@ -65,6 +65,9 @@ pub struct GateCounts {
     pub broken: i64,
     pub skipped: i64,
     pub flaky: i64,
+    /// Failed or broken results, not muted, without a defect or with one of group
+    /// `toInvestigate`.
+    pub to_investigate: i64,
 }
 
 /// A delivery to queue.
@@ -433,11 +436,13 @@ impl Store {
 
     /// Result counts of a launch; muted results count as neither failed nor broken.
     pub async fn gate_counts(&self, launch: &Launch) -> anyhow::Result<GateCounts> {
-        let r: (i64, i64, i64, i64, i64, i64) = sqlx::query_as(
+        let r: (i64, i64, i64, i64, i64, i64, i64) = sqlx::query_as(
             "select count(*), count(*) filter (where status = 'passed'), \
              count(*) filter (where status = 'failed' and not muted), \
              count(*) filter (where status = 'broken' and not muted), \
-             count(*) filter (where status = 'skipped'), count(*) filter (where flaky_in_run) \
+             count(*) filter (where status = 'skipped'), count(*) filter (where flaky_in_run), \
+             count(*) filter (where status in ('failed', 'broken') and not muted \
+               and coalesce(defect->>'group', 'toInvestigate') = 'toInvestigate') \
              from results where launch_id = $1 and launch_created_at = $2",
         )
         .bind(launch.id)
@@ -451,6 +456,7 @@ impl Store {
             broken: r.3,
             skipped: r.4,
             flaky: r.5,
+            to_investigate: r.6,
         })
     }
 

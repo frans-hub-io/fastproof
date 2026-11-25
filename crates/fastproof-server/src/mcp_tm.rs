@@ -8,7 +8,7 @@
 //! titles, the values of `fill`, `type` or `press` actions, nor any parameter values; it
 //! takes a heavy slot and reads trace lines with a bounded buffer.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::Read;
 
 use fastproof_store::tm::cases::{CaseCtx, CaseQuery, HistoryQuery};
@@ -119,6 +119,7 @@ pub struct TraceArgs {
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DraftStep {
+    #[serde(default)]
     action: String,
     #[serde(default)]
     expected: String,
@@ -127,8 +128,8 @@ pub struct DraftStep {
     #[serde(default)]
     steps: Vec<DraftStep>,
     /// Number of a shared step (`SS-<n>`) this top-level step references; action, expected, data
-    /// and steps must then stay empty. Only in `propose_case_update`; the shared step must be
-    /// reviewed (not an AI draft) and not archived.
+    /// and steps must then stay empty. Only in top-level steps of `propose_case_update`
+    /// (elsewhere refused); the shared step must be reviewed (not an AI draft) and not archived.
     #[serde(default)]
     shared_step: Option<i64>,
 }
@@ -394,8 +395,14 @@ fn tm(e: TmError) -> ToolError {
 
 fn agent_of(a: &Option<String>) -> Result<String, ToolError> {
     let a = a.as_deref().unwrap_or("mcp").trim();
-    if a.is_empty() || a.len() > MAX_AGENT || a.chars().any(char::is_control) {
-        return Err(ToolError(format!("agent must have 1 to {MAX_AGENT} bytes")));
+    if a.is_empty()
+        || a.len() > MAX_AGENT
+        || a.chars().any(char::is_control)
+        || !crate::integrations::rerun::plain_value(a)
+    {
+        return Err(ToolError(format!(
+            "agent must have 1 to {MAX_AGENT} bytes without control or invisible characters or $"
+        )));
     }
     Ok(a.to_string())
 }
@@ -426,7 +433,18 @@ async fn proposal_steps(
     project_id: Uuid,
     steps: &[DraftStep],
 ) -> Result<Vec<CaseStep>, ToolError> {
+    if steps.iter().any(|d| has_shared(&d.steps)) {
+        return Err(ToolError(
+            "sharedStep: only top-level steps reference shared steps".into(),
+        ));
+    }
+    let refs = steps.iter().filter(|d| d.shared_step.is_some()).count();
+    let max = s.cfg.tm.max_shared_refs;
+    if refs > max {
+        return Err(tm(TmError::limit("maxSharedRefs", max as u64)));
+    }
     let mut out = steps_of(steps, 1);
+    let mut found: HashMap<i64, Uuid> = HashMap::new();
     for (o, d) in out.iter_mut().zip(steps) {
         if let Some(n) = d.shared_step {
             if !(d.action.is_empty()
@@ -438,15 +456,39 @@ async fn proposal_steps(
                     "a sharedStep reference has no action, expected, data or steps".into(),
                 ));
             }
-            let row = s.store.shared_step_view(project_id, n).await.map_err(tm)?;
+            let id = match found.get(&n) {
+                Some(id) => *id,
+                None => {
+                    let row = s.store.shared_step_row(project_id, n).await.map_err(tm)?;
+                    found.insert(n, row.id);
+                    row.id
+                }
+            };
             o.shared = Some(SharedStepRef {
-                id: row.id,
-                number: row.number,
+                id,
+                number: n,
                 version: None,
             });
         }
     }
     Ok(out)
+}
+
+/// Whether any step (at any depth) names a shared step.
+fn has_shared(steps: &[DraftStep]) -> bool {
+    steps
+        .iter()
+        .any(|d| d.shared_step.is_some() || has_shared(&d.steps))
+}
+
+/// Refuses `sharedStep` where it is not accepted (drafts and shared steps themselves).
+fn no_shared(steps: &[DraftStep], what: &str) -> Result<(), ToolError> {
+    if has_shared(steps) {
+        return Err(ToolError(format!(
+            "sharedStep: {what} cannot reference shared steps"
+        )));
+    }
+    Ok(())
 }
 
 fn field_values(
@@ -708,6 +750,9 @@ async fn run_tool(s: &AppState, name: &str, a: &Value, auth: &Auth) -> ToolResul
             franshub_auth::require(auth, &s.perms.launches_read, Some(&p.key))
                 .map_err(ToolError::from)?;
             let agent = agent_of(&x.agent)?;
+            if let Some(st) = &x.steps {
+                no_shared(st, "a draft case")?;
+            }
             let d = s
                 .store
                 .result_detail(p.id, x.result_id, s.history.as_ref())
@@ -788,6 +833,7 @@ async fn run_tool(s: &AppState, name: &str, a: &Value, auth: &Auth) -> ToolResul
             let p = draft_project(s, auth, &x.project).await?;
             crate::tm_rate::admit(s, auth)?;
             let agent = agent_of(&x.agent)?;
+            no_shared(&x.steps, "a draft case")?;
             let w = CaseWrite {
                 name: x.name.clone(),
                 folder_id: x.folder_id,
@@ -1007,11 +1053,7 @@ async fn run_tool(s: &AppState, name: &str, a: &Value, auth: &Auth) -> ToolResul
             let p = draft_project(s, auth, &x.project).await?;
             crate::tm_rate::admit(s, auth)?;
             let agent = agent_of(&x.agent)?;
-            if x.steps.iter().any(|d| d.shared_step.is_some()) {
-                return Err(ToolError(
-                    "a shared step cannot contain shared steps".into(),
-                ));
-            }
+            no_shared(&x.steps, "a shared step")?;
             let w = SharedStepWrite {
                 name: x.name.clone(),
                 description: Some(x.description.clone()),

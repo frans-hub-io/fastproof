@@ -146,6 +146,10 @@ Save it in **Settings › Workflow** or with `PUT $api/settings` (`settings:writ
   without case, so `Alice` and `alice` are one person and count as one approver. The principal that created an
   unreviewed AI draft never votes on it (403 `ai_self_review`). AI agents have no `cases:review` and cannot vote
   at all.
+- A change that holds content an AI draft's creator wrote (the draft's own versions since the approved one) needs
+  **one approval more** than `approvals`, unless `allowSelfApproval`: the name of an agent token does not tell who
+  runs the agent, and that person may approve too. The review and the queue show the number needed in `required`.
+  A suggestion someone accepted is that person's change and needs the usual count.
 
 Runs started from a plan or by adding cases take each case's **runnable** version: the head when review is off,
 when the case is out of scope (an automated case in `manual` mode), or when it was never changed under review;

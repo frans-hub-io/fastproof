@@ -651,3 +651,278 @@ async fn shared_step_drafts_are_rate_limited() {
         .unwrap();
     assert!(n <= 2, "{n}");
 }
+
+/// Security round: shared step references in a proposal are counted against `maxSharedRefs`
+/// before any of them is looked up, only top-level steps reference shared steps, and the draft
+/// tools refuse `sharedStep` instead of storing an empty step.
+#[tokio::test]
+async fn shared_step_references_are_bounded_before_any_lookup() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = Server::start_with(
+        &db,
+        &[
+            ("FASTPROOF_TM_GATE", "open"),
+            ("FASTPROOF_TM_MAX_SHARED_REFS", "2"),
+        ],
+    )
+    .await;
+    s.project("ai").await;
+    let agent = s.token("ag", "agent", &["ai"]).await;
+    let (st, ss) = s
+        .post("/api/v1/projects/ai/shared-steps", ADMIN_TOKEN, json!({"name": "Sign in",
+            "steps": [{"id": "", "action": "Open /login", "expected": "Form", "data": "", "attachments": [], "steps": []}]}))
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{ss}");
+    let (st, c) = s
+        .post(
+            "/api/v1/projects/ai/cases",
+            ADMIN_TOKEN,
+            json!({"name": "Case", "status": "active",
+            "body": {"steps": [{"action": "Open", "expected": "Shown"}]}}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{c}");
+    let rev = c["revision"].as_i64().unwrap();
+    let propose = |steps: Value| json!({"project": "ai", "number": 1, "baseRevision": rev, "rationale": "reuse", "steps": steps});
+
+    let many: Vec<Value> = (1001..1004).map(|n| json!({"sharedStep": n})).collect();
+    let (err, r) = tool(&s, &agent, "propose_case_update", propose(json!(many))).await;
+    refused(err, &r, "limit_reached");
+    let huge: Vec<Value> = (0..5000).map(|_| json!({"sharedStep": 1})).collect();
+    let (err, r) = tool(&s, &agent, "propose_case_update", propose(json!(huge))).await;
+    refused(err, &r, "limit_reached");
+    let (err, r) = tool(
+        &s,
+        &agent,
+        "propose_case_update",
+        propose(json!([{"sharedStep": 1001}, {"sharedStep": 1002}])),
+    )
+    .await;
+    refused(err, &r, "not_found");
+    let (err, r) = tool(
+        &s,
+        &agent,
+        "propose_case_update",
+        propose(json!([{"action": "Pay", "steps": [{"sharedStep": 1}]}])),
+    )
+    .await;
+    refused(err, &r, "sharedStep");
+    let (err, r) = tool(
+        &s,
+        &agent,
+        "propose_case_update",
+        propose(json!([{"sharedStep": ss["number"]}, {"sharedStep": ss["number"]}])),
+    )
+    .await;
+    assert!(
+        !err,
+        "a reference needs no action; one shared step twice: {r}"
+    );
+
+    let (err, r) = tool(
+        &s,
+        &agent,
+        "create_case_draft",
+        json!({"project": "ai", "name": "Draft", "steps": [{"action": "a", "steps": [{"sharedStep": 1}]}]}),
+    )
+    .await;
+    refused(err, &r, "sharedStep");
+    let (err, r) = tool(
+        &s,
+        &agent,
+        "create_shared_step_draft",
+        json!({"project": "ai", "name": "Nested", "steps": [{"action": "a", "steps": [{"sharedStep": 1}]}]}),
+    )
+    .await;
+    refused(err, &r, "sharedStep");
+    let (err, r) = tool(
+        &s,
+        &agent,
+        "create_case_draft",
+        json!({"project": "ai", "name": "Draft", "agent": "copilot\u{202E}lanif",
+        "steps": [{"action": "a"}]}),
+    )
+    .await;
+    assert!(err, "an agent name hides no text: {r}");
+    let cases: i64 = sqlx::query_scalar("select count(*) from cases")
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    let shared: i64 = sqlx::query_scalar("select count(*) from shared_steps")
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!((cases, shared), (1, 1), "nothing else was created");
+}
+
+/// Security round: one agent cannot fill the project's shared steps with unreviewed AI drafts
+/// (`maxUnreviewedAiDrafts` per creator, as for cases); other creators are not affected.
+#[tokio::test]
+async fn unreviewed_ai_shared_step_drafts_are_capped_per_creator() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = server(&db).await;
+    s.project("ai").await;
+    let agent = s.token("ag", "agent", &["ai"]).await;
+    let other = s.token("ag2", "agent", &["ai"]).await;
+    sqlx::query(
+        "insert into shared_steps (id, project_id, number, name, steps, origin, ai_unreviewed, created_by, updated_by) \
+         select gen_random_uuid(), p.id, 1000 + g, 'Draft ' || g, '[]', 'ai', true, 'ag', 'ag' \
+         from projects p, generate_series(1, 200) g where p.key = 'ai'",
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let draft = json!({"project": "ai", "name": "One more", "steps": [{"action": "a"}]});
+    let (err, r) = tool(&s, &agent, "create_shared_step_draft", draft.clone()).await;
+    refused(err, &r, "limit_reached");
+    assert!(r.as_str().unwrap().contains("maxUnreviewedAiDrafts"), "{r}");
+    let (err, r) = tool(&s, &other, "create_shared_step_draft", draft.clone()).await;
+    assert!(!err, "another creator: {r}");
+    sqlx::query("update shared_steps set ai_unreviewed = false where number = 1001")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let (err, r) = tool(&s, &agent, "create_shared_step_draft", draft).await;
+    assert!(!err, "room after a person reviewed one: {r}");
+}
+
+async fn review_etag(s: &Server, path: &str) -> String {
+    let r = s
+        .req(Method::GET, path, Some(ADMIN_TOKEN))
+        .send()
+        .await
+        .unwrap();
+    assert!(r.status().is_success(), "{path}: {}", r.status());
+    r.headers()["etag"].to_str().unwrap().to_string()
+}
+
+async fn approve(s: &Server, path: &str, token: &str, version: i64) -> (StatusCode, Value) {
+    let etag = review_etag(s, path).await;
+    let r = s
+        .req(Method::POST, path, Some(token))
+        .header("if-match", etag)
+        .json(&json!({"version": version, "decision": "approve"}))
+        .send()
+        .await
+        .unwrap();
+    let st = r.status();
+    (st, r.json().await.unwrap_or(Value::Null))
+}
+
+/// Security round: the person who runs an agent can use its token as a second identity, so a
+/// change holding AI content written by the AI creator needs one approval more than the policy
+/// says (two people other than the agent with `approvals: 1`). A person's change does not.
+#[tokio::test]
+async fn ai_written_changes_need_one_more_approver() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = server(&db).await;
+    s.project("ai").await;
+    let agent = s.token("ag", "agent", &["ai"]).await;
+    let alice = s.token("alice", "editor", &["ai"]).await;
+    let bob = s.token("bob", "editor", &["ai"]).await;
+    let (st, b) = s
+        .call(Method::PUT, "/api/v1/projects/ai/settings", Some(ADMIN_TOKEN), Some(json!({"caseReview":
+            {"mode": "all", "approvals": 1, "resetOn": "content", "allowSelfApproval": false, "imports": "review"}})))
+        .await;
+    assert!(st.is_success(), "{st} {b}");
+
+    let (err, r) = tool(
+        &s,
+        &agent,
+        "create_shared_step_draft",
+        json!({"project": "ai", "name": "Pay", "steps": [{"action": "Enter the card", "expected": "Accepted"}]}),
+    )
+    .await;
+    assert!(!err, "{r}");
+    let (_, cur) = s
+        .get("/api/v1/projects/ai/shared-steps/1", ADMIN_TOKEN)
+        .await;
+    let put = s
+        .req(
+            Method::PUT,
+            "/api/v1/projects/ai/shared-steps/1",
+            Some(&alice),
+        )
+        .header("if-match", "\"r1\"")
+        .json(
+            &json!({"name": cur["name"], "description": cur["description"], "steps": cur["steps"]}),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert!(put.status().is_success(), "{}", put.status());
+    let (_, cur) = s
+        .get("/api/v1/projects/ai/shared-steps/1", ADMIN_TOKEN)
+        .await;
+    assert_eq!(
+        (cur["version"].as_i64(), cur["aiUnreviewed"].as_bool()),
+        (Some(1), Some(false)),
+        "a person acknowledged the draft without a change: {cur}"
+    );
+    let path = "/api/v1/projects/ai/shared-steps/1/reviews";
+    let (st, t) = approve(&s, path, &alice, 1).await;
+    assert_eq!(st, StatusCode::OK, "{t}");
+    assert_eq!(
+        (t["reviewState"].as_str(), t["required"].as_i64()),
+        (Some("pending"), Some(2)),
+        "one person is not enough for AI content: {t}"
+    );
+    let (_, q) = tool(&s, &bob, "review_queue", json!({"project": "ai"})).await;
+    assert_eq!(q["items"][0]["required"], 2, "{q}");
+    let (st, t) = approve(&s, path, &bob, 1).await;
+    assert_eq!(st, StatusCode::OK, "{t}");
+    assert_eq!(t["reviewState"], "approved", "{t}");
+
+    let (err, r) = tool(
+        &s,
+        &agent,
+        "create_case_draft",
+        json!({"project": "ai", "name": "Refund", "steps": [{"action": "Refund", "expected": "Done"}]}),
+    )
+    .await;
+    assert!(!err, "{r}");
+    let n = r["number"].as_i64().unwrap();
+    let (_, c) = s
+        .get(&format!("/api/v1/projects/ai/cases/{n}"), ADMIN_TOKEN)
+        .await;
+    let ack = s
+        .req(
+            Method::POST,
+            &format!("/api/v1/projects/ai/cases/{n}/review"),
+            Some(&alice),
+        )
+        .header("if-match", format!("\"r{}\"", c["revision"]))
+        .send()
+        .await
+        .unwrap();
+    assert!(ack.status().is_success(), "{}", ack.status());
+    let path = format!("/api/v1/projects/ai/cases/{n}/reviews");
+    let (st, t) = approve(&s, &path, &alice, 1).await;
+    assert_eq!(st, StatusCode::OK, "{t}");
+    assert_eq!(t["reviewState"], "pending", "{t}");
+    let (_, t) = approve(&s, &path, &bob, 1).await;
+    assert_eq!(t["reviewState"], "approved", "{t}");
+
+    let (st, c) = s
+        .post(
+            "/api/v1/projects/ai/cases",
+            &alice,
+            json!({"name": "By a person", "status": "draft",
+            "body": {"steps": [{"action": "Do", "expected": "Done"}]}}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{c}");
+    let path = format!("/api/v1/projects/ai/cases/{}/reviews", c["number"]);
+    let (_, t) = approve(&s, &path, &bob, 1).await;
+    assert_eq!(
+        (t["reviewState"].as_str(), t["required"].as_i64()),
+        (Some("approved"), Some(1)),
+        "{t}"
+    );
+}

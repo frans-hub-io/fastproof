@@ -112,8 +112,15 @@ people decide.
 `create_shared_step_draft` makes a shared step with `origin = ai` and `aiUnreviewed`. A case cannot reference it
 until a principal other than its creator has saved or reviewed it; before that `propose_case_update` with
 `{"sharedStep": <n>}` is refused. A reference step carries no `action`, `expected`, `data` or `steps`; an unknown,
-archived or unreviewed shared step is refused like on the REST API. A proposal that references a shared step is a
-gated write while old replicas run (`upgrade_in_progress`).
+archived or unreviewed shared step is refused like on the REST API. Only top-level steps of `propose_case_update`
+reference shared steps (at most `maxSharedRefs` references, 50 by default, counted before any is looked up); the
+draft tools refuse `sharedStep`. A proposal that references a shared step is a gated write while old replicas run
+(`upgrade_in_progress`).
+
+With version review on, a change that holds content an agent wrote as an AI draft needs one approval more than the
+policy's `approvals` (unless `allowSelfApproval`): an agent token's name says nothing about the person who runs the
+agent, so that person may approve, and another one must too. See
+[Workflows and review](workflows-and-review.md#how-a-version-is-reviewed).
 
 ### What an agent never does
 
@@ -123,7 +130,8 @@ same holds on the REST API for an agent token: it has none of `cases:review`, `l
 or `settings:write`. `review_queue` and `plan_dispatches` only read. The write tools of this section take the
 per-caller write rate (`rate_limited`), as the other TM writes do.
 
-Every write tool takes an optional `agent` (the agent's name, up to 100 bytes, recorded in the audit log).
+Every write tool takes an optional `agent` (the agent's name, up to 100 bytes without control or invisible
+characters or `$`, recorded in the audit log).
 Errors come back as tool errors whose text starts with the API error code (`forbidden`, `not_found`,
 `invalid_case`, `suggestion_stale`, …).
 
@@ -155,8 +163,9 @@ below goes:
 An agent with a terminal can call the REST API with the token it has, so the rules above hold for the REST API
 only when the token itself cannot change cases. The built-in role `agent` is made for that: it can read
 projects, launches and test cases, triage results (`results:triage`), and create work for people to review
-(`ai:propose`: `create_case_draft`, `draft_case_from_result`, `propose_case_update` and `create_rule_draft`). It
-has no `cases:write`, `rules:write`, `plans:write` or `runs:execute`, so over REST an agent token answers `403`
+(`ai:propose`: `create_case_draft`, `draft_case_from_result`, `propose_case_update`, `create_shared_step_draft`
+and `create_rule_draft`). It has no `cases:write`, `cases:review`, `rules:write`, `plans:write` or `runs:execute`,
+so over REST an agent token answers `403`
 to creating, changing, reviewing, activating or archiving cases, to accepting or rejecting suggestions, to bulk
 changes and to enabling rules, and over MCP it cannot call `add_cases_to_plan`. People review its drafts and
 suggestions with their own accounts. More limits of agent tokens:
@@ -166,9 +175,9 @@ suggestions with their own accounts. More limits of agent tokens:
   and enables. `triage` with `mute` or `unmute` answers `403` with `details.required: results:mute`.
 - **AI triage.** Triage by a principal with `ai:propose` and without `cases:write` (the `agent` role) is always
   recorded with `source: ai`, on MCP and on `POST /triage` and run item defects alike, whatever `source` it sends.
-- **Draft caps.** One principal has at most 200 unreviewed AI draft cases (`409 limit_reached`,
-  `maxUnreviewedAiDrafts`) and 20 disabled rules (`maxRuleDrafts`) per project; people review, archive or delete
-  some to make room.
+- **Draft caps.** One principal has at most 200 unreviewed AI draft cases and 200 unreviewed AI shared steps
+  (`409 limit_reached`, `maxUnreviewedAiDrafts`) and 20 disabled rules (`maxRuleDrafts`) per project; people
+  review, archive or delete some to make room.
 - **Rate.** MCP write tools count against the same per-caller rate as other writes that multiply work
   (`FASTPROOF_TM_MULTIPLYING_WRITES_PER_MINUTE`).
 

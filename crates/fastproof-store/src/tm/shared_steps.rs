@@ -1030,7 +1030,9 @@ impl Store {
     }
 
     /// Creates a shared step (version 1, `sharedStep.updated`). An AI draft is `aiUnreviewed`
-    /// until a person other than its creator saves it; cases cannot reference it before.
+    /// until a person other than its creator saves it; cases cannot reference it before. One
+    /// creator has at most `MAX_UNREVIEWED_AI_DRAFTS` unreviewed AI drafts per project
+    /// (`limit_reached`, `maxUnreviewedAiDrafts`), as for cases.
     pub async fn create_shared_step(
         &self,
         ctx: &CaseCtx<'_>,
@@ -1039,6 +1041,27 @@ impl Store {
     ) -> TmResult<SharedStepRow> {
         let c = check_write(ctx.limits, w)?;
         let mut tx = self.pool.begin().await?;
+        if origin == SharedStepOrigin::Ai {
+            sqlx::query("select pg_advisory_xact_lock(hashtextextended($1 || ':' || $2, 7902))")
+                .bind(ctx.project_id.to_string())
+                .bind(no_nul(ctx.by))
+                .execute(&mut *tx)
+                .await?;
+            let drafts: i64 = sqlx::query_scalar(
+                "select count(*) from shared_steps where project_id = $1 and origin = 'ai' \
+                 and ai_unreviewed and archived_at is null and created_by = $2",
+            )
+            .bind(ctx.project_id)
+            .bind(no_nul(ctx.by))
+            .fetch_one(&mut *tx)
+            .await?;
+            if drafts >= super::ai::MAX_UNREVIEWED_AI_DRAFTS {
+                return Err(TmError::limit(
+                    "maxUnreviewedAiDrafts",
+                    super::ai::MAX_UNREVIEWED_AI_DRAFTS as u64,
+                ));
+            }
+        }
         let row = create_in(&mut tx, ctx, c, origin).await?;
         tx.commit().await?;
         Ok(row)

@@ -59,7 +59,7 @@ const ATTEMPTS: Leaf = Leaf {
 };
 
 /// Leaves under a launch, by `launch_id`, except results and attempts.
-const LAUNCH_LEAVES: [Leaf; 8] = [
+const LAUNCH_LEAVES: [Leaf; 12] = [
     leaf("attempt_log_chunks"),
     leaf("explorer_cache"),
     leaf("launch_containers"),
@@ -68,6 +68,10 @@ const LAUNCH_LEAVES: [Leaf; 8] = [
     leaf("launch_gates"),
     leaf("case_sync_queue"),
     leaf("launch_attr_index"),
+    leaf("triage_decisions"),
+    leaf("triage_suggestions"),
+    leaf("result_patterns"),
+    leaf("analysis_launches"),
 ];
 
 /// Leaves under a case, by `case_id` (run items are not leaves and go separately).
@@ -91,7 +95,7 @@ const SHARED_STEP_LEAVES: [Leaf; 3] = [
 /// Tables of a project with nothing left under them once launches, plans, test cases and
 /// cases are gone, by `project_id`. Attachments come after cases (case attachments restrict
 /// their deletion) and after their media rows; the last ones are normally empty by then.
-const PROJECT_LEAVES: [&str; 26] = [
+const PROJECT_LEAVES: [&str; 35] = [
     "rp_items",
     "rp_launches",
     "history_imports",
@@ -118,10 +122,20 @@ const PROJECT_LEAVES: [&str; 26] = [
     "review_votes",
     "saved_queries",
     "plan_dispatches",
+    "triage_decisions",
+    "triage_suggestions",
+    "result_patterns",
+    "attempt_signals",
+    "analysis_launches",
+    "analysis_backtests",
+    "triage_memory_events",
+    "triage_memory",
+    "fingerprint_branches",
 ];
 
 /// Statistics of series, deleted by `project_id` before test cases and series.
-const SERIES_LEAVES: [&str; 6] = [
+const SERIES_LEAVES: [&str; 7] = [
+    "flaky_hints",
     "series_daily",
     "series_stats",
     "series_mutes",
@@ -377,6 +391,8 @@ impl<'c> Purge<'c> {
         self.leaves(leaf("plan_dispatches"), "launch_id", launches)
             .await?;
         self.leaves(leaf("explorer_gen"), "launch_id", launches)
+            .await?;
+        self.leaves(leaf("attempt_signals"), "launch_id", launches)
             .await?;
         self.exec("delete from launches where id = any($1)".into(), launches)
             .await?;

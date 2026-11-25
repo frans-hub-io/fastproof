@@ -1,0 +1,66 @@
+publicUrl: https://fastproof.example.com
+
+database:
+  existingSecret: fastproof-database
+
+blob:
+  backend: s3
+  s3:
+    endpoint: https://s3.example.com
+    bucket: fastproof
+    credentials:
+      existingSecret: fastproof-s3
+
+auth:
+  adminTokens:
+    existingSecret: fastproof-admin-tokens
+
+sinks:
+  clickhouse:
+    enabled: true
+    aggTtlDays: 365
+    external:
+      url: https://clickhouse.example.com:8443
+      user: fastproof
+      password:
+        existingSecret: fastproof-clickhouse
+
+analysis:
+  enabled: true
+  workers: 4
+  settleSeconds: 60
+  gateSettleSeconds: 900
+  limits:
+    launchTimeoutSeconds: 300
+    maxClusters: 5000
+    fastmockAttempts: 0
+
+roles:
+  split: true
+  analysis:
+    replicaCount: 2
+    resources:
+      requests:
+        cpu: 200m
+        memory: 256Mi
+        ephemeral-storage: 64Mi
+      limits:
+        cpu: "2"
+        memory: 1Gi
+        ephemeral-storage: 1Gi
+
+networkPolicy:
+  enabled: true
+  egress:
+    database:
+      to:
+        - ipBlock:
+            cidr: 198.51.100.10/32
+    s3:
+      to:
+        - ipBlock:
+            cidr: 198.51.100.20/32
+    clickhouse:
+      to:
+        - ipBlock:
+            cidr: 198.51.100.40/32

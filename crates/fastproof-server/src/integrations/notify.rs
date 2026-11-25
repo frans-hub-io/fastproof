@@ -896,6 +896,19 @@ async fn send_email_text(
     Outcome::Retry(last, None)
 }
 
+/// Queues the `errorRegressed` deliveries of the error-state changes of a launch (at most one
+/// per channel and project every 10 minutes, listing up to 10 errors); returns how many were
+/// queued. Owner: E. Stub until it fills it: none.
+pub async fn error_events(
+    s: &AppState,
+    project: &fastproof_store::Project,
+    launch: &fastproof_store::Launch,
+    changes: &[fastproof_store::analysis::types::ErrorStateChange],
+) -> anyhow::Result<u64> {
+    let _ = (s, project, launch, changes);
+    Ok(0)
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::Utc;

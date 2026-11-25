@@ -28,6 +28,10 @@ import { STATUS_LABEL, statusVar } from '../lib/status';
 import { AttachmentList } from '../viewers/AttachmentList';
 import { AttemptVideo } from '../viewers/player/AttemptVideo';
 import { videosOf } from '../viewers/player/videos';
+import { Patterns } from './result/Patterns';
+import { SignalsBlock } from './result/SignalsBlock';
+import { SuggestionsPanel } from './result/SuggestionsPanel';
+import { TriageHistory } from './result/TriageHistory';
 
 export function HistoryStrip({ project, history, currentLaunch, fullName }: { project: string; history: SeriesHistoryItem[]; currentLaunch: string | undefined; fullName: string }) {
   const navigate = useNavigate();
@@ -273,6 +277,7 @@ function MockInteractionsView({ project, resultId, attempt }: { project: string;
 export function Side({ project, r, types }: { project: string; r: ResultDetail; types: Map<string, DefectType> }) {
   return (
     <Stack gap="md">
+      {failing(r.status) && <SuggestionsPanel project={project} r={r} />}
       {failing(r.status) && <SimilarFailures project={project} r={r} types={types} />}
       {r.parameters.length > 0 && (
         <Card withBorder radius="md" padding="sm">
@@ -419,6 +424,9 @@ function AttemptView({ project, attempt, r, launch }: { project: string; attempt
             Output
           </Tabs.Tab>
           <Tabs.Tab value="mocks">Mock interactions</Tabs.Tab>
+          <Tabs.Tab value="triage" data-testid="tab-result-triage">
+            Triage
+          </Tabs.Tab>
         </Tabs.List>
         <Tabs.Panel value="steps" pt="sm">
           <StepTree project={project} steps={attempt.steps} timeline={timeline} />
@@ -446,6 +454,13 @@ function AttemptView({ project, attempt, r, launch }: { project: string; attempt
         </Tabs.Panel>
         <Tabs.Panel value="mocks" pt="sm">
           <MockInteractionsView project={project} resultId={r.id} attempt={attempt.no} />
+        </Tabs.Panel>
+        <Tabs.Panel value="triage" pt="sm">
+          <Stack gap="md">
+            <TriageHistory project={project} r={r} />
+            <Patterns project={project} r={r} />
+            <SignalsBlock project={project} r={r} />
+          </Stack>
         </Tabs.Panel>
         <Tabs.Panel value="output" pt="sm">
           <Stack gap="sm">

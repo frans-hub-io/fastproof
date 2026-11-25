@@ -10,8 +10,10 @@ use sqlx::PgConnection;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
+use super::decisions::{Batch, read_states, record};
 use super::hook::{TypeRef, type_refs, upsert_mutes};
 use super::rules::IssueRef;
+use super::types::{DecisionCtx, DecisionSource};
 use crate::{Defect, Store, no_nul};
 
 /// Results listed in one triage request, at most.
@@ -56,8 +58,12 @@ pub struct TriageRequest {
 
 /// Outcome of a triage request.
 #[derive(Clone, Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct TriageOutcome {
     pub updated: u64,
+    /// The journal batch of the changes (`null` when nothing changed); `POST .../triage/undo`
+    /// takes it.
+    pub batch_id: Option<Uuid>,
 }
 
 impl TriageRequest {
@@ -193,9 +199,7 @@ fn base_type<'a>(
 }
 
 impl Store {
-    /// Applies a validated triage request. The transaction runs again (at most
-    /// [`crate::ingest::TX_ATTEMPTS`] times) when PostgreSQL aborts it to break a deadlock with
-    /// a concurrent writer of the same results.
+    /// Applies a validated triage request through the REST path ([`DecisionCtx::api`]).
     pub async fn triage(
         &self,
         project_id: Uuid,
@@ -203,9 +207,28 @@ impl Store {
         req: &TriageRequest,
         by: &str,
     ) -> anyhow::Result<Result<TriageOutcome, TriageRefusal>> {
+        self.triage_with(project_id, project_key, req, by, &DecisionCtx::api())
+            .await
+    }
+
+    /// Applies a validated triage request and journals every changed result as one batch
+    /// (`ctx` says through which path). The transaction runs again (at most
+    /// [`crate::ingest::TX_ATTEMPTS`] times) when PostgreSQL aborts it to break a deadlock with
+    /// a concurrent writer of the same results.
+    pub async fn triage_with(
+        &self,
+        project_id: Uuid,
+        project_key: &str,
+        req: &TriageRequest,
+        by: &str,
+        ctx: &DecisionCtx,
+    ) -> anyhow::Result<Result<TriageOutcome, TriageRefusal>> {
         let mut attempt = 1;
         loop {
-            match self.triage_once(project_id, project_key, req, by).await {
+            match self
+                .triage_once(project_id, project_key, req, by, ctx)
+                .await
+            {
                 Err(e)
                     if attempt < crate::ingest::TX_ATTEMPTS
                         && crate::ingest::retryable(&e).is_some() =>
@@ -224,6 +247,7 @@ impl Store {
         project_key: &str,
         req: &TriageRequest,
         by: &str,
+        ctx: &DecisionCtx,
     ) -> anyhow::Result<Result<TriageOutcome, TriageRefusal>> {
         let now = Utc::now();
         let mut tx = self.pool.begin().await?;
@@ -265,7 +289,10 @@ impl Store {
             .await?
         };
         if targets.is_empty() {
-            return Ok(Ok(TriageOutcome { updated: 0 }));
+            return Ok(Ok(TriageOutcome {
+                updated: 0,
+                batch_id: None,
+            }));
         }
         let (by_id, by_group) = type_refs(&mut tx, project_id).await?;
         let chosen = match req.defect_type_id {
@@ -275,15 +302,16 @@ impl Store {
             },
             None => None,
         };
-        let source = req.source.clone().unwrap_or_else(|| "user".into());
+        let source = match ctx.source {
+            Some(s) => s.as_str().to_string(),
+            None => req.source.clone().unwrap_or_else(|| "user".into()),
+        };
         let launches: Vec<Uuid> = targets
             .iter()
             .map(|t| t.2)
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
-        let ids: Vec<Uuid> = targets.iter().map(|t| t.0).collect();
-        let created: Vec<DateTime<Utc>> = targets.iter().map(|t| t.1).collect();
         // The order every writer of results takes (see [`lock_launches`]): launch rows
         // share-locked, result rows in id order, the launch rows for the counter at the end.
         sqlx::query("select 1 from launches where id = any($1) order by id for key share")
@@ -300,6 +328,27 @@ impl Store {
         .bind(sorted.iter().map(|t| t.1).collect::<Vec<_>>())
         .execute(&mut *tx)
         .await?;
+        // The state before, read under the lock (the journal's `before`).
+        let mut before = read_states(&mut tx, &sorted).await?;
+        let mut targets = targets;
+        if ctx.skip_protected {
+            let protected: BTreeSet<Uuid> = before
+                .iter()
+                .filter(|b| matches!(b.defect_source(), Some("user" | "ai")))
+                .map(|b| b.result_id)
+                .collect();
+            targets.retain(|t| !protected.contains(&t.0));
+            before.retain(|b| !protected.contains(&b.result_id));
+            if targets.is_empty() {
+                tx.rollback().await?;
+                return Ok(Ok(TriageOutcome {
+                    updated: 0,
+                    batch_id: None,
+                }));
+            }
+        }
+        let ids: Vec<Uuid> = targets.iter().map(|t| t.0).collect();
+        let created: Vec<DateTime<Utc>> = targets.iter().map(|t| t.1).collect();
 
         if req.defect_type_id.is_some() || req.comment.is_some() || req.issue.is_some() {
             let mut defects = Vec::with_capacity(targets.len());
@@ -380,6 +429,24 @@ impl Store {
         if req.mute.is_some() || req.unmute == Some(true) {
             recount_muted(&mut tx, &launches).await?;
         }
+        let keys: Vec<(Uuid, DateTime<Utc>)> =
+            ids.iter().copied().zip(created.iter().copied()).collect();
+        let after = read_states(&mut tx, &keys).await?;
+        let batch_id = record(
+            &mut tx,
+            &Batch {
+                project_id,
+                project_key,
+                via: ctx.via,
+                source: DecisionSource::parse(&source).unwrap_or(DecisionSource::User),
+                by,
+                suggestion_id: ctx.suggestion_id,
+                reverts: ctx.reverts,
+            },
+            &before,
+            &after,
+        )
+        .await?;
         crate::events::emit(
             &mut tx,
             "results.triaged",
@@ -394,6 +461,7 @@ impl Store {
         tx.commit().await?;
         Ok(Ok(TriageOutcome {
             updated: ids.len() as u64,
+            batch_id,
         }))
     }
 }

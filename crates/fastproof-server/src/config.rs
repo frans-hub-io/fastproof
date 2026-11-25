@@ -41,6 +41,8 @@ pub struct Roles {
     pub writer: bool,
     pub sink: bool,
     pub scheduler: bool,
+    /// FastProof Analysis (idle while `FASTPROOF_ANALYSIS=off`).
+    pub analysis: bool,
 }
 
 impl Roles {
@@ -50,21 +52,25 @@ impl Roles {
         writer: true,
         sink: true,
         scheduler: true,
+        analysis: true,
     };
 
-    /// `all` or a comma list of `api`, `ingest`, `writer`, `sink`, `scheduler`.
+    const NONE: Roles = Roles {
+        api: false,
+        ingest: false,
+        writer: false,
+        sink: false,
+        scheduler: false,
+        analysis: false,
+    };
+
+    /// `all` or a comma list of `api`, `ingest`, `writer`, `sink`, `scheduler`, `analysis`.
     pub fn parse(s: &str) -> anyhow::Result<Self> {
         let s = s.trim().to_ascii_lowercase();
         if s == "all" {
             return Ok(Self::ALL);
         }
-        let mut r = Roles {
-            api: false,
-            ingest: false,
-            writer: false,
-            sink: false,
-            scheduler: false,
-        };
+        let mut r = Self::NONE;
         for part in s.split(',').map(str::trim).filter(|p| !p.is_empty()) {
             match part {
                 "api" => r.api = true,
@@ -72,22 +78,131 @@ impl Roles {
                 "writer" => r.writer = true,
                 "sink" => r.sink = true,
                 "scheduler" => r.scheduler = true,
+                "analysis" => r.analysis = true,
                 other => bail!(
-                    "unknown role {other:?}: expected all or api, ingest, writer, sink, scheduler"
+                    "unknown role {other:?}: expected all or api, ingest, writer, sink, scheduler, analysis"
                 ),
             }
         }
-        if r == (Roles {
-            api: false,
-            ingest: false,
-            writer: false,
-            sink: false,
-            scheduler: false,
-        }) {
+        if r == Self::NONE {
             bail!("no role given");
         }
         Ok(r)
     }
+}
+
+/// Whether Analysis reads ClickHouse (`FASTPROOF_ANALYSIS_CLICKHOUSE`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AnalysisClickHouse {
+    /// When `FASTPROOF_CLICKHOUSE_URL` is set and `clickhouse` is in `FASTPROOF_SINKS`.
+    Auto,
+    Off,
+}
+
+/// FastProof Analysis of the instance (`FASTPROOF_ANALYSIS*`, contract `76` §5.2).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AnalysisConfig {
+    /// `FASTPROOF_ANALYSIS=on|off` (default off).
+    pub enabled: bool,
+    /// Launch workers of this replica (`FASTPROOF_ANALYSIS_WORKERS`, 0 to 16, default 2).
+    pub workers: usize,
+    /// Age of a `launch.finished` event before it is consumed
+    /// (`FASTPROOF_ANALYSIS_SETTLE_SECONDS`, 0 to 600, default 30).
+    pub settle: Duration,
+    /// `FASTPROOF_ANALYSIS_CLICKHOUSE=auto|off`.
+    pub clickhouse: AnalysisClickHouse,
+    /// Store-side limits (`FASTPROOF_ANALYSIS_*`).
+    pub limits: fastproof_store::analysis::types::AnalysisLimits,
+}
+
+impl Default for AnalysisConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            workers: 2,
+            settle: Duration::from_secs(30),
+            clickhouse: AnalysisClickHouse::Auto,
+            limits: Default::default(),
+        }
+    }
+}
+
+/// `FASTPROOF_ANALYSIS*`; every error names the variable.
+fn analysis_config(env: &Env<'_>) -> anyhow::Result<AnalysisConfig> {
+    use fastproof_store::analysis::types::AnalysisLimits;
+    let d = AnalysisConfig::default();
+    let l = AnalysisLimits::default();
+    let n = |name: &str, default: u64, min: u64, max: u64| -> anyhow::Result<u64> {
+        let k = format!("FASTPROOF_ANALYSIS_{name}");
+        let v: u64 = env.parse(&k, default)?;
+        if !(min..=max).contains(&v) {
+            bail!("{k}: {min}..={max}");
+        }
+        Ok(v)
+    };
+    let enabled = match env
+        .var("FASTPROOF_ANALYSIS")
+        .map(|v| v.trim().to_ascii_lowercase())
+        .as_deref()
+    {
+        None | Some("off") => false,
+        Some("on") => true,
+        Some(v) => bail!("FASTPROOF_ANALYSIS: on or off, got {v:?}"),
+    };
+    let clickhouse = match env
+        .var("FASTPROOF_ANALYSIS_CLICKHOUSE")
+        .map(|v| v.trim().to_ascii_lowercase())
+        .as_deref()
+    {
+        None | Some("auto") => AnalysisClickHouse::Auto,
+        Some("off") => AnalysisClickHouse::Off,
+        Some(v) => bail!("FASTPROOF_ANALYSIS_CLICKHOUSE: auto or off, got {v:?}"),
+    };
+    let gate_mode = {
+        let k = "FASTPROOF_ANALYSIS_GATE";
+        match env.var(k) {
+            None => l.gate_mode,
+            Some(v) => fastproof_store::tm::TmGateMode::parse(&v.trim().to_ascii_lowercase())
+                .ok_or_else(|| anyhow!("{k}: auto, open or closed"))?,
+        }
+    };
+    Ok(AnalysisConfig {
+        enabled,
+        workers: n("WORKERS", d.workers as u64, 0, 16)? as usize,
+        settle: Duration::from_secs(n("SETTLE_SECONDS", d.settle.as_secs(), 0, 600)?),
+        clickhouse,
+        limits: AnalysisLimits {
+            launch_timeout_seconds: n(
+                "LAUNCH_TIMEOUT_SECONDS",
+                l.launch_timeout_seconds,
+                10,
+                3600,
+            )?,
+            max_clusters: n("MAX_CLUSTERS", l.max_clusters.into(), 10, 100_000)? as u32,
+            candidate_rows: n("CANDIDATE_ROWS", l.candidate_rows.into(), 100, 100_000)? as u32,
+            memory_max_rows: n("MEMORY_MAX_ROWS", l.memory_max_rows, 1000, 10_000_000)?,
+            log_cpu_ms: n("LOG_CPU_MS", l.log_cpu_ms, 100, 60_000)?,
+            log_last_bytes: n("LOG_LAST_BYTES", l.log_last_bytes, 1024, 1_048_576)?,
+            log_attempts: n("LOG_ATTEMPTS", l.log_attempts.into(), 10, 100_000)? as u32,
+            max_log_rules: n("MAX_LOG_RULES", l.max_log_rules.into(), 1, 1000)? as u32,
+            recompute_seconds: n("RECOMPUTE_SECONDS", l.recompute_seconds, 5, 3600)?,
+            backtest_max_events: n(
+                "BACKTEST_MAX_EVENTS",
+                l.backtest_max_events,
+                1000,
+                10_000_000,
+            )?,
+            signals_per_minute: n(
+                "SIGNALS_PER_MINUTE",
+                l.signals_per_minute.into(),
+                1,
+                100_000,
+            )? as u32,
+            fastmock_attempts: n("FASTMOCK_ATTEMPTS", l.fastmock_attempts.into(), 0, 2000)? as u32,
+            gate_mode,
+            gate_settle_seconds: n("GATE_SETTLE_SECONDS", l.gate_settle_seconds, 0, 2_592_000)?,
+        },
+    })
 }
 
 /// Where log search and similar failures go (`FASTPROOF_SEARCH_BACKEND`).
@@ -194,6 +309,8 @@ pub struct Config {
     pub guards: crate::limits::GuardSettings,
     /// Limits of test management (`FASTPROOF_TM_*`).
     pub tm: fastproof_store::tm::TmLimits,
+    /// FastProof Analysis (`FASTPROOF_ANALYSIS*`).
+    pub analysis: AnalysisConfig,
     /// Allow `http` base URLs for imports from Allure TestOps (`FASTPROOF_TESTOPS_ALLOW_HTTP`).
     pub testops_allow_http: bool,
     /// How long after the upgrade the case backfill waits before it decides per project
@@ -434,6 +551,7 @@ impl fmt::Debug for Config {
             .field("log_chunk_events", &self.log_chunk_events)
             .field("guards", &self.guards)
             .field("tm", &self.tm)
+            .field("analysis", &self.analysis)
             .field("tm_backfill_delay", &self.tm_backfill_delay)
             .field("direct_uploads", &self.direct_uploads)
             .field("rp", &self.rp)
@@ -890,6 +1008,7 @@ impl Config {
             log_chunk_events,
             guards: crate::limits::GuardSettings::from_env(&env)?,
             tm: tm_limits(&env)?,
+            analysis: analysis_config(&env)?,
             testops_allow_http: env.bool("FASTPROOF_TESTOPS_ALLOW_HTTP", false)?,
             tm_backfill_delay: delay(
                 &env,
@@ -1103,6 +1222,66 @@ mod tests {
         ] {
             let e = format!("{:#}", cfg(&[base, (k, v)]).unwrap_err());
             assert!(e.contains("FASTPROOF_"), "{k}: {e}");
+        }
+    }
+
+    #[test]
+    fn analysis_role_and_settings() {
+        let base = ("FASTPROOF_DATABASE_URL", "postgres://db.example.com/fp");
+        let c = cfg(&[base]).unwrap();
+        assert!(c.roles.analysis, "all includes analysis");
+        assert_eq!(c.analysis, AnalysisConfig::default());
+        assert!(!c.analysis.enabled);
+        let r = Roles::parse("analysis").unwrap();
+        assert!(r.analysis && !r.api && !r.scheduler && !r.ingest);
+        let r = Roles::parse("api, scheduler").unwrap();
+        assert!(!r.analysis);
+        assert!(Roles::parse(" , ").is_err());
+        let c = cfg(&[
+            base,
+            ("FASTPROOF_ANALYSIS", "ON"),
+            ("FASTPROOF_ANALYSIS_WORKERS", "0"),
+            ("FASTPROOF_ANALYSIS_SETTLE_SECONDS", "0"),
+            ("FASTPROOF_ANALYSIS_CLICKHOUSE", "off"),
+            ("FASTPROOF_ANALYSIS_GATE", "open"),
+            ("FASTPROOF_ANALYSIS_GATE_SETTLE_SECONDS", "0"),
+            ("FASTPROOF_ANALYSIS_MAX_CLUSTERS", "10"),
+            ("FASTPROOF_ANALYSIS_FASTMOCK_ATTEMPTS", "0"),
+        ])
+        .unwrap();
+        assert!(c.analysis.enabled);
+        assert_eq!(c.analysis.workers, 0);
+        assert_eq!(c.analysis.settle, Duration::ZERO);
+        assert_eq!(c.analysis.clickhouse, AnalysisClickHouse::Off);
+        assert_eq!(
+            c.analysis.limits.gate_mode,
+            fastproof_store::tm::TmGateMode::Open
+        );
+        assert_eq!(c.analysis.limits.max_clusters, 10);
+        assert_eq!(c.analysis.limits.fastmock_attempts, 0);
+        for (k, v) in [
+            ("FASTPROOF_ANALYSIS", "yes"),
+            ("FASTPROOF_ANALYSIS_WORKERS", "17"),
+            ("FASTPROOF_ANALYSIS_SETTLE_SECONDS", "601"),
+            ("FASTPROOF_ANALYSIS_CLICKHOUSE", "on"),
+            ("FASTPROOF_ANALYSIS_LAUNCH_TIMEOUT_SECONDS", "9"),
+            ("FASTPROOF_ANALYSIS_MAX_CLUSTERS", "100001"),
+            ("FASTPROOF_ANALYSIS_CANDIDATE_ROWS", "99"),
+            ("FASTPROOF_ANALYSIS_MEMORY_MAX_ROWS", "999"),
+            ("FASTPROOF_ANALYSIS_LOG_CPU_MS", "60001"),
+            ("FASTPROOF_ANALYSIS_LOG_LAST_BYTES", "1023"),
+            ("FASTPROOF_ANALYSIS_LOG_ATTEMPTS", "9"),
+            ("FASTPROOF_ANALYSIS_MAX_LOG_RULES", "0"),
+            ("FASTPROOF_ANALYSIS_RECOMPUTE_SECONDS", "4"),
+            ("FASTPROOF_ANALYSIS_BACKTEST_MAX_EVENTS", "999"),
+            ("FASTPROOF_ANALYSIS_SIGNALS_PER_MINUTE", "0"),
+            ("FASTPROOF_ANALYSIS_FASTMOCK_ATTEMPTS", "2001"),
+            ("FASTPROOF_ANALYSIS_GATE", "sometimes"),
+            ("FASTPROOF_ANALYSIS_GATE_SETTLE_SECONDS", "2592001"),
+            ("FASTPROOF_ROLES", "analysis,cook"),
+        ] {
+            let e = format!("{:#}", cfg(&[base, (k, v)]).unwrap_err());
+            assert!(e.contains(k), "{k}={v}: {e}");
         }
     }
 

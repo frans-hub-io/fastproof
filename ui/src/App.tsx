@@ -46,6 +46,9 @@ const RequirementsPage = lazy(() => import('./pages/Requirements'));
 const RequirementPage = lazy(() => import('./pages/Requirement'));
 const CoveragePage = lazy(() => import('./pages/Coverage'));
 const ManualPrintPage = lazy(() => import('./pages/ManualPrint'));
+const ErrorsPage = lazy(() => import('./pages/Errors'));
+const ErrorPage = lazy(() => import('./pages/Error'));
+const AnalyticsPage = lazy(() => import('./pages/Analytics'));
 
 setLoginRedirect(navigateForAuth);
 
@@ -71,6 +74,9 @@ export function AppRoutes() {
         <Route path="p/:key/dashboards" element={<DashboardsPage />} />
         <Route path="p/:key/dashboards/:id" element={<DashboardViewPage />} />
         <Route path="p/:key/flaky" element={<FlakyPage />} />
+        <Route path="p/:key/errors" element={<ErrorsPage />} />
+        <Route path="p/:key/errors/:fingerprint" element={<ErrorPage />} />
+        <Route path="p/:key/analytics" element={<AnalyticsPage />} />
         <Route path="p/:key/issues" element={<IssuesPage />} />
         <Route path="p/:key/compare" element={<ComparePage />} />
         <Route path="p/:key/rules" element={<RulesPage />} />

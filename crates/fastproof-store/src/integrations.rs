@@ -165,6 +165,55 @@ type AttemptRow = (
 /// Launches whose gate waits in the consumer's `pending` list (their rows were held), at most.
 pub const MAX_PENDING_GATES: usize = 10_000;
 
+/// Where the consumer of finished launches queues them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FinishedTarget {
+    /// A gate evaluation (`launch_gates`); a launch already queued stays as it is.
+    Gates,
+    /// The analysis queue (`analysis_launches`); a launch queued before goes back to
+    /// `queued` with its reason kept (or runs again after a run in progress).
+    Analysis,
+}
+
+impl FinishedTarget {
+    fn insert_sql(self) -> &'static str {
+        match self {
+            Self::Gates => {
+                "insert into launch_gates (launch_id, project_id) \
+                 select l, p from unnest($1::uuid[], $2::uuid[]) as t(l, p) \
+                 on conflict (launch_id) do nothing"
+            }
+            Self::Analysis => {
+                "insert into analysis_launches (launch_id, project_id) \
+                 select l, p from unnest($1::uuid[], $2::uuid[]) as t(l, p) \
+                 on conflict (launch_id) do update set \
+                   state = case when analysis_launches.state = 'running' then 'running' else 'queued' end, \
+                   due_at = now(), \
+                   attempts = case when analysis_launches.state = 'running' then analysis_launches.attempts else 0 end, \
+                   error = case when analysis_launches.state = 'running' then analysis_launches.error else null end, \
+                   queued_at = case when analysis_launches.state in ('queued', 'running') \
+                     then analysis_launches.queued_at else now() end"
+            }
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Gates => "gates",
+            Self::Analysis => "analysis",
+        }
+    }
+
+    fn metric(self, what: &str) -> &'static str {
+        match (self, what) {
+            (Self::Gates, "backlogged") => "fastproof_gates_backlogged_total",
+            (Self::Gates, _) => "fastproof_gates_deferred_total",
+            (Self::Analysis, "backlogged") => "fastproof_analysis_backlogged_total",
+            (Self::Analysis, _) => "fastproof_analysis_deferred_total",
+        }
+    }
+}
+
 const DELIVERY_COLUMNS: &str = "id, target_id, channel, launch_id, events, status, attempts, max_attempts, \
     last_error, response_status, created_at, next_attempt_at, delivered_at";
 
@@ -495,13 +544,33 @@ impl Store {
         batch: i64,
         max_pending: usize,
     ) -> anyhow::Result<Option<u64>> {
-        sqlx::query(
+        Ok(self
+            .consume_finished_into(FinishedTarget::Gates, consumer, settle, batch, max_pending)
+            .await?
+            .0)
+    }
+
+    /// The outbox consumer of finished launches shared by the gates and Analysis: queues the
+    /// launches of `launch.finished` events after the cursor `consumer` into the target's
+    /// table. Returns how many were queued (`None` when another replica holds the cursor) and
+    /// whether this call created the cursor.
+    pub(crate) async fn consume_finished_into(
+        &self,
+        target: FinishedTarget,
+        consumer: &str,
+        settle: Duration,
+        batch: i64,
+        max_pending: usize,
+    ) -> anyhow::Result<(Option<u64>, bool)> {
+        let created = sqlx::query(
             "insert into integration_cursors (name, last_event_id) \
              select $1, coalesce(max(id), 0) from events on conflict (name) do nothing",
         )
         .bind(consumer)
         .execute(&self.pool)
-        .await?;
+        .await?
+        .rows_affected()
+            == 1;
         let mut tx = self.pool.begin().await?;
         let cursor: Option<(i64, Vec<Uuid>)> = sqlx::query_as(
             "select last_event_id, pending from integration_cursors where name = $1 for update skip locked",
@@ -511,7 +580,7 @@ impl Store {
         .await?;
         let Some((cursor, pending)) = cursor else {
             tx.rollback().await?;
-            return Ok(None);
+            return Ok((None, created));
         };
         let rows: Vec<(i64, String, serde_json::Value)> = sqlx::query_as(
             "select id, type, payload from events where id > $1 \
@@ -525,7 +594,7 @@ impl Store {
         let last = rows.last().map(|r| r.0);
         if last.is_none() && pending.is_empty() {
             tx.rollback().await?;
-            return Ok(Some(0));
+            return Ok((Some(0), created));
         }
         // The first event of each launch, so a launch that cannot wait in `pending` is read
         // again from its event.
@@ -553,16 +622,12 @@ impl Store {
             .fetch_all(&mut *tx)
             .await?;
             let (launches, projects): (Vec<Uuid>, Vec<Uuid>) = free.iter().copied().unzip();
-            queued = sqlx::query(
-                "insert into launch_gates (launch_id, project_id) \
-                 select l, p from unnest($1::uuid[], $2::uuid[]) as t(l, p) \
-                 on conflict (launch_id) do nothing",
-            )
-            .bind(&launches)
-            .bind(&projects)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected();
+            queued = sqlx::query(target.insert_sql())
+                .bind(&launches)
+                .bind(&projects)
+                .execute(&mut *tx)
+                .await?
+                .rows_affected();
             let free_set: HashSet<Uuid> = launches.iter().copied().collect();
             let skipped: Vec<Uuid> = ids
                 .iter()
@@ -591,18 +656,20 @@ impl Store {
                 last = Some(e - 1);
             }
             keep.extend(fresh.into_iter().take(room));
-            metrics::counter!("fastproof_gates_backlogged_total").increment(1);
+            metrics::counter!(target.metric("backlogged")).increment(1);
             tracing::warn!(
                 held = held.len(),
-                "more launches held than gates can wait for; the rest stay in the outbox"
+                target = target.name(),
+                "more launches held than can wait; the rest stay in the outbox"
             );
             held = keep;
         }
         if !held.is_empty() {
-            metrics::counter!("fastproof_gates_deferred_total").increment(held.len() as u64);
+            metrics::counter!(target.metric("deferred")).increment(held.len() as u64);
             tracing::debug!(
                 launches = held.len(),
-                "launches held by another transaction; their gates are queued later"
+                target = target.name(),
+                "launches held by another transaction; they are queued later"
             );
         }
         sqlx::query(
@@ -614,7 +681,7 @@ impl Store {
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
-        Ok(Some(queued))
+        Ok((Some(queued), created))
     }
 
     /// Launches waiting for their gate evaluation, oldest first, with whether the gate was

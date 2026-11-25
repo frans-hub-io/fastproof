@@ -186,6 +186,9 @@ pub struct WidgetSettings {
     /// Launch attribute the cumulative trend groups by (for example `build`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attribute: Option<String>,
+    /// What the popular-patterns widget counts (fingerprints by default).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub patterns: Option<super::types::WidgetPatterns>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ToSchema)]

@@ -155,6 +155,25 @@ pub fn search_backend(cfg: &crate::Config) -> anyhow::Result<Option<Arc<dyn Sear
     })
 }
 
+/// The ClickHouse client of Analysis (`Inner::clickhouse`): with
+/// `FASTPROOF_ANALYSIS_CLICKHOUSE=auto`, `FASTPROOF_CLICKHOUSE_URL` set and `clickhouse` in
+/// `FASTPROOF_SINKS` (the sink fills the tables Analysis reads).
+pub fn analysis_clickhouse(
+    cfg: &crate::Config,
+) -> anyhow::Result<Option<Arc<fastproof_stream::clickhouse::ClickHouse>>> {
+    if cfg.analysis.clickhouse != crate::config::AnalysisClickHouse::Auto
+        || !cfg.sinks.contains(&SinkKind::ClickHouse)
+    {
+        return Ok(None);
+    }
+    Ok(match &cfg.clickhouse {
+        Some(c) => Some(Arc::new(fastproof_stream::clickhouse::ClickHouse::new(
+            c.clone(),
+        )?)),
+        None => None,
+    })
+}
+
 fn sinks(cfg: &crate::Config) -> anyhow::Result<Vec<Arc<dyn Sink>>> {
     let mut out: Vec<Arc<dyn Sink>> = Vec::new();
     for k in &cfg.sinks {

@@ -284,6 +284,20 @@ impl Store {
             .bind(id)
             .execute(&mut *tx)
             .await?;
+        // What Analysis learned about the type goes with it.
+        sqlx::query("delete from triage_memory where project_id = $1 and defect_type_id = $2")
+            .bind(project_id)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            "update triage_suggestions set state = 'superseded', decided_at = now() \
+             where project_id = $1 and defect_type_id = $2 and state = 'open'",
+        )
+        .bind(project_id)
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await?;
         Ok(DefectTypeChange::Done(t))
     }

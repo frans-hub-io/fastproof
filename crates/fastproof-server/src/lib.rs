@@ -1,6 +1,7 @@
 //! FastProof server and CLI: one binary with the API, ingest workers, the scheduler and the
 //! embedded UI, plus client commands for CI (`upload`, `watch`, `launch`).
 
+pub mod analysis;
 pub mod api;
 pub mod app;
 pub mod blob_guard;
@@ -16,6 +17,7 @@ pub mod limits;
 pub mod live;
 pub mod markdown;
 pub mod mcp;
+pub mod mcp_analysis;
 pub mod mcp_tm;
 pub mod media_prepare;
 pub mod merges;

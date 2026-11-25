@@ -16,6 +16,7 @@ import { resultTarget, type TriageTarget } from '../../lib/triage';
 import { groupFailures } from '../../lib/errorGroups';
 import { formatDate } from '../../lib/format';
 import { stripAnsi } from '../../lib/ansi';
+import { ClusterSuggestion } from './ClusterSuggestion';
 import { TransitionBadge } from './TransitionBadge';
 
 function ClusterResults({ project, launch, env, cluster, types, canTriage, onTriage }: { project: string; launch: Launch; env?: string; cluster: Cluster; types: Map<string, DefectType>; canTriage: boolean; onTriage: (t: TriageTarget) => void }) {
@@ -168,6 +169,7 @@ export function Clusters({ project, launch, env }: { project: string; launch: La
                   </Accordion.Control>
                   <Accordion.Panel>
                     <Stack gap="xs">
+                      <ClusterSuggestion project={project} launch={launch} cluster={c} />
                       {canTriage && (
                         <Group justify="flex-end">
                           <Button

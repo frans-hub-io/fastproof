@@ -560,6 +560,7 @@ pub(crate) async fn result_filter(
         label: key_value(q.label.as_deref(), "label")?,
         flaky: q.flaky,
         fingerprint: q.fingerprint,
+        pattern: None,
         source: q.source,
         extra: explorer.filter(s, launch).await?,
         before: q.before,

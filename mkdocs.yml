@@ -120,6 +120,11 @@ nav:
       - guide/requirements.md
   - Triage and integrations:
       - guide/rules-and-triage.md
+      - guide/analysis.md
+      - guide/unique-errors.md
+      - guide/flaky-causes.md
+      - guide/analytics.md
+      - guide/signals.md
       - guide/quality-gates.md
       - guide/rerun.md
       - guide/dashboards.md

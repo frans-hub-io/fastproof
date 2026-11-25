@@ -7,6 +7,35 @@ version has migrated the schema.
 
 This page lists what needs attention per release.
 
+## Next release: FastProof Analysis foundation
+
+- **Migrations `1000` to `1011`.** New tables for the triage journal, memory, suggestions, unique errors,
+  signals, flaky hints, log patterns and the analysis queue; new columns of `failure_fingerprints`
+  (`state` defaults to `active` for existing errors) and `replica_levels.analysis_level`. Three indexes on
+  existing tables are built concurrently in their own migrations (`1004`, `1005`, `1008`). The index of
+  attempts by trace id and the trigram index of the triage memory are built in the background by the
+  `analysis.indexes` job, like the result indexes.
+- **The triage journal starts at the upgrade.** From this version on, every change of a defect or mute is
+  recorded with its path (REST, MCP, ReportPortal, a rule at ingest, a retroactive rule, suggestions, undo), so
+  `POST /api/v1/projects/{key}/triage/undo` can take a batch back. Triage made before the upgrade has no
+  journal rows and cannot be undone. The default defect of failures ("to investigate") is not journaled.
+- **A second replica gate for analysis formats.** Log rules (`match.log`, `match.signals`, `action.pattern`),
+  gate rules with `newErrors`, `toInvestigate` or `total`, the `errorRegressed` notification event, turning on
+  `analysis.autoApply` and the new task kinds are written only once every running replica is on this version:
+  until then they answer `409 upgrade_in_progress` with `details.area: "analysis"`. The rule is the one of the
+  test management gate, on the analysis level: no replica of an older version seen within 2 minutes, and
+  `FASTPROOF_ANALYSIS_GATE_SETTLE_SECONDS` (default `600`) passed since migration `1011`.
+  `FASTPROOF_ANALYSIS_GATE=open` skips the wait (single replica), `closed` holds the formats back.
+  `GET /api/v1/admin/replicas` shows the analysis level of every replica and the state of this gate under
+  `analysis`.
+- **Stored rules this version cannot read are no longer applied.** A rule whose stored conditions or action do
+  not parse is now left out at ingest (it used to match every failed result) and is listed with
+  `phase: "afterLaunch"` and a note. The standard `analysis.tasks` job runs only retroactive rule tasks.
+- **`FASTPROOF_ROLES=all` now includes `analysis`.** The role stays idle until `FASTPROOF_ANALYSIS=on`; nothing
+  changes for installations that leave it off. With it on, the newest 20 finished launches of each project are
+  analysed once after the upgrade. In the Helm chart, `analysis.enabled: true` turns it on; with
+  `roles.split: true` the role runs as its own Deployment.
+
 ## Next release: test management gate and review
 
 - **New permission `cases:review`.** The `editor` role gains it. It allows approving test cases and shared steps

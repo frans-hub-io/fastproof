@@ -1,0 +1,159 @@
+suite: analysis
+templates:
+  - templates/deployment.yaml
+  - templates/configmap.yaml
+  - templates/networkpolicy.yaml
+  - templates/availability.yaml
+release:
+  name: fp
+  namespace: qa
+values:
+  - ../ci/analysis-values.yaml
+tests:
+  - it: is off by default and the single Deployment runs every role
+    template: templates/configmap.yaml
+    set:
+      analysis.enabled: false
+      roles.split: false
+    asserts:
+      - equal:
+          path: data.FASTPROOF_ANALYSIS
+          value: "off"
+      - equal:
+          path: data.FASTPROOF_ANALYSIS_WORKERS
+          value: "4"
+
+  - it: runs all roles, analysis included, in one Deployment without split
+    template: templates/deployment.yaml
+    set:
+      roles.split: false
+    asserts:
+      - hasDocuments:
+          count: 1
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: FASTPROOF_ROLES
+            value: all
+
+  - it: adds an analysis Deployment to the split roles
+    template: templates/deployment.yaml
+    asserts:
+      - hasDocuments:
+          count: 4
+      - equal:
+          path: metadata.name
+          value: fp-fastproof-analysis
+        documentIndex: 3
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: FASTPROOF_ROLES
+            value: analysis
+        documentIndex: 3
+      - equal:
+          path: spec.replicas
+          value: 2
+        documentIndex: 3
+      - equal:
+          path: spec.template.spec.containers[0].resources.limits.memory
+          value: 1Gi
+        documentIndex: 3
+      - equal:
+          path: spec.template.metadata.labels["fastproof.franshub.io/role"]
+          value: analysis
+        documentIndex: 3
+      - equal:
+          path: spec.template.metadata.labels["app.kubernetes.io/component"]
+          value: server
+        documentIndex: 3
+      - notContains:
+          path: spec.template.spec.containers[0].ports
+          content:
+            name: http
+            containerPort: 8080
+            protocol: TCP
+        documentIndex: 3
+
+  - it: leaves the analysis Deployment out while analysis is off
+    template: templates/deployment.yaml
+    set:
+      analysis.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 3
+
+  - it: sets the analysis variables and maps the limits to their names
+    template: templates/configmap.yaml
+    asserts:
+      - equal:
+          path: data.FASTPROOF_ANALYSIS
+          value: "on"
+      - equal:
+          path: data.FASTPROOF_ANALYSIS_WORKERS
+          value: "4"
+      - equal:
+          path: data.FASTPROOF_ANALYSIS_SETTLE_SECONDS
+          value: "60"
+      - equal:
+          path: data.FASTPROOF_ANALYSIS_CLICKHOUSE
+          value: auto
+      - equal:
+          path: data.FASTPROOF_ANALYSIS_GATE
+          value: auto
+      - equal:
+          path: data.FASTPROOF_ANALYSIS_GATE_SETTLE_SECONDS
+          value: "900"
+      - equal:
+          path: data.FASTPROOF_ANALYSIS_LAUNCH_TIMEOUT_SECONDS
+          value: "300"
+      - equal:
+          path: data.FASTPROOF_ANALYSIS_MAX_CLUSTERS
+          value: "5000"
+      - equal:
+          path: data.FASTPROOF_ANALYSIS_FASTMOCK_ATTEMPTS
+          value: "0"
+      - equal:
+          path: data.FASTPROOF_SINKS
+          value: clickhouse
+
+  - it: refuses an unknown limit
+    template: templates/configmap.yaml
+    set:
+      analysis.limits.maxEverything: 5
+    asserts:
+      - failedTemplate:
+          errorPattern: "maxEverything"
+
+  - it: refuses a mode outside the schema
+    template: templates/configmap.yaml
+    set:
+      analysis.gate: sometimes
+    asserts:
+      - failedTemplate:
+          errorPattern: "gate"
+
+  - it: gives analysis pods the egress of the api pods
+    template: templates/networkpolicy.yaml
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: spec.podSelector.matchExpressions[0]
+          value:
+            key: app.kubernetes.io/component
+            operator: In
+            values: ["server", "migrate"]
+      - contains:
+          path: spec.policyTypes
+          content: Egress
+
+  - it: gives the analysis role a disruption budget
+    template: templates/availability.yaml
+    asserts:
+      - equal:
+          path: metadata.name
+          value: fp-fastproof-analysis
+        documentIndex: 1
+      - isKind:
+          of: PodDisruptionBudget
+        documentIndex: 1

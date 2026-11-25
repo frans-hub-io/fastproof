@@ -2,6 +2,7 @@
 
 pub mod admin;
 pub mod analysis;
+pub mod analytics;
 pub mod attachments;
 pub mod case_fields;
 pub mod case_folders;
@@ -9,9 +10,13 @@ pub mod case_workflow;
 pub mod cases;
 pub mod coverage;
 pub mod dashboards;
+pub mod decisions;
 pub mod direct_uploads;
+pub mod errors;
 pub mod events;
 pub mod exports;
+pub mod flaky_hints;
+pub mod gates_history;
 pub mod history_imports;
 pub mod imports;
 pub mod integrations;
@@ -32,6 +37,8 @@ pub mod reviews;
 pub mod runs;
 pub mod search;
 pub mod shared_steps;
+pub mod signals;
+pub mod suggestions;
 pub mod trackers;
 pub mod uploads;
 pub mod version;
@@ -49,6 +56,7 @@ use utoipa::{Modify, OpenApi, ToSchema};
 use uuid::Uuid;
 
 use crate::state::AppState;
+use fastproof_store::analysis::types as an;
 use fastproof_store::tm::{self, TmError};
 
 /// Default and largest page size of lists.
@@ -150,7 +158,31 @@ pub fn type_project_settings(doc: &mut utoipa::openapi::OpenApi) {
         tm::RequirementSummary, tm::RequirementList, tm::RequirementWrite, tm::RequirementPatch,
         tm::RequirementLinksChange, tm::RequirementLink, tm::RequirementLinkList, tm::CaseRequirement,
         tm::RequirementImport, tm::CoverageCounts, tm::RequirementCoverage, tm::CoverageScopeView, tm::CoveragePage,
-        tm::CoverageExportRequest, tm::ReplicaLevel, tm::ReplicaLevels)),
+        tm::CoverageExportRequest, tm::ReplicaLevel, tm::ReplicaLevels,
+        crate::integrations::settings::Metric, crate::integrations::gates::GateStatus,
+        crate::integrations::gates::RuleResult, fastproof_store::analysis::rules::RulePhase,
+        an::DecisionVia, an::DecisionSource, an::TriageState, an::TriageDecision, an::TriageHistory, an::TriageUndo,
+        an::TriageUndoSkip, an::TriageUndoSkipCode, an::TriageUndoResult, an::GateView, an::AnalysisFeatures,
+        an::AnalysisWindows, an::AnalysisCapabilities, an::AnalysisLaunchState, an::AnalysisLaunchStatus,
+        an::AnalysisStepStatus, an::StepOutcome, an::LaunchSteps, an::AnalysisSettings, an::AnalysisSuggestSettings,
+        an::AnalysisAutoApplySettings, an::AnalysisBacktestSettings, an::AnalysisFlakySettings, an::QueueReason,
+        an::SuggestionBand, an::SuggestionSignal, an::SuggestionState, an::WhySignal, an::WhyItem,
+        an::DecisionSample, an::Suggestion, an::CommitRange, an::ClusterDecided, an::NoSuggestion,
+        an::ClusterSuggestions, an::LaunchSuggestionsState, an::LaunchSuggestions, an::SuggestionApplyTo,
+        an::SuggestionAccept, an::SuggestionAccepted, an::SuggestionReject, an::MemoryEntry, an::MemoryList,
+        an::DecisionEvent, an::BacktestRequest, an::BacktestBand, an::BacktestConfusion, an::BacktestSource,
+        an::BacktestReport, an::ErrorState, an::ErrorSort, an::ErrorIssueState, an::ErrorIssue, an::ErrorSummary,
+        an::ErrorList, an::ErrorBranch, an::ErrorTest, an::ErrorTimelinePoint, an::AnalyticsBackend,
+        an::AnalyticsWindow, an::ErrorDetail, an::ErrorTimeline, an::ErrorPatchState, an::ErrorPatch,
+        an::GateRuleOutcome, an::GateHistoryItem, an::GateHistoryGate, an::GateHistoryBranch, an::GateHistory,
+        an::GateSimulate, an::GateSimulationItem, an::GateSimulation, an::LogStreamName, an::RuleLogMatch,
+        an::RuleSignalMatch, an::ResultPattern, an::PatternCount, an::PatternCounts, an::WidgetPatterns,
+        an::SignalSource, an::SignalConfidence, an::SignalItem, an::SignalPush, an::SignalRejection,
+        an::SignalsAccepted, an::AttemptSignal, an::AttemptSignalBrief, an::AttemptSignals, an::FlakyHintKind,
+        an::HintConfidence, an::HintAction, an::FlakyHint, an::FlakyHintBrief, an::FlakyHints, an::FailureGroupBy,
+        an::FailureGroup, an::FailureAnalytics, an::DurationRegression, an::DurationRegressions, an::RetryCost,
+        an::RetryCosts, an::FlakyTrendPoint, an::FlakyTrend, an::MttrBucket, an::MttrStats, an::SlowStep,
+        an::SlowSteps, an::PortfolioProject, an::Portfolio, an::CrossProjectSimilarItem, an::CrossProjectSimilar)),
     tags(
         (name = "projects"), (name = "launches"), (name = "uploads"), (name = "results"),
         (name = "attachments"), (name = "events"), (name = "admin"), (name = "integrations"),
@@ -162,7 +194,9 @@ pub fn type_project_settings(doc: &mut utoipa::openapi::OpenApi) {
         (name = "shared-steps", description = "Shared steps: reusable step sequences that cases reference, with versions and usages"),
         (name = "reviews", description = "Case workflow and version review of cases and shared steps"),
         (name = "queries", description = "FPQL: validation, the query schema and saved queries"),
-        (name = "requirements", description = "Requirements, their links to cases, and coverage")
+        (name = "requirements", description = "Requirements, their links to cases, and coverage"),
+        (name = "analytics", description = "Failure trends and portfolio, on ClickHouse with a PostgreSQL fallback"),
+        (name = "signals", description = "Signals from grids, CI and Kubernetes about test attempts")
     )
 )]
 pub struct ApiDoc;

@@ -20,6 +20,7 @@ use fastproof_store::analysis::rules::{NewRule, Rule, RuleChange, RulePatch, val
 use fastproof_store::analysis::settings::ProjectSettings;
 use fastproof_store::analysis::tasks::{ApplyParams, DryRun, Task};
 use fastproof_store::analysis::triage::{TriageOutcome, TriageRefusal, TriageRequest};
+use fastproof_store::analysis::types::{DecisionCtx, DecisionVia};
 use fastproof_store::{Launch, Project};
 use franshub_auth::Auth;
 use franshub_http::{ApiError, ApiJson, ApiResult};
@@ -201,12 +202,13 @@ pub async fn triage(
     }
     s.refuse_merged_results(&p, body.launch_id, body.result_ids.as_deref())
         .await?;
-    let (out, body) = apply_triage(&s, &p, &auth.principal.name, body).await?;
+    let (out, body) = apply_triage(&s, &p, &auth.principal.name, body, DecisionCtx::api()).await?;
     s.audit(
         &auth,
         "results.triage",
         Some(&p.key),
-        serde_json::json!({"updated": out.updated, "resultIds": body.result_ids.as_ref().map(|v| v.len()),
+        serde_json::json!({"updated": out.updated, "batchId": out.batch_id, "via": DecisionVia::Api.as_str(),
+            "resultIds": body.result_ids.as_ref().map(|v| v.len()),
             "launchId": body.launch_id, "fingerprint": body.fingerprint, "defectTypeId": body.defect_type_id,
             "comment": body.comment.is_some(), "issue": body.issue.as_ref().map(|i| &i.url),
             "mute": body.mute.as_ref().map(|m| serde_json::json!({"until": m.until, "reason": m.reason})),
@@ -218,12 +220,14 @@ pub async fn triage(
 
 /// Applies a triage request for a principal that holds `results:triage` (the HTTP handler and
 /// the MCP tools call this): issue keys become URLs through the project's issue trackers, then
-/// the request is validated and applied. Returns the outcome and the resolved request.
+/// the request is validated and applied and journaled through `ctx`'s path. Returns the
+/// outcome and the resolved request.
 pub async fn apply_triage(
     s: &AppState,
     project: &Project,
     by: &str,
     mut req: TriageRequest,
+    ctx: DecisionCtx,
 ) -> ApiResult<(TriageOutcome, TriageRequest)> {
     if let Some(i) = &mut req.issue
         && i.url.is_none()
@@ -232,7 +236,11 @@ pub async fn apply_triage(
         i.url = s.store.project_settings(project.id).await?.issue_url(k);
     }
     req.validate(Utc::now()).map_err(ApiError::bad_request)?;
-    match s.store.triage(project.id, &project.key, &req, by).await? {
+    match s
+        .store
+        .triage_with(project.id, &project.key, &req, by, &ctx)
+        .await?
+    {
         Ok(o) => Ok((o, req)),
         Err(TriageRefusal::UnknownDefectType) => Err(ApiError::bad_request("unknown defectTypeId")),
         Err(TriageRefusal::UnknownLaunch) => Err(ApiError::not_found("launch")),
@@ -443,6 +451,8 @@ pub async fn test_rule(
         created_at: now,
         updated_at: now,
         hits: 0,
+        phase: Default::default(),
+        note: None,
     };
     match s
         .store
@@ -578,11 +588,12 @@ pub async fn get_settings(
 #[utoipa::path(put, path = "/api/v1/projects/{key}/settings", tag = "analysis", operation_id = "analysis_put_settings",
     request_body(content = ProjectSettings, description = "The areas to change. Each top-level area present in the body \
         (`flaky`, `retention`, `rollup`, `gates`, `notifications`, `issueTrackers`, `fastmock`, `vcs`, `rerun`, `caseWorkflow`, \
-        `caseReview`) replaces the stored one as a whole; areas left out are kept; `null` resets an area to its default \
+        `caseReview`, `analysis`) replaces the stored one as a whole; areas left out are kept; `null` resets an area to its default \
         (removes it). `caseSync` is merged by key instead (and its `fields` by field): keys left out keep their values, a \
         `null` key returns to its default. New formats (`caseSync.requirementLinkTypes` other than the default, \
-        `rerun.variables`, `rerun.refs`, the `caseReviewRequested` notification event) answer 409 `upgrade_in_progress` \
-        while an older replica runs. The answer is the whole stored document."),
+        `rerun.variables`, `rerun.refs`, the `caseReviewRequested` notification event; gate rules with `newErrors`, \
+        `toInvestigate` or `total`, the `errorRegressed` event, `analysis.autoApply.enabled` turning on) answer 409 \
+        `upgrade_in_progress` while an older replica runs. The answer is the whole stored document."),
     params(("key" = String, Path)),
     responses((status = 200, body = ProjectSettings), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),
         (status = 404, body = ErrorBody), (status = 409, body = ErrorBody, description = "`upgrade_in_progress`, `workflow_status_in_use`")))]
@@ -618,9 +629,15 @@ pub async fn put_settings(
             .await
             .map_err(anyhow::Error::from)?;
         for what in gated_settings(&old_doc, &new_doc) {
-            fastproof_store::tm::gate::require(&mut conn, &s.cfg.tm, what)
-                .await
-                .map_err(tm_error)?;
+            if ANALYSIS_GATED.contains(&what) {
+                fastproof_store::analysis::gate::require(&mut conn, &s.cfg.analysis.limits, what)
+                    .await
+                    .map_err(tm_error)?;
+            } else {
+                fastproof_store::tm::gate::require(&mut conn, &s.cfg.tm, what)
+                    .await
+                    .map_err(tm_error)?;
+            }
         }
         if areas.iter().any(|a| a == "caseWorkflow") {
             fastproof_store::tm::workflow::check_settings_change(
@@ -678,6 +695,15 @@ pub async fn put_settings(
             "caseWorkflow.settings",
             Some(&p.key),
             serde_json::json!({"old": old.case_workflow, "new": body.case_workflow}),
+        )
+        .await;
+    }
+    if areas.iter().any(|a| a == "analysis") {
+        s.audit(
+            &auth,
+            "analysis.settings",
+            Some(&p.key),
+            serde_json::json!({"old": old.analysis, "new": body.analysis}),
         )
         .await;
     }
@@ -740,6 +766,80 @@ pub fn gated_settings(old: &serde_json::Value, new: &serde_json::Value) -> Vec<&
     let new_review = review_channels(new);
     if !new_review.is_empty() && new_review != review_channels(old) {
         out.push("notifications.caseReviewRequested");
+    }
+    out.extend(gated_analysis_settings(old, new));
+    out
+}
+
+/// The settings keys written through the analysis gate (contract `76` §3).
+pub const ANALYSIS_GATED: [&str; 5] = [
+    "gates.newErrors",
+    "gates.toInvestigate",
+    "gates.total",
+    "notifications.errorRegressed",
+    "analysis.autoApply",
+];
+
+/// The analysis formats a settings document writes that the stored one does not hold in the
+/// same form: gate rules with `newErrors`, `toInvestigate` or `total`, channels with
+/// `errorRegressed`, and `analysis.autoApply.enabled` turning true.
+fn gated_analysis_settings(old: &serde_json::Value, new: &serde_json::Value) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    let rules_with = |d: &serde_json::Value, metric: &str| -> Vec<serde_json::Value> {
+        d.get("gates")
+            .and_then(|g| g.as_array())
+            .map(|gates| {
+                gates
+                    .iter()
+                    .filter(|g| {
+                        g.get("rules").and_then(|r| r.as_array()).is_some_and(|r| {
+                            r.iter()
+                                .any(|r| r.get("metric").and_then(|m| m.as_str()) == Some(metric))
+                        })
+                    })
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    for (metric, what) in [
+        ("newErrors", "gates.newErrors"),
+        ("toInvestigate", "gates.toInvestigate"),
+        ("total", "gates.total"),
+    ] {
+        let n = rules_with(new, metric);
+        if !n.is_empty() && n != rules_with(old, metric) {
+            out.push(what);
+        }
+    }
+    let regressed = |d: &serde_json::Value| -> Vec<serde_json::Value> {
+        d.get("notifications")
+            .and_then(|n| n.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter(|n| {
+                        n.get("on")
+                            .and_then(|o| o.as_array())
+                            .is_some_and(|o| o.iter().any(|e| e.as_str() == Some("errorRegressed")))
+                    })
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let n = regressed(new);
+    if !n.is_empty() && n != regressed(old) {
+        out.push("notifications.errorRegressed");
+    }
+    let auto = |d: &serde_json::Value| {
+        d.get("analysis")
+            .and_then(|a| a.get("autoApply"))
+            .and_then(|a| a.get("enabled"))
+            .and_then(|e| e.as_bool())
+            .unwrap_or(false)
+    };
+    if auto(new) && !auto(old) {
+        out.push("analysis.autoApply");
     }
     out
 }
@@ -1046,4 +1146,43 @@ pub async fn testplan_json(
         .map_err(super::tm_error)?
         .ok_or_else(|| ApiError::not_found("test plan"))?;
     Ok(super::plans::testplan_response(plan))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn analysis_formats_are_gated_only_when_new() {
+        let gate = |m: &str| serde_json::json!({"gates": [{"name": "g", "rules": [{"metric": m, "op": "lte", "value": 0}]}]});
+        let channel =
+            |on: &[&str]| serde_json::json!({"notifications": [{"type": "webhook", "on": on}]});
+        let empty = serde_json::json!({});
+        assert_eq!(
+            gated_settings(&empty, &gate("newErrors")),
+            vec!["gates.newErrors"]
+        );
+        assert_eq!(
+            gated_settings(&empty, &gate("toInvestigate")),
+            vec!["gates.toInvestigate"]
+        );
+        assert_eq!(gated_settings(&empty, &gate("total")), vec!["gates.total"]);
+        assert!(gated_settings(&gate("total"), &gate("total")).is_empty());
+        assert!(gated_settings(&empty, &gate("failed")).is_empty());
+        assert_eq!(
+            gated_settings(&empty, &channel(&["errorRegressed"])),
+            vec!["notifications.errorRegressed"]
+        );
+        assert!(gated_settings(&empty, &channel(&["launchFinished"])).is_empty());
+        let auto = |on: bool| serde_json::json!({"analysis": {"autoApply": {"enabled": on}}});
+        assert_eq!(
+            gated_settings(&auto(false), &auto(true)),
+            vec!["analysis.autoApply"]
+        );
+        assert!(gated_settings(&auto(true), &auto(true)).is_empty());
+        assert!(gated_settings(&auto(true), &auto(false)).is_empty());
+        for w in ANALYSIS_GATED {
+            assert!(!w.is_empty());
+        }
+    }
 }

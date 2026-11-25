@@ -115,6 +115,12 @@ pub struct RuleMatch {
     /// Result statuses; default `failed` and `broken`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub statuses: Option<Vec<String>>,
+    /// A pattern on the tail of the logs of failed attempts (evaluated after the launch).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log: Option<super::types::RuleLogMatch>,
+    /// Signals the result must have (1 to 5; evaluated after the launch).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signals: Option<Vec<super::types::RuleSignalMatch>>,
 }
 
 /// Effects of a rule.
@@ -132,6 +138,22 @@ pub struct RuleAction {
     /// Mark the failure as accepted (a known, tolerated failure).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub accept: Option<bool>,
+    /// Mark the result with this log pattern (`^[a-z0-9][a-z0-9._-]{0,63}$`; evaluated after
+    /// the launch, combinable with the other effects).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pattern: Option<String>,
+}
+
+/// When a rule is evaluated.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum RulePhase {
+    /// As results are persisted.
+    #[default]
+    Ingest,
+    /// After the launch finished, by the analysis role (`match.log`, `match.signals`,
+    /// `action.pattern`, and stored rules this version cannot read).
+    AfterLaunch,
 }
 
 /// A rule.
@@ -148,6 +170,38 @@ pub struct Rule {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub hits: i64,
+    /// When the rule is evaluated (read only, derived from `match` and `action`).
+    #[serde(default)]
+    pub phase: RulePhase,
+    /// Why the rule is not evaluated (its stored conditions or action are not readable by
+    /// this version).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// The note of a stored rule whose `match` or `action` this version cannot read.
+pub const UNREADABLE_RULE: &str =
+    "the stored conditions or action are not readable by this version; the rule is not evaluated";
+
+impl Rule {
+    /// `AfterLaunch` when the rule needs the launch's logs or signals or marks a pattern (or
+    /// cannot be read by this version), else `Ingest`.
+    pub fn phase(&self) -> RulePhase {
+        if self.note.is_some()
+            || self.matcher.log.is_some()
+            || self.matcher.signals.is_some()
+            || self.action.pattern.is_some()
+        {
+            RulePhase::AfterLaunch
+        } else {
+            RulePhase::Ingest
+        }
+    }
+
+    /// Whether the stored rule could be read by this version.
+    pub fn readable(&self) -> bool {
+        self.note.is_none()
+    }
 }
 
 /// Body of `POST .../rules` (and the rule of a dry run).
@@ -488,26 +542,54 @@ pub fn compiled_cached(id: Uuid) -> bool {
 
 const COLUMNS: &str = "id, name, enabled, ord, match, action, created_at, updated_at, hits";
 
+/// Rules whose stored `match` or `action` did not parse, already logged by this replica.
+static UNREADABLE_LOGGED: LazyLock<Mutex<std::collections::HashSet<Uuid>>> =
+    LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
+
+/// A rule row. A `match` or `action` this version cannot parse no longer becomes the
+/// match-everything default: the rule keeps the defaults for display, gets
+/// [`UNREADABLE_RULE`] as its note and phase `afterLaunch`, and is never evaluated here.
 fn rule_row(r: &sqlx::postgres::PgRow) -> Result<Rule, sqlx::Error> {
     let m: serde_json::Value = r.try_get("match")?;
     let a: serde_json::Value = r.try_get("action")?;
-    Ok(Rule {
-        id: r.try_get("id")?,
+    let id: Uuid = r.try_get("id")?;
+    let matcher = serde_json::from_value::<RuleMatch>(m);
+    let action = serde_json::from_value::<RuleAction>(a);
+    let note = if matcher.is_err() || action.is_err() {
+        let first = UNREADABLE_LOGGED
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id);
+        if first {
+            tracing::warn!(rule = %id, "a stored rule is not readable by this version; it is not evaluated");
+        }
+        Some(UNREADABLE_RULE.to_string())
+    } else {
+        None
+    };
+    let mut rule = Rule {
+        id,
         name: r.try_get("name")?,
         enabled: r.try_get("enabled")?,
         order: r.try_get("ord")?,
-        matcher: serde_json::from_value(m).unwrap_or_default(),
-        action: serde_json::from_value(a).unwrap_or_default(),
+        matcher: matcher.unwrap_or_default(),
+        action: action.unwrap_or_default(),
         created_at: r.try_get("created_at")?,
         updated_at: r.try_get("updated_at")?,
         hits: r.try_get("hits")?,
-    })
+        phase: RulePhase::Ingest,
+        note,
+    };
+    rule.phase = rule.phase();
+    Ok(rule)
 }
 
-/// The enabled rules of a project in evaluation order, compiled (cached by version).
+/// The enabled rules of a project for one phase in evaluation order, compiled (cached by
+/// version). Rules this version cannot read are left out of every phase.
 pub async fn enabled_rules(
     conn: &mut PgConnection,
     project_id: Uuid,
+    phase: RulePhase,
 ) -> anyhow::Result<Vec<Arc<CompiledRule>>> {
     let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
         "select {COLUMNS} from rules where project_id = $1 and enabled order by ord, created_at, id limit {MAX_RULES}"
@@ -517,7 +599,11 @@ pub async fn enabled_rules(
     .await?;
     let mut out = Vec::with_capacity(rows.len());
     for r in &rows {
-        if let Some(c) = compiled(rule_row(r)?) {
+        let rule = rule_row(r)?;
+        if !rule.readable() || rule.phase() != phase {
+            continue;
+        }
+        if let Some(c) = compiled(rule) {
             out.push(c);
         }
     }
@@ -664,6 +750,8 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             hits: 0,
+            phase: RulePhase::Ingest,
+            note: None,
         })
         .unwrap()
     }

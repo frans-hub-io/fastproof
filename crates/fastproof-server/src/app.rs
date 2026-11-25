@@ -139,6 +139,13 @@ pub fn api_router() -> (Router<AppState>, utoipa::openapi::OpenApi) {
         .merge(api::parameters::router())
         .merge(api::requirements::router())
         .merge(api::coverage::router())
+        .merge(api::decisions::router())
+        .merge(api::suggestions::router())
+        .merge(api::errors::router())
+        .merge(api::gates_history::router())
+        .merge(api::flaky_hints::router())
+        .merge(api::signals::router())
+        .merge(api::analytics::router())
         .split_for_parts();
     api::type_project_settings(&mut doc);
     api::admin::document_platform(&mut doc);
@@ -526,6 +533,7 @@ async fn start_inner(cfg: Config, pool: PgPool, boot: Boot) -> anyhow::Result<Ru
         _ => None,
     };
     let search = crate::stream::search_backend(&cfg)?;
+    let clickhouse = crate::stream::analysis_clickhouse(&cfg)?;
     let (rp, rp_tasks) = crate::rp::RpState::new(&cfg.rp);
     let state = AppState(Arc::new(Inner {
         media,
@@ -549,6 +557,7 @@ async fn start_inner(cfg: Config, pool: PgPool, boot: Boot) -> anyhow::Result<Ru
         stopping: boot.stop.clone(),
         direct: crate::direct_uploads::DirectState::new(&cfg.direct_uploads),
         rp,
+        clickhouse,
         cfg: Arc::new(cfg),
     }));
     if state.cfg.roles.api {
@@ -556,7 +565,24 @@ async fn start_inner(cfg: Config, pool: PgPool, boot: Boot) -> anyhow::Result<Ru
     }
     let sched = if state.cfg.roles.scheduler {
         let mut sched = crate::scheduler::standard_jobs()?;
-        sched.pause(&state.cfg.paused_jobs)?;
+        let analysis_jobs = crate::analysis::jobs()?.names();
+        let names = sched.names();
+        if let Some(j) = state
+            .cfg
+            .paused_jobs
+            .iter()
+            .find(|j| !names.contains(j) && !analysis_jobs.contains(j))
+        {
+            anyhow::bail!("cannot pause {j:?}: no such scheduled job");
+        }
+        let own: Vec<String> = state
+            .cfg
+            .paused_jobs
+            .iter()
+            .filter(|j| names.contains(j))
+            .cloned()
+            .collect();
+        sched.pause(&own)?;
         sched.register_all(&state.store).await?;
         Some(sched)
     } else {
@@ -607,6 +633,12 @@ async fn start_inner(cfg: Config, pool: PgPool, boot: Boot) -> anyhow::Result<Ru
         stop.clone(),
     )));
     tasks.extend(crate::stream::start(&state, &stop).await?);
+    if state.cfg.roles.analysis && state.cfg.analysis.enabled {
+        tasks.push(tokio::spawn(crate::analysis::run(
+            state.clone(),
+            stop.clone(),
+        )));
+    }
     tasks.extend(crate::rp::start(&state, rp_tasks, &stop));
     {
         let s = state.clone();

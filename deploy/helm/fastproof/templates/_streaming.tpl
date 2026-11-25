@@ -143,8 +143,19 @@
 {{- if include "fastproof.sinks" . -}}
 {{- $out = append $out (dict "name" "sink" "service" false) -}}
 {{- end -}}
+{{- if .Values.analysis.enabled -}}
+{{- $out = append $out (dict "name" "analysis" "service" false) -}}
+{{- end -}}
 {{- end -}}
 {{- toJson $out -}}
+{{- end -}}
+
+{{- define "fastproof.analysisLimitEnv" -}}
+{{- $names := dict "launchTimeoutSeconds" "LAUNCH_TIMEOUT_SECONDS" "maxClusters" "MAX_CLUSTERS" "candidateRows" "CANDIDATE_ROWS" "memoryMaxRows" "MEMORY_MAX_ROWS" "logCpuMs" "LOG_CPU_MS" "logLastBytes" "LOG_LAST_BYTES" "logAttempts" "LOG_ATTEMPTS" "maxLogRules" "MAX_LOG_RULES" "recomputeSeconds" "RECOMPUTE_SECONDS" "backtestMaxEvents" "BACKTEST_MAX_EVENTS" "signalsPerMinute" "SIGNALS_PER_MINUTE" "fastmockAttempts" "FASTMOCK_ATTEMPTS" -}}
+{{- if not (hasKey $names .) -}}
+{{- fail (printf "analysis.limits.%s is not a known limit" .) -}}
+{{- end -}}
+{{- printf "FASTPROOF_ANALYSIS_%s" (index $names .) -}}
 {{- end -}}
 
 {{- define "fastproof.workloads" -}}

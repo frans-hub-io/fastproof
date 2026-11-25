@@ -272,7 +272,7 @@ const TOOLS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "triage",
-        description: "Set the defect type, comment, issue link or mute of results or of a whole failure cluster. Recorded as AI triage and audited. Needs results:triage; mute and unmute also need results:mute (agents propose a mute with create_rule_draft instead).",
+        description: "Set the defect type, comment, issue link or mute of results or of a whole failure cluster. Recorded as AI triage in the decision journal and audited; returns {updated, batchId}. Needs results:triage; mute and unmute also need results:mute (agents propose a mute with create_rule_draft instead).",
         schema: schema::<TriageArgs>,
         write: true,
     },
@@ -623,16 +623,22 @@ impl McpServer {
                 .await;
                 Ok(out)
             }
-            other => match crate::mcp_tm::run(s, other, a, auth).await {
+            other => match crate::mcp_analysis::run(s, other, a, auth).await {
                 Some(r) => r,
-                None => Err(ToolError(format!("unknown tool {other:?}"))),
+                None => match crate::mcp_tm::run(s, other, a, auth).await {
+                    Some(r) => r,
+                    None => Err(ToolError(format!("unknown tool {other:?}"))),
+                },
             },
         }
     }
 }
 
 fn all_tools() -> impl Iterator<Item = &'static ToolSpec> {
-    TOOLS.iter().chain(crate::mcp_tm::TOOLS.iter())
+    TOOLS
+        .iter()
+        .chain(crate::mcp_analysis::TOOLS.iter())
+        .chain(crate::mcp_tm::TOOLS.iter())
 }
 
 /// Tool definitions as listed.

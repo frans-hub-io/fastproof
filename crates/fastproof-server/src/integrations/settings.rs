@@ -33,6 +33,40 @@ pub enum Metric {
     Flaky,
     /// Launch duration in seconds.
     Duration,
+    /// Unique errors of the launch not seen on the baseline branch (or the launch's own) in
+    /// the last 30 days, ignored errors left out (FastProof Analysis).
+    NewErrors,
+    /// Failed or broken results, not muted, without a defect or with one of group
+    /// `toInvestigate` (FastProof Analysis).
+    ToInvestigate,
+    /// Results that ran: every status except `skipped` (FastProof Analysis).
+    Total,
+}
+
+impl Metric {
+    /// Metrics that only replicas of the analysis level know (written through the analysis
+    /// gate).
+    pub fn is_analysis(self) -> bool {
+        matches!(
+            self,
+            Metric::NewErrors | Metric::ToInvestigate | Metric::Total
+        )
+    }
+
+    /// The camelCase name.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Metric::Failed => "failed",
+            Metric::Broken => "broken",
+            Metric::NewFailures => "newFailures",
+            Metric::PassRate => "passRate",
+            Metric::Flaky => "flaky",
+            Metric::Duration => "duration",
+            Metric::NewErrors => "newErrors",
+            Metric::ToInvestigate => "toInvestigate",
+            Metric::Total => "total",
+        }
+    }
 }
 
 /// A comparison.
@@ -548,12 +582,13 @@ pub struct IntegrationSettings {
     pub fastmock: Option<FastMockSettings>,
 }
 
-pub const EVENTS: [&str; 5] = [
+pub const EVENTS: [&str; 6] = [
     "launchFinished",
     "gateFailed",
     "newFailures",
     "manualRunClosed",
     "caseReviewRequested",
+    "errorRegressed",
 ];
 
 fn field<T: serde::de::DeserializeOwned>(
@@ -669,7 +704,7 @@ impl IntegrationSettings {
             }
             if n.on.is_empty() || n.on.iter().any(|e| !EVENTS.contains(&e.as_str())) {
                 return Err(
-                    "notifications.on: one or more of launchFinished, gateFailed, newFailures, manualRunClosed, caseReviewRequested"
+                    "notifications.on: one or more of launchFinished, gateFailed, newFailures, manualRunClosed, caseReviewRequested, errorRegressed"
                         .into(),
                 );
             }

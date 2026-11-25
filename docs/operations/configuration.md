@@ -137,12 +137,39 @@ ingest limits are listed on [Limits](limits.md).
 | Variable | Default | Meaning |
 |---|---|---|
 | `FASTPROOF_INGEST_MODE` | `direct` | `direct`: uploads go through the spool and a PostgreSQL job queue to the ingest workers. `kafka`: the HTTP gateway produces to Kafka and writer consumers persist |
-| `FASTPROOF_ROLES` | `all` | Components this process runs: `all`, or a comma list of `api`, `ingest`, `writer`, `sink`, `scheduler` |
+| `FASTPROOF_ROLES` | `all` | Components this process runs: `all`, or a comma list of `api`, `ingest`, `writer`, `sink`, `scheduler`, `analysis` (`analysis` stays idle while `FASTPROOF_ANALYSIS=off`) |
 | `FASTPROOF_SEARCH_BACKEND` | `postgres` | Where log search and similar-failure lookups go: `postgres`, `clickhouse` or `opensearch` |
 | `FASTPROOF_SINKS` | empty | Consumers that copy results, attempts, steps and logs out: empty, or a comma list of `clickhouse`, `opensearch` |
 
 A search backend other than `postgres` needs the matching sink, because the sink is what fills it. See
 [Scaling and big data](scaling.md) for when to use which.
+
+## FastProof Analysis
+
+The `analysis` role analyses finished launches in the background. It does nothing until
+`FASTPROOF_ANALYSIS=on`; `FASTPROOF_ROLES=all` includes it. Every variable is checked at start and an error names
+it.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `FASTPROOF_ANALYSIS` | `off` | `on` or `off`: the instance switch. A project can still opt out in its settings (`analysis.enabled`) |
+| `FASTPROOF_ANALYSIS_WORKERS` | `2` | Launch workers of this replica, 0 to 16 (0: this replica analyses no launches) |
+| `FASTPROOF_ANALYSIS_SETTLE_SECONDS` | `30` | Age of a finished-launch event before it is taken, 0 to 600 |
+| `FASTPROOF_ANALYSIS_CLICKHOUSE` | `auto` | `auto`: read ClickHouse when `FASTPROOF_CLICKHOUSE_URL` is set and `clickhouse` is in `FASTPROOF_SINKS`; `off`: PostgreSQL only |
+| `FASTPROOF_ANALYSIS_LAUNCH_TIMEOUT_SECONDS` | `120` | Wall time of the analysis of one launch, 10 to 3600 |
+| `FASTPROOF_ANALYSIS_MAX_CLUSTERS` | `2000` | Failure clusters analysed per launch, 10 to 100 000 |
+| `FASTPROOF_ANALYSIS_CANDIDATE_ROWS` | `5000` | Memory rows scanned per cluster without `pg_trgm`, 100 to 100 000 |
+| `FASTPROOF_ANALYSIS_MEMORY_MAX_ROWS` | `200000` | Triage memory rows kept per project, 1000 to 10 000 000 |
+| `FASTPROOF_ANALYSIS_LOG_CPU_MS` | `2000` | CPU time of log rules per launch, 100 to 60 000 |
+| `FASTPROOF_ANALYSIS_LOG_LAST_BYTES` | `262144` | Log bytes read from the end of each failed attempt, 1024 to 1 048 576 |
+| `FASTPROOF_ANALYSIS_LOG_ATTEMPTS` | `2000` | Failed attempts per launch whose logs are read, 10 to 100 000 |
+| `FASTPROOF_ANALYSIS_MAX_LOG_RULES` | `100` | Enabled after-launch rules per project, 1 to 1000 |
+| `FASTPROOF_ANALYSIS_RECOMPUTE_SECONDS` | `30` | Least time between two analyses of one launch on request, 5 to 3600 |
+| `FASTPROOF_ANALYSIS_BACKTEST_MAX_EVENTS` | `200000` | Decision events one backtest reads, 1000 to 10 000 000 |
+| `FASTPROOF_ANALYSIS_SIGNALS_PER_MINUTE` | `600` | Pushed signals per project and replica each minute, 1 to 100 000 |
+| `FASTPROOF_ANALYSIS_FASTMOCK_ATTEMPTS` | `100` | Failed attempts per launch looked up in FastMock, 0 to 2000 (0: off) |
+| `FASTPROOF_ANALYSIS_GATE` | `auto` | `auto`, `open` or `closed`: whether new analysis formats may be written (see [Upgrading](upgrading.md)) |
+| `FASTPROOF_ANALYSIS_GATE_SETTLE_SECONDS` | `600` | Seconds after the analysis upgrade migration before the gate may open, 0 to 2 592 000 |
 
 ## Kafka
 

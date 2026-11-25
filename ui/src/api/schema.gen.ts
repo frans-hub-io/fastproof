@@ -27,7 +27,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** @description Replicas seen within a day with their test-management level, and whether new data formats may be written (`FASTPROOF_TM_GATE`, `FASTPROOF_TM_GATE_SETTLE_SECONDS`). Needs `settings:write` without a project scope. */
+        /** @description Replicas seen within a day with their test-management and analysis levels, and whether new data formats may be written (`FASTPROOF_TM_GATE`, `FASTPROOF_TM_GATE_SETTLE_SECONDS`; `analysis`: `FASTPROOF_ANALYSIS_GATE`, `FASTPROOF_ANALYSIS_GATE_SETTLE_SECONDS`). Needs `settings:write` without a project scope. */
         get: operations["admin_replicas"];
         put?: never;
         post?: never;
@@ -132,6 +132,23 @@ export interface paths {
         options?: never;
         head?: never;
         patch: operations["projects_patch"];
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/analysis/capabilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description What FastProof Analysis answers for the project: the instance and project switches, ClickHouse, `pg_trgm`, the analysis replica gate, the features and the data windows. Needs `projects:read`. */
+        get: operations["analysis_capabilities"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/v1/projects/{key}/attachments/{attachment}/media-url": {
@@ -1024,6 +1041,23 @@ export interface paths {
         options?: never;
         head?: never;
         patch: operations["launches_patch"];
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/launches/{id}/analysis": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description The analysis of a launch: queued, running, done, failed, or `none` when it was never queued, with the outcome of each step. Needs `launches:read`. */
+        get: operations["analysis_launch_status"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/v1/projects/{key}/launches/{id}/attachments": {
@@ -2533,6 +2567,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{key}/triage/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description The decision journal of a result (`resultId`, newest first) or of a batch (`batchId`): every change of a defect or mute with its path (`via`), source, author, the state before and after, and whether the batch can still be undone. Needs `launches:read`. */
+        get: operations["analysis_triage_history"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/triage/undo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Undoes a batch: every result still at the state the batch left is put back to its state before (mutes included); results changed since, gone or merged are skipped. The restore is a new batch (`via: undo`), so an undo can be undone too. Rule batches at ingest are not undoable (409 `batch_not_undoable`; edit the rule); batches above 20000 results answer 409 `batch_too_large`. Needs `results:triage`, and `results:mute` for a batch that changed mutes; an AI agent undoes only its own batches (403 `not_your_batch`). */
+        post: operations["analysis_triage_undo"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/tokens": {
         parameters: {
             query?: never;
@@ -2639,6 +2707,170 @@ export interface components {
             name: string;
             to: string;
         };
+        /** @description `analysis.autoApply`: rank-1 suggestions of these bands are applied by themselves. */
+        AnalysisAutoApplySettings: {
+            /**
+             * @description Non-empty, only `same`.
+             * @default [
+             *       "same"
+             *     ]
+             */
+            bands?: components["schemas"]["SuggestionBand"][];
+            /** @default false */
+            enabled?: boolean;
+        };
+        /** @description `analysis.backtest`. */
+        AnalysisBacktestSettings: {
+            /** @default true */
+            nightly?: boolean;
+        };
+        /** @description `GET .../analysis/capabilities`. */
+        AnalysisCapabilities: {
+            clickhouse: boolean;
+            /** @description The instance and the project have Analysis on. */
+            enabled: boolean;
+            features: components["schemas"]["AnalysisFeatures"];
+            /** @description Every replica knows the analysis formats. */
+            gateOpen: boolean;
+            instanceEnabled: boolean;
+            projectEnabled: boolean;
+            /** @description `pg_trgm` is installed. */
+            trigram: boolean;
+            windows: components["schemas"]["AnalysisWindows"];
+            /** @description Feature names that need ClickHouse. */
+            withClickHouse: string[];
+        };
+        /** @description Which analysis features answer for a project. */
+        AnalysisFeatures: {
+            analytics: boolean;
+            crossProjectSimilar: boolean;
+            errors: boolean;
+            flakyHints: boolean;
+            gateAnalytics: boolean;
+            logPatterns: boolean;
+            portfolio: boolean;
+            signals: boolean;
+            suggestions: boolean;
+        };
+        /** @description `analysis.flaky`. */
+        AnalysisFlakySettings: {
+            /**
+             * Format: double
+             * @description 0.05 to 1.0.
+             * @default 0.2
+             */
+            hintMinScore?: number;
+        };
+        /**
+         * @description State of a launch in the analysis queue (`none`: never queued).
+         * @enum {string}
+         */
+        AnalysisLaunchState: "queued" | "running" | "done" | "failed" | "none";
+        /** @description `GET .../launches/{id}/analysis`. */
+        AnalysisLaunchStatus: {
+            /** Format: date-time */
+            finishedAt?: string | null;
+            /** Format: date-time */
+            queuedAt?: string | null;
+            state: components["schemas"]["AnalysisLaunchState"];
+            steps: components["schemas"]["LaunchSteps"];
+        };
+        /** @description The project's settings area `analysis` (the instance switch is `FASTPROOF_ANALYSIS`). */
+        AnalysisSettings: {
+            /**
+             * @default {
+             *       "enabled": false,
+             *       "bands": [
+             *         "same"
+             *       ]
+             *     }
+             */
+            autoApply?: components["schemas"]["AnalysisAutoApplySettings"];
+            /**
+             * @default {
+             *       "nightly": true
+             *     }
+             */
+            backtest?: components["schemas"]["AnalysisBacktestSettings"];
+            /**
+             * @description The project's opt-out.
+             * @default true
+             */
+            enabled?: boolean;
+            /**
+             * @default {
+             *       "hintMinScore": 0.2
+             *     }
+             */
+            flaky?: components["schemas"]["AnalysisFlakySettings"];
+            /**
+             * Format: int32
+             * @description 30 to 3650.
+             * @default 365
+             */
+            memoryDays?: number;
+            /**
+             * Format: int32
+             * @description 1 to 100.
+             * @default 10
+             */
+            resolveAfterLaunches?: number;
+            /**
+             * @default {
+             *       "minScore": 0.4,
+             *       "maxCandidates": 3
+             *     }
+             */
+            suggest?: components["schemas"]["AnalysisSuggestSettings"];
+        };
+        /**
+         * @description Outcome of a pipeline step.
+         * @enum {string}
+         */
+        AnalysisStepStatus: "done" | "partial" | "skipped" | "failed";
+        /** @description `analysis.suggest`. */
+        AnalysisSuggestSettings: {
+            /**
+             * Format: int32
+             * @description 1 to 3.
+             * @default 3
+             */
+            maxCandidates?: number;
+            /**
+             * Format: double
+             * @description 0.40 to 0.95.
+             * @default 0.4
+             */
+            minScore?: number;
+        };
+        /** @description Data windows of a project's analysis, in days. */
+        AnalysisWindows: {
+            /**
+             * Format: int32
+             * @description 30 on PostgreSQL, the ClickHouse TTL with ClickHouse.
+             */
+            analyticsDays: number;
+            /** Format: int32 */
+            memoryDays: number;
+            /** Format: int32 */
+            rawDays: number;
+        };
+        /**
+         * @description Backend of an analytics answer.
+         * @enum {string}
+         */
+        AnalyticsBackend: "postgres" | "clickhouse";
+        /** @description The window an analytics answer covers. */
+        AnalyticsWindow: {
+            backend: components["schemas"]["AnalyticsBackend"];
+            /** Format: date-time */
+            from: string;
+            /** @description Less than asked for (the PostgreSQL fallback covers at most 30 days). */
+            partial: boolean;
+            reason?: string | null;
+            /** Format: date-time */
+            to: string;
+        };
         /** @description A stored attachment. */
         AttachmentCreated: {
             /** Format: uuid */
@@ -2670,6 +2902,33 @@ export interface components {
             name: string;
             /** Format: int64 */
             size?: number | null;
+        };
+        /** @description A stored signal. */
+        AttemptSignal: {
+            /** Format: date-time */
+            at: string;
+            /** Format: int32 */
+            attempt?: number | null;
+            confidence: components["schemas"]["SignalConfidence"];
+            detail: Record<string, never>;
+            /** Format: int64 */
+            id: number;
+            kind: string;
+            /** Format: uuid */
+            resultId?: string | null;
+            source: components["schemas"]["SignalSource"];
+        };
+        /** @description Signals of a cluster's results, counted. */
+        AttemptSignalBrief: {
+            confidence: components["schemas"]["SignalConfidence"];
+            /** Format: int64 */
+            count: number;
+            kind: string;
+            source: components["schemas"]["SignalSource"];
+        };
+        /** @description `GET .../results/{id}/signals`. */
+        AttemptSignals: {
+            items: components["schemas"]["AttemptSignal"][];
         };
         /** @description One execution of a result. */
         AttemptView: {
@@ -2714,6 +2973,62 @@ export interface components {
             items: components["schemas"]["AuditItem"][];
             next?: string | null;
         };
+        /** @description Precision of one band in a backtest. */
+        BacktestBand: {
+            band: components["schemas"]["SuggestionBand"];
+            /** Format: int64 */
+            correct: number;
+            /** Format: int64 */
+            correctGroup: number;
+            /** Format: double */
+            precision?: number | null;
+            /** @description `suggested` reached 50. */
+            shown: boolean;
+            /** Format: int64 */
+            suggested: number;
+        };
+        /** @description A frequent mistake in a backtest (group names). */
+        BacktestConfusion: {
+            /** Format: int64 */
+            count: number;
+            expected: string;
+            suggested: string;
+        };
+        /** @description A backtest report. */
+        BacktestReport: {
+            bands: components["schemas"]["BacktestBand"][];
+            confusions: components["schemas"]["BacktestConfusion"][];
+            /** Format: double */
+            coverage: number;
+            /** Format: date-time */
+            createdAt: string;
+            createdBy: string;
+            /** Format: int64 */
+            decisions: number;
+            /** Format: date-time */
+            from?: string | null;
+            /** Format: uuid */
+            id: string;
+            /** Format: int64 */
+            noSuggestion: number;
+            source: components["schemas"]["BacktestSource"];
+            /** Format: date-time */
+            to?: string | null;
+            truncated: boolean;
+        };
+        /** @description Body of `POST .../analysis/backtest`. */
+        BacktestRequest: {
+            /**
+             * Format: int32
+             * @description 1 to 730, default 180.
+             */
+            days?: number | null;
+        };
+        /**
+         * @description Where the events of a backtest came from.
+         * @enum {string}
+         */
+        BacktestSource: "project" | "synthetic" | "events";
         Board: {
             /** Format: date-time */
             createdAt: string;
@@ -3450,6 +3765,7 @@ export interface components {
             /** Format: int64 */
             count: number;
             defect?: components["schemas"]["Defect"] | null;
+            errorState?: components["schemas"]["ErrorState"] | null;
             fingerprint: string;
             isNew: boolean;
             /**
@@ -3458,10 +3774,17 @@ export interface components {
              */
             knownSince?: string | null;
             message?: string | null;
+            /** @description First seen on the launch's branch in this launch. */
+            newOnBranch?: boolean;
             /** Format: uuid */
             sampleResultId: string;
             statuses: components["schemas"]["ClusterStatuses"];
         };
+        /**
+         * @description Who decided a cluster.
+         * @enum {string}
+         */
+        ClusterDecided: "person" | "rule";
         /** @description `{items}` of clusters. */
         ClusterList: {
             items: components["schemas"]["Cluster"][];
@@ -3472,6 +3795,30 @@ export interface components {
             broken: number;
             /** Format: int64 */
             failed: number;
+        };
+        /** @description A cluster of a launch with its suggestions. */
+        ClusterSuggestions: {
+            commits?: components["schemas"]["CommitRange"] | null;
+            /** Format: int64 */
+            count: number;
+            decided?: components["schemas"]["ClusterDecided"] | null;
+            defect?: components["schemas"]["Defect"] | null;
+            errorState?: components["schemas"]["ErrorState"] | null;
+            fingerprint: string;
+            isNew: boolean;
+            message?: string | null;
+            newOnBranch: boolean;
+            noSuggestion?: components["schemas"]["NoSuggestion"] | null;
+            /** Format: uuid */
+            sampleResultId: string;
+            signals: components["schemas"]["AttemptSignalBrief"][];
+            suggestions: components["schemas"]["Suggestion"][];
+        };
+        /** @description The commits between the last good launch and the first failing one. */
+        CommitRange: {
+            compareUrl?: string | null;
+            first?: string | null;
+            lastGood?: string | null;
         };
         /** @description Launch B compared with launch A. */
         Comparison: {
@@ -3610,6 +3957,25 @@ export interface components {
             /** @description The value (`fp_…`): store it now. */
             token: string;
         };
+        /** @description `GET /api/v1/analytics/similar`. */
+        CrossProjectSimilar: {
+            items: components["schemas"]["CrossProjectSimilarItem"][];
+        };
+        /** @description A similar failure in another readable project. */
+        CrossProjectSimilarItem: {
+            group?: string | null;
+            /** Format: uuid */
+            launchId: string;
+            /** Format: int64 */
+            launchNumber: number;
+            message?: string | null;
+            name: string;
+            project: string;
+            /** Format: uuid */
+            resultId: string;
+            /** Format: double */
+            score: number;
+        };
         /** @description The launches of one value of a launch attribute, added up. */
         CumulativePoint: {
             /** Format: int64 */
@@ -3664,6 +4030,60 @@ export interface components {
             mostFailing: components["schemas"]["FailingTest"][];
             passRate: components["schemas"]["PassRatePoint"][];
         };
+        /**
+         * @description A person's triage decision as the memory and the backtest see it (also the line of the
+         *     NDJSON export, where `by` is a hash).
+         */
+        DecisionEvent: {
+            /** Format: date-time */
+            at: string;
+            branch?: string | null;
+            by: string;
+            /** Format: uuid */
+            defectTypeId: string;
+            envKey?: string | null;
+            fingerprint: string;
+            frames: string[];
+            group: string;
+            messageNorm: string;
+            /** Format: uuid */
+            previousTypeId?: string | null;
+            /** Format: int32 */
+            results: number;
+            /** Format: uuid */
+            testCaseId?: string | null;
+            /**
+             * Format: int32
+             * @description Format version, 1.
+             */
+            v: number;
+        };
+        /** @description The decision a suggestion learned from. */
+        DecisionSample: {
+            /** Format: int32 */
+            confirmed: number;
+            /** Format: date-time */
+            decidedAt: string;
+            decidedBy: string;
+            /** Format: uuid */
+            launchId?: string | null;
+            /** Format: int64 */
+            launchNumber?: number | null;
+            /** Format: int32 */
+            overridden: number;
+            /** Format: uuid */
+            resultId?: string | null;
+        };
+        /**
+         * @description Who made a triage decision: a person, an AI agent, a rule or auto-apply.
+         * @enum {string}
+         */
+        DecisionSource: "user" | "ai" | "rule" | "auto";
+        /**
+         * @description The path a triage decision came through.
+         * @enum {string}
+         */
+        DecisionVia: "api" | "mcp" | "rp" | "rule" | "retro" | "suggestion" | "auto" | "undo";
         /** @description Triage of a result: defect type (with its group and name when triaged), comment, issue. */
         Defect: {
             /** @description An accepted (known, tolerated) failure. */
@@ -3858,6 +4278,27 @@ export interface components {
             /** Format: date */
             t: string;
         };
+        /** @description A test that became slower. */
+        DurationRegression: {
+            name: string;
+            /** Format: int64 */
+            p50BeforeMs: number;
+            /** Format: int64 */
+            p50RecentMs: number;
+            /** Format: double */
+            ratio: number;
+            /** Format: int64 */
+            runs: number;
+            /** Format: uuid */
+            seriesId: string;
+            /** Format: uuid */
+            testCaseId: string;
+        };
+        /** @description `GET .../analytics/durations`. */
+        DurationRegressions: {
+            items: components["schemas"]["DurationRegression"][];
+            window: components["schemas"]["AnalyticsWindow"];
+        };
         /** @description The results of one environment of a launch. */
         EnvironmentCounts: {
             counts: components["schemas"]["Counts"];
@@ -3874,6 +4315,119 @@ export interface components {
             code: string;
             details?: unknown;
             message: string;
+        };
+        /** @description An error on one branch. */
+        ErrorBranch: {
+            branch: string;
+            /** Format: date-time */
+            firstSeenAt: string;
+            /** Format: uuid */
+            lastLaunchId?: string | null;
+            /** Format: date-time */
+            lastSeenAt: string;
+            /** Format: int64 */
+            launchesSince: number;
+            /** Format: int64 */
+            occurrences: number;
+        };
+        /** @description `GET .../errors/{fingerprint}`. */
+        ErrorDetail: components["schemas"]["ErrorSummary"] & {
+            aliasList: string[];
+            branchList: components["schemas"]["ErrorBranch"][];
+            commits?: components["schemas"]["CommitRange"] | null;
+            decisions: components["schemas"]["MemoryEntry"][];
+            /** Format: int64 */
+            mttrSeconds?: number | null;
+            testList: components["schemas"]["ErrorTest"][];
+            timeline: components["schemas"]["ErrorTimelinePoint"][];
+            window: components["schemas"]["AnalyticsWindow"];
+        };
+        /** @description The issue linked to an error. */
+        ErrorIssue: {
+            key?: string | null;
+            state: components["schemas"]["ErrorIssueState"];
+            url: string;
+        };
+        /**
+         * @description State of the issue linked to an error.
+         * @enum {string}
+         */
+        ErrorIssueState: "open" | "closed" | "creating";
+        /** @description `GET .../errors`. */
+        ErrorList: {
+            items: components["schemas"]["ErrorSummary"][];
+            next?: string | null;
+        };
+        /** @description Body of `PATCH .../errors/{fingerprint}`. */
+        ErrorPatch: {
+            /** @description The canonical error this one is an alias of; `null` splits it. */
+            aliasOf?: string | null;
+            state?: components["schemas"]["ErrorPatchState"] | null;
+        };
+        /**
+         * @description State a person may set on an error.
+         * @enum {string}
+         */
+        ErrorPatchState: "ignored" | "active";
+        /**
+         * @description Order of the errors list.
+         * @enum {string}
+         */
+        ErrorSort: "lastSeen" | "firstSeen" | "occurrences" | "launches";
+        /**
+         * @description State of a unique error.
+         * @enum {string}
+         */
+        ErrorState: "new" | "active" | "resolved" | "regressed" | "ignored";
+        /** @description A unique error in a list. */
+        ErrorSummary: {
+            aliasOf?: string | null;
+            /** Format: int64 */
+            aliases: number;
+            branches: string[];
+            fingerprint: string;
+            /** Format: date-time */
+            firstSeenAt: string;
+            group?: string | null;
+            issue?: components["schemas"]["ErrorIssue"] | null;
+            /** Format: date-time */
+            lastSeenAt: string;
+            /** Format: int64 */
+            launches: number;
+            message: string;
+            /** Format: int64 */
+            occurrences: number;
+            /** Format: int32 */
+            regressedCount: number;
+            /** @description 14 daily counts, oldest first. */
+            spark: number[];
+            state: components["schemas"]["ErrorState"];
+            /** Format: date-time */
+            stateAt?: string | null;
+            /** Format: int64 */
+            tests: number;
+        };
+        /** @description A test an error occurs in. */
+        ErrorTest: {
+            name: string;
+            /** Format: int64 */
+            occurrences: number;
+            /** Format: uuid */
+            testCaseId: string;
+        };
+        /** @description `GET .../errors/{fingerprint}/timeline`. */
+        ErrorTimeline: {
+            items: components["schemas"]["ErrorTimelinePoint"][];
+            window: components["schemas"]["AnalyticsWindow"];
+        };
+        /** @description Occurrences of an error on one day. */
+        ErrorTimelinePoint: {
+            /** Format: date */
+            day: string;
+            /** Format: int64 */
+            launches: number;
+            /** Format: int64 */
+            occurrences: number;
         };
         /** @description Error details of an attempt or step. */
         ErrorView: {
@@ -3900,6 +4454,33 @@ export interface components {
             /** Format: uuid */
             testCaseId: string;
         };
+        /** @description `GET .../analytics/failures`. */
+        FailureAnalytics: {
+            groupBy: components["schemas"]["FailureGroupBy"];
+            items: components["schemas"]["FailureGroup"][];
+            /** Format: int64 */
+            total: number;
+            window: components["schemas"]["AnalyticsWindow"];
+        };
+        /** @description One group of failures. */
+        FailureGroup: {
+            /** Format: int64 */
+            failures: number;
+            key: string;
+            label: string;
+            /** Format: int64 */
+            launches: number;
+            /** Format: double */
+            share: number;
+            /** Format: int64 */
+            tests: number;
+            trend: number[];
+        };
+        /**
+         * @description Grouping of the failure analytics.
+         * @enum {string}
+         */
+        FailureGroupBy: "fingerprint" | "defectGroup" | "suite" | "env";
         /** @description The FastMock instance whose journal is correlated with results. */
         FastMockSettings: {
             tokenSecretRef?: string | null;
@@ -3933,6 +4514,43 @@ export interface components {
         FinishLaunch: {
             /** @description `finished` (default) or `interrupted`. */
             status?: string | null;
+        };
+        /** @description A likely cause of a flaky test. */
+        FlakyHint: {
+            actions: components["schemas"]["HintAction"][];
+            confidence: components["schemas"]["HintConfidence"];
+            evidence: Record<string, never>;
+            kind: components["schemas"]["FlakyHintKind"];
+            /** Format: int32 */
+            sample: number;
+            summary: string;
+        };
+        /** @description A hint in the flaky list. */
+        FlakyHintBrief: {
+            confidence: components["schemas"]["HintConfidence"];
+            kind: components["schemas"]["FlakyHintKind"];
+        };
+        /**
+         * @description Kind of a flaky-cause hint.
+         * @enum {string}
+         */
+        FlakyHintKind: "timing" | "environment" | "order" | "retry" | "infra" | "time";
+        /** @description `GET .../flaky/{seriesId}/hints`. */
+        FlakyHints: {
+            backend: components["schemas"]["AnalyticsBackend"];
+            /** Format: date-time */
+            computedAt?: string | null;
+            /** Format: int32 */
+            failures: number;
+            hints: components["schemas"]["FlakyHint"][];
+            /** Format: int32 */
+            infraFailures: number;
+            /** Format: double */
+            infraShare?: number | null;
+            /** Format: uuid */
+            seriesId: string;
+            /** Format: int32 */
+            windowRuns: number;
         };
         /** @description A flaky test. */
         FlakyItem: {
@@ -3974,6 +4592,20 @@ export interface components {
              */
             stabilizationPeriod?: number;
         };
+        /** @description `GET .../analytics/flaky-trend`. */
+        FlakyTrend: {
+            items: components["schemas"]["FlakyTrendPoint"][];
+            window: components["schemas"]["AnalyticsWindow"];
+        };
+        /** @description Flaky results on one day. */
+        FlakyTrendPoint: {
+            /** Format: date */
+            day: string;
+            /** Format: int64 */
+            flaky: number;
+            /** Format: int64 */
+            runs: number;
+        };
         /** @description Cases in a folder and its subfolders (not archived). */
         FolderCounts: {
             /** Format: int64 */
@@ -4001,6 +4633,46 @@ export interface components {
             name: string;
             rules: components["schemas"]["GateRule"][];
         };
+        /** @description `GET .../gates/history`. */
+        GateHistory: {
+            branches: components["schemas"]["GateHistoryBranch"][];
+            gates: components["schemas"]["GateHistoryGate"][];
+            items: components["schemas"]["GateHistoryItem"][];
+            next?: string | null;
+        };
+        /** @description Evaluations per branch. */
+        GateHistoryBranch: {
+            branch: string;
+            /** Format: int64 */
+            evaluations: number;
+            /** Format: int64 */
+            failed: number;
+        };
+        /** @description Aggregates of one gate over the window. */
+        GateHistoryGate: {
+            /** Format: int64 */
+            evaluations: number;
+            /** Format: int64 */
+            failed: number;
+            /** Format: int64 */
+            flips: number;
+            gate: string;
+            /** Format: double */
+            meanSecondsToGreen?: number | null;
+            topFailingMetric?: components["schemas"]["Metric"];
+        };
+        /** @description One gate evaluation in the history. */
+        GateHistoryItem: {
+            branch?: string | null;
+            /** Format: date-time */
+            evaluatedAt: string;
+            failed: components["schemas"]["GateRuleOutcome"][];
+            /** Format: uuid */
+            launchId: string;
+            /** Format: int64 */
+            launchNumber: number;
+            status: components["schemas"]["GateStatus"];
+        };
         /**
          * @description The gate result of a launch: `pending` while the launch runs or uploads are processed,
          *     otherwise `failed` when a rule of an enabled gate that applies to the branch does not hold.
@@ -4024,11 +4696,59 @@ export interface components {
             /** Format: double */
             value: number;
         };
+        /** @description A failed rule of a gate evaluation. */
+        GateRuleOutcome: {
+            /** Format: double */
+            actual?: number | null;
+            /** Format: double */
+            expected: number;
+            gate: string;
+            metric: components["schemas"]["Metric"];
+        };
+        /** @description Body of `POST .../gates/simulate`. */
+        GateSimulate: {
+            branch?: string | null;
+            gate: components["schemas"]["Gate"];
+            /**
+             * Format: int32
+             * @description 1 to 200, default 50.
+             */
+            launches?: number | null;
+        };
+        /** @description `POST .../gates/simulate`. */
+        GateSimulation: {
+            /** Format: int64 */
+            evaluated: number;
+            /** Format: int64 */
+            failed: number;
+            items: components["schemas"]["GateSimulationItem"][];
+            /** Format: int64 */
+            skipped: number;
+        };
+        /** @description A simulated evaluation of one launch. */
+        GateSimulationItem: {
+            branch?: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: uuid */
+            launchId: string;
+            /** Format: int64 */
+            launchNumber: number;
+            results: components["schemas"]["RuleResult"][];
+            status: components["schemas"]["GateStatus"];
+        };
         /**
          * @description `passed`, `failed` or `pending`.
          * @enum {string}
          */
         GateStatus: "passed" | "failed" | "pending";
+        /** @description State of the analysis replica gate. */
+        GateView: {
+            gateOpen: boolean;
+            mode: components["schemas"]["TmGateMode"];
+            /** Format: date-time */
+            settleUntil?: string | null;
+        };
         /** @description A role and where the caller may grant it. */
         GrantableRole: {
             /** @description Grantable with `scopes: ["*"]`. */
@@ -4056,6 +4776,16 @@ export interface components {
             /** Format: date */
             t: string;
         };
+        /**
+         * @description What a hint suggests doing.
+         * @enum {string}
+         */
+        HintAction: "mute" | "issue" | "rule";
+        /**
+         * @description Confidence of a flaky-cause hint.
+         * @enum {string}
+         */
+        HintConfidence: "low" | "medium" | "high";
         /** @description One result of a test case in a launch. */
         HistoryEntry: {
             branch?: string | null;
@@ -4625,6 +5355,29 @@ export interface components {
             name: string;
             vcs?: components["schemas"]["LaunchVcs"] | null;
         };
+        /** @description The steps of the analysis of a launch, as recorded. */
+        LaunchSteps: {
+            errors?: components["schemas"]["StepOutcome"] | null;
+            flakyHints?: components["schemas"]["StepOutcome"] | null;
+            logRules?: components["schemas"]["StepOutcome"] | null;
+            signals?: components["schemas"]["StepOutcome"] | null;
+            suggestions?: components["schemas"]["StepOutcome"] | null;
+        };
+        /** @description `GET .../launches/{id}/suggestions`. */
+        LaunchSuggestions: {
+            clusters: components["schemas"]["ClusterSuggestions"][];
+            /** Format: date-time */
+            computedAt?: string | null;
+            /** Format: uuid */
+            launchId: string;
+            state: components["schemas"]["LaunchSuggestionsState"];
+            truncated: boolean;
+        };
+        /**
+         * @description State of the suggestions of a launch.
+         * @enum {string}
+         */
+        LaunchSuggestionsState: "disabled" | "pending" | "ready" | "partial";
         /** @description Version control metadata of a launch. */
         LaunchVcs: {
             /** @default null */
@@ -4735,6 +5488,11 @@ export interface components {
         LogStreamBatch: {
             lines: components["schemas"]["LogLine"][];
         };
+        /**
+         * @description A log stream.
+         * @enum {string}
+         */
+        LogStreamName: "stdout" | "stderr" | "log" | "step";
         /** @description Body of `POST /launches/{id}/manual/close`. */
         ManualClose: {
             /** @description Absent: `skipped`. */
@@ -4821,6 +5579,37 @@ export interface components {
             /** @description Path of the URL, relative to the server: `/api/v1/media/<token>`. */
             url: string;
         };
+        /** @description A memory entry as the API shows it. */
+        MemoryEntry: {
+            branches: string[];
+            comment?: string | null;
+            /** Format: int32 */
+            confirmed: number;
+            defectName: string;
+            /** Format: uuid */
+            defectTypeId: string;
+            environments: string[];
+            fingerprint: string;
+            /** Format: date-time */
+            firstDecidedAt: string;
+            frames: string[];
+            group: string;
+            issueKey?: string | null;
+            issueUrl?: string | null;
+            /** Format: date-time */
+            lastDecidedAt: string;
+            lastDecidedBy: string;
+            messageNorm: string;
+            /** Format: int32 */
+            overridden: number;
+            sample?: components["schemas"]["DecisionSample"] | null;
+            /** Format: int64 */
+            testCases: number;
+        };
+        /** @description `GET .../analysis/memory`. */
+        MemoryList: {
+            items: components["schemas"]["MemoryEntry"][];
+        };
         /** @description What a merge did. */
         MergeCounts: {
             /**
@@ -4879,7 +5668,7 @@ export interface components {
          * @description A metric a gate rule checks.
          * @enum {string}
          */
-        Metric: "failed" | "broken" | "newFailures" | "passRate" | "flaky" | "duration";
+        Metric: "failed" | "broken" | "newFailures" | "passRate" | "flaky" | "duration" | "newErrors" | "toInvestigate" | "total";
         /** @description One request FastMock answered. */
         MockInteraction: {
             /** Format: date-time */
@@ -4915,6 +5704,24 @@ export interface components {
             space?: string | null;
             /** @description More journal entries than were read could belong to the window. */
             truncated: boolean;
+        };
+        /** @description Resolved errors up to `le` seconds. */
+        MttrBucket: {
+            /** Format: int64 */
+            count: number;
+            /** Format: int64 */
+            le: number;
+        };
+        /** @description `GET .../analytics/mttr`. */
+        MttrStats: {
+            buckets: components["schemas"]["MttrBucket"][];
+            /** Format: int64 */
+            p50Seconds?: number | null;
+            /** Format: int64 */
+            p90Seconds?: number | null;
+            /** Format: int64 */
+            resolved: number;
+            window: components["schemas"]["AnalyticsWindow"];
         };
         /** @description Mute effect of a rule. */
         MuteAction: {
@@ -5019,6 +5826,11 @@ export interface components {
             /** @description Project keys, or `["*"]` for every project including later ones. */
             scopes?: string[] | null;
         };
+        /**
+         * @description Why a cluster has no suggestion.
+         * @enum {string}
+         */
+        NoSuggestion: "newError" | "noHistory" | "belowThreshold" | "decided";
         /** @description A notification channel. */
         Notification: {
             filter?: components["schemas"]["NotificationFilter"] | null;
@@ -5434,6 +6246,20 @@ export interface components {
             description?: string | null;
             name?: string | null;
         };
+        /** @description Results and launches marked with a pattern. */
+        PatternCount: {
+            /** Format: date-time */
+            lastSeenAt: string;
+            /** Format: int64 */
+            launches: number;
+            pattern: string;
+            /** Format: int64 */
+            results: number;
+        };
+        /** @description `GET .../analysis/patterns`. */
+        PatternCounts: {
+            items: components["schemas"]["PatternCount"][];
+        };
         PatternPoint: {
             fingerprint: string;
             /** Format: date-time */
@@ -5549,6 +6375,30 @@ export interface components {
             added: number[];
             removed: number[];
         };
+        /** @description `GET /api/v1/analytics/portfolio`. */
+        Portfolio: {
+            items: components["schemas"]["PortfolioProject"][];
+            window: components["schemas"]["AnalyticsWindow"];
+        };
+        /** @description A project in the portfolio. */
+        PortfolioProject: {
+            /** Format: int64 */
+            failures: number;
+            /** Format: int64 */
+            flakyTests: number;
+            key: string;
+            /** Format: int64 */
+            launches: number;
+            /** Format: int64 */
+            mttrP50Seconds?: number | null;
+            name: string;
+            /** Format: int64 */
+            newErrors: number;
+            /** Format: double */
+            passRate?: number | null;
+            /** Format: int64 */
+            regressedErrors: number;
+        };
         PreviewBody: {
             widgets: components["schemas"]["BoardWidget"][];
         };
@@ -5575,6 +6425,31 @@ export interface components {
          *     key such as `vcs`) are kept as given and validated by the integrations feature.
          */
         ProjectSettings: {
+            /**
+             * @description FastProof Analysis of the project (skipped when the default).
+             * @default {
+             *       "enabled": true,
+             *       "memoryDays": 365,
+             *       "resolveAfterLaunches": 10,
+             *       "suggest": {
+             *         "minScore": 0.4,
+             *         "maxCandidates": 3
+             *       },
+             *       "autoApply": {
+             *         "enabled": false,
+             *         "bands": [
+             *           "same"
+             *         ]
+             *       },
+             *       "backtest": {
+             *         "nightly": true
+             *       },
+             *       "flaky": {
+             *         "hintMinScore": 0.2
+             *       }
+             *     }
+             */
+            analysis?: components["schemas"]["AnalysisSettings"];
             /**
              * @description Version review of cases and shared steps (skipped when the default, review off).
              * @default {
@@ -5724,6 +6599,11 @@ export interface components {
             normalized?: string | null;
             ok: boolean;
         };
+        /**
+         * @description Why a launch is in the analysis queue.
+         * @enum {string}
+         */
+        QueueReason: "finished" | "recompute" | "backfill";
         /** @description A result that was not accepted. */
         Rejected: {
             /**
@@ -5735,6 +6615,11 @@ export interface components {
         };
         /** @description The test-management level a replica reported. */
         ReplicaLevel: {
+            /**
+             * Format: int32
+             * @description The analysis level (0 for builds before FastProof Analysis).
+             */
+            analysisLevel: number;
             instance: string;
             /** Format: date-time */
             seenAt: string;
@@ -5749,6 +6634,8 @@ export interface components {
          *     written.
          */
         ReplicaLevels: {
+            /** @description The analysis gate (`FASTPROOF_ANALYSIS_GATE*`). */
+            analysis: components["schemas"]["GateView"];
             gateOpen: boolean;
             mode: components["schemas"]["TmGateMode"];
             replicas: components["schemas"]["ReplicaLevel"][];
@@ -6138,6 +7025,18 @@ export interface components {
             /** @description Why the series is muted, when it is. */
             muteReason?: string | null;
             parameters: components["schemas"]["ParameterView"][];
+            /** @description Log pattern marks of the result. */
+            patterns?: components["schemas"]["ResultPattern"][];
+        };
+        /** @description A pattern mark on a result. */
+        ResultPattern: {
+            /** Format: int32 */
+            attempt: number;
+            /** @description At most 300 characters. */
+            excerpt: string;
+            pattern: string;
+            /** Format: uuid */
+            ruleId: string;
         };
         /**
          * @description Whether a result comes from a manual run or from an upload; also the automation filter.
@@ -6260,6 +7159,23 @@ export interface components {
              * @default 90
              */
             rawDays?: number;
+        };
+        /** @description Time spent on attempts that did not become final, per suite. */
+        RetryCost: {
+            /** Format: int64 */
+            retries: number;
+            suite: string;
+            /** Format: int64 */
+            tests: number;
+            /** Format: int64 */
+            wastedMs: number;
+        };
+        /** @description `GET .../analytics/retries`. */
+        RetryCosts: {
+            items: components["schemas"]["RetryCost"][];
+            /** Format: int64 */
+            totalWastedMs: number;
+            window: components["schemas"]["AnalyticsWindow"];
         };
         /** @description Body of `POST /reviews/bulk` (1 to `maxBulkReview` items). */
         ReviewBulk: {
@@ -6406,8 +7322,15 @@ export interface components {
             id: string;
             match: components["schemas"]["RuleMatch"];
             name: string;
+            /**
+             * @description Why the rule is not evaluated (its stored conditions or action are not readable by
+             *     this version).
+             */
+            note?: string | null;
             /** Format: int32 */
             order: number;
+            /** @description When the rule is evaluated (read only, derived from `match` and `action`). */
+            phase?: components["schemas"]["RulePhase"];
             /** Format: date-time */
             updatedAt: string;
         };
@@ -6420,17 +7343,37 @@ export interface components {
             defectTypeId?: string | null;
             issue?: components["schemas"]["IssueRef"] | null;
             mute?: components["schemas"]["MuteAction"] | null;
+            /**
+             * @description Mark the result with this log pattern (`^[a-z0-9][a-z0-9._-]{0,63}$`; evaluated after
+             *     the launch, combinable with the other effects).
+             */
+            pattern?: string | null;
         };
         /** @description `{items}` of rules. */
         RuleList: {
             items: components["schemas"]["Rule"][];
+        };
+        /** @description `match.log` of a rule: a pattern on the tail of failed attempts' logs. */
+        RuleLogMatch: {
+            contains?: string | null;
+            /**
+             * Format: int32
+             * @description 1024 to 1048576.
+             */
+            lastBytes?: number | null;
+            levels?: components["schemas"]["LogLevel"][] | null;
+            regex?: string | null;
+            streams?: components["schemas"]["LogStreamName"][] | null;
         };
         /** @description Conditions of a rule; all given ones must hold. */
         RuleMatch: {
             /** @description Environment key of the launch. */
             environment?: string | null;
             fingerprint?: string | null;
+            log?: components["schemas"]["RuleLogMatch"] | null;
             messageRegex?: string | null;
+            /** @description Signals the result must have (1 to 5; evaluated after the launch). */
+            signals?: components["schemas"]["RuleSignalMatch"][] | null;
             /** @description Result statuses; default `failed` and `broken`. */
             statuses?: string[] | null;
             /** Format: uuid */
@@ -6446,6 +7389,11 @@ export interface components {
             /** Format: int32 */
             order?: number | null;
         };
+        /**
+         * @description When a rule is evaluated.
+         * @enum {string}
+         */
+        RulePhase: "ingest" | "afterLaunch";
         /** @description Outcome of one rule. */
         RuleResult: {
             /**
@@ -6465,6 +7413,11 @@ export interface components {
             note?: string | null;
             ok: boolean;
             rule: components["schemas"]["GateRule"];
+        };
+        /** @description `match.signals[]` of a rule: a stored signal of this source (and kind) on the result. */
+        RuleSignalMatch: {
+            kind?: string | null;
+            source: components["schemas"]["SignalSource"];
         };
         /** @description Body of `POST .../rules/test`. */
         RuleTest: {
@@ -6964,6 +7917,53 @@ export interface components {
             name: string;
             steps: components["schemas"]["CaseStep"][];
         };
+        /**
+         * @description How a signal was matched to its attempt.
+         * @enum {string}
+         */
+        SignalConfidence: "exact" | "window";
+        /**
+         * @description One pushed signal (`source` is `grid`, `ci` or `k8s`; `mock` signals are written by the
+         *     server only).
+         */
+        SignalItem: {
+            /** Format: date-time */
+            at: string;
+            /** @description Flat string, number or boolean values; at most 4 KiB serialized. */
+            detail?: Record<string, never> | null;
+            kind: string;
+            /** Format: uuid */
+            launchId?: string | null;
+            resultClientId?: string | null;
+            source: components["schemas"]["SignalSource"];
+            traceId?: string | null;
+        };
+        /** @description Body of `POST .../signals`. */
+        SignalPush: {
+            /** @description 1 to 1000. */
+            items: components["schemas"]["SignalItem"][];
+        };
+        /** @description A refused item of a push. */
+        SignalRejection: {
+            code: string;
+            /** Format: int32 */
+            index: number;
+        };
+        /**
+         * @description Where a signal about a test attempt comes from.
+         * @enum {string}
+         */
+        SignalSource: "mock" | "grid" | "ci" | "k8s";
+        /** @description `POST .../signals`. */
+        SignalsAccepted: {
+            /** Format: int64 */
+            accepted: number;
+            /** Format: int64 */
+            matched: number;
+            /** Format: int64 */
+            pending: number;
+            rejected: components["schemas"]["SignalRejection"][];
+        };
         /** @description Similar failures of a result. */
         SimilarList: {
             items: components["schemas"]["SimilarResult"][];
@@ -6984,6 +7984,21 @@ export interface components {
              * @description 1 for the same fingerprint, else the text similarity of the messages (0..1).
              */
             score: number;
+        };
+        /** @description A slow step name. */
+        SlowStep: {
+            /** Format: int64 */
+            count: number;
+            name: string;
+            /** Format: int64 */
+            p50Ms: number;
+            /** Format: int64 */
+            p95Ms: number;
+        };
+        /** @description `GET .../analytics/slow-steps`. */
+        SlowSteps: {
+            items: components["schemas"]["SlowStep"][];
+            window: components["schemas"]["AnalyticsWindow"];
         };
         /** @description Body of `POST /test-plans/{id}/launches`. */
         StartPlanLaunch: {
@@ -7008,6 +8023,13 @@ export interface components {
          * @enum {string}
          */
         Status: "passed" | "failed" | "broken" | "skipped" | "unknown";
+        /** @description What one step of the analysis of a launch did. */
+        StepOutcome: {
+            detail: Record<string, never>;
+            /** Format: int64 */
+            millis: number;
+            status: components["schemas"]["AnalysisStepStatus"];
+        };
         /**
          * @description Status of one step of a run item.
          * @enum {string}
@@ -7035,6 +8057,79 @@ export interface components {
          * @enum {string}
          */
         StepsLayout: "rows" | "cells";
+        /** @description A triage suggestion for a cluster. */
+        Suggestion: {
+            band: components["schemas"]["SuggestionBand"];
+            comment?: string | null;
+            defectName: string;
+            /** Format: uuid */
+            defectTypeId: string;
+            group: string;
+            /** Format: uuid */
+            id: string;
+            issueKey?: string | null;
+            issueUrl?: string | null;
+            /**
+             * Format: double
+             * @description The band's precision in the latest backtest with at least 50 decisions in it.
+             */
+            precision?: number | null;
+            /** Format: int32 */
+            rank: number;
+            ruleDraftOffered: boolean;
+            /** Format: uuid */
+            ruleId?: string | null;
+            sample?: components["schemas"]["DecisionSample"] | null;
+            /** Format: double */
+            score: number;
+            signal: components["schemas"]["SuggestionSignal"];
+            state: components["schemas"]["SuggestionState"];
+            why: components["schemas"]["WhyItem"][];
+        };
+        /** @description Body of `POST .../suggestions/{id}/accept`. */
+        SuggestionAccept: {
+            applyTo?: components["schemas"]["SuggestionApplyTo"] | null;
+            comment?: string | null;
+            issue?: components["schemas"]["TriageIssue"] | null;
+            /** @description With `applyTo: results`, at most 1000 of the cluster. */
+            resultIds?: string[] | null;
+        };
+        /** @description Outcome of an accepted suggestion. */
+        SuggestionAccepted: {
+            /** Format: uuid */
+            batchId?: string | null;
+            /** Format: int64 */
+            skipped: number;
+            /** Format: uuid */
+            suggestionId: string;
+            /** Format: int64 */
+            updated: number;
+        };
+        /**
+         * @description What an accepted suggestion applies to.
+         * @enum {string}
+         */
+        SuggestionApplyTo: "cluster" | "results";
+        /**
+         * @description Band of a suggestion: `same` (the same error decided the same way before), `high`, `low`.
+         * @enum {string}
+         */
+        SuggestionBand: "same" | "high" | "low";
+        /** @description Body of `POST .../suggestions/{id}/reject`. */
+        SuggestionReject: {
+            /** @description At most 500 bytes. */
+            reason?: string | null;
+        };
+        /**
+         * @description The family of the largest contribution to a suggestion's score.
+         * @enum {string}
+         */
+        SuggestionSignal: "memory" | "similar" | "rule" | "history" | "signal";
+        /**
+         * @description State of a suggestion.
+         * @enum {string}
+         */
+        SuggestionState: "open" | "accepted" | "rejected" | "superseded" | "expired";
         /**
          * @description State of an AI suggestion.
          * @enum {string}
@@ -7490,6 +8585,36 @@ export interface components {
             status: string;
             transition?: string | null;
         };
+        /** @description A row of the decision journal. */
+        TriageDecision: {
+            after: components["schemas"]["TriageState"];
+            /** Format: date-time */
+            at: string;
+            /** Format: uuid */
+            batchId: string;
+            before: components["schemas"]["TriageState"];
+            by: string;
+            fingerprint?: string | null;
+            /** Format: int64 */
+            id: number;
+            /** Format: uuid */
+            launchId: string;
+            /** Format: uuid */
+            resultId: string;
+            /** Format: uuid */
+            revertsBatch?: string | null;
+            source: components["schemas"]["DecisionSource"];
+            /** Format: uuid */
+            suggestionId?: string | null;
+            /** @description The batch is not a rule batch and at least one of its results is still at its `after`. */
+            undoable: boolean;
+            via: components["schemas"]["DecisionVia"];
+        };
+        /** @description `GET .../triage/history`: rows of a result (newest first) or of a batch. */
+        TriageHistory: {
+            items: components["schemas"]["TriageDecision"][];
+            next?: string | null;
+        };
         /** @description Issue of a triage: a URL, or a key that a project issue tracker turns into one. */
         TriageIssue: {
             key?: string | null;
@@ -7497,6 +8622,12 @@ export interface components {
         };
         /** @description Outcome of a triage request. */
         TriageOutcome: {
+            /**
+             * Format: uuid
+             * @description The journal batch of the changes (`null` when nothing changed); `POST .../triage/undo`
+             *     takes it.
+             */
+            batchId?: string | null;
             /** Format: int64 */
             updated: number;
         };
@@ -7517,6 +8648,39 @@ export interface components {
             source?: string | null;
             unmute?: boolean | null;
         };
+        /** @description The triage state of a result before or after a decision. */
+        TriageState: {
+            defect?: components["schemas"]["Defect"] | null;
+            /** Format: date-time */
+            muteUntil?: string | null;
+            muted: boolean;
+        };
+        /** @description Body of `POST .../triage/undo`. */
+        TriageUndo: {
+            /** Format: uuid */
+            batchId: string;
+        };
+        /** @description Outcome of an undo: the new batch (none when nothing was restored). */
+        TriageUndoResult: {
+            /** Format: uuid */
+            batchId?: string | null;
+            /** Format: int64 */
+            restored: number;
+            /** Format: uuid */
+            reverts: string;
+            skipped: components["schemas"]["TriageUndoSkip"][];
+        };
+        /** @description A result an undo left as it is. */
+        TriageUndoSkip: {
+            code: components["schemas"]["TriageUndoSkipCode"];
+            /** Format: uuid */
+            resultId: string;
+        };
+        /**
+         * @description Why a result of an undone batch was left as it is.
+         * @enum {string}
+         */
+        TriageUndoSkipCode: "changed_since" | "result_gone" | "launch_merged";
         /**
          * @description What an import does with select values that are not options yet.
          * @enum {string}
@@ -7637,6 +8801,21 @@ export interface components {
          * @enum {string}
          */
         VersionSource: "ui" | "code" | "import" | "ai" | "restore" | "bulk";
+        /** @description A contribution to a suggestion's score. */
+        WhyItem: {
+            detail: string;
+            signal: components["schemas"]["WhySignal"];
+            /**
+             * Format: double
+             * @description The added score; for `age` the factor minus 1.
+             */
+            weight: number;
+        };
+        /**
+         * @description One reason in the "why" of a suggestion.
+         * @enum {string}
+         */
+        WhySignal: "sameFingerprint" | "message" | "frames" | "testCase" | "environment" | "branch" | "confirmed" | "overridden" | "age" | "conflict" | "rule" | "history" | "mock" | "grid" | "infra";
         /** @enum {string} */
         WidgetBucket: "day" | "week";
         /** @enum {string} */
@@ -7678,6 +8857,11 @@ export interface components {
             kind: "launch";
             launch?: components["schemas"]["LaunchPoint"] | null;
         };
+        /**
+         * @description What the `PopularPatterns` widget counts.
+         * @enum {string}
+         */
+        WidgetPatterns: "fingerprints" | "logPatterns";
         WidgetResult: {
             data: components["schemas"]["WidgetData"];
             /** @enum {string} */
@@ -7715,6 +8899,7 @@ export interface components {
              * @description Launches or list items, 1 to 50 (default 10; lists of tests hold at most 10).
              */
             limit?: number | null;
+            patterns?: components["schemas"]["WidgetPatterns"] | null;
             view?: components["schemas"]["WidgetView"] | null;
         };
         /** @enum {string} */
@@ -8173,6 +9358,43 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Project"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    analysis_capabilities: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnalysisCapabilities"];
                 };
             };
             403: {
@@ -12208,6 +13430,44 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    analysis_launch_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnalysisLaunchStatus"];
                 };
             };
             403: {
@@ -16283,7 +17543,7 @@ export interface operations {
             };
             cookie?: never;
         };
-        /** @description The areas to change. Each top-level area present in the body (`flaky`, `retention`, `rollup`, `gates`, `notifications`, `issueTrackers`, `fastmock`, `vcs`, `rerun`, `caseWorkflow`, `caseReview`) replaces the stored one as a whole; areas left out are kept; `null` resets an area to its default (removes it). `caseSync` is merged by key instead (and its `fields` by field): keys left out keep their values, a `null` key returns to its default. New formats (`caseSync.requirementLinkTypes` other than the default, `rerun.variables`, `rerun.refs`, the `caseReviewRequested` notification event) answer 409 `upgrade_in_progress` while an older replica runs. The answer is the whole stored document. */
+        /** @description The areas to change. Each top-level area present in the body (`flaky`, `retention`, `rollup`, `gates`, `notifications`, `issueTrackers`, `fastmock`, `vcs`, `rerun`, `caseWorkflow`, `caseReview`, `analysis`) replaces the stored one as a whole; areas left out are kept; `null` resets an area to its default (removes it). `caseSync` is merged by key instead (and its `fields` by field): keys left out keep their values, a `null` key returns to its default. New formats (`caseSync.requirementLinkTypes` other than the default, `rerun.variables`, `rerun.refs`, the `caseReviewRequested` notification event; gate rules with `newErrors`, `toInvestigate` or `total`, the `errorRegressed` event, `analysis.autoApply.enabled` turning on) answer 409 `upgrade_in_progress` while an older replica runs. The answer is the whole stored document. */
         requestBody: {
             content: {
                 "application/json": components["schemas"]["ProjectSettings"];
@@ -18371,6 +19631,125 @@ export interface operations {
                 };
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    analysis_triage_history: {
+        parameters: {
+            query?: {
+                /** @description The rows of a result, newest first. */
+                resultId?: string;
+                /** @description The rows of a batch. */
+                batchId?: string;
+                /** @description The `next` of the previous page. */
+                before?: string;
+                /** @description 1 to 500, default 50. */
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TriageHistory"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    analysis_triage_undo: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TriageUndo"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TriageUndoResult"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };

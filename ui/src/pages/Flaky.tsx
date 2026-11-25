@@ -2,6 +2,7 @@ import { Anchor, Autocomplete, Card, Group, Progress, SimpleGrid, Stack, Table, 
 import { EmptyState } from '@franshub/ui-shell';
 import { useMemo } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router';
+import { useAnalysisCapabilities } from '../api/analysis';
 import { useProject } from '../api/hooks';
 import { useFlaky } from '../api/stageC';
 import type { FlakyTest } from '../api/types-next';
@@ -12,6 +13,7 @@ import { useLaunchList } from '../lib/launches';
 import { sameNameHints } from '../lib/names';
 import { SameName } from '../components/SameName';
 import { STATUS_LABEL, statusVar } from '../lib/status';
+import { HintChips } from './flaky/HintChips';
 
 function Strip({ statuses }: { statuses: FlakyTest['lastStatuses'] }) {
   const oldestFirst = [...statuses].reverse();
@@ -37,6 +39,7 @@ export default function FlakyPage() {
   const branches = useMemo(() => [...new Set(launches.map((l) => l.vcs?.branch).filter((b): b is string => !!b))], [launches]);
   const envs = useMemo(() => [...new Set(launches.map((l) => l.environment?.key).filter((e): e is string => !!e))], [launches]);
   const items = useMemo(() => [...(q.data ?? [])].sort((a, b) => b.score - a.score), [q.data]);
+  const hintsOn = !!useAnalysisCapabilities(key).data?.features.flakyHints;
   const hints = useMemo(() => sameNameHints(items, (f) => f.name, (f) => [f.testCaseId, f.seriesKey]), [items]);
 
   const set = (k: string, v: string) =>
@@ -77,6 +80,7 @@ export default function FlakyPage() {
                       <Table.Th w={170}>Score</Table.Th>
                       <Table.Th w={190} style={{ whiteSpace: 'nowrap' }}>Last runs, oldest → newest</Table.Th>
                       <Table.Th w={120}>Last flaky</Table.Th>
+                      {hintsOn && <Table.Th w={160}>Likely cause</Table.Th>}
                     </Table.Tr>
                   </Table.Thead>
                   <Table.Tbody>
@@ -108,6 +112,11 @@ export default function FlakyPage() {
                             </Text>
                           </Tooltip>
                         </Table.Td>
+                        {hintsOn && (
+                          <Table.Td>
+                            <HintChips project={key} item={f} />
+                          </Table.Td>
+                        )}
                       </Table.Tr>
                     ))}
                   </Table.Tbody>

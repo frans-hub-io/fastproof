@@ -221,6 +221,10 @@ digest:
 | `ingest.mode` | `direct` | `direct` or `kafka` |
 | `search.backend` | `postgres` | `postgres`, `clickhouse` or `opensearch` |
 | `roles.split`, `roles.<role>.*` | `false` | Separate Deployments per role |
+| `analysis.enabled` | `false` | FastProof Analysis (`FASTPROOF_ANALYSIS`); with `roles.split` it runs in its own Deployment |
+| `analysis.workers`, `settleSeconds`, `clickhouse`, `gate`, `gateSettleSeconds` | `2`, `30`, `auto`, `auto`, `600` | `FASTPROOF_ANALYSIS_WORKERS`, `_SETTLE_SECONDS`, `_CLICKHOUSE`, `_GATE`, `_GATE_SETTLE_SECONDS` |
+| `analysis.limits.<name>` | none | Analysis limits by camelCase name, for example `maxClusters` for `FASTPROOF_ANALYSIS_MAX_CLUSTERS` (see [Configuration](configuration.md#fastproof-analysis)); an unknown name fails the render |
+| `sinks.clickhouse.aggTtlDays` | `730` | Days the ClickHouse aggregates of Analysis are kept |
 | `kafka.*`, `sinks.*`, `opensearch.*` | off | Kafka, ClickHouse and OpenSearch; see above |
 | `kafka.topics.replication`, `kafka.clientId`, `kafka.maxRecordBytes` | `-1`, `fastproof`, `900000` | `FASTPROOF_KAFKA_REPLICATION`, `_CLIENT_ID`, `_MAX_RECORD_BYTES` |
 | `kafka.consumer.fetchMaxBytes`, `maxInflightBytes`, `batchMaxRecords`, `batchMaxBytes` | `1048576`, `67108864`, `1000`, `1048576` | `FASTPROOF_KAFKA_FETCH_MAX_BYTES`, `_MAX_INFLIGHT_BYTES`, `_BATCH_MAX_RECORDS`, `_BATCH_MAX_BYTES`; the fetch and the budget are raised to at least `kafka.maxRecordBytes`. See [memory of the Kafka consumers](scaling.md#memory-of-the-kafka-consumers) |
@@ -236,7 +240,8 @@ the Helm release data.
 The `ci/` directory of the chart has complete examples: `minimal-fs-values.yaml`,
 `cloudpirates-garage-values.yaml`, `cnpg-external-s3-values.yaml`, `oidc-values.yaml`, `ha-values.yaml`,
 `kafka-clickhouse-values.yaml`, `kafka-opensearch-values.yaml`, `split-roles-values.yaml`,
-`bigdata-values.yaml` (a small-footprint big-data setup), `integrations-values.yaml` (egress allowlist,
+`bigdata-values.yaml` (a small-footprint big-data setup), `analysis-values.yaml` (FastProof Analysis split with
+ClickHouse), `integrations-values.yaml` (egress allowlist,
 secrets key, SMTP and delivery settings) and `mirror-values.yaml`.
 
 The chart sets every server variable on [Configuration](configuration.md), from a value or from its own
@@ -399,6 +404,7 @@ Kafka writers and the sinks scale and fail independently:
 | `<release>-fastproof-ingest` | `ingest` | Always |
 | `<release>-fastproof-writer` | `writer` | With `ingest.mode: kafka` |
 | `<release>-fastproof-sink` | `sink` | With a ClickHouse or OpenSearch sink |
+| `<release>-fastproof-analysis` | `analysis` | With `analysis.enabled: true` |
 
 Each `roles.<role>` takes `replicaCount`, `extraRoles`, `resources`, probe overrides (`startupProbe`,
 `readinessProbe`, `livenessProbe`, merged over the top-level ones), `autoscaling`, `pdb`, pod labels and
@@ -406,6 +412,10 @@ annotations, and scheduling (`nodeSelector`, `tolerations`, `affinity`, `topolog
 values fall back to the top-level ones. The top-level `replicaCount` and `autoscaling` apply only without
 the split. A headless `<release>-fastproof-ops` Service lets the ServiceMonitor scrape every role. Split roles
 share attachments, so they need S3 or a ReadWriteMany volume.
+
+`roles.analysis` defaults to 192 MiB requested and 768 MiB limit with one replica; its pods have the egress of
+the other server pods (FastMock and `integrations.egressAllow`). `ci/analysis-values.yaml` runs it split with
+ClickHouse.
 
 `roles.writer` and `roles.sink` default to 192 MiB requested and 512 MiB limit, sized for the default
 in-flight budget of the Kafka consumers (`kafka.consumer.maxInflightBytes`, 64 MiB). To run them smaller,

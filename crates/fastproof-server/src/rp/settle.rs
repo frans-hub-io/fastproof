@@ -407,13 +407,17 @@ async fn triage_round(s: &AppState) -> anyhow::Result<()> {
             ..Default::default()
         };
         if defect.is_some() {
-            match crate::api::analysis::apply_triage(s, &project, &by, req).await {
+            let ctx = fastproof_store::analysis::types::DecisionCtx::new(
+                fastproof_store::analysis::types::DecisionVia::Rp,
+            );
+            match crate::api::analysis::apply_triage(s, &project, &by, req, ctx).await {
                 Ok((out, body)) => {
                     let mut ev = franshub_access::AuditEvent::anonymous(
                         &by,
                         Some("token"),
                         "results.triage",
-                        serde_json::json!({"updated": out.updated, "resultIds": [result_id],
+                        serde_json::json!({"updated": out.updated, "batchId": out.batch_id, "via": "rp",
+                            "resultIds": [result_id],
                             "defectTypeId": body.defect_type_id, "comment": body.comment.is_some(),
                             "issue": body.issue.as_ref().map(|i| &i.url), "source": "reporter"}),
                     );

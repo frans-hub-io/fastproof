@@ -303,6 +303,8 @@ type ResultRow = (
     Option<String>,
     Option<String>,
     bool,
+    bool,
+    Option<DateTime<Utc>>,
 );
 
 /// Labels of a manual result: manual series are left out of flaky detection.
@@ -370,12 +372,13 @@ pub async fn after_persist_deferred(
     .fetch_one(&mut *conn)
     .await?;
     let settings = ProjectSettings::from_value(settings);
-    let rules: Vec<Arc<CompiledRule>> = rules::enabled_rules(conn, launch.project_id).await?;
+    let rules: Vec<Arc<CompiledRule>> =
+        rules::enabled_rules(conn, launch.project_id, rules::RulePhase::Ingest).await?;
     let need_trace = rules.iter().any(|r| r.needs_trace());
 
     let rows: Vec<ResultRow> = sqlx::query_as(
         "select r.id, r.series_id, r.test_case_id, r.status, r.message, r.defect, la.id, la.fingerprint, la.trace, \
-           r.labels @> $5::jsonb as manual \
+           r.labels @> $5::jsonb as manual, r.muted, r.mute_until \
          from results r left join lateral (select a.id, a.fingerprint, \
              case when $4 then left(a.trace, 16384) end as trace from attempts a \
            where a.result_id = r.id and a.launch_created_at = r.launch_created_at \
@@ -440,8 +443,23 @@ pub async fn after_persist_deferred(
     );
     let mut catalog: BTreeMap<String, (String, i64)> = BTreeMap::new();
     let mut stat_updates: Vec<(Uuid, Status, bool)> = Vec::new();
-    for (id, series_id, test_case_id, status_s, message, defect, latest, fp, trace, manual) in &rows
+    let mut journal: Vec<super::decisions::RuleChangeRow> = Vec::new();
+    for (
+        id,
+        series_id,
+        test_case_id,
+        status_s,
+        message,
+        defect,
+        latest,
+        fp,
+        trace,
+        manual,
+        was_muted,
+        was_until,
+    ) in &rows
     {
+        let mut by_rule: Option<Uuid> = None;
         let status = Status::parse_lenient(status_s);
         let (transition, flaky) = verdict(status, *manual, history.get(series_id), &opts);
         let existing: Option<Defect> = defect.clone().and_then(|d| serde_json::from_value(d).ok());
@@ -468,6 +486,7 @@ pub async fn after_persist_deferred(
                 Some(rule) => {
                     new_defect =
                         rule_defect(rule, status, existing.as_ref(), &by_id, &by_group, now);
+                    by_rule = Some(rule.rule.id);
                     *hits.entry(rule.rule.id).or_default() += 1;
                     if let Some(m) = &rule.rule.action.mute {
                         let until = m.days.map(|d| now + chrono::Duration::days(d as i64));
@@ -498,12 +517,31 @@ pub async fn after_persist_deferred(
             }
         }
         let mute = mutes.get(series_id).copied();
+        let changed_by_rule = by_rule.filter(|_| {
+            !super::decisions::same_decision(existing.as_ref(), new_defect.as_ref())
+                || *was_muted != mute.is_some()
+                || *was_until != mute.flatten()
+        });
+        let written = new_defect.map(serde_json::to_value).transpose()?;
+        if let Some(rule_id) = changed_by_rule {
+            journal.push(super::decisions::RuleChangeRow {
+                result_id: *id,
+                series_id: *series_id,
+                fingerprint: fp.clone(),
+                rule_id,
+                before_defect: defect.clone(),
+                before_muted: *was_muted,
+                before_mute_until: *was_until,
+                after_defect: written.clone(),
+                after_muted: mute.is_some(),
+                after_mute_until: mute.flatten(),
+            });
+        }
         upd.0.push(*id);
         upd.1.push(fp.clone());
         upd.2.push(transition);
         upd.3.push(flaky);
-        upd.4
-            .push(new_defect.map(serde_json::to_value).transpose()?);
+        upd.4.push(written);
         upd.5.push(mute.is_some());
         upd.6.push(mute.flatten());
         if status.is_failure()
@@ -541,6 +579,7 @@ pub async fn after_persist_deferred(
     if !new_mutes.is_empty() {
         upsert_mutes(conn, launch.project_id, &new_mutes, SYSTEM, false).await?;
     }
+    super::decisions::record_rule_changes(conn, launch, &journal).await?;
     // Series whose statistics another launch changed since the snapshot are judged again
     // before the lock, from a fresh look at their rows: under the lock, only the few that
     // changed in the short time since need it.
@@ -675,7 +714,7 @@ async fn recheck(
     let mut transitions = Vec::new();
     let mut flakies = Vec::new();
     let mut flaky_of: HashMap<Uuid, bool> = HashMap::new();
-    for (id, series_id, _, status_s, _, _, _, _, _, manual) in rows {
+    for (id, series_id, _, status_s, _, _, _, _, _, manual, _, _) in rows {
         if !changed.contains(series_id) {
             continue;
         }

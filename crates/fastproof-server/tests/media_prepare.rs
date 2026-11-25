@@ -18,12 +18,9 @@ fn report_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../fastproof-media/tests/data/playwright")
 }
 
+/// Makes a paused job due: the server's scheduler runs it within a tick.
 async fn run_job(db: &TestDb, name: &str) {
-    sqlx::query("update scheduled_jobs set next_run_at = now() where name = $1")
-        .bind(name)
-        .execute(&db.pool)
-        .await
-        .unwrap();
+    db.trigger_job(name).await;
 }
 
 /// Waits until no preparation is pending or running; returns `(name, status, attempts)`.
@@ -82,9 +79,12 @@ async fn scenario(extra: &[(&str, &str)]) {
     let Some(db) = TestDb::new().await else {
         return;
     };
-    let s = Server::start_with(&db, extra).await;
-    db.hold_jobs(&["media.prepare", "attachments.gc", "projects.purge"])
-        .await;
+    let s = Server::start_with_paused(
+        &db,
+        extra,
+        &["media.prepare", "attachments.gc", "projects.purge"],
+    )
+    .await;
     let key = format!("vid-{:08x}", rand::random::<u32>());
     s.project(&key).await;
     let launch = s.launch(&key, None).await;
@@ -459,8 +459,7 @@ async fn infrastructure_errors_are_retried() {
     let Some(db) = TestDb::new().await else {
         return;
     };
-    let s = Server::start(&db).await;
-    db.hold_jobs(&["media.prepare"]).await;
+    let s = Server::start_paused(&db, &["media.prepare"]).await;
     s.project("retry").await;
     let lid = s.launch("retry", None).await["id"]
         .as_str()
@@ -510,8 +509,7 @@ async fn claims_are_fair_and_finish_checks_the_project() {
     let Some(db) = TestDb::new().await else {
         return;
     };
-    let s = Server::start(&db).await;
-    db.hold_jobs(&["media.prepare"]).await;
+    let s = Server::start_paused(&db, &["media.prepare"]).await;
     for p in ["busy", "quiet"] {
         s.project(p).await;
     }

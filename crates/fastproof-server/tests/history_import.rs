@@ -753,17 +753,27 @@ async fn a1_a3_the_statistics_are_locked_and_a_failed_chunk_leaves_nothing_to_re
     .await;
     assert_eq!(st, StatusCode::ACCEPTED, "{b}");
     let id = b["id"].as_str().unwrap().to_string();
-    tokio::time::sleep(Duration::from_millis(1500)).await;
-    let (_, j) = s
-        .get(
-            &format!("/api/v1/projects/lk/history-imports/{id}"),
-            ADMIN_TOKEN,
-        )
-        .await;
-    assert_eq!(
-        j["status"], "running",
-        "the import waits for the statistics rows: {j}"
-    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        let (_, j) = s
+            .get(
+                &format!("/api/v1/projects/lk/history-imports/{id}"),
+                ADMIN_TOKEN,
+            )
+            .await;
+        assert!(
+            j["status"] == "queued" || j["status"] == "running",
+            "the import waits for the statistics rows: {j}"
+        );
+        if j["status"] == "running" && db.lock_waiters().await > 0 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the import did not reach the held rows: {j}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
     assert_eq!(
         count(
             &db,
@@ -876,7 +886,8 @@ async fn a5_a6_the_caps_are_checked_before_the_body_and_per_caller_and_server() 
     let Some(db) = TestDb::new().await else {
         return;
     };
-    let s = Server::start(&db).await;
+    // The test fails stale imports itself and counts them.
+    let s = Server::start_paused(&db, &["history.imports"]).await;
     s.project("p0").await;
     keep_forever(&s, "p0").await;
     live_launch(&s, "p0", "main", results_zip(|_| {})).await;
@@ -948,7 +959,8 @@ async fn a8_a9_a10_imports_never_write_into_foreign_launches_run_no_analysis_and
     let Some(db) = TestDb::new().await else {
         return;
     };
-    let s = Server::start(&db).await;
+    // The test runs the fingerprint backfill itself, after the import.
+    let s = Server::start_paused(&db, &["fingerprints.backfill"]).await;
     s.project("src").await;
     keep_forever(&s, "src").await;
     live_launch(&s, "src", "main", results_zip(|_| {})).await;

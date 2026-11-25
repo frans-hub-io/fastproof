@@ -88,6 +88,22 @@ impl Store {
         Ok(r.rows_affected() == 1)
     }
 
+    /// Sets when a job is due next, whatever its schedule says (a paused job is set far ahead).
+    pub async fn set_scheduled_job_next_run(
+        &self,
+        name: &str,
+        next_run_at: DateTime<Utc>,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "update scheduled_jobs set next_run_at = $2, updated_at = now() where name = $1",
+        )
+        .bind(name)
+        .bind(next_run_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     /// Releases a job after a run and sets its next due time.
     pub async fn finish_scheduled_job(
         &self,

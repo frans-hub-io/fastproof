@@ -35,7 +35,20 @@ async fn s3_server(db: &TestDb, extra: &[(&str, &str)]) -> Option<Server> {
     vars.push(("FASTPROOF_BLOB_BACKEND_MIGRATED", "true"));
     vars.push(("FASTPROOF_DIRECT_UPLOAD_ALLOW_HTTP", "true"));
     vars.extend_from_slice(extra);
-    Some(Server::start_with(db, &vars).await)
+    // The tests sweep themselves (or through the scheduler when they choose) and check the
+    // state of a video before its seekable copy is made.
+    Some(
+        Server::start_with_paused(
+            db,
+            &vars,
+            &[
+                "direct_uploads.sweep",
+                "direct_uploads.orphans",
+                "media.prepare",
+            ],
+        )
+        .await,
+    )
 }
 
 fn state(s: &Server) -> &fastproof_server::state::AppState {
@@ -232,9 +245,9 @@ async fn direct_upload_is_verified_and_behaves_like_any_attachment() {
     .await
     .unwrap();
     assert!(
-        content_type.starts_with("video/") && (media_state == 0 || claimed),
-        "the video waits for its seekable copy like any uploaded video \
-         (pending, or already claimed by the server's worker): {content_type} {media_state} {claimed}"
+        content_type.starts_with("video/") && media_state == 0 && !claimed,
+        "the video waits for its seekable copy like any uploaded video: \
+         {content_type} {media_state} {claimed}"
     );
 
     let (st, out) = s
@@ -394,11 +407,7 @@ async fn objects_that_differ_from_the_declaration_are_rejected_and_deleted() {
     let (_, big) = ask(&s, &p, lid, json!([{"sha256": sha(b"x"), "size": 10}])).await;
     let big = &big["items"][0];
     assert!(put(big, body(20_000, 3)).await.is_success());
-    let swept = fastproof_server::direct_uploads::sweep(st8).await.unwrap();
-    assert!(
-        swept.oversize <= 1,
-        "the server's own sweep job may have handled it first: {swept:?}"
-    );
+    db.run_scheduled("direct_uploads.sweep").await;
     let big_id = big["uploadId"].as_str().unwrap();
     assert!(direct_objects(&s, big_id).await.is_empty());
     let (st, e) = complete(&s, &p, lid, &big["uploadId"]).await;

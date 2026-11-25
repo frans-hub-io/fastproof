@@ -20,6 +20,15 @@ use sqlx::{ConnectOptions, PgPool};
 
 pub const ADMIN_TOKEN: &str = "admin-token-for-tests-0123456789";
 
+/// `last_started_at, last_finished_at, lease_owner, last_status, last_error` of a scheduled job.
+type JobRun = (
+    Option<chrono::DateTime<chrono::Utc>>,
+    Option<chrono::DateTime<chrono::Utc>>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
 pub struct TestDb {
     pub admin: PgConnectOptions,
     pub name: String,
@@ -48,30 +57,84 @@ impl TestDb {
         })
     }
 
-    /// Lets the first runs of the scheduler's `jobs` finish (every job is due when a server
-    /// starts, and that run may begin only after the test wrote its data), then postpones their
-    /// next runs by a day. Tests that do the work of a job themselves call this right after
-    /// starting the server, so the scheduler does not do it first.
-    pub async fn hold_jobs(&self, jobs: &[&str]) {
-        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    /// Makes a scheduled job due now, once no run holds it; returns the database time it was
+    /// set due. The server's scheduler claims it within a tick (paused jobs too).
+    pub async fn trigger_job(&self, job: &str) -> chrono::DateTime<chrono::Utc> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(150);
         loop {
-            let held: Vec<String> = sqlx::query_scalar(
-                "update scheduled_jobs set next_run_at = now() + interval '1 day' \
-                 where name = any($1) and last_finished_at is not null and lease_owner is null \
-                 returning name",
+            let due: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(
+                "update scheduled_jobs set next_run_at = now() \
+                 where name = $1 and lease_owner is null returning now()",
             )
-            .bind(jobs)
-            .fetch_all(&self.pool)
+            .bind(job)
+            .fetch_optional(&self.pool)
             .await
             .unwrap();
-            if jobs.iter().all(|j| held.iter().any(|h| h == j)) {
+            if let Some(t) = due {
+                return t;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{job} stayed held by a run"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    /// Runs a scheduled job through the server's real scheduler at the time the test chooses:
+    /// makes it due and waits until a run that started after that finished, which must succeed.
+    /// Used with jobs the server keeps paused (`Server::start_paused`) and with running ones.
+    pub async fn run_scheduled(&self, job: &str) {
+        let since = self.trigger_job(job).await;
+        let deadline = std::time::Instant::now() + Duration::from_secs(150);
+        loop {
+            let (started, finished, owner, status, error): JobRun = sqlx::query_as(
+                "select last_started_at, last_finished_at, lease_owner, last_status, last_error \
+                 from scheduled_jobs where name = $1",
+            )
+            .bind(job)
+            .fetch_one(&self.pool)
+            .await
+            .unwrap();
+            if let (Some(st), Some(fin), None) = (started, finished, &owner)
+                && st >= since
+                && fin >= st
+            {
+                assert_eq!(status.as_deref(), Some("ok"), "{job} failed: {error:?}");
                 return;
             }
             assert!(
                 std::time::Instant::now() < deadline,
-                "the first runs of {jobs:?} did not finish (held {held:?})"
+                "{job} did not run after it was made due"
             );
             tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    /// Sessions of this database that wait for a lock.
+    pub async fn lock_waiters(&self) -> i64 {
+        sqlx::query_scalar(
+            "select count(*) from pg_stat_activity \
+             where datname = current_database() and wait_event_type = 'Lock'",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .unwrap()
+    }
+
+    /// Waits until a session of this database waits for a lock: a request the test holds up
+    /// with a lock of its own has got that far (instead of sleeping and hoping it did).
+    pub async fn wait_for_lock_waiter(&self) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            if self.lock_waiters().await > 0 {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "nothing waits for the held lock"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
 
@@ -129,6 +192,18 @@ impl Server {
 
     pub async fn start_with(db: &TestDb, extra: &[(&str, &str)]) -> Self {
         Self::start_cfg(db, extra, |_| {}).await
+    }
+
+    /// Starts a server whose scheduler keeps `jobs` paused: they never run on their own, so a
+    /// test that does their work itself, or checks a state they would change, is not raced by
+    /// the server; [`TestDb::run_scheduled`] runs one through the scheduler when the test wants.
+    pub async fn start_paused(db: &TestDb, jobs: &[&str]) -> Self {
+        Self::start_cfg(db, &[], paused(jobs)).await
+    }
+
+    /// [`Server::start_paused`] with extra settings.
+    pub async fn start_with_paused(db: &TestDb, extra: &[(&str, &str)], jobs: &[&str]) -> Self {
+        Self::start_cfg(db, extra, paused(jobs)).await
     }
 
     pub async fn start_cfg(
@@ -370,6 +445,12 @@ impl Drop for Server {
             drop(r);
         }
     }
+}
+
+/// A `Server::start_cfg` tweak that pauses scheduled jobs (see [`Server::start_paused`]).
+pub fn paused(jobs: &[&str]) -> impl FnOnce(&mut Config) + use<> {
+    let jobs: Vec<String> = jobs.iter().map(|j| j.to_string()).collect();
+    move |c: &mut Config| c.paused_jobs = jobs
 }
 
 /// One Prometheus recorder for the whole test process.

@@ -556,6 +556,7 @@ async fn start_inner(cfg: Config, pool: PgPool, boot: Boot) -> anyhow::Result<Ru
     }
     let sched = if state.cfg.roles.scheduler {
         let mut sched = crate::scheduler::standard_jobs()?;
+        sched.pause(&state.cfg.paused_jobs)?;
         sched.register_all(&state.store).await?;
         Some(sched)
     } else {

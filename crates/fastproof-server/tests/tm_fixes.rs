@@ -138,8 +138,7 @@ async fn allure_id_on_a_linked_test_moves_it_to_the_named_case() {
     let Some(db) = TestDb::new().await else {
         return;
     };
-    let s = Server::start(&db).await;
-    db.hold_jobs(&["cases.sync", "cases.backfill"]).await;
+    let s = Server::start_paused(&db, &["cases.sync", "cases.backfill"]).await;
     s.project("ai").await;
     let up = s.token("ci", "uploader", &["ai"]).await;
     let card = create(
@@ -324,8 +323,7 @@ async fn code_values_never_wipe_the_case() {
     let Some(db) = TestDb::new().await else {
         return;
     };
-    let s = Server::start(&db).await;
-    db.hold_jobs(&["cases.sync", "cases.backfill"]).await;
+    let s = Server::start_paused(&db, &["cases.sync", "cases.backfill"]).await;
     s.project("nw").await;
     let up = s.token("ci", "uploader", &["nw"]).await;
     let mut full = result(
@@ -372,8 +370,7 @@ async fn a_plan_launch_joined_by_ci_is_synced_on_close() {
     let Some(db) = TestDb::new().await else {
         return;
     };
-    let s = Server::start(&db).await;
-    db.hold_jobs(&["cases.sync", "cases.backfill"]).await;
+    let s = Server::start_paused(&db, &["cases.sync", "cases.backfill"]).await;
     s.project("pl").await;
     let tester = s.token("t", "tester", &["pl"]).await;
     let up = s.token("ci", "uploader", &["pl"]).await;

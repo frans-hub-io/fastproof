@@ -520,8 +520,7 @@ async fn case_versions_are_pruned_by_retention() {
     let Some(db) = TestDb::new().await else {
         return;
     };
-    let s = Server::start(&db).await;
-    db.hold_jobs(&["cases.versions.prune"]).await;
+    let s = Server::start_paused(&db, &["cases.versions.prune"]).await;
     s.project("ver").await;
     s.project("all").await;
     let base = "/api/v1/projects/ver";

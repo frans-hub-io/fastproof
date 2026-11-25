@@ -175,8 +175,7 @@ async fn code_sync_trust_follows_sources_and_caller() {
     let Some(db) = TestDb::new().await else {
         return;
     };
-    let s = Server::start(&db).await;
-    db.hold_jobs(&["launches.merges"]).await;
+    let s = Server::start_paused(&db, &["launches.merges"]).await;
     s.project("tr").await;
     let store = Store::new(db.pool.clone());
     let p = store.project("tr").await.unwrap().unwrap();
@@ -291,8 +290,7 @@ async fn hidden_launches_retention_refs_and_missing_sources() {
     let Some(db) = TestDb::new().await else {
         return;
     };
-    let s = Server::start(&db).await;
-    db.hold_jobs(&["launches.merges", "retention.apply"]).await;
+    let s = Server::start_paused(&db, &["launches.merges", "retention.apply"]).await;
     s.project("hd").await;
     let store = Store::new(db.pool.clone());
     let a = shard(
@@ -419,8 +417,7 @@ async fn late_logs_and_writes_after_finalization_reach_the_target() {
     let Some(db) = TestDb::new().await else {
         return;
     };
-    let s = Server::start(&db).await;
-    db.hold_jobs(&["launches.merges"]).await;
+    let s = Server::start_paused(&db, &["launches.merges"]).await;
     s.project("lt").await;
     let store = Store::new(db.pool.clone());
     let a = shard(
@@ -515,8 +512,7 @@ async fn the_job_isolates_failures_and_skips_deleted_projects() {
     let Some(db) = TestDb::new().await else {
         return;
     };
-    let s = Server::start(&db).await;
-    db.hold_jobs(&["launches.merges"]).await;
+    let s = Server::start_paused(&db, &["launches.merges"]).await;
     let store = Store::new(db.pool.clone());
     let mut merges = Vec::new();
     for key in ["j1", "j2", "j3"] {
@@ -749,8 +745,7 @@ async fn ingest_ownership_fingerprints_and_copied_triage_on_undo() {
     let Some(db) = TestDb::new().await else {
         return;
     };
-    let s = Server::start(&db).await;
-    db.hold_jobs(&["launches.merges"]).await;
+    let s = Server::start_paused(&db, &["launches.merges"]).await;
     s.project("un").await;
     let x = launch(&s, "un", "original", ADMIN_TOKEN).await;
     post(
@@ -1038,8 +1033,7 @@ async fn ingest_of_other_launches_is_not_blocked_by_a_merge() {
     let Some(db) = TestDb::new().await else {
         return;
     };
-    let s = Server::start(&db).await;
-    db.hold_jobs(&["launches.merges"]).await;
+    let s = Server::start_paused(&db, &["launches.merges"]).await;
     s.project("nb").await;
     let tests: Vec<Value> = (0..200)
         .map(|i| res(&format!("a{i}"), &format!("t{i}"), "passed", T0 + i))
@@ -1061,7 +1055,7 @@ async fn ingest_of_other_launches_is_not_blocked_by_a_merge() {
         let c = Server::client_only(&base);
         merge(&c, "nb", ADMIN_TOKEN, json!({"launchIds": [a2, b2]})).await
     });
-    tokio::time::sleep(Duration::from_millis(1500)).await;
+    db.wait_for_lock_waiter().await;
     assert!(!merging.is_finished(), "the merge waits for the held lock");
     let started = Instant::now();
     let items: Vec<Value> = (0..200)

@@ -438,8 +438,7 @@ async fn test_plans_are_capped_and_expire() {
     let Some(db) = TestDb::new().await else {
         return;
     };
-    let s = Server::start(&db).await;
-    db.hold_jobs(&["retention.apply"]).await;
+    let s = Server::start_paused(&db, &["retention.apply"]).await;
     s.project("plans").await;
     let pid: uuid::Uuid = sqlx::query_scalar("select id from projects where key = 'plans'")
         .fetch_one(&db.pool)
@@ -611,7 +610,13 @@ async fn deleted_project_keys_start_clean() {
     };
     let dir = tempfile::tempdir().unwrap();
     let file = access_file(dir.path());
-    let s = Server::start_with(&db, &[("FASTPROOF_ACCESS_FILE", &file)]).await;
+    // The test purges the deleted projects itself.
+    let s = Server::start_with_paused(
+        &db,
+        &[("FASTPROOF_ACCESS_FILE", &file)],
+        &["projects.purge"],
+    )
+    .await;
     for key in ["reuse", "bound"] {
         s.project(key).await;
     }
@@ -712,8 +717,11 @@ async fn attachment_gc_keeps_reuploaded_content() {
     let Some(db) = TestDb::new().await else {
         return;
     };
-    let s = Server::start(&db).await;
-    db.hold_jobs(&["attachments.gc", "retention.apply"]).await;
+    let s = Server::start_paused(
+        &db,
+        &["attachments.gc", "retention.apply", "projects.purge"],
+    )
+    .await;
     s.project("gc").await;
     let l1 = launch_id(&s, "gc").await;
     upload_attachment(&s, "gc", &l1, "text/plain", "a.txt", "same bytes").await;

@@ -88,7 +88,8 @@ async fn fingerprints_clusters_triage_and_similar() {
     let Some(db) = TestDb::new().await else {
         return;
     };
-    let s = Server::start(&db).await;
+    // The test runs the fingerprint backfill itself and counts what it fills.
+    let s = Server::start_paused(&db, &["fingerprints.backfill"]).await;
     let store = Store::new(db.pool.clone());
     s.project("an").await;
     let viewer = s.token("viewer", "viewer", &["an"]).await;
@@ -455,8 +456,7 @@ async fn rules_on_ingest_dry_run_retroactive_and_mute_expiry() {
     let Some(db) = TestDb::new().await else {
         return;
     };
-    let s = Server::start(&db).await;
-    db.hold_jobs(&["mutes.expire"]).await;
+    let s = Server::start_paused(&db, &["mutes.expire"]).await;
     let store = Store::new(db.pool.clone());
     s.project("ru").await;
     let editor = s.token("ed", "editor", &["ru"]).await;
@@ -902,18 +902,22 @@ async fn dashboard_rollup_partitions_and_retention() {
     let Some(db) = TestDb::new().await else {
         return;
     };
-    let s = Server::start(&db).await;
-    let store = Store::new(db.pool.clone());
-    // The first runs of the scheduler's jobs drop empty old partitions, and this test moves
-    // launches into the past.
-    db.hold_jobs(&[
-        "history.rollup",
-        "retention.apply",
-        "analysis.indexes",
-        "partitions.ensure",
-    ])
+    // The scheduler's jobs would roll up and drop the launches this test moves into the past.
+    let s = Server::start_paused(
+        &db,
+        &[
+            "history.rollup",
+            "retention.apply",
+            "analysis.indexes",
+            "partitions.ensure",
+        ],
+    )
     .await;
+    let store = Store::new(db.pool.clone());
     store.ensure_partitions(6, 1).await.unwrap();
+    fastproof_store::analysis::indexes::ensure_analysis_indexes(&db.pool)
+        .await
+        .unwrap();
     let valid: bool = sqlx::query_scalar(
         "select indisvalid from pg_index where indexrelid = 'results_fingerprint'::regclass",
     )
@@ -1208,8 +1212,11 @@ async fn retention_by_count_queues_unreferenced_blobs() {
     let Some(db) = TestDb::new().await else {
         return;
     };
-    let s = Server::start(&db).await;
-    db.hold_jobs(&["retention.apply", "attachments.gc"]).await;
+    let s = Server::start_paused(
+        &db,
+        &["retention.apply", "attachments.gc", "projects.purge"],
+    )
+    .await;
     let store = Store::new(db.pool.clone());
     s.project("keep").await;
     s.call(
@@ -1277,26 +1284,13 @@ async fn retention_by_count_queues_unreferenced_blobs() {
             .unwrap();
     let path = s.dir.path().join("blobs").join(&key);
     assert!(path.exists(), "{}", path.display());
-    sqlx::query("update scheduled_jobs set next_run_at = now() where name = 'projects.purge'")
-        .execute(&db.pool)
+    db.run_scheduled("projects.purge").await;
+    let n: i64 = sqlx::query_scalar("select count(*) from blob_deletions")
+        .fetch_one(&db.pool)
         .await
         .unwrap();
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
-    loop {
-        let n: i64 = sqlx::query_scalar("select count(*) from blob_deletions")
-            .fetch_one(&db.pool)
-            .await
-            .unwrap();
-        if !path.exists() && n == 0 {
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "blob not deleted (file exists: {}, queued: {n})",
-            path.exists()
-        );
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+    assert_eq!(n, 0, "the queued blob deletion ran");
+    assert!(!path.exists(), "{}", path.display());
 }
 
 #[tokio::test]

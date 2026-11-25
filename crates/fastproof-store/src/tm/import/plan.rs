@@ -110,6 +110,18 @@ fn steps_of(
             } else {
                 prev.map(|p| p.id.clone()).unwrap_or_default()
             };
+            let empty = s.action.is_empty()
+                && s.expected.is_empty()
+                && s.data.is_empty()
+                && s.attachments.is_empty()
+                && s.steps.is_empty();
+            if let Some(p) = prev
+                && p.shared.is_some()
+                && p.id == id
+                && empty
+            {
+                return p.clone();
+            }
             CaseStep {
                 id,
                 action: s.action.clone(),
@@ -1504,5 +1516,72 @@ impl Store {
         )
         .fetch_all(&self.pool)
         .await?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tm::SharedStepRef;
+
+    #[test]
+    fn reimport_keeps_shared_step_references() {
+        let reference = CaseStep {
+            id: "s_ref".into(),
+            shared: Some(SharedStepRef {
+                id: Uuid::now_v7(),
+                number: 3,
+                version: None,
+            }),
+            ..Default::default()
+        };
+        let own = CaseStep {
+            id: "s_own".into(),
+            action: "open".into(),
+            ..Default::default()
+        };
+        let cur = vec![own, reference.clone()];
+        let exported = vec![
+            ImportedStep {
+                id: "s_own".into(),
+                action: "open the page".into(),
+                ..Default::default()
+            },
+            ImportedStep {
+                id: "s_ref".into(),
+                ..Default::default()
+            },
+        ];
+        let out = steps_of(&exported, &HashMap::new(), Some(&cur));
+        assert_eq!(out[0].action, "open the page");
+        assert_eq!(
+            out[1], reference,
+            "an exported reference comes back as the reference"
+        );
+        let csv = vec![
+            ImportedStep {
+                action: "open".into(),
+                ..Default::default()
+            },
+            ImportedStep::default(),
+        ];
+        let out = steps_of(&csv, &HashMap::new(), Some(&cur));
+        assert_eq!(out[1], reference, "rows without ids match by position");
+        let filled = vec![
+            ImportedStep::default(),
+            ImportedStep {
+                id: "s_ref".into(),
+                action: "now a step of its own".into(),
+                ..Default::default()
+            },
+        ];
+        let out = steps_of(&filled, &HashMap::new(), Some(&cur));
+        assert!(out[1].shared.is_none(), "content replaces the reference");
+        assert_eq!(out[1].action, "now a step of its own");
+        let out = steps_of(&exported, &HashMap::new(), None);
+        assert!(
+            out[1].shared.is_none(),
+            "a new case never gains a reference"
+        );
     }
 }

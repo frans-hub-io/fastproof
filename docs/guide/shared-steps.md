@@ -47,6 +47,10 @@ has a **Shared step changes** list, so you can see why a case behaves differentl
 
 A shared step saves like a case: send `If-Match` with the `ETag` you read, or the save answers 412 or 428.
 
+Shared step versions follow the project's case version retention (`retention.caseVersionsKeep` and
+`retention.caseVersionsDays`). The current version, the approved one and every version a run pinned are always
+kept.
+
 ## Runs keep their steps
 
 When a case is added to a manual run (from a plan, or by hand), the run item **pins** the current version of
@@ -62,6 +66,8 @@ version exists, `v5 available`.
   `run_item_started`.
 - **Rerunning** an item pins it again, so the new execution uses the versions that are current then. The
   earlier execution keeps the versions it ran.
+- One run item shows at most 1 MiB of shared step content (each reference counts, also a repeated one). A
+  reference past that limit stays collapsed with a note and takes a result as one step.
 
 Under [version review](workflows-and-review.md), a case and its shared steps run their **approved** version
 while a newer one waits for review.
@@ -85,7 +91,9 @@ curl -fsS -X POST "$api/cases/42/extract-shared" -H "$auth" -H 'If-Match: "r7"' 
 **Archive** hides a shared step from the picker and refuses **new** references (409 `shared_step_archived`);
 cases that already use it keep working. Restore it from the archive list. **Delete for good** needs
 `settings:write` and answers 409 `shared_step_in_use` with the number of cases and open runs while any case
-uses it or an open run pins it.
+uses it or an open run pins it. Closed runs that used it then show "Shared step SS-n is no longer available" in
+its place. Restoring a case version that references a deleted or archived shared step is refused like any new
+reference.
 
 **Inline** replaces the references to a shared step with copies of its current steps in every case that uses
 it, as new case versions (source `bulk`), so you can retire the shared step. Up to 1000 usages are done in the

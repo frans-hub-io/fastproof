@@ -239,6 +239,7 @@ impl Store {
             let owned = super::cases::code_owned_keys(&mut tx, ctx.project_id).await?;
             super::cases::keep_code_owned(&cur, &mut snap, &owned);
         }
+        super::shared_steps::validate_refs(&mut tx, ctx, &snap.body, Some(&cur)).await?;
         let state =
             super::cases::state_for_status(&mut tx, ctx, &cur, snap.status, VersionSource::Restore)
                 .await?;
@@ -259,8 +260,9 @@ impl Store {
         Ok(row)
     }
 
-    /// Deletes case versions beyond each project's retention (`retention.caseVersionsKeep`,
-    /// `retention.caseVersionsDays`; projects with neither are skipped), walking cases by id
+    /// Deletes case and shared step versions beyond each project's retention
+    /// (`retention.caseVersionsKeep`, `retention.caseVersionsDays`; projects with neither are
+    /// skipped; shared steps: `shared_steps::prune_versions`), walking cases by id
     /// in chunks of 500 and deleting at most `batch` versions per statement, until `budget`
     /// is spent (the next run goes on). Never deleted: the current version of a case, versions
     /// a run item or an earlier execution was run against, and on cases made from code the
@@ -287,6 +289,23 @@ impl Store {
             let r = &settings.retention;
             if r.case_versions_keep == 0 && r.case_versions_days == 0 {
                 continue;
+            }
+            loop {
+                if started.elapsed() > budget {
+                    return Ok(deleted);
+                }
+                let n = super::shared_steps::prune_versions(
+                    &self.pool,
+                    project_id,
+                    r.case_versions_keep,
+                    r.case_versions_days,
+                    batch.max(1),
+                )
+                .await?;
+                deleted += n;
+                if (n as i64) < batch.max(1) {
+                    break;
+                }
             }
             let mut after = Uuid::nil();
             loop {

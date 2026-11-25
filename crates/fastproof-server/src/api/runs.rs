@@ -33,6 +33,8 @@ use crate::state::AppState;
 pub const MAX_REPORT_BYTES: usize = 64 * 1024 * 1024;
 /// Items read per page while building a manual report.
 const REPORT_PAGE: i64 = 500;
+/// Step text one report page holds before it ends early (expanded shared steps make items large).
+const REPORT_PAGE_BYTES: usize = 16 * 1024 * 1024;
 /// Bytes of a new-issue URL, at most (browsers and trackers cut longer ones).
 pub const MAX_ISSUE_URL_BYTES: usize = 8000;
 
@@ -994,9 +996,9 @@ pub async fn manual_report(
     }
     let mut after = 0i64;
     loop {
-        let page = s
+        let (page, cut) = s
             .store
-            .manual_report_page(p.id, id, after, REPORT_PAGE)
+            .manual_report_page(p.id, id, after, REPORT_PAGE, REPORT_PAGE_BYTES)
             .await?;
         let Some(last) = page.last() else {
             break;
@@ -1018,7 +1020,7 @@ pub async fn manual_report(
                 ));
             }
         }
-        if n < REPORT_PAGE {
+        if n < REPORT_PAGE && !cut {
             break;
         }
     }

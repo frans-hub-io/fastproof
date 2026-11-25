@@ -664,16 +664,80 @@ pub async fn validate_refs(
     Ok(())
 }
 
+/// One bounded delete of shared step versions beyond a project's retention (`keep` newest,
+/// older than `days`; `0` = no bound of that kind), at most `batch` rows. Never deleted: the
+/// head, the approved version, a version a run item or an earlier execution pinned, and a
+/// version replaced less than an hour ago (a run that is being started may still pin it).
+pub(crate) async fn prune_versions(
+    pool: &sqlx::PgPool,
+    project_id: Uuid,
+    keep: u32,
+    days: u32,
+    batch: i64,
+) -> anyhow::Result<u64> {
+    let n = sqlx::query(
+        "with pinned as ( \
+           select p.key::uuid as id, p.value::int as v from run_items r \
+             cross join lateral jsonb_each_text(r.shared_pins) p \
+             where r.project_id = $1 and r.shared_pins is not null \
+           union \
+           select p.key::uuid, p.value::int from run_items r join run_item_executions e on e.run_item_id = r.id \
+             cross join lateral jsonb_each_text(e.shared_pins) p \
+             where r.project_id = $1 and e.shared_pins is not null), \
+         d as ( \
+           select v.shared_step_id, v.version from shared_steps s \
+             join shared_step_versions v on v.shared_step_id = s.id \
+           where s.project_id = $1 and v.version < s.version \
+             and v.version is distinct from s.approved_version \
+             and ($2 = 0 or v.version <= s.version - $2) \
+             and ($3 = 0 or v.created_at < now() - make_interval(days => $3)) \
+             and not exists (select 1 from pinned p where p.id = v.shared_step_id and p.v = v.version) \
+             and not exists (select 1 from shared_step_versions n where n.shared_step_id = v.shared_step_id \
+               and n.version > v.version and n.created_at > now() - interval '1 hour') \
+           limit $4) \
+         delete from shared_step_versions v using d \
+         where v.shared_step_id = d.shared_step_id and v.version = d.version",
+    )
+    .bind(project_id)
+    .bind(keep as i32)
+    .bind(days as i32)
+    .bind(batch)
+    .execute(pool)
+    .await?
+    .rows_affected();
+    Ok(n)
+}
+
 /// Records which shared steps a case uses (`shared_step_usages`): those its head body
 /// references and those of its approved version when that differs (the runnable one under
-/// review).
+/// review). The head's shared steps are locked (`for key share`) and must exist: a case
+/// created while its shared step was being purged, or restored to a version that references
+/// a purged one, answers 404 instead of keeping a dangling reference.
 pub async fn sync_usages(
     conn: &mut PgConnection,
     project_id: Uuid,
     case_id: Uuid,
     body: &CaseBody,
 ) -> TmResult<()> {
-    let mut ids: BTreeSet<Uuid> = ref_ids(&body.steps).into_iter().collect();
+    let head: Vec<Uuid> = ref_ids(&body.steps)
+        .into_iter()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    if !head.is_empty() {
+        let found: i64 = sqlx::query_scalar(
+            "select count(*) from (select id from shared_steps where project_id = $1 and id = any($2) \
+             order by id for key share) s",
+        )
+        .bind(project_id)
+        .bind(&head)
+        .fetch_one(&mut *conn)
+        .await?;
+        if found as usize != head.len() {
+            return Err(TmError::NotFound("shared step"));
+        }
+    }
+    let mut ids: BTreeSet<Uuid> = head.into_iter().collect();
     let r: Option<(i32, Option<i32>)> =
         sqlx::query_as("select version, approved_version from cases where id = $1")
             .bind(case_id)

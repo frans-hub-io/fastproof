@@ -92,9 +92,15 @@ pub async fn pins_for_items(
         .collect())
 }
 
+/// Bytes of shared step content (steps JSON) one executed snapshot takes in all: each
+/// reference is charged, also a repeated one. References beyond it stay unexpanded with a note,
+/// so `maxSharedRefs` references to one large shared step cannot multiply a small case body.
+pub const MAX_EXPANDED_SHARED_BYTES: usize = 1024 * 1024;
+
 /// Replaces the `shared` steps of an executed snapshot by the pinned versions' steps and
 /// stamps the version on the reference. A shared step that is no longer there (purged) or has
-/// no pin keeps an empty reference with a note in `action`.
+/// no pin keeps an empty reference with a note in `action`; so does one that would take the
+/// snapshot over [`MAX_EXPANDED_SHARED_BYTES`].
 #[allow(clippy::ptr_arg)]
 pub async fn expand_steps(
     conn: &mut PgConnection,
@@ -113,6 +119,11 @@ pub async fn expand_steps(
         return Ok(());
     }
     let (_, contents) = load(conn, project_id, &wanted).await?;
+    let mut sizes: HashMap<(Uuid, i32), usize> = HashMap::new();
+    for (k, (_, inner)) in &contents {
+        sizes.insert(*k, serde_json::to_vec(inner)?.len());
+    }
+    let mut left = MAX_EXPANDED_SHARED_BYTES;
     for s in steps.iter_mut() {
         let Some(r) = s.shared.as_mut() else {
             continue;
@@ -121,8 +132,23 @@ pub async fn expand_steps(
             continue;
         };
         r.version = Some(*v);
-        match contents.get(&(r.id, *v)) {
-            Some((_, inner)) => s.steps = inner.clone(),
+        let key = (r.id, *v);
+        match contents.get(&key) {
+            Some((_, inner)) => {
+                let size = sizes.get(&key).copied().unwrap_or(0);
+                if size > left {
+                    s.steps = Vec::new();
+                    s.action = format!(
+                        "Shared step SS-{} is not shown: the steps of this run item reached {} KiB",
+                        r.number,
+                        MAX_EXPANDED_SHARED_BYTES / 1024
+                    );
+                    left = 0;
+                } else {
+                    left -= size;
+                    s.steps = inner.clone();
+                }
+            }
             None => {
                 s.steps = Vec::new();
                 s.action = format!("Shared step SS-{} is no longer available", r.number);

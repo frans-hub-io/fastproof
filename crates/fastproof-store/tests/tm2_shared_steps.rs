@@ -1171,3 +1171,351 @@ async fn saving_a_shared_step_used_by_thousands_of_cases_stays_fast() {
         "saving a shared step never touches case versions"
     );
 }
+
+/// Security review: restoring a case version is a new reference like any other (archived and
+/// purged shared steps, the gate), and a reference to a shared step that is gone never gets
+/// stored with the case.
+#[tokio::test]
+async fn restored_versions_and_new_cases_never_keep_dangling_references() {
+    let Some((db, store)) = TestDb::migrated().await else {
+        return;
+    };
+    let p = project(&store, "dang").await;
+    let l = open();
+    let c = ctx(&p, "ann", &l);
+    let archived = new_shared(&store, &p, &l, "Archived later").await;
+    let purged = new_shared(&store, &p, &l, "Purged later").await;
+    let case = new_case(
+        &store,
+        &p,
+        &l,
+        "A",
+        vec![reference(&purged), reference(&archived)],
+    )
+    .await
+    .unwrap();
+    let v2 = store
+        .update_case(
+            &c,
+            case.number,
+            case.revision,
+            &replace_body(&case, vec![step("", "own step")]),
+            true,
+        )
+        .await
+        .unwrap()
+        .1;
+    store
+        .set_shared_step_archived(&c, archived.number, true)
+        .await
+        .unwrap();
+    store.purge_shared_step(&c, purged.number).await.unwrap();
+    let r = store
+        .restore_case_version(&c, case.number, 1, v2.revision)
+        .await;
+    assert!(
+        matches!(r, Err(TmError::NotFound("shared step"))),
+        "a purged shared step is not referenced again: {r:?}"
+    );
+    let v3 = store
+        .update_case(
+            &c,
+            case.number,
+            v2.revision,
+            &replace_body(&v2, vec![reference(&archived)]),
+            true,
+        )
+        .await;
+    assert!(
+        matches!(
+            v3,
+            Err(TmError::Conflict {
+                code: "shared_step_archived",
+                ..
+            })
+        ),
+        "{v3:?}"
+    );
+    let only_archived = new_case(&store, &p, &l, "B", vec![step("", "x")])
+        .await
+        .unwrap();
+    let mut conn = db.pool.acquire().await.unwrap();
+    sqlx::query("update shared_steps set archived_at = null where id = $1")
+        .bind(archived.id)
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    let b2 = store
+        .update_case(
+            &c,
+            only_archived.number,
+            only_archived.revision,
+            &replace_body(&only_archived, vec![reference(&archived)]),
+            true,
+        )
+        .await
+        .unwrap()
+        .1;
+    let b3 = store
+        .update_case(
+            &c,
+            only_archived.number,
+            b2.revision,
+            &replace_body(&b2, vec![step("", "y")]),
+            true,
+        )
+        .await
+        .unwrap()
+        .1;
+    store
+        .set_shared_step_archived(&c, archived.number, true)
+        .await
+        .unwrap();
+    let r = store
+        .restore_case_version(&c, only_archived.number, 2, b3.revision)
+        .await;
+    assert!(
+        matches!(
+            r,
+            Err(TmError::Conflict {
+                code: "shared_step_archived",
+                ..
+            })
+        ),
+        "restoring a version is a new reference to an archived shared step: {r:?}"
+    );
+    let closed = TmLimits {
+        gate_mode: TmGateMode::Closed,
+        ..Default::default()
+    };
+    store
+        .set_shared_step_archived(&c, archived.number, false)
+        .await
+        .unwrap();
+    let r = store
+        .restore_case_version(
+            &ctx(&p, "ann", &closed),
+            only_archived.number,
+            2,
+            b3.revision,
+        )
+        .await;
+    assert!(
+        matches!(
+            r,
+            Err(TmError::Conflict {
+                code: "upgrade_in_progress",
+                ..
+            })
+        ),
+        "restoring the first reference is a gated write: {r:?}"
+    );
+    store
+        .restore_case_version(&c, only_archived.number, 2, b3.revision)
+        .await
+        .unwrap();
+    assert_eq!(
+        usage_cases(&db, &archived).await,
+        vec![only_archived.number]
+    );
+
+    let gone = CaseBody {
+        steps: vec![CaseStep {
+            shared: Some(SharedStepRef {
+                id: purged.id,
+                number: purged.number,
+                version: None,
+            }),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let r = fastproof_store::tm::shared_steps::sync_usages(&mut conn, p.id, case.id, &gone).await;
+    assert!(
+        matches!(r, Err(TmError::NotFound("shared step"))),
+        "a case created while its shared step was purged rolls back: {r:?}"
+    );
+}
+
+async fn big_shared(store: &Store, p: &Project, l: &TmLimits) -> SharedStepRow {
+    let text = "x".repeat(15_000);
+    store
+        .create_shared_step(
+            &ctx(p, "ann", l),
+            &write("Big", (0..4).map(|_| step("", &text)).collect()),
+            SharedStepOrigin::Ui,
+        )
+        .await
+        .unwrap()
+}
+
+/// Security review: `maxSharedRefs` references to one large shared step cost a few bytes in
+/// the case but are charged to one expansion budget per run item, and a manual report page
+/// ends early instead of holding hundreds of expanded snapshots.
+#[tokio::test]
+async fn expansion_is_charged_to_a_byte_budget() {
+    let Some((db, store)) = TestDb::migrated().await else {
+        return;
+    };
+    let p = project(&store, "amp").await;
+    let l = open();
+    let ss = big_shared(&store, &p, &l).await;
+    let size = serde_json::to_vec(&ss.steps).unwrap().len();
+    let refs = l.max_shared_refs;
+    assert!(size * refs > expand::MAX_EXPANDED_SHARED_BYTES);
+    let launch = open_launch(&db, &p).await;
+    let mut items = Vec::new();
+    for name in ["A", "B"] {
+        let case = new_case(
+            &store,
+            &p,
+            &l,
+            name,
+            (0..refs).map(|_| reference(&ss)).collect(),
+        )
+        .await
+        .unwrap();
+        items.push(start_item(&store, &db, &p, &l, launch, &case).await);
+    }
+    let run = store.run_item(p.id, items[0]).await.unwrap();
+    assert_eq!(run.steps.len(), refs);
+    let expanded = run.steps.iter().filter(|s| !s.steps.is_empty()).count();
+    assert_eq!(expanded, expand::MAX_EXPANDED_SHARED_BYTES / size);
+    assert!(
+        run.steps[expanded..]
+            .iter()
+            .all(|s| s.steps.is_empty() && s.action.contains("is not shown"))
+    );
+    let total: usize = run
+        .steps
+        .iter()
+        .map(|s| serde_json::to_vec(&s.steps).unwrap().len())
+        .sum();
+    assert!(total <= expand::MAX_EXPANDED_SHARED_BYTES + refs * 2);
+    let path = format!("{}.1", expanded + 1);
+    let r = store
+        .put_run_step(
+            &p,
+            items[0],
+            &path,
+            &RunStepWrite {
+                status: StepStatus::Passed,
+                actual: None,
+                comment: None,
+                attachment_ids: None,
+            },
+            "ann",
+            &l,
+        )
+        .await;
+    assert!(
+        matches!(r, Err(TmError::NotFound("step"))),
+        "a step that is not shown takes no result: {r:?}"
+    );
+
+    let (page, more) = store
+        .manual_report_page(p.id, launch, 0, 500, 1)
+        .await
+        .unwrap();
+    assert_eq!(
+        (page.len(), more),
+        (1, true),
+        "the page ends after one large item"
+    );
+    let (rest, more) = store
+        .manual_report_page(p.id, launch, page[0].case_number, 500, 1)
+        .await
+        .unwrap();
+    assert_eq!(
+        (rest.len(), more),
+        (1, false),
+        "the last item ends the report"
+    );
+    let (all, more) = store
+        .manual_report_page(p.id, launch, 0, 500, usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!((all.len(), more), (2, false));
+}
+
+/// Security review: shared step versions follow the project's case version retention; the
+/// head, the approved version and versions runs pinned are kept.
+#[tokio::test]
+async fn shared_step_versions_follow_retention() {
+    let Some((db, store)) = TestDb::migrated().await else {
+        return;
+    };
+    let p = project(&store, "ret").await;
+    let keep_all = project(&store, "kept").await;
+    let l = open();
+    let c = ctx(&p, "ann", &l);
+    let ss = new_shared(&store, &p, &l, "Log in").await;
+    let other = new_shared(&store, &keep_all, &l, "Log in").await;
+    let mut row = ss.clone();
+    let mut other_row = other.clone();
+    for v in 2..=5 {
+        if v == 3 {
+            let case = new_case(&store, &p, &l, "A", vec![reference(&row)])
+                .await
+                .unwrap();
+            let launch = open_launch(&db, &p).await;
+            start_item(&store, &db, &p, &l, launch, &case).await;
+        }
+        row = store
+            .update_shared_step(
+                &c,
+                row.number,
+                row.revision,
+                &write("Log in", vec![step("", &format!("version {v}"))]),
+            )
+            .await
+            .unwrap()
+            .1;
+        other_row = store
+            .update_shared_step(
+                &ctx(&keep_all, "ann", &l),
+                other_row.number,
+                other_row.revision,
+                &write("Log in", vec![step("", &format!("version {v}"))]),
+            )
+            .await
+            .unwrap()
+            .1;
+    }
+    sqlx::query(
+        "update shared_steps set approved_version = 4, review_state = 'pending' where id = $1",
+    )
+    .bind(ss.id)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    sqlx::query("update shared_step_versions set created_at = created_at - interval '2 hours'")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let mut s = ProjectSettings::default();
+    s.retention.case_versions_keep = 1;
+    store.put_project_settings(p.id, &s).await.unwrap();
+    store
+        .prune_case_versions(std::time::Duration::from_secs(60), 1, 0)
+        .await
+        .unwrap();
+    let versions = |id: Uuid| {
+        let pool = db.pool.clone();
+        async move {
+            sqlx::query_scalar::<_, i32>(
+                "select version from shared_step_versions where shared_step_id = $1 order by version desc",
+            )
+            .bind(id)
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    assert_eq!(
+        versions(ss.id).await,
+        vec![5, 4, 2],
+        "the head, the approved version and the version a run pinned"
+    );
+    assert_eq!(versions(other.id).await.len(), 5, "no retention set");
+}

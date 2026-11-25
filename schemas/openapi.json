@@ -896,6 +896,84 @@
         }
       }
     },
+    "/api/v1/projects/{key}/analysis/patterns": {
+      "get": {
+        "tags": [
+          "analysis"
+        ],
+        "description": "Log patterns marked by rules (`action.pattern`) in the project, most marked results first.",
+        "operationId": "analysis_patterns",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "days",
+            "in": "query",
+            "description": "Days back, 1..=365 (default 30).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "1..=100, default 20.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PatternCounts"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{key}/attachments/{attachment}/media-url": {
       "post": {
         "tags": [
@@ -9591,6 +9669,15 @@
             }
           },
           {
+            "name": "pattern",
+            "in": "query",
+            "description": "Only results marked with this log pattern (`^[a-z0-9][a-z0-9._-]{0,63}$`).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "source",
             "in": "query",
             "description": "`manual` (projected from run items) or `automated`.",
@@ -12366,6 +12453,15 @@
                 }
               }
             }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         }
       }
@@ -12375,6 +12471,7 @@
         "tags": [
           "analysis"
         ],
+        "description": "Queues the rule's retroactive application: task `rule.apply`, or `log_rule.apply` for a rule that reads logs or signals or marks a pattern (run by the analysis role, within the raw retention).",
         "operationId": "analysis_apply_rule",
         "parameters": [
           {
@@ -12425,6 +12522,15 @@
             }
           },
           "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
             "content": {
               "application/json": {
                 "schema": {
@@ -36376,6 +36482,28 @@
                 "type": "string",
                 "enum": [
                   "patterns"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The popular-patterns widget in `logPatterns` mode: log pattern marks of rules.",
+            "required": [
+              "items",
+              "kind"
+            ],
+            "properties": {
+              "items": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/PatternCount"
+                }
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "logPatterns"
                 ]
               }
             }

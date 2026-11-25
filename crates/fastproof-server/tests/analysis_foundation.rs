@@ -632,7 +632,13 @@ async fn the_role_analyses_finished_launches() {
     assert_eq!(a["steps"]["errors"]["status"], "done", "{a}");
     for step in ["signals", "logRules", "flakyHints"] {
         assert_eq!(a["steps"][step]["status"], "skipped", "{a}");
-        assert_eq!(a["steps"][step]["detail"]["reason"], "not available");
+        let reason = a["steps"][step]["detail"]["reason"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(
+            reason == "not available" || (step == "logRules" && reason == "no log rules"),
+            "{a}"
+        );
     }
     assert_eq!(a["steps"]["suggestions"]["status"], "done", "{a}");
 

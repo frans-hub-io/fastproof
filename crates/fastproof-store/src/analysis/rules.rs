@@ -19,6 +19,8 @@ use sqlx::{PgConnection, Row};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
+use super::types::{LogStreamName, RuleLogMatch, RuleSignalMatch};
+use crate::logs::{LogLevel, LogStream};
 use crate::{Store, json_no_nul, no_nul};
 
 /// Rules per project, at most.
@@ -41,6 +43,14 @@ pub const INGEST_SCAN_BYTES: u64 = 64 << 20;
 pub const LAUNCH_EVALUATIONS: u64 = 1_000_000;
 /// Bytes scanned by one dry run or retroactive pass over a launch.
 pub const LAUNCH_SCAN_BYTES: u64 = 1 << 30;
+/// Longest `match.log.contains`, in bytes.
+pub const MAX_CONTAINS_BYTES: usize = 1024;
+/// Signal conditions of a rule, at most.
+pub const MAX_SIGNAL_MATCHES: usize = 5;
+/// Longest signal kind of a condition, in bytes.
+pub const MAX_SIGNAL_KIND_BYTES: usize = 64;
+/// Smallest and largest `match.log.lastBytes`.
+pub const LOG_LAST_BYTES: std::ops::RangeInclusive<u32> = 1024..=1_048_576;
 
 /// Compiles a user pattern under the size limits.
 pub fn compile_regex(p: &str) -> Result<Regex, String> {
@@ -265,10 +275,19 @@ pub fn validate_rule(name: &str, m: &RuleMatch, a: &RuleAction) -> Result<(), St
         && m.test_case_id.is_none()
         && m.fingerprint.is_none()
         && m.environment.is_none()
+        && m.log.is_none()
+        && m.signals.is_none()
     {
         return Err(
-            "match needs messageRegex, traceRegex, testCaseId, fingerprint or environment".into(),
+            "match needs messageRegex, traceRegex, testCaseId, fingerprint, environment, log or signals"
+                .into(),
         );
+    }
+    if let Some(l) = &m.log {
+        validate_log_match(l)?;
+    }
+    if let Some(sig) = &m.signals {
+        validate_signal_matches(sig)?;
     }
     if let Some(p) = &m.message_regex {
         compile_regex(p).map_err(|e| format!("match.messageRegex: {e}"))?;
@@ -304,8 +323,14 @@ pub fn validate_rule(name: &str, m: &RuleMatch, a: &RuleAction) -> Result<(), St
         && a.issue.is_none()
         && a.mute.is_none()
         && a.accept.is_none()
+        && a.pattern.is_none()
     {
-        return Err("action needs defectTypeId, comment, issue, mute or accept".into());
+        return Err("action needs defectTypeId, comment, issue, mute, accept or pattern".into());
+    }
+    if let Some(p) = &a.pattern
+        && !valid_pattern_name(p)
+    {
+        return Err("action.pattern must match ^[a-z0-9][a-z0-9._-]{0,63}$".into());
     }
     if let Some(c) = &a.comment
         && c.len() > 4000
@@ -321,6 +346,98 @@ pub fn validate_rule(name: &str, m: &RuleMatch, a: &RuleAction) -> Result<(), St
         return Err("action.mute.days must be 1..=365".into());
     }
     Ok(())
+}
+
+/// Whether a string is a pattern name (`^[a-z0-9][a-z0-9._-]{0,63}$`).
+pub fn valid_pattern_name(p: &str) -> bool {
+    let b = p.as_bytes();
+    !b.is_empty()
+        && b.len() <= 64
+        && (b[0].is_ascii_lowercase() || b[0].is_ascii_digit())
+        && b.iter().all(|c| {
+            c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'.' | b'_' | b'-')
+        })
+}
+
+/// Checks `match.log`: exactly one of `regex` and `contains`, levels and streams without
+/// repeats, `lastBytes` in [`LOG_LAST_BYTES`].
+pub fn validate_log_match(l: &RuleLogMatch) -> Result<(), String> {
+    match (&l.regex, &l.contains) {
+        (Some(_), Some(_)) | (None, None) => {
+            return Err("match.log needs exactly one of regex and contains".into());
+        }
+        (Some(p), None) => {
+            compile_regex(p).map_err(|e| format!("match.log.regex: {e}"))?;
+        }
+        (None, Some(c)) => {
+            if c.is_empty() || c.len() > MAX_CONTAINS_BYTES || c.contains('\0') {
+                return Err(format!(
+                    "match.log.contains must have 1 to {MAX_CONTAINS_BYTES} bytes"
+                ));
+            }
+            compile_contains(c).map_err(|e| format!("match.log.contains: {e}"))?;
+        }
+    }
+    if let Some(v) = &l.levels {
+        let set: std::collections::HashSet<_> = v.iter().collect();
+        if v.is_empty() || set.len() != v.len() {
+            return Err("match.log.levels must list 1 to 5 different levels".into());
+        }
+    }
+    if let Some(v) = &l.streams {
+        let set: std::collections::HashSet<_> = v.iter().collect();
+        if v.is_empty() || set.len() != v.len() {
+            return Err("match.log.streams must list 1 to 4 different streams".into());
+        }
+    }
+    if let Some(n) = l.last_bytes
+        && !LOG_LAST_BYTES.contains(&n)
+    {
+        return Err(format!(
+            "match.log.lastBytes must be {}..={}",
+            LOG_LAST_BYTES.start(),
+            LOG_LAST_BYTES.end()
+        ));
+    }
+    Ok(())
+}
+
+/// Checks `match.signals`: 1 to [`MAX_SIGNAL_MATCHES`] conditions, kinds of 1 to
+/// [`MAX_SIGNAL_KIND_BYTES`] bytes of `a-z`, `A-Z`, `0-9`, `.`, `_`, `-` and `:`.
+pub fn validate_signal_matches(v: &[RuleSignalMatch]) -> Result<(), String> {
+    if v.is_empty() || v.len() > MAX_SIGNAL_MATCHES {
+        return Err(format!(
+            "match.signals must list 1 to {MAX_SIGNAL_MATCHES} conditions"
+        ));
+    }
+    for s in v {
+        if let Some(k) = &s.kind
+            && (k.is_empty()
+                || k.len() > MAX_SIGNAL_KIND_BYTES
+                || !k
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'-' | b':')))
+        {
+            return Err(format!(
+                "match.signals[].kind must have 1 to {MAX_SIGNAL_KIND_BYTES} bytes of a-z, A-Z, 0-9, ., _, - and :"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The first after-launch field a rule sets, as the analysis gate names it (`None` for an
+/// ingest rule).
+pub fn after_launch_format(m: &RuleMatch, a: &RuleAction) -> Option<&'static str> {
+    if m.log.is_some() {
+        Some("rules.match.log")
+    } else if m.signals.is_some() {
+        Some("rules.match.signals")
+    } else if a.pattern.is_some() {
+        Some("rules.action.pattern")
+    } else {
+        None
+    }
 }
 
 /// Limits of one evaluation pass.
@@ -372,6 +489,91 @@ pub struct Subject<'a> {
     pub environment: Option<&'a str>,
 }
 
+/// A `match.log.contains` text as a case-insensitive literal search. The regex engine finds a
+/// literal in time linear in the line; comparing the text at every offset of the line would
+/// cost the line's length times the text's (16 KiB × 1 KiB per line).
+pub fn compile_contains(c: &str) -> Result<Regex, String> {
+    RegexBuilder::new(&regex::escape(c))
+        .case_insensitive(true)
+        .size_limit(REGEX_SIZE_LIMIT)
+        .dfa_size_limit(REGEX_DFA_LIMIT)
+        .build()
+        .map_err(|_| "the text is too long to search for".to_string())
+}
+
+/// `match.log` of a rule, compiled.
+#[derive(Debug)]
+pub struct CompiledLog {
+    regex: Option<Regex>,
+    /// `contains`, matched case-insensitively like the log search ([`compile_contains`]).
+    contains: Option<Regex>,
+    levels: Option<Vec<LogLevel>>,
+    streams: Option<Vec<LogStream>>,
+    /// The tail of each attempt's log the rule reads; `None` for the instance default.
+    pub last_bytes: Option<u32>,
+}
+
+impl CompiledLog {
+    fn compile(l: &RuleLogMatch) -> Result<Self, String> {
+        Ok(Self {
+            regex: l.regex.as_deref().map(compile_regex).transpose()?,
+            contains: l.contains.as_deref().map(compile_contains).transpose()?,
+            levels: l.levels.clone(),
+            streams: l.streams.as_ref().map(|v| {
+                v.iter()
+                    .map(|s| match s {
+                        LogStreamName::Stdout => LogStream::Stdout,
+                        LogStreamName::Stderr => LogStream::Stderr,
+                        LogStreamName::Log => LogStream::Log,
+                        LogStreamName::Step => LogStream::Step,
+                    })
+                    .collect()
+            }),
+            last_bytes: l.last_bytes,
+        })
+    }
+
+    /// Whether a line of this level and stream is looked at. A line without a level (the
+    /// captured `stdout` and `stderr` of an uploaded result) passes only when the rule names no
+    /// levels.
+    pub fn wants(&self, level: Option<LogLevel>, stream: LogStream) -> bool {
+        if let Some(v) = &self.levels {
+            match level {
+                Some(l) if v.contains(&l) => {}
+                _ => return false,
+            }
+        }
+        self.streams.as_ref().is_none_or(|v| v.contains(&stream))
+    }
+
+    /// Charges one evaluation for a scan of one attempt's tail; false when the budget ran out.
+    pub fn begin_scan(&self, budget: &mut Budget) -> bool {
+        budget.take(1, 0)
+    }
+
+    /// Whether a line's text matches (`Some`), or `None` when the budget ran out. The text is
+    /// cut to [`MATCH_INPUT_BYTES`] and its bytes are charged to the budget (the evaluation was
+    /// charged once for the tail by [`Self::begin_scan`]).
+    pub fn line_matches(&self, text: &str, budget: &mut Budget) -> Option<bool> {
+        let input = match_input(text);
+        if !budget.take(0, input.len() as u64) {
+            return None;
+        }
+        Some(match (&self.regex, &self.contains) {
+            (Some(re), _) | (None, Some(re)) => re.is_match(input),
+            (None, None) => false,
+        })
+    }
+
+    /// The byte offset of the first match in a line that matched (for its excerpt).
+    pub fn find(&self, text: &str) -> Option<usize> {
+        match (&self.regex, &self.contains) {
+            (Some(re), _) | (None, Some(re)) => re.find(text).map(|m| m.start()),
+            (None, None) => None,
+        }
+    }
+}
+
 /// A rule with its patterns compiled.
 #[derive(Debug)]
 pub struct CompiledRule {
@@ -379,6 +581,8 @@ pub struct CompiledRule {
     message: Option<Regex>,
     trace: Option<Regex>,
     statuses: Vec<Status>,
+    log: Option<CompiledLog>,
+    after_launch: bool,
 }
 
 impl CompiledRule {
@@ -399,11 +603,20 @@ impl CompiledRule {
             Some(s) => s.iter().map(|s| Status::parse_lenient(s)).collect(),
             None => vec![Status::Failed, Status::Broken],
         };
+        let log = rule
+            .matcher
+            .log
+            .as_ref()
+            .map(CompiledLog::compile)
+            .transpose()?;
+        let after_launch = rule.phase() == RulePhase::AfterLaunch;
         Ok(Self {
             rule,
             message,
             trace,
             statuses,
+            log,
+            after_launch,
         })
     }
 
@@ -411,11 +624,40 @@ impl CompiledRule {
         self.trace.is_some()
     }
 
-    /// `Some(matched)`, or `None` when the budget ran out.
+    /// The compiled `match.log`.
+    pub fn log(&self) -> Option<&CompiledLog> {
+        self.log.as_ref()
+    }
+
+    /// Whether the rule is evaluated after the launch (by the analysis role).
+    pub fn after_launch(&self) -> bool {
+        self.after_launch
+    }
+
+    /// `Some(matched)`, or `None` when the budget ran out. A rule evaluated after the launch
+    /// never matches here: its logs and signals are not part of the subject, so the ingest
+    /// hook, the `rule.apply` task and the result-only dry run cannot apply it to every failure
+    /// by accident.
     pub fn matches(&self, s: &Subject<'_>, budget: &mut Budget) -> Option<bool> {
         if !budget.take(1, 0) {
             return None;
         }
+        if self.after_launch {
+            return Some(false);
+        }
+        self.subject_matches(s, budget)
+    }
+
+    /// The conditions on the result itself (everything but `match.log` and `match.signals`),
+    /// for the evaluation after the launch; `None` when the budget ran out.
+    pub fn result_matches(&self, s: &Subject<'_>, budget: &mut Budget) -> Option<bool> {
+        if !budget.take(1, 0) {
+            return None;
+        }
+        self.subject_matches(s, budget)
+    }
+
+    fn subject_matches(&self, s: &Subject<'_>, budget: &mut Budget) -> Option<bool> {
         let m = &self.rule.matcher;
         if !self.statuses.contains(&Status::parse_lenient(s.status)) {
             return Some(false);
@@ -637,6 +879,28 @@ pub enum RuleChange {
     Conflict(String),
 }
 
+/// The project has this many enabled after-launch rules already (`max_log_rules`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AfterLaunchLimit(pub u32);
+
+/// Enabled rules of a project evaluated after the launch (`match.log`, `match.signals` or
+/// `action.pattern`), `except` one.
+async fn enabled_after_launch(
+    conn: &mut PgConnection,
+    project_id: Uuid,
+    except: Option<Uuid>,
+) -> anyhow::Result<i64> {
+    Ok(sqlx::query_scalar(
+        "select count(*) from rules where project_id = $1 and enabled \
+           and (match ? 'log' or match ? 'signals' or action ? 'pattern') \
+           and ($2::uuid is null or id <> $2)",
+    )
+    .bind(project_id)
+    .bind(except)
+    .fetch_one(&mut *conn)
+    .await?)
+}
+
 impl Store {
     pub async fn rules(&self, project_id: Uuid) -> anyhow::Result<Vec<Rule>> {
         let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
@@ -666,6 +930,21 @@ impl Store {
         r: &NewRule,
         created_by: &str,
     ) -> anyhow::Result<RuleChange> {
+        Ok(self
+            .create_rule_limited(project_id, r, created_by, None)
+            .await?
+            .unwrap_or_else(|_| unreachable!("no limit given")))
+    }
+
+    /// [`Self::create_rule`] that refuses an enabled after-launch rule when the project already
+    /// has `max_after_launch` of them.
+    pub async fn create_rule_limited(
+        &self,
+        project_id: Uuid,
+        r: &NewRule,
+        created_by: &str,
+        max_after_launch: Option<u32>,
+    ) -> anyhow::Result<Result<RuleChange, AfterLaunchLimit>> {
         let mut tx = self.pool.begin().await?;
         sqlx::query("select id from projects where id = $1 for update")
             .bind(project_id)
@@ -676,9 +955,16 @@ impl Store {
             .fetch_one(&mut *tx)
             .await?;
         if n >= MAX_RULES {
-            return Ok(RuleChange::Conflict(format!(
+            return Ok(Ok(RuleChange::Conflict(format!(
                 "at most {MAX_RULES} rules per project"
-            )));
+            ))));
+        }
+        if let Some(max) = max_after_launch
+            && r.enabled.unwrap_or(true)
+            && after_launch_format(&r.matcher, &r.action).is_some()
+            && enabled_after_launch(&mut tx, project_id, None).await? >= i64::from(max)
+        {
+            return Ok(Err(AfterLaunchLimit(max)));
         }
         let row = sqlx::query(sqlx::AssertSqlSafe(format!(
             "insert into rules (id, project_id, name, enabled, ord, match, action, created_by) \
@@ -695,11 +981,38 @@ impl Store {
         .fetch_one(&mut *tx)
         .await?;
         tx.commit().await?;
-        Ok(RuleChange::Done(Box::new(rule_row(&row)?)))
+        Ok(Ok(RuleChange::Done(Box::new(rule_row(&row)?))))
     }
 
     /// Applies a patch (validated by the caller on the merged rule).
     pub async fn update_rule(&self, project_id: Uuid, rule: &Rule) -> anyhow::Result<RuleChange> {
+        Ok(self
+            .update_rule_limited(project_id, rule, None)
+            .await?
+            .unwrap_or_else(|_| unreachable!("no limit given")))
+    }
+
+    /// [`Self::update_rule`] that refuses to leave the project with more than
+    /// `max_after_launch` enabled after-launch rules.
+    pub async fn update_rule_limited(
+        &self,
+        project_id: Uuid,
+        rule: &Rule,
+        max_after_launch: Option<u32>,
+    ) -> anyhow::Result<Result<RuleChange, AfterLaunchLimit>> {
+        let mut tx = self.pool.begin().await?;
+        if let Some(max) = max_after_launch
+            && rule.enabled
+            && after_launch_format(&rule.matcher, &rule.action).is_some()
+        {
+            sqlx::query("select id from projects where id = $1 for update")
+                .bind(project_id)
+                .execute(&mut *tx)
+                .await?;
+            if enabled_after_launch(&mut tx, project_id, Some(rule.id)).await? >= i64::from(max) {
+                return Ok(Err(AfterLaunchLimit(max)));
+            }
+        }
         let row = sqlx::query(sqlx::AssertSqlSafe(format!(
             "update rules set name = $3, enabled = $4, ord = $5, match = $6, action = $7, \
              updated_at = greatest(now(), updated_at + interval '1 microsecond') \
@@ -712,13 +1025,14 @@ impl Store {
         .bind(rule.order)
         .bind(json_no_nul(serde_json::to_value(&rule.matcher)?))
         .bind(json_no_nul(serde_json::to_value(&rule.action)?))
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *tx)
         .await?;
+        tx.commit().await?;
         forget_compiled(rule.id);
-        Ok(match row {
+        Ok(Ok(match row {
             Some(r) => RuleChange::Done(Box::new(rule_row(&r)?)),
             None => RuleChange::NotFound,
-        })
+        }))
     }
 
     pub async fn delete_rule(&self, project_id: Uuid, id: Uuid) -> anyhow::Result<bool> {
@@ -856,6 +1170,126 @@ mod tests {
         s.environment = Some("staging");
         s.status = "passed";
         assert_eq!(r.matches(&s, &mut b), Some(false));
+    }
+
+    #[test]
+    fn log_conditions_and_pattern_marks_are_validated() {
+        let log = |l: RuleLogMatch| RuleMatch {
+            log: Some(l),
+            ..Default::default()
+        };
+        let mark = RuleAction {
+            pattern: Some("oom.heap_1-x".into()),
+            ..Default::default()
+        };
+        let contains = RuleLogMatch {
+            contains: Some("OutOfMemoryError".into()),
+            ..Default::default()
+        };
+        assert!(validate_rule("r", &log(contains.clone()), &mark).is_ok());
+        for bad in ["", "Oom", "-x", "a b", &"a".repeat(65), "é"] {
+            let a = RuleAction {
+                pattern: Some(bad.into()),
+                ..Default::default()
+            };
+            assert!(
+                validate_rule("r", &log(contains.clone()), &a).is_err(),
+                "{bad:?}"
+            );
+        }
+        assert!(valid_pattern_name(&"a".repeat(64)));
+        let bad_logs = [
+            RuleLogMatch::default(),
+            RuleLogMatch {
+                regex: Some("a".into()),
+                contains: Some("a".into()),
+                ..Default::default()
+            },
+            RuleLogMatch {
+                regex: Some("(a".into()),
+                ..Default::default()
+            },
+            RuleLogMatch {
+                regex: Some(r"(a)\1".into()),
+                ..Default::default()
+            },
+            RuleLogMatch {
+                contains: Some("x".repeat(MAX_CONTAINS_BYTES + 1)),
+                ..Default::default()
+            },
+            RuleLogMatch {
+                last_bytes: Some(1023),
+                ..contains.clone()
+            },
+            RuleLogMatch {
+                last_bytes: Some(1_048_577),
+                ..contains.clone()
+            },
+            RuleLogMatch {
+                levels: Some(vec![]),
+                ..contains.clone()
+            },
+            RuleLogMatch {
+                streams: Some(vec![LogStreamName::Stdout, LogStreamName::Stdout]),
+                ..contains.clone()
+            },
+        ];
+        for l in bad_logs {
+            assert!(validate_rule("r", &log(l.clone()), &mark).is_err(), "{l:?}");
+        }
+        let sig = |v: Vec<RuleSignalMatch>| RuleMatch {
+            signals: Some(v),
+            ..Default::default()
+        };
+        let grid = RuleSignalMatch {
+            source: super::super::types::SignalSource::Grid,
+            kind: Some("node-lost".into()),
+        };
+        assert!(validate_rule("r", &sig(vec![grid.clone()]), &mark).is_ok());
+        assert!(validate_rule("r", &sig(vec![]), &mark).is_err());
+        assert!(validate_rule("r", &sig(vec![grid.clone(); 6]), &mark).is_err());
+        let bad_kind = RuleSignalMatch {
+            kind: Some("node lost".into()),
+            ..grid.clone()
+        };
+        assert!(validate_rule("r", &sig(vec![bad_kind]), &mark).is_err());
+        assert_eq!(
+            after_launch_format(&log(contains.clone()), &RuleAction::default()),
+            Some("rules.match.log")
+        );
+        assert_eq!(
+            after_launch_format(&sig(vec![grid]), &RuleAction::default()),
+            Some("rules.match.signals")
+        );
+        assert_eq!(
+            after_launch_format(&RuleMatch::default(), &mark),
+            Some("rules.action.pattern")
+        );
+        assert_eq!(
+            after_launch_format(&RuleMatch::default(), &RuleAction::default()),
+            None
+        );
+    }
+
+    #[test]
+    fn after_launch_rules_never_match_a_result_alone() {
+        // The ingest hook, the `rule.apply` task and the result-only dry run see no logs: a
+        // rule that needs them must not match every failure there.
+        let mut r = rule(RuleMatch {
+            message_regex: Some("boom".into()),
+            ..Default::default()
+        });
+        let mut b = Budget::ingest();
+        assert_eq!(r.matches(&subject("boom", None), &mut b), Some(true));
+        r.rule.action.pattern = Some("p".into());
+        let r = CompiledRule::compile(r.rule).unwrap();
+        assert!(r.after_launch());
+        assert_eq!(r.matches(&subject("boom", None), &mut b), Some(false));
+        assert_eq!(r.result_matches(&subject("boom", None), &mut b), Some(true));
+        assert_eq!(
+            r.result_matches(&subject("other", None), &mut b),
+            Some(false)
+        );
     }
 
     #[test]

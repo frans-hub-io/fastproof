@@ -251,6 +251,35 @@ function TopList({ rows, color, unit }: { rows: { key: string; to: string; name:
   );
 }
 
+function LogPatterns({ items }: { items: Extract<WidgetData, { kind: 'logPatterns' }>['items'] }) {
+  return (
+    <Table.ScrollContainer minWidth={360}>
+      <Table verticalSpacing={4} fz="sm" data-testid="log-patterns-table">
+        <Table.Thead>
+          <Table.Tr>
+            <Table.Th>Pattern</Table.Th>
+            <Table.Th ta="right">Results</Table.Th>
+            <Table.Th ta="right">Launches</Table.Th>
+            <Table.Th>Last seen</Table.Th>
+          </Table.Tr>
+        </Table.Thead>
+        <Table.Tbody>
+          {items.map((p) => (
+            <Table.Tr key={p.pattern}>
+              <Table.Td className="fp-mono" style={{ overflowWrap: 'anywhere' }}>
+                {p.pattern}
+              </Table.Td>
+              <Table.Td ta="right">{p.results.toLocaleString()}</Table.Td>
+              <Table.Td ta="right">{p.launches.toLocaleString()}</Table.Td>
+              <Table.Td>{new Date(p.lastSeenAt).toLocaleDateString()}</Table.Td>
+            </Table.Tr>
+          ))}
+        </Table.Tbody>
+      </Table>
+    </Table.ScrollContainer>
+  );
+}
+
 function Patterns({ items }: { items: Extract<WidgetData, { kind: 'patterns' }>['items'] }) {
   return (
     <Table.ScrollContainer minWidth={480}>
@@ -542,5 +571,6 @@ export function WidgetBody({ project, widget, data }: { project: string; widget:
     );
   }
   if (data.kind === 'patterns') return data.items.length === 0 ? <Empty text="No failure patterns in this range." /> : <Patterns items={data.items} />;
+  if (data.kind === 'logPatterns') return data.items.length === 0 ? <Empty text="No log pattern was marked in this range. Rules with a pattern action mark results after each launch." /> : <LogPatterns items={data.items} />;
   return widget.type === 'component-health' ? <Components w={widget} d={data} /> : <LaunchExecution project={project} w={widget} d={data} />;
 }

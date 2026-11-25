@@ -22,6 +22,7 @@ import {
   treeTestsOf,
   uploadsOf,
   type MockRole,
+  patternsOf,
 } from './fixtures';
 import { dashboardHandlers } from './handlersDashboards';
 import { resetDashboards } from './dashboards';
@@ -346,7 +347,9 @@ export const handlers = [
     if (!def || def.project !== params.key) return error(404, 'not_found', 'launch not found');
     const url = new URL(request.url);
     const key = def.project;
-    return HttpResponse.json(page(filterResults(launchResults(def.launch.id).map((r) => analyze(key, r)), url), url, (r) => r.id));
+    const pattern = url.searchParams.get('pattern');
+    const all = launchResults(def.launch.id).filter((r) => !pattern || patternsOf(r.id).some((p) => p.pattern === pattern));
+    return HttpResponse.json(page(filterResults(all.map((r) => analyze(key, r)), url), url, (r) => r.id));
   }),
 
   http.get(`${API}/projects/:key/launches/:id/tree`, ({ params, request }) => {

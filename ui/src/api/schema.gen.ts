@@ -219,6 +219,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{key}/analysis/patterns": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Log patterns marked by rules (`action.pattern`) in the project, most marked results first. */
+        get: operations["analysis_patterns"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{key}/attachments/{attachment}/media-url": {
         parameters: {
             query?: never;
@@ -2010,6 +2027,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /** @description Queues the rule's retroactive application: task `rule.apply`, or `log_rule.apply` for a rule that reads logs or signals or marks a pattern (run by the analysis role, within the raw retention). */
         post: operations["analysis_apply_rule"];
         delete?: never;
         options?: never;
@@ -9092,6 +9110,10 @@ export interface components {
             /** @enum {string} */
             kind: "patterns";
         } | {
+            items: components["schemas"]["PatternCount"][];
+            /** @enum {string} */
+            kind: "logPatterns";
+        } | {
             components: components["schemas"]["ComponentPoint"][];
             defects: components["schemas"]["DefectCounts"];
             groupBy: string;
@@ -9854,6 +9876,56 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MemoryList"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    analysis_patterns: {
+        parameters: {
+            query?: {
+                /** @description Days back, 1..=365 (default 30). */
+                days?: number;
+                /** @description 1..=100, default 20. */
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PatternCounts"];
                 };
             };
             400: {
@@ -15670,6 +15742,8 @@ export interface operations {
                 flaky?: boolean;
                 /** @description Results with this fingerprint or one of its aliases (a unique error). */
                 fingerprint?: string;
+                /** @description Only results marked with this log pattern (`^[a-z0-9][a-z0-9._-]{0,63}$`). */
+                pattern?: string;
                 /** @description `manual` (projected from run items) or `automated`. */
                 source?: components["schemas"]["ResultSource"];
                 before?: string;
@@ -17392,6 +17466,14 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
         };
     };
     analysis_apply_rule: {
@@ -17426,6 +17508,14 @@ export interface operations {
                 };
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -822,6 +822,14 @@ export function launchResults(id: string): ResultSummary[] {
   return liveResults(def).map((r) => r.summary);
 }
 
+/** Log pattern marks of mock results: the rich result and a few failures of its launch. */
+export function patternsOf(id: string): NonNullable<ResultDetail['patterns']> {
+  const stored = resultsById.get(id);
+  if (!stored || stored.launchId !== RICH_LAUNCH || stored.def.index > 3) return [];
+  if (stored.def.index > 0 && stored.summary.status !== 'failed' && stored.summary.status !== 'broken') return [];
+  return [{ pattern: 'oom', ruleId: 'rule-oom', attempt: 0, excerpt: 'java.lang.OutOfMemoryError: Java heap space (cart has 120000 items)' }];
+}
+
 export function resultDetail(id: string): ResultDetail | undefined {
   let stored = resultsById.get(id);
   if (!stored) {
@@ -846,6 +854,7 @@ export function resultDetail(id: string): ResultDetail | undefined {
         ]
       : [],
     attempts: stored.attempts(),
+    patterns: patternsOf(id),
     history,
     launchId: stored.launchId,
     launchNumber: def?.launch.number ?? 0,

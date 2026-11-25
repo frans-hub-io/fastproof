@@ -509,6 +509,8 @@ pub struct ResultQuery {
     pub flaky: Option<bool>,
     /// Results with this fingerprint or one of its aliases (a unique error).
     pub fingerprint: Option<String>,
+    /// Only results marked with this log pattern (`^[a-z0-9][a-z0-9._-]{0,63}$`).
+    pub pattern: Option<String>,
     /// `manual` (projected from run items) or `automated`.
     pub source: Option<ResultSource>,
     pub before: Option<String>,
@@ -554,6 +556,14 @@ pub(crate) async fn result_filter(
             )));
         }
     }
+    let pattern = q.pattern.filter(|p| !p.is_empty());
+    if let Some(p) = &pattern
+        && !fastproof_store::analysis::rules::valid_pattern_name(p)
+    {
+        return Err(ApiError::bad_request(
+            "pattern must match ^[a-z0-9][a-z0-9._-]{0,63}$",
+        ));
+    }
     let f = ResultFilter {
         statuses,
         q: q.q.filter(|v| !v.trim().is_empty()),
@@ -561,7 +571,7 @@ pub(crate) async fn result_filter(
         label: key_value(q.label.as_deref(), "label")?,
         flaky: q.flaky,
         fingerprint: q.fingerprint,
-        pattern: None,
+        pattern,
         source: q.source,
         extra: explorer.filter(s, launch).await?,
         before: q.before,
@@ -1193,5 +1203,42 @@ pub async fn history(
         test_case,
         items,
         daily,
+    }))
+}
+
+/// Query of `GET .../analysis/patterns`.
+#[derive(Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+#[serde(rename_all = "camelCase")]
+pub struct PatternQuery {
+    /// Days back, 1..=365 (default 30).
+    pub days: Option<u32>,
+    /// 1..=100, default 20.
+    pub limit: Option<i64>,
+}
+
+#[utoipa::path(get, path = "/api/v1/projects/{key}/analysis/patterns", tag = "analysis", operation_id = "analysis_patterns",
+    description = "Log patterns marked by rules (`action.pattern`) in the project, most marked results first.",
+    params(("key" = String, Path), PatternQuery),
+    responses((status = 200, body = fastproof_store::analysis::types::PatternCounts), (status = 400, body = ErrorBody),
+        (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
+pub async fn patterns(
+    State(s): State<AppState>,
+    auth: Auth,
+    P(key): P<String>,
+    Q(q): Q<PatternQuery>,
+) -> ApiResult<Json<fastproof_store::analysis::types::PatternCounts>> {
+    let p = s.project_for(&auth, &key, &s.perms.launches_read).await?;
+    let days = q.days.unwrap_or(30);
+    if !(1..=365).contains(&days) {
+        return Err(ApiError::bad_request("days must be 1..=365"));
+    }
+    let limit = q.limit.unwrap_or(20);
+    if !(1..=100).contains(&limit) {
+        return Err(ApiError::bad_request("limit must be 1..=100"));
+    }
+    let since = chrono::Utc::now() - chrono::Duration::days(i64::from(days));
+    Ok(Json(fastproof_store::analysis::types::PatternCounts {
+        items: s.store.pattern_counts(p.id, since, limit).await?,
     }))
 }

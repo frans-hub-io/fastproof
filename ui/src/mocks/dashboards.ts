@@ -179,6 +179,18 @@ function dataOf(project: string, w: DashboardWidget): WidgetData {
       return { kind: 'growth', points: Array.from({ length: days }, (_, i) => ({ t: new Date(NOW - (days - 1 - i) * DAY).toISOString().slice(0, 10), added: (i * 7) % 5 })) };
     }
     case 'popular-patterns':
+      if (s.patterns === 'logPatterns') {
+        return {
+          kind: 'logPatterns',
+          items: [
+            { pattern: 'oom', results: 41, launches: 9 },
+            { pattern: 'db-timeout', results: 17, launches: 6 },
+            { pattern: 'grid-node-lost', results: 5, launches: 2 },
+          ]
+            .slice(0, s.limit ?? 10)
+            .map((p, i) => ({ ...p, lastSeenAt: new Date(NOW - i * DAY).toISOString() })),
+        };
+      }
       return {
         kind: 'patterns',
         items: ['TimeoutError: waiting for locator("#checkout")', 'AssertionError: expected 200 but got 503', 'ECONNRESET while calling payments', 'Element is not attached to the DOM'].slice(0, s.limit ?? 10).map((message, i) => ({

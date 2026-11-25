@@ -262,8 +262,9 @@ impl Store {
     /// Deletes case versions beyond each project's retention (`retention.caseVersionsKeep`,
     /// `retention.caseVersionsDays`; projects with neither are skipped), walking cases by id
     /// in chunks of 500 and deleting at most `batch` versions per statement, until `budget`
-    /// is spent (the next run goes on). Never deleted: the current version of a case, versions
-    /// a run item or an earlier execution was run against, and on cases made from code the
+    /// is spent (the next run goes on). Never deleted: the current and the approved version of a
+    /// case, versions a run item or an earlier execution was run against, and on cases made
+    /// from code the
     /// newest version that was not written by code (code sync checks for it), and a version
     /// replaced less than an hour ago (a launch that is being started may still record it for
     /// its run items). Projects are visited starting at `start` (modulo their number), so a
@@ -334,6 +335,7 @@ impl Store {
 const PRUNE_SQL: &str = "with d as (\
        select v.case_id, v.version from cases c join case_versions v on v.case_id = c.id \
        where c.id = any($1) and c.project_id = $2 and v.version < c.version \
+         and v.version is distinct from c.approved_version \
          and ($3 = 0 or v.version <= c.version - $3) \
          and ($4 = 0 or v.created_at < now() - make_interval(days => $4)) \
          and not exists (select 1 from run_items r where r.case_id = v.case_id and r.case_version = v.version) \

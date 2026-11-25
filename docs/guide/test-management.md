@@ -126,7 +126,8 @@ Tags are free text. Code sync fills them from the `tag` labels of automated test
 ### Status and the trash
 
 The life cycle is fixed: `draft` (being written; required fields may be empty), `active` (in use) and
-`outdated` (no longer relevant, kept for history). Any status can change to any other.
+`outdated` (no longer relevant, kept for history). Any status can change to any other, unless the project
+has a [case workflow](workflows-and-review.md#case-workflow) with its own states and transitions.
 
 Deleting a case moves it to the **trash** (`DELETE $api/cases/12`); `POST $api/cases/12/restore` takes it
 back. Archived cases are left out of lists and plan filters; `GET $api/cases?archived=true` lists the trash.
@@ -148,7 +149,8 @@ curl -fsS -X PUT "$api/settings" -H "$auth" -H 'Content-Type: application/json' 
 - `caseVersionsDays` (0 to 36 500, default `0`): versions older than this many days may be pruned.
 - With both set, a version is pruned only when it is beyond the newest `caseVersionsKeep` **and** older than
   `caseVersionsDays`; with one set, that one decides; with neither (both `0`), nothing is pruned.
-- Never pruned: the current version, the versions that run items (and their earlier executions) were run
+- Never pruned: the current version, the approved version of a case under
+  [review](workflows-and-review.md#version-review), the versions that run items (and their earlier executions) were run
   against, so manual runs always show the steps that were executed, a version replaced less than an hour ago
   (a launch being started may still record it), and on cases made from code the newest version that a person
   or an import wrote.

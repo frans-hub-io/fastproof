@@ -2258,18 +2258,20 @@ impl Store {
             }
             let state = match &op {
                 BulkOp::Status(_) | BulkOp::State(_) => {
-                    let checked = if snap.status != cur.status {
-                        state_for_status(&mut tx, ctx, cur, snap.status, VersionSource::Bulk).await
-                    } else if let (BulkOp::State(_), Some(c)) = (&op, state_category) {
-                        super::workflow::check_transition(&mut tx, ctx, cur, c).await
-                    } else {
-                        Ok(None)
+                    let checked = match &op {
+                        BulkOp::State(k) => {
+                            super::workflow::check_transition_to(&mut tx, ctx, cur, k)
+                                .await
+                                .map(|_| Some(k.clone()))
+                        }
+                        _ if snap.status != cur.status => {
+                            state_for_status(&mut tx, ctx, cur, snap.status, VersionSource::Bulk)
+                                .await
+                        }
+                        _ => Ok(None),
                     };
                     match checked {
-                        Ok(st) => match &op {
-                            BulkOp::State(k) => Some(k.clone()),
-                            _ => st,
-                        },
+                        Ok(st) => st,
                         Err(TmError::Conflict { code, .. })
                         | Err(TmError::Forbidden { code, .. }) => {
                             skip(&mut out, *n, code);

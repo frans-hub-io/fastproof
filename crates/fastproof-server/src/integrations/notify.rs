@@ -485,6 +485,245 @@ pub async fn send(
     }
 }
 
+/// The event of review requests.
+pub const REVIEW_EVENT: &str = "caseReviewRequested";
+/// Least time between two `caseReviewRequested` deliveries of one notification.
+pub const REVIEW_THROTTLE: Duration = Duration::from_secs(300);
+
+/// One object waiting for review in a [`ReviewDigest`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewDigestItem {
+    /// `case` or `sharedStep`.
+    pub kind: String,
+    /// `TC-<n>` or `SS-<n>`.
+    pub key: String,
+    pub name: String,
+    pub author: Option<String>,
+    /// The page of the object, when `FASTPROOF_PUBLIC_URL` is set.
+    pub url: Option<String>,
+}
+
+/// What a `caseReviewRequested` message says: objects of a project that became pending since
+/// the previous message of the notification.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewDigest {
+    pub project: String,
+    pub event: String,
+    /// Objects waiting for review now.
+    pub waiting: i64,
+    /// Objects that became pending since the previous message.
+    pub new: i64,
+    /// The newest of them (at most 10).
+    pub items: Vec<ReviewDigestItem>,
+    /// The review queue page, when `FASTPROOF_PUBLIC_URL` is set.
+    pub url: Option<String>,
+}
+
+/// The headline of a review request.
+pub fn review_headline(d: &ReviewDigest) -> String {
+    one_line(
+        &format!(
+            "FastProof {}: {} new for review, {} waiting",
+            d.project, d.new, d.waiting
+        ),
+        300,
+    )
+}
+
+/// The plain-text message of a review request.
+pub fn review_text(d: &ReviewDigest) -> String {
+    let mut out = vec![review_headline(d)];
+    for i in &d.items {
+        let by = i
+            .author
+            .as_deref()
+            .map(|a| format!(" (by {})", one_line(a, 100)))
+            .unwrap_or_default();
+        out.push(format!("{} {}{by}", i.key, one_line(&i.name, 200)));
+    }
+    if d.new > d.items.len() as i64 {
+        out.push(format!("and {} more", d.new - d.items.len() as i64));
+    }
+    if let Some(u) = &d.url {
+        out.push(u.clone());
+    }
+    out.join("\n")
+}
+
+/// The Teams card of a review request (plain text runs only).
+pub fn review_card(d: &ReviewDigest) -> serde_json::Value {
+    use super::teams::plain;
+    let mut body = vec![
+        serde_json::json!({"type": "TextBlock", "text": plain(&review_headline(d), 300),
+        "weight": "Bolder", "wrap": true, "size": "Medium"}),
+    ];
+    for i in &d.items {
+        let by = i
+            .author
+            .as_deref()
+            .map(|a| format!(" (by {})", plain(a, 100)))
+            .unwrap_or_default();
+        body.push(
+            serde_json::json!({"type": "RichTextBlock", "spacing": "Small", "inlines": [
+            {"type": "TextRun", "text": format!("{} ", i.key), "weight": "Bolder"},
+            {"type": "TextRun", "text": format!("{}{by}", plain(&i.name, 200))}]}),
+        );
+    }
+    let mut card = serde_json::json!({"type": "AdaptiveCard",
+        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json", "version": "1.5", "body": body});
+    if let Some(u) = &d.url {
+        card["actions"] =
+            serde_json::json!([{"type": "Action.OpenUrl", "title": "Open reviews", "url": u}]);
+    }
+    super::teams::message(card)
+}
+
+/// The JSON body of a review request webhook.
+pub fn review_webhook_body(delivery: Uuid, d: &ReviewDigest) -> Vec<u8> {
+    let mut v = serde_json::to_value(d).unwrap_or_default();
+    if let Some(o) = v.as_object_mut() {
+        o.insert("deliveryId".into(), serde_json::json!(delivery));
+    }
+    serde_json::to_vec(&v).unwrap_or_default()
+}
+
+/// Whether every recipient of an email notification is one of `actors` (the authors of the
+/// requested versions): such a message would reach the actor alone and is not sent.
+pub fn only_actors(n: &Notification, actors: &[String]) -> bool {
+    if n.kind != "email" {
+        return false;
+    }
+    let to: Vec<String> = n
+        .target
+        .split(',')
+        .map(|a| a.trim().to_ascii_lowercase())
+        .filter(|a| !a.is_empty())
+        .collect();
+    !to.is_empty()
+        && to
+            .iter()
+            .all(|a| actors.iter().any(|x| x.trim().eq_ignore_ascii_case(a)))
+}
+
+/// Sends one review request.
+pub async fn send_review(
+    st: &AppState,
+    project_id: Uuid,
+    delivery: Uuid,
+    n: &Notification,
+    d: &ReviewDigest,
+) -> Outcome {
+    match n.kind.as_str() {
+        "webhook" => {
+            let url = match target_url(st, project_id, n, SecretPurpose::Webhook).await {
+                Ok(u) => u,
+                Err(o) => return o,
+            };
+            let key = match secret(
+                st,
+                project_id,
+                &n.secret_ref,
+                SecretPurpose::Webhook,
+                Some(&url),
+            )
+            .await
+            {
+                Ok(k) => k,
+                Err(o) => return o,
+            };
+            let body = review_webhook_body(delivery, d);
+            let ts = chrono::Utc::now().timestamp();
+            let mut headers = vec![
+                ("X-FastProof-Event", REVIEW_EVENT.to_string()),
+                ("X-FastProof-Delivery", delivery.to_string()),
+                ("X-FastProof-Timestamp", ts.to_string()),
+            ];
+            if let Some(k) = &key {
+                headers.push((
+                    "X-FastProof-Signature",
+                    signature(k.expose().as_bytes(), ts, &body),
+                ));
+            }
+            post_json(st, &url, body, &headers).await
+        }
+        "teams" => {
+            if n.target_secret_ref.is_none() {
+                return Outcome::Fail("teams needs targetSecretRef".into(), None);
+            }
+            let url = match target_url(st, project_id, n, SecretPurpose::Teams).await {
+                Ok(u) => u,
+                Err(o) => return o,
+            };
+            if let Err(e) = super::secrets::check_teams_url(&url) {
+                return Outcome::Fail(e, None);
+            }
+            post_teams(
+                st,
+                &url,
+                serde_json::to_vec(&review_card(d)).unwrap_or_default(),
+            )
+            .await
+        }
+        "slack" => {
+            let url = match target_url(st, project_id, n, SecretPurpose::Slack).await {
+                Ok(u) => u,
+                Err(o) => return o,
+            };
+            let body =
+                serde_json::to_vec(&serde_json::json!({"text": slack_escape(&review_text(d))}))
+                    .unwrap_or_default();
+            post_json(st, &url, body, &[]).await
+        }
+        "telegram" => {
+            let base = st
+                .cfg
+                .integrations
+                .telegram_api
+                .as_str()
+                .trim_end_matches('/');
+            let token = match secret(
+                st,
+                project_id,
+                &n.secret_ref,
+                SecretPurpose::Telegram,
+                Some(base),
+            )
+            .await
+            {
+                Ok(Some(t)) => t,
+                Ok(None) => return Outcome::Fail("telegram needs secretRef".into(), None),
+                Err(o) => return o,
+            };
+            let t = token.expose().trim();
+            if t.is_empty()
+                || t.len() > 128
+                || !t
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b':' | b'_' | b'-'))
+            {
+                return Outcome::Fail("the telegram bot token is malformed".into(), None);
+            }
+            let url = format!("{base}/bot{t}/sendMessage");
+            let body = serde_json::to_vec(&serde_json::json!({
+                "chat_id": n.target.trim(),
+                "text": review_text(d),
+                "disable_web_page_preview": true,
+            }))
+            .unwrap_or_default();
+            post_json(st, &url, body, &[]).await
+        }
+        "email" => match &st.cfg.integrations.smtp {
+            None => Outcome::Fail("email needs FASTPROOF_SMTP_URL".into(), None),
+            Some(smtp) => {
+                send_email_text(st, smtp, &n.target, review_headline(d), review_text(d)).await
+            }
+        },
+        other => Outcome::Fail(format!("unknown notification kind {other}"), None),
+    }
+}
+
 /// Least time between two test sends of one notification (per replica).
 pub const TEST_INTERVAL: Duration = Duration::from_secs(5);
 
@@ -583,13 +822,23 @@ pub fn sample_summary(project: &str, project_url: Option<String>, n: &Notificati
 }
 
 async fn send_email(st: &AppState, smtp: &SmtpConfig, to: &str, s: &Summary) -> Outcome {
+    send_email_text(st, smtp, to, headline(s), text(s)).await
+}
+
+async fn send_email_text(
+    st: &AppState,
+    smtp: &SmtpConfig,
+    to: &str,
+    subject: String,
+    body: String,
+) -> Outcome {
     let from: Mailbox = match smtp.from.parse() {
         Ok(m) => m,
         Err(_) => return Outcome::Fail("FASTPROOF_SMTP_FROM is invalid".into(), None),
     };
     let mut b = Message::builder()
         .from(from)
-        .subject(headline(s))
+        .subject(subject)
         .header(ContentType::TEXT_PLAIN);
     for a in to.split(',').map(str::trim).filter(|a| !a.is_empty()) {
         match a.parse::<Mailbox>() {
@@ -597,7 +846,7 @@ async fn send_email(st: &AppState, smtp: &SmtpConfig, to: &str, s: &Summary) -> 
             Err(_) => return Outcome::Fail(format!("invalid address {a:?}"), None),
         }
     }
-    let msg = match b.body(text(s)) {
+    let msg = match b.body(body) {
         Ok(m) => m,
         Err(e) => return Outcome::Fail(format!("building the message failed: {e}"), None),
     };
@@ -826,6 +1075,85 @@ mod tests {
             v.get("test").is_none(),
             "real deliveries carry no test flag"
         );
+    }
+
+    fn digest() -> ReviewDigest {
+        ReviewDigest {
+            project: "shop".into(),
+            event: REVIEW_EVENT.into(),
+            waiting: 4,
+            new: 3,
+            items: vec![
+                ReviewDigestItem {
+                    kind: "case".into(),
+                    key: "TC-7".into(),
+                    name: "Pay <with> card\nnow".into(),
+                    author: Some("alice".into()),
+                    url: None,
+                },
+                ReviewDigestItem {
+                    kind: "sharedStep".into(),
+                    key: "SS-2".into(),
+                    name: "Log in".into(),
+                    author: None,
+                    url: None,
+                },
+            ],
+            url: Some("https://fastproof.example.com/p/shop/reviews".into()),
+        }
+    }
+
+    #[test]
+    fn review_messages() {
+        let d = digest();
+        let t = review_text(&d);
+        assert!(
+            t.starts_with("FastProof shop: 3 new for review, 4 waiting"),
+            "{t}"
+        );
+        assert!(t.contains("TC-7 Pay <with> card now (by alice)"), "{t}");
+        assert!(t.contains("SS-2 Log in\n"), "{t}");
+        assert!(t.contains("and 1 more"), "{t}");
+        assert!(slack_escape(&t).contains("&lt;with&gt;"));
+        let v: serde_json::Value =
+            serde_json::from_slice(&review_webhook_body(Uuid::nil(), &d)).unwrap();
+        assert_eq!(v["event"], REVIEW_EVENT);
+        assert_eq!(v["items"][0]["key"], "TC-7");
+        let card = review_card(&d);
+        let s = card.to_string();
+        assert!(
+            s.contains("AdaptiveCard") && s.contains("Open reviews"),
+            "{s}"
+        );
+        assert!(
+            !s.contains("Pay <with> card\\n"),
+            "control characters become spaces"
+        );
+    }
+
+    #[test]
+    fn review_requests_never_reach_the_actor_alone() {
+        let n = |kind: &str, target: &str| Notification {
+            id: "r".into(),
+            kind: kind.into(),
+            on: vec![REVIEW_EVENT.into()],
+            target: target.into(),
+            target_secret_ref: None,
+            secret_ref: None,
+            filter: None,
+        };
+        let actors = vec!["Alice@example.com".to_string()];
+        assert!(only_actors(&n("email", "alice@example.com"), &actors));
+        assert!(only_actors(&n("email", " alice@example.com , "), &actors));
+        assert!(!only_actors(
+            &n("email", "alice@example.com, bob@example.com"),
+            &actors
+        ));
+        assert!(!only_actors(
+            &n("slack", "https://hooks.example.com/x"),
+            &actors
+        ));
+        assert!(!only_actors(&n("email", "team@example.com"), &actors));
     }
 
     #[test]

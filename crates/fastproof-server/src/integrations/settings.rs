@@ -478,6 +478,63 @@ pub fn valid_variable_name(n: &str) -> bool {
             .iter()
             .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || *c == b'_')
         && !n.starts_with("FASTPROOF_")
+        && !reserved_variable(n)
+}
+
+/// Names that change how the CI or the shell behaves, or print secrets: never allowlisted.
+pub fn reserved_variable(n: &str) -> bool {
+    const PREFIXES: [&str; 19] = [
+        "CI_",
+        "GITLAB_",
+        "GITHUB_",
+        "RUNNER_",
+        "ACTIONS_",
+        "LD_",
+        "DYLD_",
+        "BASH_",
+        "NODE_",
+        "PYTHON",
+        "JAVA_",
+        "JDK_",
+        "GIT_",
+        "NPM_CONFIG_",
+        "PERL5",
+        "RUBY",
+        "SSL_CERT_",
+        "DOCKER_",
+        "KUBE",
+    ];
+    const NAMES: [&str; 28] = [
+        "CI",
+        "PATH",
+        "ENV",
+        "IFS",
+        "HOME",
+        "SHELL",
+        "USER",
+        "PS4",
+        "PROMPT_COMMAND",
+        "SHELLOPTS",
+        "TMPDIR",
+        "OPTIONS",
+        "JAVA_TOOL_OPTIONS",
+        "_JAVA_OPTIONS",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "FTP_PROXY",
+        "CURL_CA_BUNDLE",
+        "REQUESTS_CA_BUNDLE",
+        "MAVEN_OPTS",
+        "GRADLE_OPTS",
+        "GOFLAGS",
+        "GOPROXY",
+        "TRIGGER_PAYLOAD",
+        "TRIGGER_TOKEN",
+        "PROXY",
+    ];
+    NAMES.contains(&n) || PREFIXES.iter().any(|p| n.starts_with(p))
 }
 
 /// The integration keys of the settings document.

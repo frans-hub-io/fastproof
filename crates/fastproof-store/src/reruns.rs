@@ -12,7 +12,7 @@ use crate::{Store, no_nul};
 /// Reruns of one launch that did not fail, at most (a failed attempt, such as one during a CI
 /// outage, does not use them up; the hourly limit counts every attempt).
 pub const MAX_RERUNS_PER_LAUNCH: i64 = 20;
-/// Reruns per project per hour, at most.
+/// CI triggers (reruns and plan dispatches) per project per hour, at most.
 pub const MAX_RERUNS_PER_HOUR: i64 = 60;
 /// Seconds between two reruns of the same launch.
 pub const RERUN_COOLDOWN_SECONDS: i64 = 10;
@@ -126,12 +126,7 @@ impl Store {
         if total >= MAX_RERUNS_PER_LAUNCH {
             return Ok(Err(RerunRefusal::TooManyForLaunch));
         }
-        let hour: i64 = sqlx::query_scalar(
-            "select count(*) from launch_reruns where project_id = $1 and created_at > now() - interval '1 hour'",
-        )
-        .bind(project_id)
-        .fetch_one(&mut *tx)
-        .await?;
+        let hour = crate::plan_dispatches::triggers_last_hour(&mut tx, project_id).await?;
         if hour >= MAX_RERUNS_PER_HOUR {
             return Ok(Err(RerunRefusal::TooManyInHour));
         }

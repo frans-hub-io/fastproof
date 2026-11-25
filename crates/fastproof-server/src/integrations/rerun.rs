@@ -5,13 +5,23 @@
 
 use fastproof_store::Launch;
 use fastproof_store::analysis::plans::TestPlanJson;
+use std::collections::BTreeMap;
+
 use reqwest::Method;
 use serde_json::json;
 use uuid::Uuid;
 
+use axum::http::StatusCode;
+use fastproof_store::analysis::settings::branch_glob_match;
+use fastproof_store::plan_dispatches::MAX_CI_ENVIRONMENTS;
+use fastproof_store::tm::PlanCi;
+use franshub_http::ApiError;
+
 use super::egress::MAX_RESPONSE_BYTES;
 use super::secrets::{SecretPurpose, origin_of};
-use super::settings::RerunSettings;
+use super::settings::{
+    MAX_RERUN_VARIABLES, MAX_VARIABLE_VALUE_BYTES, RerunSettings, valid_variable_value,
+};
 use crate::state::AppState;
 
 /// Tests sent inline to a webhook; a larger plan is fetched from `planUrl`.
@@ -26,6 +36,24 @@ pub struct Job<'a> {
     pub plan_id: Uuid,
     pub mode: &'a str,
     pub plan: &'a TestPlanJson,
+}
+
+/// What a plan start adds to a [`Job`]: the ref, the variables and the environment name.
+pub struct PlanExtras<'a> {
+    pub git_ref: &'a str,
+    pub variables: &'a BTreeMap<String, String>,
+    pub environment: Option<&'a str>,
+}
+
+impl PlanExtras<'_> {
+    /// The variables as sent: the allowlisted ones and `FASTPROOF_ENVIRONMENT`.
+    fn sent(&self) -> BTreeMap<String, String> {
+        let mut v = self.variables.clone();
+        if let Some(e) = self.environment {
+            v.insert("FASTPROOF_ENVIRONMENT".into(), e.into());
+        }
+        v
+    }
 }
 
 fn enc(s: &str) -> String {
@@ -80,6 +108,33 @@ pub async fn dispatch(
     settings: &RerunSettings,
     job: &Job<'_>,
 ) -> Result<Option<String>, String> {
+    dispatch_with(st, project_id, settings, job, None).await
+}
+
+/// [`dispatch`] for a launch started from a plan (`job.mode` is `plan`): the request carries the
+/// ref and the variables of `extras`.
+pub async fn dispatch_plan(
+    st: &AppState,
+    project_id: Uuid,
+    settings: &RerunSettings,
+    job: &Job<'_>,
+    extras: &PlanExtras<'_>,
+) -> Result<Option<String>, String> {
+    dispatch_with(st, project_id, settings, job, Some(extras)).await
+}
+
+async fn dispatch_with(
+    st: &AppState,
+    project_id: Uuid,
+    settings: &RerunSettings,
+    job: &Job<'_>,
+    extras: Option<&PlanExtras<'_>>,
+) -> Result<Option<String>, String> {
+    let git_ref_of = |settings: &RerunSettings| match extras {
+        Some(e) => e.git_ref.to_string(),
+        None => git_ref(settings),
+    };
+    let event = if extras.is_some() { "plan" } else { "rerun" };
     let scope = settings.scope();
     let secret = |name: String| {
         let (url, scope) = (settings.url.clone(), scope.clone());
@@ -125,13 +180,19 @@ pub async fn dispatch(
                 if let Some(u) = &fastproof_url {
                     inputs["fastproof_url"] = json!(u);
                 }
+                if let Some(e) = extras {
+                    let sent = e.sent();
+                    if !sent.is_empty() {
+                        inputs["fastproof_variables"] = json!(json!(sent).to_string());
+                    }
+                }
                 (
                     Method::POST,
                     format!(
                         "{base}/repos/{repo}/actions/workflows/{}/dispatches",
                         enc(wf)
                     ),
-                    json!({"ref": git_ref(settings), "inputs": inputs}).to_string(),
+                    json!({"ref": git_ref_of(settings), "inputs": inputs}).to_string(),
                     "application/json",
                 )
             }
@@ -139,7 +200,7 @@ pub async fn dispatch(
                 let repo = settings.repository.as_deref().unwrap_or_default();
                 let mut f = url::form_urlencoded::Serializer::new(String::new());
                 f.append_pair("token", token.as_deref().unwrap_or_default());
-                f.append_pair("ref", &git_ref(settings));
+                f.append_pair("ref", &git_ref_of(settings));
                 f.append_pair("variables[FASTPROOF_PLAN_ID]", &job.plan_id.to_string());
                 f.append_pair("variables[FASTPROOF_LAUNCH]", job.external_id);
                 f.append_pair(
@@ -148,6 +209,11 @@ pub async fn dispatch(
                 );
                 if let Some(u) = &fastproof_url {
                     f.append_pair("variables[FASTPROOF_URL]", u);
+                }
+                if let Some(e) = extras {
+                    for (k, v) in e.sent() {
+                        f.append_pair(&format!("variables[{k}]"), &v);
+                    }
                 }
                 (
                     Method::POST,
@@ -158,8 +224,8 @@ pub async fn dispatch(
             }
             _ => {
                 let inline = job.plan.tests.len() <= MAX_INLINE_TESTS;
-                let body = json!({
-                    "event": "rerun",
+                let mut body = json!({
+                    "event": event,
                     "project": job.project,
                     "rerunId": job.rerun_id,
                     "mode": job.mode,
@@ -177,6 +243,10 @@ pub async fn dispatch(
                     "testCount": job.plan.tests.len(),
                     "testplan": inline.then_some(job.plan),
                 });
+                if let Some(e) = extras {
+                    body["variables"] = json!(e.sent());
+                    body["environment"] = json!(e.environment);
+                }
                 (
                     Method::POST,
                     settings.url.clone(),
@@ -193,7 +263,7 @@ pub async fn dispatch(
     if settings.provider == "webhook" {
         let ts = chrono::Utc::now().timestamp();
         rb = rb
-            .header("X-FastProof-Event", "rerun")
+            .header("X-FastProof-Event", event)
             .header("X-FastProof-Delivery", job.rerun_id.to_string())
             .header("X-FastProof-Timestamp", ts.to_string());
         if let Some(k) = &signing {
@@ -244,6 +314,161 @@ pub fn target(settings: &RerunSettings) -> serde_json::Value {
         "origin": origin_of(&settings.url),
         "tokenSecretRef": settings.token_secret_ref,
         "signingSecretRef": settings.signing_secret_ref,
+    })
+}
+
+/// What a plan start sends to the CI, checked against the project's `rerun` settings.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ResolvedPlanCi {
+    pub git_ref: String,
+    /// One entry per launch: the environment name and the variables of that launch.
+    pub environments: Vec<(Option<String>, BTreeMap<String, String>)>,
+}
+
+fn not_allowed(name: &str, what: &str) -> ApiError {
+    let shown: String = name.chars().take(64).collect();
+    ApiError::new(
+        StatusCode::BAD_REQUEST,
+        "ci_variable_not_allowed",
+        format!("CI variable {what}: it is not in the project's rerun.variables"),
+    )
+    .with_details(json!({"name": shown}))
+}
+
+/// Git ref-name rules on top of the allowed characters (letters, digits, `- _ . /`): bounded,
+/// no leading `-` or `.`, no empty, dotted or `.lock` segments, no trailing `/` or `.`.
+pub fn valid_git_ref(r: &str) -> bool {
+    !r.is_empty()
+        && r.len() <= 200
+        && !r.starts_with(['-', '/'])
+        && !r.ends_with(['/', '.'])
+        && !r.contains("..")
+        && !r.contains("//")
+        && r.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'/'))
+        && r.split('/')
+            .all(|seg| !seg.starts_with('.') && !seg.ends_with(".lock"))
+}
+
+/// A value the caller typed (not one of the admin's `values`) and an `externalId` sent to the
+/// CI: no `$`, which GitLab expands to the CI project's own variables (`$DEPLOY_TOKEN`), and
+/// no invisible format characters (bidi overrides, zero-width) that make the dispatch list show
+/// something other than what was sent.
+pub fn plain_value(v: &str) -> bool {
+    !v.chars().any(|c| {
+        matches!(c, '$' | '\u{00AD}' | '\u{061C}' | '\u{180E}' | '\u{200B}'..='\u{200F}'
+            | '\u{2028}'..='\u{202E}' | '\u{2060}'..='\u{206F}' | '\u{FEFF}' | '\u{FFF9}'..='\u{FFFB}')
+    })
+}
+
+/// An `externalId` of a plan start sent to the CI (`fastproof_launch`, `FASTPROOF_LAUNCH`):
+/// 1 to 128 letters, digits, `.`, `_` and `-`, as the start dialog makes them.
+pub fn valid_ci_external_id(v: &str) -> bool {
+    !v.is_empty()
+        && v.len() <= 128
+        && v.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+}
+
+fn valid_environment(n: &str) -> bool {
+    let b = n.as_bytes();
+    !b.is_empty()
+        && b.len() <= 64
+        && b[0].is_ascii_alphanumeric()
+        && b.iter()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'.' | b'-'))
+}
+
+fn checked(
+    cfg: &RerunSettings,
+    vars: &BTreeMap<String, String>,
+    into: &mut BTreeMap<String, String>,
+) -> Result<(), ApiError> {
+    if vars.len() > MAX_RERUN_VARIABLES {
+        return Err(ApiError::bad_request(format!(
+            "at most {MAX_RERUN_VARIABLES} CI variables"
+        )));
+    }
+    let allowed = cfg.variables.as_deref().unwrap_or_default();
+    for (name, value) in vars {
+        let Some(def) = allowed.iter().find(|v| &v.name == name) else {
+            return Err(not_allowed(name, "is not allowed"));
+        };
+        match &def.values {
+            Some(list) if !list.contains(value) => {
+                return Err(not_allowed(name, "has a value that is not listed"));
+            }
+            None if !valid_variable_value(value) || !plain_value(value) => {
+                return Err(ApiError::bad_request(format!(
+                    "the value of {name} has 1 to {MAX_VARIABLE_VALUE_BYTES} bytes without control or invisible characters and without $"
+                )));
+            }
+            _ => {}
+        }
+        into.insert(name.clone(), value.clone());
+    }
+    Ok(())
+}
+
+/// The ref, the environments and the variables of a plan start: variables only by name from
+/// `rerun.variables`, with values from its list when it has one; defaults fill the rest, request
+/// variables override them and an environment's own override both. The ref is the configured one
+/// or one that matches `rerun.refs`.
+pub fn resolve_plan_ci(cfg: &RerunSettings, ci: &PlanCi) -> Result<ResolvedPlanCi, ApiError> {
+    let default_ref = git_ref(cfg);
+    let git_ref = match ci.git_ref.as_deref() {
+        None => default_ref,
+        Some(r) => {
+            let valid = valid_git_ref(r);
+            let listed = cfg.refs.iter().flatten().any(|g| branch_glob_match(g, r));
+            if !valid || (r != default_ref && !listed) {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "ci_ref_not_allowed",
+                    "the ref matches none of the project's rerun.refs",
+                ));
+            }
+            r.to_string()
+        }
+    };
+    let mut base: BTreeMap<String, String> = cfg
+        .variables
+        .iter()
+        .flatten()
+        .filter_map(|v| v.default.clone().map(|d| (v.name.clone(), d)))
+        .collect();
+    if let Some(v) = &ci.variables {
+        checked(cfg, v, &mut base)?;
+    }
+    let named = ci.environments.as_deref().unwrap_or_default();
+    if named.len() > MAX_CI_ENVIRONMENTS {
+        return Err(ApiError::bad_request(format!(
+            "at most {MAX_CI_ENVIRONMENTS} CI environments"
+        )));
+    }
+    if named.is_empty() {
+        return Ok(ResolvedPlanCi {
+            git_ref,
+            environments: vec![(None, base)],
+        });
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut environments = Vec::with_capacity(named.len());
+    for e in named {
+        if !valid_environment(&e.name) || !seen.insert(e.name.as_str()) {
+            return Err(ApiError::bad_request(
+                "environment names are unique, 1 to 64 letters, digits, . _ -, starting with a letter or digit",
+            ));
+        }
+        let mut vars = base.clone();
+        if let Some(v) = &e.variables {
+            checked(cfg, v, &mut vars)?;
+        }
+        environments.push((Some(e.name.clone()), vars));
+    }
+    Ok(ResolvedPlanCi {
+        git_ref,
+        environments,
     })
 }
 
@@ -301,6 +526,107 @@ mod tests {
             "77"
         );
         assert_eq!(generic_ci_ref("77"), "77");
+    }
+
+    #[test]
+    fn git_ref_rules() {
+        for ok in ["main", "release/1.2", "v1.0.0", "feature/a_b-c"] {
+            assert!(valid_git_ref(ok), "{ok}");
+        }
+        for bad in [
+            "",
+            "-x",
+            "/x",
+            "x/",
+            "x.",
+            "a..b",
+            "a//b",
+            ".hidden",
+            "a/.b",
+            "x.lock",
+            "a.lock/b",
+            "a b",
+            "a~1",
+            "a^",
+            "a:b",
+            "a?",
+            "a*",
+            "a[",
+            "a\\b",
+            "a\nb",
+            &"x".repeat(201),
+        ] {
+            assert!(!valid_git_ref(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn typed_values_cannot_reference_ci_variables_or_hide_text() {
+        for ok in [
+            "smoke",
+            "https://shop.example.com/a?b=c&d=e",
+            "a b",
+            "naïve",
+        ] {
+            assert!(plain_value(ok), "{ok}");
+        }
+        for bad in [
+            "$DEPLOY_TOKEN",
+            "${CI_JOB_TOKEN}",
+            "x$y",
+            "ab\u{202E}cd",
+            "a\u{200B}b",
+            "a\u{2066}b",
+            "\u{FEFF}a",
+        ] {
+            assert!(!plain_value(bad), "{bad:?}");
+        }
+        assert!(valid_ci_external_id("plan-0a1b2c3d-123456"));
+        for bad in ["", "a$b", "a b", "a/b", "a\"b", &"x".repeat(129)] {
+            assert!(!valid_ci_external_id(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn reserved_variable_names_are_refused() {
+        for n in [
+            "CI_DEBUG_TRACE",
+            "GITLAB_TOKEN",
+            "GITHUB_ENV",
+            "RUNNER_TEMP",
+            "ACTIONS_STEP_DEBUG",
+            "LD_PRELOAD",
+            "LD_LIBRARY_PATH",
+            "PATH",
+            "BASH_ENV",
+            "ENV",
+            "CI",
+            "NODE_OPTIONS",
+            "GIT_SSH_COMMAND",
+            "GIT_CONFIG_COUNT",
+            "HTTPS_PROXY",
+            "HTTP_PROXY",
+            "ALL_PROXY",
+            "NO_PROXY",
+            "NPM_CONFIG_REGISTRY",
+            "PERL5OPT",
+            "RUBYOPT",
+            "SSL_CERT_FILE",
+            "DOCKER_HOST",
+            "KUBECONFIG",
+            "MAVEN_OPTS",
+            "GRADLE_OPTS",
+            "GOFLAGS",
+            "TRIGGER_PAYLOAD",
+        ] {
+            assert!(
+                !crate::integrations::settings::valid_variable_name(n),
+                "{n}"
+            );
+        }
+        for n in ["BROWSER", "SUITE", "TARGET_ENV"] {
+            assert!(crate::integrations::settings::valid_variable_name(n), "{n}");
+        }
     }
 
     #[test]

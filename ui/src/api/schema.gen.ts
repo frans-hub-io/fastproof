@@ -1345,6 +1345,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{key}/launches/{id}/plan-check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description What a finished launch started from a plan ran compared to the plan: results that are not linked to an automated case of the plan (`extra`) and automated plan cases without a result (`missing`). 404 for a launch without a plan or one that is not finished. */
+        get: operations["launch_plan_check"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{key}/launches/{id}/rerun": {
         parameters: {
             query?: never;
@@ -2275,6 +2292,23 @@ export interface paths {
         patch: operations["update_test_plan"];
         trace?: never;
     };
+    "/api/v1/projects/{key}/test-plans/{id}/dispatches": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description CI dispatches of the plan's launches, newest first. Callers without `settings:write` get generic error texts and only the pipeline id in `ciRef`. */
+        get: operations["list_plan_dispatches"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{key}/test-plans/{id}/items": {
         parameters: {
             query?: never;
@@ -2303,7 +2337,7 @@ export interface paths {
         /** @description Launches started from a managed plan, newest first, with their `manual` progress. */
         get: operations["list_plan_launches"];
         put?: never;
-        /** @description Starts a launch from a managed plan: run items for its manual cases (assigned per `assign`), `manual.state = open`; automated cases get no run items, CI runs them from `testplanUrl` (see `ciHint`) and uploads into the same launch (`externalId`; generated when absent). An `externalId` of a launch already started from this plan returns that launch (200). */
+        /** @description Starts a launch from a managed plan: run items for its manual cases (assigned per `assign`), `manual.state = open`; automated cases get no run items, CI runs them from `testplanUrl` (see `ciHint`) and uploads into the same launch (`externalId`; generated when absent). An `externalId` of a launch already started from this plan returns that launch (200). With `ci.dispatch` (needs `launches:rerun` and the project's `rerun` settings) the start makes one launch per `ci.environments` entry (at most 10; none given: one) and triggers the CI once per launch with the plan, the ref and the variables allowed by `rerun.variables` and `rerun.refs`; the answer is 201 with every dispatch's status, and a CI refusal keeps the launches. Counts against the 60 CI triggers per project and hour shared with reruns, and a plan can be started in CI once per 10 seconds. */
         post: operations["start_plan_launch"];
         delete?: never;
         options?: never;
@@ -13364,6 +13398,53 @@ export interface operations {
             };
         };
     };
+    launch_plan_check: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlanCheck"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description too many concurrent heavy reads of the caller */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     integrations_rerun: {
         parameters: {
             query?: never;
@@ -17372,6 +17453,55 @@ export interface operations {
             };
         };
     };
+    list_plan_dispatches: {
+        parameters: {
+            query?: {
+                before?: string;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlanDispatchList"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     list_test_plan_items: {
         parameters: {
             query?: {
@@ -17590,8 +17720,17 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
-            /** @description `launch_exists`, `plan_archived`, `plan_not_managed`, `limit_reached` */
+            /** @description `launch_exists`, `plan_archived`, `plan_not_managed`, `limit_reached`, `plan_has_no_automated_cases` and `conflict` (no `rerun` settings) with `ci` */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description CI start limits (`too_many_requests`), or the caller's rate of plan launches (`rate_limited`; a CI start counts once per environment) */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };

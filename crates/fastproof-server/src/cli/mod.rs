@@ -1,4 +1,4 @@
-//! Command line: `serve`, `migrate`, `upload`, `watch`, `launch start|finish`, `testplan`, `rerun`,
+//! Command line: `serve`, `migrate`, `upload`, `watch`, `launch start|finish`, `testplan`, `rerun`, `plan run`,
 //! `cases export|import`, `import allure-history`, `rp import`, `export`, `bench [tm]`, `version`.
 
 pub mod archive;
@@ -12,6 +12,7 @@ pub mod export;
 pub mod gate;
 pub mod import;
 pub mod merge;
+pub mod plan;
 pub mod rp;
 pub mod settle;
 pub mod watch;
@@ -64,6 +65,12 @@ pub enum Command {
     /// CI configured in the project settings (`rerun`). Prints the external id the new launch
     /// uses.
     Rerun(RerunArgs),
+    /// Managed test plans: `plan run` starts launches from a plan and runs its automated tests
+    /// in the project's CI.
+    Plan {
+        #[command(subcommand)]
+        command: plan::PlanCommand,
+    },
     /// Export test cases (`export --format ndjson|csv [--out file]`) or import them
     /// (`import <file> --format <f> [--apply]`, a dry run by default).
     Cases {
@@ -452,6 +459,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<i32> {
         Command::Gate(g) => Ok(gate::run(g).await),
         Command::Testplan(t) => testplan(t).await,
         Command::Rerun(r) => rerun(r).await,
+        Command::Plan { command } => plan::run(command).await,
         Command::Cases { command } => cases::run(command).await,
         Command::Export(e) => export::run(e).await,
         Command::Import { command } => import::run(command).await,

@@ -12,9 +12,10 @@ use fastproof_store::tm::expand;
 use fastproof_store::tm::runs::step_paths;
 use fastproof_store::tm::shared_steps::{INLINE_SYNC_MAX, InlineOutcome, SharedStepQuery};
 use fastproof_store::tm::{
-    CaseBody, CaseReviewSettings, CaseRow, CaseStep, CaseWrite, ExtractSharedStep, ReviewMode,
-    RunItemsAdd, RunStepWrite, SharedStepOrigin, SharedStepRef, SharedStepRow, SharedStepWrite,
-    StepStatus, TmError, TmGateMode, TmJobKind, TmJobStatus, TmLimits, VersionSource,
+    CaseBody, CaseReviewSettings, CaseRow, CaseStep, CaseWrite, ExtractSharedStep, ReviewDecision,
+    ReviewKind, ReviewMode, ReviewState, ReviewVoteWrite, RunItemsAdd, RunStepWrite,
+    SharedStepOrigin, SharedStepRef, SharedStepRow, SharedStepWrite, StepStatus, TmError,
+    TmGateMode, TmJobKind, TmJobStatus, TmLimits, VersionSource,
 };
 use fastproof_store::{Project, Store};
 use sqlx::PgPool;
@@ -816,6 +817,19 @@ async fn review_decides_the_runnable_version() {
     let p = project(&store, "rv").await;
     let l = open();
     let c = ctx(&p, "ann", &l);
+    let ann = CaseCtx {
+        can_review: true,
+        ..ctx(&p, "ann", &l)
+    };
+    let bob = CaseCtx {
+        can_review: true,
+        ..ctx(&p, "bob", &l)
+    };
+    let approve = |version: i32| ReviewVoteWrite {
+        version,
+        decision: ReviewDecision::Approve,
+        comment: None,
+    };
     let s = ProjectSettings {
         case_review: CaseReviewSettings {
             mode: ReviewMode::Manual,
@@ -825,25 +839,92 @@ async fn review_decides_the_runnable_version() {
     };
     store.put_project_settings(p.id, &s).await.unwrap();
     let ss = new_shared(&store, &p, &l, "Log in").await;
+    assert_eq!(
+        (ss.review_state, ss.approved_version),
+        (Some(ReviewState::Pending), None),
+        "a new shared step waits for review"
+    );
+    let (t, ss_revision) = store
+        .vote(
+            &bob,
+            ReviewKind::SharedStep,
+            ss.number,
+            ss.revision,
+            &approve(1),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        (t.review_state, t.approved_version),
+        (Some(ReviewState::Approved), Some(1))
+    );
     let case = new_case(&store, &p, &l, "A", vec![reference(&ss)])
         .await
         .unwrap();
+    assert_eq!(
+        (case.review_state, case.approved_version),
+        (Some(ReviewState::Pending), None),
+        "a new manual case waits for review and is not runnable"
+    );
+    let launch = open_launch(&db, &p).await;
+    let skipped = store
+        .add_run_items(
+            &p,
+            launch,
+            &RunItemsAdd {
+                case_numbers: Some(vec![case.number]),
+                ..Default::default()
+            },
+            &l,
+        )
+        .await
+        .unwrap();
+    assert_eq!(skipped.added, 0, "a case never approved does not run");
+    let refused = store
+        .vote(
+            &ann,
+            ReviewKind::Case,
+            case.number,
+            case.revision,
+            &approve(1),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            refused,
+            TmError::Forbidden {
+                code: "self_approval",
+                ..
+            }
+        ),
+        "the author does not approve her own case: {refused:?}"
+    );
     store
+        .vote(
+            &bob,
+            ReviewKind::Case,
+            case.number,
+            case.revision,
+            &approve(1),
+        )
+        .await
+        .unwrap();
+
+    let (_, v2) = store
         .update_shared_step(
             &c,
             ss.number,
-            ss.revision,
+            ss_revision,
             &write("Log in", vec![step("", "second version")]),
         )
         .await
         .unwrap();
-    sqlx::query(
-        "update shared_steps set review_state = 'pending', approved_version = 1 where id = $1",
-    )
-    .bind(ss.id)
-    .execute(&db.pool)
-    .await
-    .unwrap();
+    assert_eq!(
+        (v2.version, v2.review_state, v2.approved_version),
+        (2, Some(ReviewState::Pending), Some(1)),
+        "an edit waits for review and v1 stays runnable"
+    );
     let view = store.case_view(p.id, case.number).await.unwrap();
     assert_eq!(
         (
@@ -853,23 +934,50 @@ async fn review_decides_the_runnable_version() {
         (1, 2),
         "the case lists the shared step at its approved version"
     );
-    let launch = open_launch(&db, &p).await;
     let item = start_item(&store, &db, &p, &l, launch, &case).await;
     let run = store.run_item(p.id, item).await.unwrap();
     assert_eq!(run.shared_pins[0].version, 1);
     assert_eq!(run.shared_pins[0].current, 1);
     assert_eq!(run.steps[0].steps.len(), 2);
-    sqlx::query(
-        "update shared_steps set approved_version = 2, review_state = 'approved' where id = $1",
-    )
-    .bind(ss.id)
-    .execute(&db.pool)
-    .await
-    .unwrap();
+    let refused = store
+        .vote(
+            &ann,
+            ReviewKind::SharedStep,
+            ss.number,
+            v2.revision,
+            &approve(2),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            refused,
+            TmError::Forbidden {
+                code: "self_approval",
+                ..
+            }
+        ),
+        "the author of the pending change does not approve it: {refused:?}"
+    );
+    let (t, _) = store
+        .vote(
+            &bob,
+            ReviewKind::SharedStep,
+            ss.number,
+            v2.revision,
+            &approve(2),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        (t.review_state, t.approved_version),
+        (Some(ReviewState::Approved), Some(2))
+    );
     let run = store.run_item(p.id, item).await.unwrap();
     assert_eq!(
         (run.shared_pins[0].version, run.shared_pins[0].current),
-        (1, 2)
+        (1, 2),
+        "a started run keeps its pin and offers the newly approved version"
     );
 }
 

@@ -316,6 +316,43 @@ fn tm_limits(env: &Env<'_>) -> anyhow::Result<fastproof_store::tm::TmLimits> {
             100_000,
         )?,
         max_open_plan_launches: n("MAX_OPEN_PLAN_LAUNCHES", d.max_open_plan_launches, 100_000)?,
+        max_shared_steps: n("MAX_SHARED_STEPS", d.max_shared_steps, 1_000_000)?,
+        max_shared_refs: n("MAX_SHARED_REFS", d.max_shared_refs, 1000)?,
+        max_shared_step_steps: n("MAX_SHARED_STEP_STEPS", d.max_shared_step_steps, 10_000)?,
+        max_shared_step_bytes: n(
+            "MAX_SHARED_STEP_BYTES",
+            d.max_shared_step_bytes,
+            16 * 1024 * 1024,
+        )?,
+        max_parameter_columns: n("MAX_PARAMETER_COLUMNS", d.max_parameter_columns, 1000)?,
+        max_parameter_rows: n("MAX_PARAMETER_ROWS", d.max_parameter_rows, 100_000)?,
+        max_parameter_value_bytes: n(
+            "MAX_PARAMETER_VALUE_BYTES",
+            d.max_parameter_value_bytes,
+            1024 * 1024,
+        )?,
+        max_run_iterations: n("MAX_RUN_ITERATIONS", d.max_run_iterations, 10_000_000)?,
+        max_requirements: n("MAX_REQUIREMENTS", d.max_requirements, 10_000_000)?,
+        max_requirement_depth: n("MAX_REQUIREMENT_DEPTH", d.max_requirement_depth, 100)?,
+        max_requirement_cases: n("MAX_REQUIREMENT_CASES", d.max_requirement_cases, 1_000_000)?,
+        max_saved_queries: n("MAX_SAVED_QUERIES", d.max_saved_queries, 100_000)?,
+        max_bulk_review: n("MAX_BULK_REVIEW", d.max_bulk_review, 100_000)?,
+        gate_mode: {
+            let k = "FASTPROOF_TM_GATE";
+            match env.var(k) {
+                None => d.gate_mode,
+                Some(v) => fastproof_store::tm::TmGateMode::parse(&v.trim().to_ascii_lowercase())
+                    .ok_or_else(|| anyhow!("{k}: auto, open or closed"))?,
+            }
+        },
+        gate_settle_seconds: {
+            let k = "FASTPROOF_TM_GATE_SETTLE_SECONDS";
+            let v: u64 = env.parse(k, d.gate_settle_seconds)?;
+            if v > 30 * 86_400 {
+                bail!("{k}: 0..=2592000");
+            }
+            v
+        },
     })
 }
 
@@ -978,11 +1015,26 @@ mod tests {
         .unwrap();
         assert_eq!(c.tm.max_folders, 500);
         assert_eq!(c.tm.max_import_bytes, 1_048_576);
+        assert_eq!(c.tm.gate_mode, fastproof_store::tm::TmGateMode::Auto);
+        assert_eq!(c.tm.gate_settle_seconds, 600);
+        let c = cfg(&[
+            base,
+            ("FASTPROOF_TM_GATE", "Open"),
+            ("FASTPROOF_TM_GATE_SETTLE_SECONDS", "0"),
+            ("FASTPROOF_TM_MAX_BULK_REVIEW", "20"),
+        ])
+        .unwrap();
+        assert_eq!(c.tm.gate_mode, fastproof_store::tm::TmGateMode::Open);
+        assert_eq!(c.tm.gate_settle_seconds, 0);
+        assert_eq!(c.tm.max_bulk_review, 20);
         for (k, v) in [
             ("FASTPROOF_TM_MAX_FOLDERS", "0"),
             ("FASTPROOF_TM_MAX_STEP_DEPTH", "11"),
             ("FASTPROOF_TM_MAX_TAGS", "many"),
             ("FASTPROOF_TM_MAX_IMPORT_ZIP_BYTES", "-1"),
+            ("FASTPROOF_TM_MAX_SHARED_STEPS", "0"),
+            ("FASTPROOF_TM_GATE", "sometimes"),
+            ("FASTPROOF_TM_GATE_SETTLE_SECONDS", "-5"),
         ] {
             let e = cfg(&[base, (k, v)]).unwrap_err().to_string();
             assert!(e.contains(k), "{e}");

@@ -65,6 +65,37 @@ pub struct TmLimits {
     pub multiplying_writes_per_minute: usize,
     /// Launches with an open manual run that one caller started from plans, per project.
     pub max_open_plan_launches: usize,
+    /// Shared steps per project.
+    pub max_shared_steps: usize,
+    /// `shared` steps per case.
+    pub max_shared_refs: usize,
+    /// Steps of one shared step on all levels.
+    pub max_shared_step_steps: usize,
+    /// Bytes of the steps of one shared step as JSON.
+    pub max_shared_step_bytes: usize,
+    /// Parameter columns per case.
+    pub max_parameter_columns: usize,
+    /// Parameter rows per case.
+    pub max_parameter_rows: usize,
+    /// Bytes of one parameter value.
+    pub max_parameter_value_bytes: usize,
+    /// Run iterations per launch.
+    pub max_run_iterations: usize,
+    /// Requirements per project.
+    pub max_requirements: usize,
+    /// Depth of requirements (a top-level requirement has depth 1).
+    pub max_requirement_depth: usize,
+    /// Case links per requirement.
+    pub max_requirement_cases: usize,
+    /// Saved queries per owner and entity (shared ones: twice as many per project).
+    pub max_saved_queries: usize,
+    /// Items of one bulk review.
+    pub max_bulk_review: usize,
+    /// Whether writes of new formats wait for every replica (`FASTPROOF_TM_GATE`).
+    pub gate_mode: TmGateMode,
+    /// Seconds after the replica-level migration before the gate may open
+    /// (`FASTPROOF_TM_GATE_SETTLE_SECONDS`).
+    pub gate_settle_seconds: u64,
 }
 
 impl Default for TmLimits {
@@ -93,6 +124,21 @@ impl Default for TmLimits {
             max_name_bytes: 500,
             multiplying_writes_per_minute: 30,
             max_open_plan_launches: 20,
+            max_shared_steps: 5000,
+            max_shared_refs: 50,
+            max_shared_step_steps: 100,
+            max_shared_step_bytes: 65_536,
+            max_parameter_columns: 20,
+            max_parameter_rows: 1000,
+            max_parameter_value_bytes: 1024,
+            max_run_iterations: 50_000,
+            max_requirements: 50_000,
+            max_requirement_depth: 6,
+            max_requirement_cases: 500,
+            max_saved_queries: 100,
+            max_bulk_review: 500,
+            gate_mode: TmGateMode::Auto,
+            gate_settle_seconds: 600,
         }
     }
 }
@@ -206,7 +252,7 @@ impl Default for ResultSource {
 
 str_enum!(
     /// Action of `POST /cases/bulk`.
-    CaseBulkAction { Move = "move", SetStatus = "setStatus", SetField = "setField", AddTags = "addTags", RemoveTags = "removeTags", Archive = "archive", Restore = "restore" }
+    CaseBulkAction { Move = "move", SetStatus = "setStatus", SetField = "setField", AddTags = "addTags", RemoveTags = "removeTags", Archive = "archive", Restore = "restore", SetState = "setState" }
 );
 
 str_enum!(
@@ -261,7 +307,7 @@ str_enum!(
 
 str_enum!(
     /// Kind of a background test-management job.
-    TmJobKind { Import = "import", Export = "export", Backfill = "backfill" }
+    TmJobKind { Import = "import", Export = "export", Backfill = "backfill", LastStatus = "last_status", SharedInline = "shared_inline", WorkflowRemap = "workflow_remap", Requirements = "requirements", CoverageExport = "coverage_export" }
 );
 
 str_enum!(
@@ -333,6 +379,8 @@ pub struct CaseStep {
     #[serde(default)]
     #[schema(required = true)]
     pub id: String,
+    #[serde(default)]
+    #[schema(required = true)]
     pub action: String,
     #[serde(default)]
     #[schema(required = true)]
@@ -347,6 +395,10 @@ pub struct CaseStep {
     #[serde(default)]
     #[schema(no_recursion, required = true)]
     pub steps: Vec<CaseStep>,
+    /// A reference to a shared step (top level only; the other fields stay empty on write).
+    /// In a run item, `steps` are the pinned version's steps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shared: Option<SharedStepRef>,
 }
 
 /// A link of a case.
@@ -378,6 +430,8 @@ pub struct CaseBody {
     #[serde(default)]
     #[schema(required = true)]
     pub links: Vec<CaseLink>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parameters: Option<CaseParameters>,
 }
 
 /// A step rendered to sanitized HTML.
@@ -467,6 +521,9 @@ pub struct CaseSummary {
     pub updated_at: DateTime<Utc>,
     pub ai_unreviewed: bool,
     pub archived: bool,
+    /// The key of the configured workflow status (`null` without `caseWorkflow`).
+    pub state: Option<String>,
+    pub review_state: Option<ReviewState>,
 }
 
 /// A test identity (row of `test_cases`) linked to a case.
@@ -537,6 +594,13 @@ pub struct Case {
     pub updated_by: Option<String>,
     pub updated_at: DateTime<Utc>,
     pub archived_at: Option<DateTime<Utc>>,
+    /// The key of the configured workflow status (`null` without `caseWorkflow`).
+    pub state: Option<String>,
+    /// The newest approved version under review (`null`: none, or never reviewed).
+    pub approved_version: Option<i32>,
+    pub review_state: Option<ReviewState>,
+    /// Shared steps the case references, at their runnable version.
+    pub shared_steps: Vec<SharedStepBrief>,
 }
 
 /// A page of cases.
@@ -817,6 +881,9 @@ pub struct CaseBulk {
     pub numbers: Option<Vec<i64>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filter: Option<CaseFilter>,
+    /// An FPQL query (exclusive with `numbers` and `filter`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
     pub action: CaseBulkAction,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub value: Option<serde_json::Value>,
@@ -886,6 +953,9 @@ pub struct TestPlan {
     pub name: String,
     pub description: String,
     pub filter: Option<CaseFilter>,
+    /// An FPQL query selecting the plan's cases (exclusive with `filter`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
     pub counts: FolderCounts,
     pub revision: i64,
     pub created_by: Option<String>,
@@ -908,6 +978,14 @@ pub struct TestPlanWrite {
     )]
     #[schema(value_type = Option<CaseFilter>)]
     pub filter: Option<Option<CaseFilter>>,
+    /// An FPQL query (exclusive with `filter`); `null` removes it.
+    #[serde(
+        default,
+        deserialize_with = "double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schema(value_type = Option<String>)]
+    pub query: Option<Option<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub case_numbers: Option<Vec<i64>>,
 }
@@ -978,6 +1056,15 @@ pub struct StartPlanLaunch {
     /// Absent: `false`.
     #[serde(default)]
     pub include_automated: bool,
+    /// Absent: `true`; `false` creates no run items (a CI start).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_manual: Option<bool>,
+    /// Run the head version of cases whose head is not approved (needs `cases:review`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub include_unapproved: bool,
+    /// Dispatch the automated cases to CI.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ci: Option<PlanCi>,
 }
 
 impl PlanAssign {
@@ -993,6 +1080,11 @@ pub struct PlanLaunch {
     pub launch: Launch,
     pub testplan_url: String,
     pub ci_hint: String,
+    /// One launch per CI environment; the first is `launch`.
+    pub launches: Vec<Launch>,
+    pub dispatches: Vec<PlanDispatch>,
+    /// Cases left out (the first 1000).
+    pub skips: Vec<RunItemSkip>,
 }
 
 /// Manual progress of a launch (present when the launch has a manual run).
@@ -1028,6 +1120,10 @@ pub struct RunItemSummary {
     pub assignee: Option<String>,
     pub execution_no: i32,
     pub updated_at: DateTime<Utc>,
+    /// Iterations of a parameterized case (0 without parameters; `run_items.iterations`).
+    /// Named `iterationCount` because [`RunItem`] flattens this struct next to its own
+    /// `iterations` list.
+    pub iteration_count: i32,
 }
 
 /// The result of one step of a run item; `path` is `1`, `1.2`, `1.2.3` over the executed
@@ -1064,6 +1160,10 @@ pub struct RunItem {
     pub started_at: Option<DateTime<Utc>>,
     pub finished_at: Option<DateTime<Utc>>,
     pub revision: i64,
+    /// Shared steps pinned for this item.
+    pub shared_pins: Vec<SharedPin>,
+    pub iterations: Vec<RunIteration>,
+    pub parameter_columns: Vec<String>,
 }
 
 /// Body of `PUT /run-items/{itemId}/steps/{path}`.
@@ -1105,6 +1205,9 @@ pub struct RunItemPatch {
     pub assignee: Option<Option<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub untested_steps_to: Option<UntestedStepsTo>,
+    /// Apply `status` to every iteration (explicit only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub all_iterations: Option<bool>,
 }
 
 /// Body of `POST /launches/{id}/run-items`.
@@ -1122,6 +1225,9 @@ pub struct RunItemsAdd {
     )]
     #[schema(value_type = Option<String>)]
     pub assignee: Option<Option<String>>,
+    /// Run the head version of cases whose head is not approved (needs `cases:review`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub include_unapproved: bool,
 }
 
 /// Outcome of adding run items.
@@ -1138,8 +1244,9 @@ pub struct RunItemsAdded {
 
 str_enum!(
     /// Why a case was not added to a launch as a run item: `automated` (CI runs it; only manual
-    /// cases become run items) or `in_launch` (it has a run item already).
-    RunItemSkipCode { Automated = "automated", InLaunch = "in_launch" }
+    /// cases become run items), `in_launch` (it has a run item already), `not_approved` (under
+    /// review without an approved version) or `blocked_by_state` (its workflow state blocks runs).
+    RunItemSkipCode { Automated = "automated", InLaunch = "in_launch", NotApproved = "not_approved", BlockedByState = "blocked_by_state" }
 );
 
 /// A case left out when adding run items.
@@ -1365,6 +1472,16 @@ pub struct CaseRow {
     pub updated_by: Option<String>,
     pub updated_at: DateTime<Utc>,
     pub archived_at: Option<DateTime<Utc>>,
+    /// Key of the configured workflow status.
+    pub state: Option<String>,
+    pub approved_version: Option<i32>,
+    pub review_state: Option<ReviewState>,
+    /// The newest final result over all identities (denormalized).
+    pub last_status: Option<String>,
+    pub last_status_at: Option<DateTime<Utc>>,
+    pub last_source: Option<ResultSource>,
+    pub last_launch_id: Option<Uuid>,
+    pub last_result_id: Option<Uuid>,
 }
 
 impl CaseRow {
@@ -1385,4 +1502,1268 @@ pub struct FolderRow {
     /// Ancestors and the folder itself, from the root.
     pub path_ids: Vec<Uuid>,
     pub depth: i32,
+}
+
+// ---- TM next level (`74-tm-next-interfaces.md` §6) ----
+
+str_enum!(
+    /// Whether writes of new formats wait until every replica knows them.
+    TmGateMode { Auto = "auto", Open = "open", Closed = "closed" }
+);
+
+/// A reference of a case step to a shared step; `version` only in expanded run item steps.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SharedStepRef {
+    pub id: Uuid,
+    pub number: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<i32>,
+}
+
+str_enum!(
+    /// Where a shared step came from.
+    SharedStepOrigin { Ui = "ui", Import = "import", Ai = "ai" }
+);
+
+/// A shared step a case references, at its runnable version.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedStepBrief {
+    pub id: Uuid,
+    pub number: i64,
+    pub name: String,
+    pub version: i32,
+    pub archived: bool,
+    pub steps: Vec<CaseStep>,
+    pub steps_html: Vec<CaseStepHtml>,
+}
+
+/// The Markdown of a shared step rendered to sanitized HTML.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedStepHtml {
+    pub description: String,
+    pub steps: Vec<CaseStepHtml>,
+}
+
+/// How many cases and open runs use a shared step.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedStepUsageCount {
+    pub cases: i64,
+    pub open_runs: i64,
+}
+
+/// A shared step.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedStep {
+    pub id: Uuid,
+    pub number: i64,
+    pub name: String,
+    pub description: String,
+    pub steps: Vec<CaseStep>,
+    pub html: SharedStepHtml,
+    pub version: i32,
+    pub approved_version: Option<i32>,
+    pub review_state: Option<ReviewState>,
+    pub origin: SharedStepOrigin,
+    pub ai_unreviewed: bool,
+    pub usage: SharedStepUsageCount,
+    pub revision: i64,
+    pub created_by: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_by: Option<String>,
+    pub updated_at: DateTime<Utc>,
+    pub archived_at: Option<DateTime<Utc>>,
+}
+
+/// A shared step in lists.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedStepSummary {
+    pub number: i64,
+    pub name: String,
+    pub version: i32,
+    pub approved_version: Option<i32>,
+    pub review_state: Option<ReviewState>,
+    pub step_count: i64,
+    pub cases: i64,
+    pub ai_unreviewed: bool,
+    pub archived: bool,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// A page of shared steps.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedStepList {
+    pub items: Vec<SharedStepSummary>,
+    pub next: Option<String>,
+}
+
+/// Body of creating or replacing a shared step (steps without `shared`, depth at most 2).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SharedStepWrite {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub steps: Vec<CaseStep>,
+}
+
+/// A version of a shared step in its history (`changed` within name, description, steps).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedStepVersionSummary {
+    pub version: i32,
+    pub source: VersionSource,
+    pub changed: Vec<String>,
+    pub created_by: String,
+    pub created_at: DateTime<Utc>,
+}
+
+/// The content of a shared step at one version.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedStepSnapshot {
+    pub name: String,
+    pub description: String,
+    pub steps: Vec<CaseStep>,
+}
+
+/// A version of a shared step with its snapshot.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedStepVersion {
+    #[serde(flatten)]
+    pub summary: SharedStepVersionSummary,
+    pub snapshot: SharedStepSnapshot,
+}
+
+/// A page of shared step versions.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedStepVersionList {
+    pub items: Vec<SharedStepVersionSummary>,
+    pub next: Option<String>,
+}
+
+/// A case that uses a shared step.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedStepUsage {
+    pub case_number: i64,
+    pub name: String,
+    pub status: CaseStatus,
+    pub archived: bool,
+}
+
+/// A page of the cases that use a shared step.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedStepUsageList {
+    pub items: Vec<SharedStepUsage>,
+    pub next: Option<String>,
+    pub open_runs: i64,
+}
+
+/// Body of `POST /cases/{n}/extract-shared`: adjacent top-level step ids.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ExtractSharedStep {
+    pub step_ids: Vec<String>,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+/// The shared step extracted from a case, and the case after it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtractedSharedStep {
+    pub shared_step: SharedStep,
+    pub case: Case,
+}
+
+/// A version of a shared step a case references (the case's "Versions" stream).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedStepChange {
+    pub shared_step_number: i64,
+    pub name: String,
+    pub version: i32,
+    pub source: VersionSource,
+    pub changed: Vec<String>,
+    pub created_by: String,
+    pub created_at: DateTime<Utc>,
+}
+
+/// A page of shared step changes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedStepChangeList {
+    pub items: Vec<SharedStepChange>,
+    pub next: Option<String>,
+}
+
+/// A shared step pinned for a run item: `version` runs, `current` is the runnable one now.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedPin {
+    pub id: Uuid,
+    pub number: i64,
+    pub name: String,
+    pub version: i32,
+    pub current: i32,
+}
+
+str_enum!(
+    /// Review state of the head version of a case or shared step.
+    ReviewState { Pending = "pending", ChangesRequested = "changes_requested", Approved = "approved" }
+);
+
+str_enum!(
+    /// A reviewer's decision.
+    ReviewDecision { Approve = "approve", RequestChanges = "request_changes" }
+);
+
+str_enum!(
+    /// What a review is about.
+    ReviewKind { Case = "case", SharedStep = "sharedStep" }
+);
+
+str_enum!(
+    /// Which cases need review: none, manual ones, or all.
+    ReviewMode { Off = "off", Manual = "manual", All = "all" }
+);
+
+str_enum!(
+    /// A condition of a workflow transition.
+    WorkflowGuard { Approved = "approved", RequiredFields = "requiredFields", NotAuthor = "notAuthor" }
+);
+
+str_enum!(
+    /// The permission a workflow transition needs.
+    WorkflowPermission { CasesWrite = "cases:write", CasesReview = "cases:review" }
+);
+
+str_enum!(
+    /// Which changes reset an approval.
+    ReviewResetOn { Content = "content", Any = "any" }
+);
+
+str_enum!(
+    /// Whether imported changes need review.
+    ReviewImports { Review = "review", Bypass = "bypass" }
+);
+
+/// A configured workflow status: a key within a category (`cases.status`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CaseWorkflowStatus {
+    pub key: String,
+    pub name: String,
+    pub category: CaseStatus,
+    /// Cases in this state do not enter run items or `testplan.json`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocks_runs: Option<bool>,
+    /// `#rrggbb`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+}
+
+/// A workflow transition: from any of `from` (keys or `*`) to `to` (a key or `*`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CaseWorkflowTransition {
+    pub from: Vec<String>,
+    pub to: String,
+    /// Absent: `cases:write`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission: Option<WorkflowPermission>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requires: Option<Vec<WorkflowGuard>>,
+}
+
+/// The workflow of manual or of automated cases.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CaseWorkflowFlow {
+    pub initial: String,
+    pub transitions: Vec<CaseWorkflowTransition>,
+}
+
+/// `caseWorkflow` of the project settings.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CaseWorkflowSettings {
+    pub statuses: Vec<CaseWorkflowStatus>,
+    pub manual: CaseWorkflowFlow,
+    pub automated: CaseWorkflowFlow,
+}
+
+impl Default for CaseWorkflowSettings {
+    /// The suggested workflow (draft, ready for review, active, outdated); a project without
+    /// `caseWorkflow` has no workflow at all.
+    fn default() -> Self {
+        let st = |key: &str, name: &str, category, blocks: bool, color: Option<&str>| {
+            CaseWorkflowStatus {
+                key: key.into(),
+                name: name.into(),
+                category,
+                blocks_runs: blocks.then_some(true),
+                color: color.map(Into::into),
+            }
+        };
+        let tr = |from: &str, to: &str, permission, requires: Option<Vec<WorkflowGuard>>| {
+            CaseWorkflowTransition {
+                from: vec![from.into()],
+                to: to.into(),
+                permission,
+                requires,
+            }
+        };
+        Self {
+            statuses: vec![
+                st("draft", "Draft", CaseStatus::Draft, false, None),
+                st(
+                    "ready_for_review",
+                    "Ready for review",
+                    CaseStatus::Draft,
+                    true,
+                    None,
+                ),
+                st("active", "Active", CaseStatus::Active, false, None),
+                st(
+                    "outdated",
+                    "Outdated",
+                    CaseStatus::Outdated,
+                    false,
+                    Some("#868e96"),
+                ),
+            ],
+            manual: CaseWorkflowFlow {
+                initial: "draft".into(),
+                transitions: vec![
+                    tr("draft", "ready_for_review", None, None),
+                    tr(
+                        "ready_for_review",
+                        "active",
+                        None,
+                        Some(vec![WorkflowGuard::Approved]),
+                    ),
+                    tr("*", "outdated", Some(WorkflowPermission::CasesReview), None),
+                ],
+            },
+            automated: CaseWorkflowFlow {
+                initial: "active".into(),
+                transitions: vec![tr("*", "*", None, None)],
+            },
+        }
+    }
+}
+
+impl CaseWorkflowSettings {
+    /// The status with this key.
+    pub fn status(&self, key: &str) -> Option<&CaseWorkflowStatus> {
+        self.statuses.iter().find(|s| s.key == key)
+    }
+
+    /// Whether cases in this state stay out of runs.
+    pub fn blocks_runs(&self, key: &str) -> bool {
+        self.status(key)
+            .is_some_and(|s| s.blocks_runs.unwrap_or(false))
+    }
+
+    /// Keys of the states that block runs.
+    pub fn blocking_keys(&self) -> Vec<String> {
+        self.statuses
+            .iter()
+            .filter(|s| s.blocks_runs.unwrap_or(false))
+            .map(|s| s.key.clone())
+            .collect()
+    }
+}
+
+/// `caseReview` of the project settings: version review of cases and shared steps.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CaseReviewSettings {
+    pub mode: ReviewMode,
+    /// Distinct approvals a head version needs (1 to 5).
+    pub approvals: i32,
+    pub reset_on: ReviewResetOn,
+    pub allow_self_approval: bool,
+    pub imports: ReviewImports,
+}
+
+impl Default for CaseReviewSettings {
+    fn default() -> Self {
+        Self {
+            mode: ReviewMode::Off,
+            approvals: 1,
+            reset_on: ReviewResetOn::Content,
+            allow_self_approval: false,
+            imports: ReviewImports::Review,
+        }
+    }
+}
+
+impl CaseReviewSettings {
+    /// Whether review is on for a case (`automated`) or shared step (`false`).
+    pub fn in_scope(&self, automated: bool) -> bool {
+        match self.mode {
+            ReviewMode::Off => false,
+            ReviewMode::Manual => !automated,
+            ReviewMode::All => true,
+        }
+    }
+}
+
+/// `GET /case-workflow`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CaseWorkflowView {
+    /// Whether the project has `caseWorkflow` (else `workflow` is the suggested one).
+    pub configured: bool,
+    pub workflow: CaseWorkflowSettings,
+    pub review: CaseReviewSettings,
+}
+
+/// Body of `PUT /case-workflow`: `null` removes the workflow; `remap` moves cases of removed
+/// states (old key to new key) in a job.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CaseWorkflowPut {
+    pub workflow: Option<CaseWorkflowSettings>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remap: Option<BTreeMap<String, String>>,
+}
+
+/// Answer of `PUT /case-workflow`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CaseWorkflowSaved {
+    pub view: CaseWorkflowView,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job: Option<TmJob>,
+}
+
+/// Body of `POST /cases/{n}/transition`: a state key.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CaseTransition {
+    pub to: String,
+}
+
+/// A transition from the current state, with what it still misses.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AllowedTransition {
+    pub to: String,
+    pub name: String,
+    pub allowed: bool,
+    pub missing: Vec<String>,
+}
+
+/// A review vote.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewVote {
+    pub reviewer: String,
+    pub decision: ReviewDecision,
+    pub comment: String,
+    pub version: i32,
+    pub created_at: DateTime<Utc>,
+}
+
+/// The review of a case or shared step.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewThread {
+    pub kind: ReviewKind,
+    pub number: i64,
+    pub name: String,
+    pub head_version: i32,
+    pub approved_version: Option<i32>,
+    pub review_state: Option<ReviewState>,
+    pub author: Option<String>,
+    pub approvals: i64,
+    pub required: i32,
+    pub votes: Vec<ReviewVote>,
+    pub can_vote: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why_not: Option<String>,
+    pub transitions: Vec<AllowedTransition>,
+}
+
+/// Body of a vote.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReviewVoteWrite {
+    pub version: i32,
+    pub decision: ReviewDecision,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
+}
+
+/// An object waiting for review.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewQueueItem {
+    pub kind: ReviewKind,
+    pub number: i64,
+    pub name: String,
+    pub head_version: i32,
+    pub approved_version: Option<i32>,
+    pub review_state: ReviewState,
+    pub author: Option<String>,
+    pub changed: Vec<String>,
+    pub approvals: i64,
+    pub required: i32,
+    pub folder_id: Option<Uuid>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// A page of the review queue.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewQueue {
+    pub items: Vec<ReviewQueueItem>,
+    pub next: Option<String>,
+}
+
+/// One object of a bulk review.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReviewBulkItem {
+    pub kind: ReviewKind,
+    pub number: i64,
+    pub version: i32,
+}
+
+/// Body of `POST /reviews/bulk` (1 to `maxBulkReview` items).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReviewBulk {
+    pub items: Vec<ReviewBulkItem>,
+    pub decision: ReviewDecision,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
+}
+
+/// An object a bulk review skipped: `version_moved`, `self_approval`, `not_pending`,
+/// `not_found` or `review_not_enabled`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewBulkSkip {
+    pub kind: ReviewKind,
+    pub number: i64,
+    pub code: String,
+}
+
+/// Outcome of a bulk review.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewBulkResult {
+    pub applied: i64,
+    pub skipped: Vec<ReviewBulkSkip>,
+}
+
+str_enum!(
+    /// What an FPQL query selects.
+    QueryEntity { Cases = "cases", Requirements = "requirements" }
+);
+
+str_enum!(
+    /// Type of an FPQL attribute.
+    QueryAttributeType { Number = "number", String = "string", Text = "text", Enum = "enum", Bool = "bool", Date = "date", User = "user", Folder = "folder", Field = "field", Ref = "ref" }
+);
+
+/// An FPQL error; `position` and `length` in UTF-16 code units, 0-based.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct QueryError {
+    pub position: u32,
+    pub length: u32,
+    pub expected: Vec<String>,
+    pub near: String,
+    pub message: String,
+}
+
+/// Body of `POST /query/validate`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct QueryValidate {
+    pub entity: QueryEntity,
+    pub query: String,
+}
+
+/// Outcome of validating a query.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct QueryValidation {
+    pub ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub normalized: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub count: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub count_capped: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<QueryError>,
+}
+
+/// An attribute of FPQL.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct QueryAttribute {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub attr_type: QueryAttributeType,
+    pub operators: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub values: Option<Vec<String>>,
+    pub description: String,
+}
+
+/// A function of FPQL.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct QueryFunction {
+    pub name: String,
+    pub signature: String,
+    pub description: String,
+}
+
+/// A case field usable as `field[key]` in FPQL.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct QueryField {
+    pub key: String,
+    pub name: String,
+    #[serde(rename = "type")]
+    pub field_type: FieldType,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub values: Option<Vec<String>>,
+}
+
+/// What FPQL offers for an entity (completion and help).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct QuerySchema {
+    pub entity: QueryEntity,
+    pub attributes: Vec<QueryAttribute>,
+    pub functions: Vec<QueryFunction>,
+    pub fields: Vec<QueryField>,
+    pub keywords: Vec<String>,
+}
+
+/// A saved query.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedQuery {
+    pub id: Uuid,
+    pub entity: QueryEntity,
+    pub name: String,
+    pub query: String,
+    pub owner: String,
+    pub shared: bool,
+    pub position: i32,
+    pub mine: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Body of `POST /saved-queries`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SavedQueryWrite {
+    pub entity: QueryEntity,
+    pub name: String,
+    pub query: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shared: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position: Option<i32>,
+}
+
+/// Body of `PATCH /saved-queries/{id}`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SavedQueryPatch {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shared: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position: Option<i32>,
+}
+
+/// Saved queries of an entity.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedQueryList {
+    pub items: Vec<SavedQuery>,
+}
+
+/// A CI environment of a plan start (`name` `^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PlanCiEnvironment {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variables: Option<BTreeMap<String, String>>,
+}
+
+/// CI dispatch of a plan start.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PlanCi {
+    pub dispatch: bool,
+    #[serde(default, rename = "ref", skip_serializing_if = "Option::is_none")]
+    pub git_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variables: Option<BTreeMap<String, String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environments: Option<Vec<PlanCiEnvironment>>,
+}
+
+str_enum!(
+    /// State of a CI dispatch from a plan.
+    PlanDispatchStatus { Dispatching = "dispatching", Dispatched = "dispatched", Failed = "failed" }
+);
+
+/// A CI dispatch of a plan launch.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanDispatch {
+    pub id: Uuid,
+    pub plan_id: Uuid,
+    pub launch_id: Uuid,
+    pub launch_number: Option<i64>,
+    pub environment: Option<String>,
+    pub provider: String,
+    pub status: PlanDispatchStatus,
+    pub error: Option<String>,
+    pub ci_ref: Option<String>,
+    pub git_ref: String,
+    pub variables: BTreeMap<String, String>,
+    pub requested_by: String,
+    pub created_at: DateTime<Utc>,
+    pub dispatched_at: Option<DateTime<Utc>>,
+}
+
+/// A page of plan dispatches.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanDispatchList {
+    pub items: Vec<PlanDispatch>,
+    pub next: Option<String>,
+}
+
+/// What a finished launch of a plan ran compared to the plan: `extraNames` holds the first 20;
+/// `warning` when `extra > 0` or nothing of a non-empty plan ran.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanCheck {
+    pub plan_id: Uuid,
+    pub in_plan: i64,
+    pub ran: i64,
+    pub extra: i64,
+    pub missing: i64,
+    pub extra_names: Vec<String>,
+    pub warning: bool,
+}
+
+/// A CI variable that plan starts may set (`rerun.variables`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RerunVariable {
+    /// `^[A-Z][A-Z0-9_]{0,63}$`, not starting with `FASTPROOF_`.
+    pub name: String,
+    /// Allowed values (1 to 50); absent: any value of 1 to 256 bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub values: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+str_enum!(
+    /// How parameter rows are generated.
+    ParameterMode { All = "all", Pairwise = "pairwise" }
+);
+
+/// A row of parameter values (`id` `r_<ulid>`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ParameterRow {
+    pub id: String,
+    pub values: BTreeMap<String, String>,
+    pub enabled: bool,
+}
+
+/// The generator that filled the rows.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ParameterGenerator {
+    pub mode: ParameterMode,
+    pub values: BTreeMap<String, Vec<String>>,
+}
+
+/// Parameters of a data-driven case: `${column}` in preconditions, action, expected and data.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CaseParameters {
+    pub columns: Vec<String>,
+    pub rows: Vec<ParameterRow>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generator: Option<ParameterGenerator>,
+}
+
+/// Body of `POST /cases/{n}/parameters/generate`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ParameterGenerate {
+    pub mode: ParameterMode,
+    pub values: BTreeMap<String, Vec<String>>,
+}
+
+/// Generated parameter rows (nothing saved).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ParameterRows {
+    pub rows: Vec<ParameterRow>,
+}
+
+/// An iteration of a parameterized run item.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RunIteration {
+    pub row_id: String,
+    pub position: i32,
+    pub values: BTreeMap<String, String>,
+    pub status: RunStatus,
+    pub comment: String,
+    pub result_id: Option<Uuid>,
+    pub executed_by: Option<String>,
+    pub started_at: Option<DateTime<Utc>>,
+    pub finished_at: Option<DateTime<Utc>>,
+    pub step_results: Vec<RunStepResult>,
+}
+
+/// Body of `PATCH /run-items/{itemId}/iterations/{rowId}`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RunIterationPatch {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<RunStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub untested_steps_to: Option<UntestedStepsTo>,
+}
+
+/// Answer to an iteration step write.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RunIterationStepAck {
+    pub iteration_status: RunStatus,
+    pub item_status: RunStatus,
+    pub suggested_status: RunStatus,
+    pub revision: i64,
+}
+
+str_enum!(
+    /// Lifecycle of a requirement.
+    RequirementStatus { Draft = "draft", Active = "active", Done = "done", Obsolete = "obsolete" }
+);
+
+str_enum!(
+    /// Where a requirement came from.
+    RequirementOrigin { Ui = "ui", Import = "import", Tracker = "tracker", Ai = "ai" }
+);
+
+str_enum!(
+    /// Where a requirement link came from.
+    RequirementLinkOrigin { Ui = "ui", Code = "code", Import = "import", Ai = "ai" }
+);
+
+str_enum!(
+    /// Whether a requirement link is confirmed or an AI proposal.
+    RequirementLinkStatus { Active = "active", Proposed = "proposed" }
+);
+
+str_enum!(
+    /// Coverage of a requirement with its children.
+    CoverageStatus { Uncovered = "uncovered", Failed = "failed", NotRun = "notRun", Partial = "partial", Passed = "passed" }
+);
+
+str_enum!(
+    /// Which results a coverage page counts.
+    CoverageScopeKind { Default = "default", Plan = "plan", Launches = "launches", Window = "window" }
+);
+
+str_enum!(
+    /// File format of a coverage export.
+    CoverageExportFormat { Csv = "csv", Xlsx = "xlsx" }
+);
+
+/// A requirement on the path of another.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RequirementPathEntry {
+    pub id: Uuid,
+    pub number: i64,
+    pub title: String,
+}
+
+/// The tracker issue a requirement comes from.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RequirementTracker {
+    pub tracker_id: Option<String>,
+    pub issue_key: String,
+    pub url: Option<String>,
+    pub external_state: Option<String>,
+    pub synced_at: Option<DateTime<Utc>>,
+}
+
+/// A requirement.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Requirement {
+    pub id: Uuid,
+    pub number: i64,
+    pub title: String,
+    pub description: String,
+    pub description_html: String,
+    #[serde(rename = "type")]
+    pub req_type: String,
+    pub status: RequirementStatus,
+    pub parent_id: Option<Uuid>,
+    pub path: Vec<RequirementPathEntry>,
+    pub depth: i32,
+    pub tracker: Option<RequirementTracker>,
+    pub content_changed_at: DateTime<Utc>,
+    pub origin: RequirementOrigin,
+    pub cases: i64,
+    pub children: i64,
+    pub revision: i64,
+    pub created_by: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_by: Option<String>,
+    pub updated_at: DateTime<Utc>,
+    pub archived_at: Option<DateTime<Utc>>,
+}
+
+/// A requirement in lists.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RequirementSummary {
+    pub number: i64,
+    pub title: String,
+    #[serde(rename = "type")]
+    pub req_type: String,
+    pub status: RequirementStatus,
+    pub parent_id: Option<Uuid>,
+    pub depth: i32,
+    pub has_children: bool,
+    pub issue_key: Option<String>,
+    pub external_state: Option<String>,
+    pub cases: i64,
+    pub archived: bool,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// A page of requirements.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RequirementList {
+    pub items: Vec<RequirementSummary>,
+    pub next: Option<String>,
+}
+
+/// Body of creating or replacing a requirement.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RequirementWrite {
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
+    pub req_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<RequirementStatus>,
+    #[serde(
+        default,
+        deserialize_with = "double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schema(value_type = Option<i64>)]
+    pub parent_number: Option<Option<i64>>,
+    #[serde(
+        default,
+        deserialize_with = "double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schema(value_type = Option<String>)]
+    pub tracker_id: Option<Option<String>>,
+    #[serde(
+        default,
+        deserialize_with = "double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schema(value_type = Option<String>)]
+    pub issue_key: Option<Option<String>>,
+    #[serde(
+        default,
+        deserialize_with = "double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schema(value_type = Option<String>)]
+    pub url: Option<Option<String>>,
+}
+
+/// Body of `PATCH /requirements/{n}`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RequirementPatch {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
+    pub req_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<RequirementStatus>,
+    #[serde(
+        default,
+        deserialize_with = "double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schema(value_type = Option<i64>)]
+    pub parent_number: Option<Option<i64>>,
+}
+
+/// Body of `POST /requirements/{n}/links`: case numbers.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RequirementLinksChange {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub add: Option<Vec<i64>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remove: Option<Vec<i64>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm: Option<Vec<i64>>,
+}
+
+/// A case linked to a requirement.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RequirementLink {
+    pub case_number: i64,
+    pub name: String,
+    pub status: CaseStatus,
+    pub automated: bool,
+    pub origin: RequirementLinkOrigin,
+    pub link_status: RequirementLinkStatus,
+    pub created_by: String,
+    pub created_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_result: Option<LastResult>,
+}
+
+/// A page of the cases of a requirement.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RequirementLinkList {
+    pub items: Vec<RequirementLink>,
+    pub next: Option<String>,
+}
+
+/// A requirement of a case.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CaseRequirement {
+    pub number: i64,
+    pub title: String,
+    #[serde(rename = "type")]
+    pub req_type: String,
+    pub status: RequirementStatus,
+    pub origin: RequirementLinkOrigin,
+    pub link_status: RequirementLinkStatus,
+}
+
+/// Body of `POST /requirements/import` (a dry run first).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RequirementImport {
+    pub tracker_id: String,
+    pub query: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_number: Option<i64>,
+}
+
+/// Cases of a requirement by their newest result in the scope.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CoverageCounts {
+    pub total: i64,
+    pub passed: i64,
+    pub failed: i64,
+    pub not_run: i64,
+    pub skipped: i64,
+}
+
+/// Coverage of a requirement with its children.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RequirementCoverage {
+    pub number: i64,
+    pub title: String,
+    #[serde(rename = "type")]
+    pub req_type: String,
+    pub status: RequirementStatus,
+    pub depth: i32,
+    pub has_children: bool,
+    pub coverage: CoverageStatus,
+    pub cases: CoverageCounts,
+    pub changed_after_run: bool,
+}
+
+/// The results a coverage page counts.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CoverageScopeView {
+    pub kind: CoverageScopeKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch_ids: Option<Vec<Uuid>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub days: Option<i32>,
+    pub launches: i64,
+}
+
+/// A page of requirement coverage.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CoveragePage {
+    pub scope: CoverageScopeView,
+    pub items: Vec<RequirementCoverage>,
+    pub next: Option<String>,
+}
+
+/// Body of `POST /coverage/exports`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CoverageExportRequest {
+    pub format: CoverageExportFormat,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch_ids: Option<Vec<Uuid>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub days: Option<i32>,
+}
+
+/// The test-management level a replica reported.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplicaLevel {
+    pub instance: String,
+    pub tm_level: i32,
+    pub version: String,
+    pub started_at: DateTime<Utc>,
+    pub seen_at: DateTime<Utc>,
+}
+
+/// `GET /api/v1/admin/replicas`: replicas seen within a day and whether new formats may be
+/// written.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplicaLevels {
+    pub gate_open: bool,
+    pub mode: TmGateMode,
+    pub settle_until: Option<DateTime<Utc>>,
+    pub replicas: Vec<ReplicaLevel>,
+}
+
+/// A row of `shared_steps` (without `search_text`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SharedStepRow {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub number: i64,
+    pub name: String,
+    pub description: String,
+    pub steps: Vec<CaseStep>,
+    pub version: i32,
+    pub approved_version: Option<i32>,
+    pub review_state: Option<ReviewState>,
+    pub revision: i64,
+    pub origin: SharedStepOrigin,
+    pub ai_unreviewed: bool,
+    pub created_by: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_by: Option<String>,
+    pub updated_at: DateTime<Utc>,
+    pub archived_at: Option<DateTime<Utc>>,
+}
+
+impl SharedStepRow {
+    /// `SS-<n>`.
+    pub fn key(&self) -> String {
+        format!("SS-{}", self.number)
+    }
+}
+
+/// A row of `requirements`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RequirementRow {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub number: i64,
+    pub title: String,
+    pub description: String,
+    pub req_type: String,
+    pub status: RequirementStatus,
+    pub parent_id: Option<Uuid>,
+    pub path_ids: Vec<Uuid>,
+    pub depth: i16,
+    pub tracker_id: Option<String>,
+    pub issue_key: Option<String>,
+    pub url: Option<String>,
+    pub external_state: Option<String>,
+    pub synced_at: Option<DateTime<Utc>>,
+    pub content_changed_at: DateTime<Utc>,
+    pub origin: RequirementOrigin,
+    pub revision: i64,
+    pub created_by: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_by: Option<String>,
+    pub updated_at: DateTime<Utc>,
+    pub archived_at: Option<DateTime<Utc>>,
+}
+
+impl RequirementRow {
+    /// `REQ-<n>`.
+    pub fn key(&self) -> String {
+        format!("REQ-{}", self.number)
+    }
 }

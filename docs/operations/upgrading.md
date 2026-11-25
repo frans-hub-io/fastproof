@@ -7,6 +7,25 @@ version has migrated the schema.
 
 This page lists what needs attention per release.
 
+## Next release: test management gate and review
+
+- **New permission `cases:review`.** The `editor` role gains it. It allows approving test cases and shared steps
+  and starting runs with unapproved versions.
+- **New data formats wait for every replica.** Shared steps in cases, case parameters, rerun variables and refs,
+  requirement link types, the `caseReviewRequested` notification event and other new formats are written only
+  once every running replica is on this version, so that a replica of the previous version never reads data it
+  cannot parse. Each replica records its level every 30 seconds. A write of a new format answers `409` with the
+  code `upgrade_in_progress` while a replica of an older version was seen within the last 2 minutes, or less
+  than `FASTPROOF_TM_GATE_SETTLE_SECONDS` (default `600`) have passed since the upgrade migration ran. Writes of
+  the formats the previous version knows are not held back.
+- **`FASTPROOF_TM_GATE`.** `auto` (the default) applies the rule above. `open` skips the wait, for installations
+  with a single replica that do not want to wait. `closed` holds the new formats back until you change it.
+- **Check the gate.** `GET /api/v1/admin/replicas` (needs the global permission `settings:write`) lists the
+  replicas with their versions and levels, and says whether the gate is open.
+- **Last results are filled in the background.** After the gate first opens, a `last_status` job per project
+  fills the new last-result columns of cases. Until it has finished, case lists show no last result for cases
+  that did not run since the upgrade.
+
 ## 0.2.0-dev2: faster first view of large launches, merge isolation
 
 - **Index job every 10 minutes.** The scheduled job `analysis.indexes` (it built the fingerprint index every

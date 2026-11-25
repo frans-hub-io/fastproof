@@ -78,6 +78,7 @@ pub fn api_router() -> (Router<AppState>, utoipa::openapi::OpenApi) {
         .routes(routes!(api::search::similar))
         .routes(routes!(api::admin::audit))
         .routes(routes!(api::admin::jobs))
+        .routes(routes!(api::admin::replicas))
         .routes(routes!(api::version::get))
         .routes(routes!(api::integrations::gate))
         .routes(routes!(api::integrations::secrets))
@@ -131,6 +132,13 @@ pub fn api_router() -> (Router<AppState>, utoipa::openapi::OpenApi) {
         .merge(api::history_imports::router())
         .merge(api::merges::router())
         .merge(api::trackers::router())
+        .merge(api::shared_steps::router())
+        .merge(api::reviews::router())
+        .merge(api::case_workflow::router())
+        .merge(api::queries::router())
+        .merge(api::parameters::router())
+        .merge(api::requirements::router())
+        .merge(api::coverage::router())
         .split_for_parts();
     api::type_project_settings(&mut doc);
     api::admin::document_platform(&mut doc);
@@ -606,6 +614,11 @@ async fn start_inner(cfg: Config, pool: PgPool, boot: Boot) -> anyhow::Result<Ru
             async move { local_maintenance(s, stop).await },
         ));
     }
+    {
+        let s = state.clone();
+        let stop = stop.clone();
+        tasks.push(tokio::spawn(async move { replica_level(s, stop).await }));
+    }
     // The API serves once the listeners are subscribed, so that a client never misses the
     // notifications of what it writes.
     let app = router(state.clone());
@@ -628,6 +641,49 @@ async fn start_inner(cfg: Config, pool: PgPool, boot: Boot) -> anyhow::Result<Ru
         stop,
         tasks,
     })
+}
+
+/// How often every replica records its test-management level.
+pub const REPLICA_HEARTBEAT: Duration = Duration::from_secs(30);
+
+/// Per-replica task (every role): records this replica's test-management level every
+/// [`REPLICA_HEARTBEAT`]; the first time the gate for new formats is seen open, queues the
+/// `last_status` backfill of every project that has none yet.
+async fn replica_level(s: AppState, stop: CancellationToken) {
+    let mut backfilled = false;
+    loop {
+        if let Err(e) = s
+            .store
+            .replica_heartbeat(&s.instance, env!("CARGO_PKG_VERSION"))
+            .await
+        {
+            tracing::warn!(error = %format!("{e:#}"), "recording the replica level failed");
+        } else if !backfilled {
+            let open = async {
+                let mut conn = s.store.pool().acquire().await?;
+                fastproof_store::tm::gate::is_open(&mut conn, &s.cfg.tm).await
+            }
+            .await;
+            if let Ok(true) = open {
+                match s.store.enqueue_last_status_jobs().await {
+                    Ok(n) => {
+                        backfilled = true;
+                        if n > 0 {
+                            tracing::info!(projects = n, "queued the last-result backfill");
+                            crate::tm_jobs::kick(&s);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %format!("{e:#}"), "queuing the last-result backfill failed")
+                    }
+                }
+            }
+        }
+        tokio::select! {
+            _ = stop.cancelled() => return,
+            _ = tokio::time::sleep(REPLICA_HEARTBEAT) => {}
+        }
+    }
 }
 
 /// Per-replica housekeeping: queue gauges, managed token retention, stale spool files.

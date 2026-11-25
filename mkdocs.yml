@@ -113,6 +113,11 @@ nav:
       - guide/test-management.md
       - guide/manual-runs.md
       - guide/importing-test-cases.md
+      - guide/shared-steps.md
+      - guide/query-language.md
+      - guide/workflows-and-review.md
+      - guide/parameters.md
+      - guide/requirements.md
   - Triage and integrations:
       - guide/rules-and-triage.md
       - guide/quality-gates.md

@@ -71,18 +71,27 @@ const LAUNCH_LEAVES: [Leaf; 8] = [
 ];
 
 /// Leaves under a case, by `case_id` (run items are not leaves and go separately).
-const CASE_LEAVES: [Leaf; 5] = [
+const CASE_LEAVES: [Leaf; 7] = [
     leaf("case_versions"),
     leaf("case_keys"),
     leaf("case_attachments"),
     leaf("case_suggestions"),
     leaf("test_plan_items"),
+    leaf("shared_step_usages"),
+    leaf("requirement_links"),
+];
+
+/// Leaves under a shared step, by `shared_step_id`.
+const SHARED_STEP_LEAVES: [Leaf; 3] = [
+    leaf("shared_step_versions"),
+    leaf("shared_step_keys"),
+    leaf("shared_step_usages"),
 ];
 
 /// Tables of a project with nothing left under them once launches, plans, test cases and
 /// cases are gone, by `project_id`. Attachments come after cases (case attachments restrict
 /// their deletion) and after their media rows; the last ones are normally empty by then.
-const PROJECT_LEAVES: [&str; 23] = [
+const PROJECT_LEAVES: [&str; 26] = [
     "rp_items",
     "rp_launches",
     "history_imports",
@@ -106,6 +115,9 @@ const PROJECT_LEAVES: [&str; 23] = [
     "launch_merge_work",
     "launch_merges",
     "direct_uploads",
+    "review_votes",
+    "saved_queries",
+    "plan_dispatches",
 ];
 
 /// Statistics of series, deleted by `project_id` before test cases and series.
@@ -255,7 +267,7 @@ impl<'c> Purge<'c> {
     }
 
     /// Deletes run items whose `col` (`launch_id` or `case_id`) is one of `ids`, with their
-    /// step results and executions.
+    /// step results, iterations and executions.
     async fn run_items(&mut self, col: &str, ids: &[Uuid]) -> anyhow::Result<()> {
         let select = format!("select id from run_items where {col} = any($1) limit $2");
         loop {
@@ -265,6 +277,10 @@ impl<'c> Purge<'c> {
             }
             self.leaves(leaf("run_step_results"), "run_item_id", &items)
                 .await?;
+            self.leaves(leaf("run_iteration_step_results"), "run_item_id", &items)
+                .await?;
+            self.leaves(leaf("run_iterations"), "run_item_id", &items)
+                .await?;
             self.leaves(leaf("run_item_executions"), "run_item_id", &items)
                 .await?;
             self.exec("delete from run_items where id = any($1)".into(), &items)
@@ -273,6 +289,33 @@ impl<'c> Purge<'c> {
                 return Ok(());
             }
         }
+    }
+
+    /// Cases whose last result came from one of these launches lose it, `n` per statement; a
+    /// `last_status` job of their project (unless the project is being deleted) recomputes
+    /// them from the results that are left.
+    async fn last_status(&mut self, launches: &[Uuid]) -> anyhow::Result<()> {
+        let mut cleared = 0;
+        loop {
+            let r = self
+                .exec_n(crate::tm::last_status::CLEAR_SQL, launches)
+                .await?;
+            cleared += r;
+            if r < self.n as u64 {
+                break;
+            }
+        }
+        if cleared > 0 {
+            self.tick()?;
+            let projects: Vec<Uuid> =
+                sqlx::query_scalar("select distinct project_id from launches where id = any($1)")
+                    .bind(launches)
+                    .fetch_all(&mut *self.conn)
+                    .await?;
+            self.tick()?;
+            crate::tm::last_status::enqueue(&mut *self.conn, &projects).await?;
+        }
+        Ok(())
     }
 
     /// Deletes the uploads of these launches with their ingest jobs.
@@ -304,6 +347,7 @@ impl<'c> Purge<'c> {
         raw: bool,
     ) -> anyhow::Result<()> {
         debug_assert!(launches.len() as i64 <= self.n);
+        self.last_status(launches).await?;
         self.uploads(launches).await?;
         if raw {
             self.leaves(ATTEMPTS, "launch_id", launches).await?;
@@ -329,6 +373,8 @@ impl<'c> Purge<'c> {
             .await?;
         self.leaves(leaf("rp_items"), "launch_id", launches).await?;
         self.leaves(leaf("rp_launches"), "launch_id", launches)
+            .await?;
+        self.leaves(leaf("plan_dispatches"), "launch_id", launches)
             .await?;
         self.leaves(leaf("explorer_gen"), "launch_id", launches)
             .await?;
@@ -388,6 +434,32 @@ impl<'c> Purge<'c> {
             }
             self.run_items("case_id", &cases).await?;
             self.exec("delete from cases where id = any($1)".into(), &cases)
+                .await?;
+        }
+        self.drain("requirement_links", RowKey::Ctid, by_project, "", &p)
+            .await?;
+        self.drain(
+            "requirements",
+            RowKey::Ctid,
+            by_project,
+            "order by depth desc",
+            &p,
+        )
+        .await?;
+        loop {
+            let steps = self
+                .ids(
+                    "select id from shared_steps where project_id = any($1) limit $2",
+                    &p,
+                )
+                .await?;
+            if steps.is_empty() {
+                break;
+            }
+            for l in SHARED_STEP_LEAVES {
+                self.leaves(l, "shared_step_id", &steps).await?;
+            }
+            self.exec("delete from shared_steps where id = any($1)".into(), &steps)
                 .await?;
         }
         self.drain(

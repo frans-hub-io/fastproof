@@ -59,12 +59,12 @@ pub async fn create_managed(
     p: &Project,
     w: &TestPlanWrite,
 ) -> ApiResult<TestPlan> {
-    let _permit = match &w.filter {
-        Some(Some(_)) => {
-            crate::tm_rate::admit(s, auth)?;
-            Some(s.guards.heavy(auth).await?)
-        }
-        _ => None,
+    let by_query = matches!(&w.query, Some(Some(q)) if !q.trim().is_empty());
+    let _permit = if matches!(&w.filter, Some(Some(_))) || by_query {
+        crate::tm_rate::admit(s, auth)?;
+        Some(s.guards.heavy(auth).await?)
+    } else {
+        None
     };
     let plan = s
         .store
@@ -76,7 +76,7 @@ pub async fn create_managed(
         "testPlan.create",
         Some(&p.key),
         serde_json::json!({"id": plan.id, "kind": "managed", "name": plan.name,
-            "cases": plan.counts.total, "filter": plan.filter.is_some()}),
+            "cases": plan.counts.total, "filter": plan.filter.is_some(), "query": plan.query}),
     )
     .await;
     Ok(plan)
@@ -171,7 +171,7 @@ pub async fn update_test_plan(
         "testPlan.update",
         Some(&p.key),
         serde_json::json!({"id": id, "name": body.name, "description": body.description.is_some(),
-            "filter": body.filter.as_ref().map(|f| f.is_some())}),
+            "filter": body.filter.as_ref().map(|f| f.is_some()), "query": body.query}),
     )
     .await;
     Ok(with_etag(plan.revision, plan))
@@ -429,6 +429,14 @@ pub async fn start_plan_launch(
         debug: None,
     };
     super::launches::validate_start(&start)?;
+    if body.include_unapproved {
+        franshub_auth::require(&auth, &s.perms.cases_review, Some(&p.key))?;
+    }
+    if body.ci.as_ref().is_some_and(|c| c.dispatch) {
+        return Err(ApiError::bad_request(
+            "CI dispatch from plans is not available",
+        ));
+    }
     let can_sync = auth.principal.allowed(&s.perms.cases_sync, Some(&p.key));
     let started = s
         .store
@@ -473,9 +481,12 @@ pub async fn start_plan_launch(
             StatusCode::OK
         },
         Json(PlanLaunch {
+            launches: vec![launch.clone()],
             launch,
             testplan_url,
             ci_hint,
+            dispatches: Vec::new(),
+            skips: started.skips,
         }),
     ))
 }

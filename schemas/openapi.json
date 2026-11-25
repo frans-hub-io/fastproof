@@ -37,6 +37,44 @@
         }
       }
     },
+    "/api/v1/admin/replicas": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "description": "Replicas seen within a day with their test-management level, and whether new data formats may be written (`FASTPROOF_TM_GATE`, `FASTPROOF_TM_GATE_SETTLE_SECONDS`). Needs `settings:write` without a project scope.",
+        "operationId": "admin_replicas",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReplicaLevels"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/audit": {
       "get": {
         "tags": [
@@ -1581,6 +1619,15 @@
             }
           },
           {
+            "name": "query",
+            "in": "query",
+            "description": "An FPQL query (at most 4096 bytes), ANDed with the other parameters; without\n`archived=true` archived cases stay out unless the query names `archived`. An invalid\nquery is 400 `invalid_query` with `details: QueryError`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "sort",
             "in": "query",
             "description": "`number` (default), `-number` or `updated` (most recent first).",
@@ -1783,7 +1830,7 @@
         "tags": [
           "cases"
         ],
-        "description": "One action on cases named by number or matched by a filter (at most `maxBulk`). `move` takes a folder id or null, `setStatus` a status, `setField` `{key, value}`, `addTags`/`removeTags` a list. Each changed case gets one version with `source = bulk`; the others are listed in `skipped` with a code.",
+        "description": "One action on cases named by number, matched by a filter or by an FPQL `query` (exactly one of them; at most `maxBulk`). `move` takes a folder id or null, `setStatus` a status, `setField` `{key, value}`, `addTags`/`removeTags` a list. Each changed case gets one version with `source = bulk`; the others are listed in `skipped` with a code.",
         "operationId": "bulk_cases",
         "parameters": [
           {
@@ -1928,6 +1975,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "query",
+            "in": "query",
+            "description": "An FPQL query (exclusive with the filter parameters).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -1990,7 +2046,7 @@
         "tags": [
           "imports"
         ],
-        "description": "Starts a zip export job. The answer's `downloadUrl` (shown only here) is a one-time link for the caller, valid for 24 hours once the job is `done`. A caller has at most 2 and a project at most 4 exports queued or running (else 409 `export_busy`).",
+        "description": "Starts a zip export job of the cases of `filter` or of an FPQL `query` (a query is a new format: while an upgrade is in progress it is 409 `upgrade_in_progress`). The answer's `downloadUrl` (shown only here) is a one-time link for the caller, valid for 24 hours once the job is `done`. A caller has at most 2 and a project at most 4 exports queued or running (else 409 `export_busy`).",
         "operationId": "create_case_export",
         "parameters": [
           {
@@ -9527,6 +9583,148 @@
         }
       }
     },
+    "/api/v1/projects/{key}/query/schema": {
+      "get": {
+        "tags": [
+          "queries"
+        ],
+        "description": "What FPQL offers for an entity: attributes with their operators and values, functions, the project's fields and the keywords (for completion). `entity=requirements` answers 400 until requirement queries exist.",
+        "operationId": "query_schema",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "entity",
+            "in": "query",
+            "description": "`cases` (default) or `requirements`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuerySchema"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/query/validate": {
+      "post": {
+        "tags": [
+          "queries"
+        ],
+        "description": "Checks a query: 200 with `ok: true`, the normalized text and the number of matching cases (not archived unless the query names `archived`; at most 10 000, then `countCapped`), or 200 with `ok: false` and the `error` (position and length in UTF-16 code units). The count runs with a 5 s statement timeout.",
+        "operationId": "validate_query",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QueryValidate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueryValidation"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{key}/results/{id}": {
       "get": {
         "tags": [
@@ -11026,6 +11224,280 @@
         }
       }
     },
+    "/api/v1/projects/{key}/saved-queries": {
+      "get": {
+        "tags": [
+          "queries"
+        ],
+        "description": "The caller's saved queries and the shared ones of an entity, by position.",
+        "operationId": "list_saved_queries",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "entity",
+            "in": "query",
+            "description": "`cases` (default) or `requirements`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SavedQueryList"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "queries"
+        ],
+        "description": "Saves a query of the caller (checked like a query that runs). `shared: true` needs `cases:write`. At most 100 per owner and entity and 200 shared ones per project and entity (409 `limit_reached`); a name the caller already uses is 409 `saved_query_name_taken`.",
+        "operationId": "create_saved_query",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SavedQueryWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SavedQuery"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`invalid_query`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/saved-queries/{id}": {
+      "delete": {
+        "tags": [
+          "queries"
+        ],
+        "description": "Deletes a saved query: the caller's own, or a shared one with `cases:write`. Another user's personal query is 404.",
+        "operationId": "delete_saved_query",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "queries"
+        ],
+        "description": "Changes a saved query: the caller's own, or a shared one with `cases:write` (sharing and unsharing: the owner with `cases:write`). Another user's personal query is 404.",
+        "operationId": "update_saved_query",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SavedQueryPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SavedQuery"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`invalid_query`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{key}/search/logs": {
       "get": {
         "tags": [
@@ -11393,7 +11865,7 @@
           }
         ],
         "requestBody": {
-          "description": "The areas to change. Each top-level area present in the body (`flaky`, `retention`, `rollup`, `gates`, `notifications`, `issueTrackers`, `fastmock`, `vcs`, `rerun`) replaces the stored one as a whole; areas left out are kept; `null` resets an area to its default (removes it). `caseSync` is merged by key instead (and its `fields` by field): keys left out keep their values, a `null` key returns to its default. The answer is the whole stored document.",
+          "description": "The areas to change. Each top-level area present in the body (`flaky`, `retention`, `rollup`, `gates`, `notifications`, `issueTrackers`, `fastmock`, `vcs`, `rerun`, `caseWorkflow`, `caseReview`) replaces the stored one as a whole; areas left out are kept; `null` resets an area to its default (removes it). `caseSync` is merged by key instead (and its `fields` by field): keys left out keep their values, a `null` key returns to its default. New formats (`caseSync.requirementLinkTypes` other than the default, `rerun.variables`, `rerun.refs`, the `caseReviewRequested` notification event) answer 409 `upgrade_in_progress` while an older replica runs. The answer is the whole stored document.",
           "content": {
             "application/json": {
               "schema": {
@@ -11432,6 +11904,16 @@
             }
           },
           "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`upgrade_in_progress`, `workflow_status_in_use`",
             "content": {
               "application/json": {
                 "schema": {
@@ -13731,6 +14213,33 @@
           }
         }
       },
+      "AllowedTransition": {
+        "type": "object",
+        "description": "A transition from the current state, with what it still misses.",
+        "required": [
+          "to",
+          "name",
+          "allowed",
+          "missing"
+        ],
+        "properties": {
+          "allowed": {
+            "type": "boolean"
+          },
+          "missing": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "name": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          }
+        }
+      },
       "AttachmentCreated": {
         "type": "object",
         "description": "A stored attachment.",
@@ -14277,11 +14786,20 @@
           "revision",
           "version",
           "createdAt",
-          "updatedAt"
+          "updatedAt",
+          "sharedSteps"
         ],
         "properties": {
           "aiUnreviewed": {
             "type": "boolean"
+          },
+          "approvedVersion": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The newest approved version under review (`null`: none, or never reviewed)."
           },
           "archivedAt": {
             "type": [
@@ -14375,9 +14893,33 @@
           "origin": {
             "$ref": "#/components/schemas/CaseOrigin"
           },
+          "reviewState": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ReviewState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "revision": {
             "type": "integer",
             "format": "int64"
+          },
+          "sharedSteps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SharedStepBrief"
+            },
+            "description": "Shared steps the case references, at their runnable version."
+          },
+          "state": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The key of the configured workflow status (`null` without `caseWorkflow`)."
           },
           "status": {
             "$ref": "#/components/schemas/CaseStatus"
@@ -14423,6 +14965,16 @@
               "$ref": "#/components/schemas/CaseLink"
             }
           },
+          "parameters": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CaseParameters"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "preconditions": {
             "type": "string"
           },
@@ -14465,6 +15017,13 @@
               "format": "int64"
             }
           },
+          "query": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "An FPQL query (exclusive with `numbers` and `filter`)."
+          },
           "value": {}
         },
         "additionalProperties": false
@@ -14479,7 +15038,8 @@
           "addTags",
           "removeTags",
           "archive",
-          "restore"
+          "restore",
+          "setState"
         ]
       },
       "CaseBulkResult": {
@@ -14540,6 +15100,13 @@
           "format": {
             "type": "string",
             "description": "`zip` (the default and only value): `cases.ndjson`, `cases.csv` and `attachments/`."
+          },
+          "query": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "An FPQL query selecting the cases (exclusive with `filter`)."
           }
         },
         "additionalProperties": false
@@ -15240,6 +15807,39 @@
           "ai"
         ]
       },
+      "CaseParameters": {
+        "type": "object",
+        "description": "Parameters of a data-driven case: `${column}` in preconditions, action, expected and data.",
+        "required": [
+          "columns",
+          "rows"
+        ],
+        "properties": {
+          "columns": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "generator": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ParameterGenerator"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ParameterRow"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
       "CasePatch": {
         "type": "object",
         "description": "Body of `PATCH /cases/{n}` (merge): absent keys are kept, `folderId: null` moves to the root.",
@@ -15313,6 +15913,70 @@
           }
         ],
         "description": "What an AI suggestion proposes: a patch plus optionally a new name and body."
+      },
+      "CaseRequirement": {
+        "type": "object",
+        "description": "A requirement of a case.",
+        "required": [
+          "number",
+          "title",
+          "type",
+          "status",
+          "origin",
+          "linkStatus"
+        ],
+        "properties": {
+          "linkStatus": {
+            "$ref": "#/components/schemas/RequirementLinkStatus"
+          },
+          "number": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "origin": {
+            "$ref": "#/components/schemas/RequirementLinkOrigin"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RequirementStatus"
+          },
+          "title": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        }
+      },
+      "CaseReviewSettings": {
+        "type": "object",
+        "description": "`caseReview` of the project settings: version review of cases and shared steps.",
+        "required": [
+          "mode",
+          "approvals",
+          "resetOn",
+          "allowSelfApproval",
+          "imports"
+        ],
+        "properties": {
+          "allowSelfApproval": {
+            "type": "boolean"
+          },
+          "approvals": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Distinct approvals a head version needs (1 to 5)."
+          },
+          "imports": {
+            "$ref": "#/components/schemas/ReviewImports"
+          },
+          "mode": {
+            "$ref": "#/components/schemas/ReviewMode"
+          },
+          "resetOn": {
+            "$ref": "#/components/schemas/ReviewResetOn"
+          }
+        },
+        "additionalProperties": false
       },
       "CaseSnapshot": {
         "type": "object",
@@ -15399,6 +16063,17 @@
           "id": {
             "type": "string",
             "description": "Stable id across versions (`s_<ulid>`); an empty id on write is assigned by the server."
+          },
+          "shared": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SharedStepRef",
+                "description": "A reference to a shared step (top level only; the other fields stay empty on write).\nIn a run item, `steps` are the pinned version's steps."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "steps": {
             "type": "array",
@@ -15585,6 +16260,23 @@
             "type": "integer",
             "format": "int64"
           },
+          "reviewState": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ReviewState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "state": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The key of the configured workflow status (`null` without `caseWorkflow`)."
+          },
           "status": {
             "$ref": "#/components/schemas/CaseStatus"
           },
@@ -15710,6 +16402,16 @@
             "description": "Match identities to cases by TMS links (`tms` labels) of TestRail or Qase keys.",
             "default": false
           },
+          "requirementLinkTypes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Allure link types whose links name requirements (skipped when the default).",
+            "default": [
+              "requirement"
+            ]
+          },
           "rootFolder": {
             "type": "string",
             "description": "Folder under which created cases are placed.",
@@ -15726,6 +16428,19 @@
             "type": "boolean",
             "description": "Also trust the CI default branch (`vcs.defaultBranch`).",
             "default": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "CaseTransition": {
+        "type": "object",
+        "description": "Body of `POST /cases/{n}/transition`: a state key.",
+        "required": [
+          "to"
+        ],
+        "properties": {
+          "to": {
+            "type": "string"
           }
         },
         "additionalProperties": false
@@ -15856,6 +16571,197 @@
           "version": {
             "type": "integer",
             "format": "int32"
+          }
+        }
+      },
+      "CaseWorkflowFlow": {
+        "type": "object",
+        "description": "The workflow of manual or of automated cases.",
+        "required": [
+          "initial",
+          "transitions"
+        ],
+        "properties": {
+          "initial": {
+            "type": "string"
+          },
+          "transitions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CaseWorkflowTransition"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "CaseWorkflowPut": {
+        "type": "object",
+        "description": "Body of `PUT /case-workflow`: `null` removes the workflow; `remap` moves cases of removed\nstates (old key to new key) in a job.",
+        "properties": {
+          "remap": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "workflow": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CaseWorkflowSettings"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "CaseWorkflowSaved": {
+        "type": "object",
+        "description": "Answer of `PUT /case-workflow`.",
+        "required": [
+          "view"
+        ],
+        "properties": {
+          "job": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TmJob"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "view": {
+            "$ref": "#/components/schemas/CaseWorkflowView"
+          }
+        }
+      },
+      "CaseWorkflowSettings": {
+        "type": "object",
+        "description": "`caseWorkflow` of the project settings.",
+        "required": [
+          "statuses",
+          "manual",
+          "automated"
+        ],
+        "properties": {
+          "automated": {
+            "$ref": "#/components/schemas/CaseWorkflowFlow"
+          },
+          "manual": {
+            "$ref": "#/components/schemas/CaseWorkflowFlow"
+          },
+          "statuses": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CaseWorkflowStatus"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "CaseWorkflowStatus": {
+        "type": "object",
+        "description": "A configured workflow status: a key within a category (`cases.status`).",
+        "required": [
+          "key",
+          "name",
+          "category"
+        ],
+        "properties": {
+          "blocksRuns": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Cases in this state do not enter run items or `testplan.json`."
+          },
+          "category": {
+            "$ref": "#/components/schemas/CaseStatus"
+          },
+          "color": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`#rrggbb`."
+          },
+          "key": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "CaseWorkflowTransition": {
+        "type": "object",
+        "description": "A workflow transition: from any of `from` (keys or `*`) to `to` (a key or `*`).",
+        "required": [
+          "from",
+          "to"
+        ],
+        "properties": {
+          "from": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "permission": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/WorkflowPermission",
+                "description": "Absent: `cases:write`."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "requires": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/WorkflowGuard"
+            }
+          },
+          "to": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "CaseWorkflowView": {
+        "type": "object",
+        "description": "`GET /case-workflow`.",
+        "required": [
+          "configured",
+          "workflow",
+          "review"
+        ],
+        "properties": {
+          "configured": {
+            "type": "boolean",
+            "description": "Whether the project has `caseWorkflow` (else `workflow` is the suggested one)."
+          },
+          "review": {
+            "$ref": "#/components/schemas/CaseReviewSettings"
+          },
+          "workflow": {
+            "$ref": "#/components/schemas/CaseWorkflowSettings"
           }
         }
       },
@@ -16191,6 +17097,195 @@
             "format": "int64"
           }
         }
+      },
+      "CoverageCounts": {
+        "type": "object",
+        "description": "Cases of a requirement by their newest result in the scope.",
+        "required": [
+          "total",
+          "passed",
+          "failed",
+          "notRun",
+          "skipped"
+        ],
+        "properties": {
+          "failed": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "notRun": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "passed": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "skipped": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "CoverageExportFormat": {
+        "type": "string",
+        "description": "File format of a coverage export.",
+        "enum": [
+          "csv",
+          "xlsx"
+        ]
+      },
+      "CoverageExportRequest": {
+        "type": "object",
+        "description": "Body of `POST /coverage/exports`.",
+        "required": [
+          "format"
+        ],
+        "properties": {
+          "branch": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "days": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "environment": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "format": {
+            "$ref": "#/components/schemas/CoverageExportFormat"
+          },
+          "launchIds": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "planId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          }
+        },
+        "additionalProperties": false
+      },
+      "CoveragePage": {
+        "type": "object",
+        "description": "A page of requirement coverage.",
+        "required": [
+          "scope",
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RequirementCoverage"
+            }
+          },
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "scope": {
+            "$ref": "#/components/schemas/CoverageScopeView"
+          }
+        }
+      },
+      "CoverageScopeKind": {
+        "type": "string",
+        "description": "Which results a coverage page counts.",
+        "enum": [
+          "default",
+          "plan",
+          "launches",
+          "window"
+        ]
+      },
+      "CoverageScopeView": {
+        "type": "object",
+        "description": "The results a coverage page counts.",
+        "required": [
+          "kind",
+          "launches"
+        ],
+        "properties": {
+          "branch": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "days": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "environment": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "$ref": "#/components/schemas/CoverageScopeKind"
+          },
+          "launchIds": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "launches": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "planId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          }
+        }
+      },
+      "CoverageStatus": {
+        "type": "string",
+        "description": "Coverage of a requirement with its children.",
+        "enum": [
+          "uncovered",
+          "failed",
+          "notRun",
+          "partial",
+          "passed"
+        ]
       },
       "CreateTrackerIssue": {
         "allOf": [
@@ -17076,6 +18171,48 @@
               "string",
               "null"
             ]
+          }
+        }
+      },
+      "ExtractSharedStep": {
+        "type": "object",
+        "description": "Body of `POST /cases/{n}/extract-shared`: adjacent top-level step ids.",
+        "required": [
+          "stepIds",
+          "name"
+        ],
+        "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "stepIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "ExtractedSharedStep": {
+        "type": "object",
+        "description": "The shared step extracted from a case, and the case after it.",
+        "required": [
+          "sharedStep",
+          "case"
+        ],
+        "properties": {
+          "case": {
+            "$ref": "#/components/schemas/Case"
+          },
+          "sharedStep": {
+            "$ref": "#/components/schemas/SharedStep"
           }
         }
       },
@@ -20118,6 +21255,13 @@
           "name": {
             "type": "string"
           },
+          "query": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Managed plans: cases selected by an FPQL query (exclusive with `filter`)."
+          },
           "statuses": {
             "type": [
               "array",
@@ -20224,7 +21368,7 @@
             "items": {
               "type": "string"
             },
-            "description": "`launchFinished`, `gateFailed`, `newFailures`, `manualRunClosed`."
+            "description": "`launchFinished`, `gateFailed`, `newFailures`, `manualRunClosed`, `caseReviewRequested`."
           },
           "secretRef": {
             "type": [
@@ -20979,7 +22123,8 @@
                 "folderPath",
                 "status",
                 "executionNo",
-                "updatedAt"
+                "updatedAt",
+                "iterationCount"
               ],
               "properties": {
                 "assignee": {
@@ -21005,6 +22150,11 @@
                 "id": {
                   "type": "string",
                   "format": "uuid"
+                },
+                "iterationCount": {
+                  "type": "integer",
+                  "format": "int32",
+                  "description": "Iterations of a parameterized case (0 without parameters; `run_items.iterations`).\nNamed `iterationCount` because [`RunItem`] flattens this struct next to its own\n`iterations` list."
                 },
                 "name": {
                   "type": "string"
@@ -21089,6 +22239,13 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "query": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "An FPQL query selecting the plan's cases (exclusive with `filter`)."
                 },
                 "revision": {
                   "type": "integer",
@@ -21280,6 +22437,58 @@
           }
         }
       },
+      "ParameterGenerate": {
+        "type": "object",
+        "description": "Body of `POST /cases/{n}/parameters/generate`.",
+        "required": [
+          "mode",
+          "values"
+        ],
+        "properties": {
+          "mode": {
+            "$ref": "#/components/schemas/ParameterMode"
+          },
+          "values": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "ParameterGenerator": {
+        "type": "object",
+        "description": "The generator that filled the rows.",
+        "required": [
+          "mode",
+          "values"
+        ],
+        "properties": {
+          "mode": {
+            "$ref": "#/components/schemas/ParameterMode"
+          },
+          "values": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
       "ParameterMode": {
         "type": "string",
         "description": "How a parameter value may be shown.",
@@ -21288,6 +22497,48 @@
           "masked",
           "hidden"
         ]
+      },
+      "ParameterRow": {
+        "type": "object",
+        "description": "A row of parameter values (`id` `r_<ulid>`).",
+        "required": [
+          "id",
+          "values",
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "values": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "ParameterRows": {
+        "type": "object",
+        "description": "Generated parameter rows (nothing saved).",
+        "required": [
+          "rows"
+        ],
+        "properties": {
+          "rows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ParameterRow"
+            }
+          }
+        }
       },
       "ParameterView": {
         "type": "object",
@@ -21424,20 +22675,268 @@
           "none"
         ]
       },
+      "PlanCheck": {
+        "type": "object",
+        "description": "What a finished launch of a plan ran compared to the plan: `extraNames` holds the first 20;\n`warning` when `extra > 0` or nothing of a non-empty plan ran.",
+        "required": [
+          "planId",
+          "inPlan",
+          "ran",
+          "extra",
+          "missing",
+          "extraNames",
+          "warning"
+        ],
+        "properties": {
+          "extra": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "extraNames": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "inPlan": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "missing": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "planId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "ran": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "warning": {
+            "type": "boolean"
+          }
+        }
+      },
+      "PlanCi": {
+        "type": "object",
+        "description": "CI dispatch of a plan start.",
+        "required": [
+          "dispatch"
+        ],
+        "properties": {
+          "dispatch": {
+            "type": "boolean"
+          },
+          "environments": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/PlanCiEnvironment"
+            }
+          },
+          "ref": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "variables": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "PlanCiEnvironment": {
+        "type": "object",
+        "description": "A CI environment of a plan start (`name` `^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`).",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "variables": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "PlanDispatch": {
+        "type": "object",
+        "description": "A CI dispatch of a plan launch.",
+        "required": [
+          "id",
+          "planId",
+          "launchId",
+          "provider",
+          "status",
+          "gitRef",
+          "variables",
+          "requestedBy",
+          "createdAt"
+        ],
+        "properties": {
+          "ciRef": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "dispatchedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "environment": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "gitRef": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "launchId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "launchNumber": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "planId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "requestedBy": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/PlanDispatchStatus"
+          },
+          "variables": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "PlanDispatchList": {
+        "type": "object",
+        "description": "A page of plan dispatches.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PlanDispatch"
+            }
+          },
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "PlanDispatchStatus": {
+        "type": "string",
+        "description": "State of a CI dispatch from a plan.",
+        "enum": [
+          "dispatching",
+          "dispatched",
+          "failed"
+        ]
+      },
       "PlanLaunch": {
         "type": "object",
         "description": "A launch started from a plan, with the CI hand-off.",
         "required": [
           "launch",
           "testplanUrl",
-          "ciHint"
+          "ciHint",
+          "launches",
+          "dispatches",
+          "skips"
         ],
         "properties": {
           "ciHint": {
             "type": "string"
           },
+          "dispatches": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PlanDispatch"
+            }
+          },
           "launch": {
             "$ref": "#/components/schemas/Launch"
+          },
+          "launches": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Launch"
+            },
+            "description": "One launch per CI environment; the first is `launch`."
+          },
+          "skips": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RunItemSkip"
+            },
+            "description": "Cases left out (the first 1000)."
           },
           "testplanUrl": {
             "type": "string"
@@ -21567,6 +23066,17 @@
         "type": "object",
         "description": "Settings of a project. The analysis parts (`flaky`, `retention`, `rollup`) are typed here;\nthe integration parts (`gates`, `notifications`, `issueTrackers`, `fastmock`, and any other\nkey such as `vcs`) are kept as given and validated by the integrations feature.",
         "properties": {
+          "caseReview": {
+            "$ref": "#/components/schemas/CaseReviewSettings",
+            "description": "Version review of cases and shared steps (skipped when the default, review off).",
+            "default": {
+              "mode": "off",
+              "approvals": 1,
+              "resetOn": "content",
+              "allowSelfApproval": false,
+              "imports": "review"
+            }
+          },
           "caseSync": {
             "$ref": "#/components/schemas/CaseSyncSettings",
             "description": "Code sync of test cases.",
@@ -21598,6 +23108,17 @@
                 "component": "code"
               }
             }
+          },
+          "caseWorkflow": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CaseWorkflowSettings",
+                "description": "Configured workflow of cases (absent: any status to any, no states)."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "fastmock": {
             "oneOf": [
@@ -21677,6 +23198,248 @@
           }
         }
       },
+      "QueryAttribute": {
+        "type": "object",
+        "description": "An attribute of FPQL.",
+        "required": [
+          "name",
+          "type",
+          "operators",
+          "description"
+        ],
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "operators": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "type": {
+            "$ref": "#/components/schemas/QueryAttributeType"
+          },
+          "values": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "QueryAttributeType": {
+        "type": "string",
+        "description": "Type of an FPQL attribute.",
+        "enum": [
+          "number",
+          "string",
+          "text",
+          "enum",
+          "bool",
+          "date",
+          "user",
+          "folder",
+          "field",
+          "ref"
+        ]
+      },
+      "QueryEntity": {
+        "type": "string",
+        "description": "What an FPQL query selects.",
+        "enum": [
+          "cases",
+          "requirements"
+        ]
+      },
+      "QueryError": {
+        "type": "object",
+        "description": "An FPQL error; `position` and `length` in UTF-16 code units, 0-based.",
+        "required": [
+          "position",
+          "length",
+          "expected",
+          "near",
+          "message"
+        ],
+        "properties": {
+          "expected": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "length": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "message": {
+            "type": "string"
+          },
+          "near": {
+            "type": "string"
+          },
+          "position": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "QueryField": {
+        "type": "object",
+        "description": "A case field usable as `field[key]` in FPQL.",
+        "required": [
+          "key",
+          "name",
+          "type"
+        ],
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "type": {
+            "$ref": "#/components/schemas/FieldType"
+          },
+          "values": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "QueryFunction": {
+        "type": "object",
+        "description": "A function of FPQL.",
+        "required": [
+          "name",
+          "signature",
+          "description"
+        ],
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "signature": {
+            "type": "string"
+          }
+        }
+      },
+      "QuerySchema": {
+        "type": "object",
+        "description": "What FPQL offers for an entity (completion and help).",
+        "required": [
+          "entity",
+          "attributes",
+          "functions",
+          "fields",
+          "keywords"
+        ],
+        "properties": {
+          "attributes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/QueryAttribute"
+            }
+          },
+          "entity": {
+            "$ref": "#/components/schemas/QueryEntity"
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/QueryField"
+            }
+          },
+          "functions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/QueryFunction"
+            }
+          },
+          "keywords": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "QueryValidate": {
+        "type": "object",
+        "description": "Body of `POST /query/validate`.",
+        "required": [
+          "entity",
+          "query"
+        ],
+        "properties": {
+          "entity": {
+            "$ref": "#/components/schemas/QueryEntity"
+          },
+          "query": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "QueryValidation": {
+        "type": "object",
+        "description": "Outcome of validating a query.",
+        "required": [
+          "ok"
+        ],
+        "properties": {
+          "count": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "countCapped": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "error": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/QueryError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "normalized": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ok": {
+            "type": "boolean"
+          }
+        }
+      },
       "Rejected": {
         "type": "object",
         "description": "A result that was not accepted.",
@@ -21693,6 +23456,67 @@
           },
           "message": {
             "type": "string"
+          }
+        }
+      },
+      "ReplicaLevel": {
+        "type": "object",
+        "description": "The test-management level a replica reported.",
+        "required": [
+          "instance",
+          "tmLevel",
+          "version",
+          "startedAt",
+          "seenAt"
+        ],
+        "properties": {
+          "instance": {
+            "type": "string"
+          },
+          "seenAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "startedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "tmLevel": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "version": {
+            "type": "string"
+          }
+        }
+      },
+      "ReplicaLevels": {
+        "type": "object",
+        "description": "`GET /api/v1/admin/replicas`: replicas seen within a day and whether new formats may be\nwritten.",
+        "required": [
+          "gateOpen",
+          "mode",
+          "replicas"
+        ],
+        "properties": {
+          "gateOpen": {
+            "type": "boolean"
+          },
+          "mode": {
+            "$ref": "#/components/schemas/TmGateMode"
+          },
+          "replicas": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReplicaLevel"
+            }
+          },
+          "settleUntil": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
           }
         }
       },
@@ -22010,6 +23834,593 @@
         },
         "additionalProperties": false
       },
+      "Requirement": {
+        "type": "object",
+        "description": "A requirement.",
+        "required": [
+          "id",
+          "number",
+          "title",
+          "description",
+          "descriptionHtml",
+          "type",
+          "status",
+          "path",
+          "depth",
+          "contentChangedAt",
+          "origin",
+          "cases",
+          "children",
+          "revision",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "archivedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "cases": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "children": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "contentChangedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "createdBy": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "depth": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "description": {
+            "type": "string"
+          },
+          "descriptionHtml": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "number": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "origin": {
+            "$ref": "#/components/schemas/RequirementOrigin"
+          },
+          "parentId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "path": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RequirementPathEntry"
+            }
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RequirementStatus"
+          },
+          "title": {
+            "type": "string"
+          },
+          "tracker": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RequirementTracker"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "type": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedBy": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "RequirementCoverage": {
+        "type": "object",
+        "description": "Coverage of a requirement with its children.",
+        "required": [
+          "number",
+          "title",
+          "type",
+          "status",
+          "depth",
+          "hasChildren",
+          "coverage",
+          "cases",
+          "changedAfterRun"
+        ],
+        "properties": {
+          "cases": {
+            "$ref": "#/components/schemas/CoverageCounts"
+          },
+          "changedAfterRun": {
+            "type": "boolean"
+          },
+          "coverage": {
+            "$ref": "#/components/schemas/CoverageStatus"
+          },
+          "depth": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "hasChildren": {
+            "type": "boolean"
+          },
+          "number": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RequirementStatus"
+          },
+          "title": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        }
+      },
+      "RequirementImport": {
+        "type": "object",
+        "description": "Body of `POST /requirements/import` (a dry run first).",
+        "required": [
+          "trackerId",
+          "query"
+        ],
+        "properties": {
+          "parentNumber": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "query": {
+            "type": "string"
+          },
+          "trackerId": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "RequirementLink": {
+        "type": "object",
+        "description": "A case linked to a requirement.",
+        "required": [
+          "caseNumber",
+          "name",
+          "status",
+          "automated",
+          "origin",
+          "linkStatus",
+          "createdBy",
+          "createdAt"
+        ],
+        "properties": {
+          "automated": {
+            "type": "boolean"
+          },
+          "caseNumber": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "createdBy": {
+            "type": "string"
+          },
+          "lastResult": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/LastResult"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "linkStatus": {
+            "$ref": "#/components/schemas/RequirementLinkStatus"
+          },
+          "name": {
+            "type": "string"
+          },
+          "origin": {
+            "$ref": "#/components/schemas/RequirementLinkOrigin"
+          },
+          "status": {
+            "$ref": "#/components/schemas/CaseStatus"
+          }
+        }
+      },
+      "RequirementLinkList": {
+        "type": "object",
+        "description": "A page of the cases of a requirement.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RequirementLink"
+            }
+          },
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "RequirementLinkOrigin": {
+        "type": "string",
+        "description": "Where a requirement link came from.",
+        "enum": [
+          "ui",
+          "code",
+          "import",
+          "ai"
+        ]
+      },
+      "RequirementLinkStatus": {
+        "type": "string",
+        "description": "Whether a requirement link is confirmed or an AI proposal.",
+        "enum": [
+          "active",
+          "proposed"
+        ]
+      },
+      "RequirementLinksChange": {
+        "type": "object",
+        "description": "Body of `POST /requirements/{n}/links`: case numbers.",
+        "properties": {
+          "add": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          "confirm": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          "remove": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "RequirementList": {
+        "type": "object",
+        "description": "A page of requirements.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RequirementSummary"
+            }
+          },
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "RequirementOrigin": {
+        "type": "string",
+        "description": "Where a requirement came from.",
+        "enum": [
+          "ui",
+          "import",
+          "tracker",
+          "ai"
+        ]
+      },
+      "RequirementPatch": {
+        "type": "object",
+        "description": "Body of `PATCH /requirements/{n}`.",
+        "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "parentNumber": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "status": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RequirementStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "RequirementPathEntry": {
+        "type": "object",
+        "description": "A requirement on the path of another.",
+        "required": [
+          "id",
+          "number",
+          "title"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "number": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "title": {
+            "type": "string"
+          }
+        }
+      },
+      "RequirementStatus": {
+        "type": "string",
+        "description": "Lifecycle of a requirement.",
+        "enum": [
+          "draft",
+          "active",
+          "done",
+          "obsolete"
+        ]
+      },
+      "RequirementSummary": {
+        "type": "object",
+        "description": "A requirement in lists.",
+        "required": [
+          "number",
+          "title",
+          "type",
+          "status",
+          "depth",
+          "hasChildren",
+          "cases",
+          "archived",
+          "updatedAt"
+        ],
+        "properties": {
+          "archived": {
+            "type": "boolean"
+          },
+          "cases": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "depth": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "externalState": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "hasChildren": {
+            "type": "boolean"
+          },
+          "issueKey": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "number": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "parentId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RequirementStatus"
+          },
+          "title": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "RequirementTracker": {
+        "type": "object",
+        "description": "The tracker issue a requirement comes from.",
+        "required": [
+          "issueKey"
+        ],
+        "properties": {
+          "externalState": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "issueKey": {
+            "type": "string"
+          },
+          "syncedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "trackerId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "RequirementWrite": {
+        "type": "object",
+        "description": "Body of creating or replacing a requirement.",
+        "required": [
+          "title"
+        ],
+        "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "issueKey": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "parentNumber": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "status": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RequirementStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "trackerId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
       "Rerun": {
         "type": "object",
         "description": "A rerun as listed.",
@@ -22210,6 +24621,16 @@
             ],
             "description": "The branch or tag the workflow or pipeline runs on (GitHub, GitLab); `main` when absent.\nIt is never taken from the launch, whose branch comes from the uploader."
           },
+          "refs": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Branch globs a plan's CI dispatch may run on (0 to 20; `*` within a segment, `**`\nacross `/`). Absent: only `ref`."
+          },
           "repository": {
             "type": [
               "string",
@@ -22235,12 +24656,58 @@
             "type": "string",
             "description": "GitHub API URL (`https://api.github.com`, or `https://host/api/v3` for GitHub\nEnterprise), GitLab base URL (origin only), or the webhook URL. No user info, query or\nfragment; GitHub and GitLab take no other path."
           },
+          "variables": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/RerunVariable"
+            },
+            "description": "CI variables a plan's CI dispatch may set, by name (0 to 20)."
+          },
           "workflow": {
             "type": [
               "string",
               "null"
             ],
             "description": "GitHub: the workflow file name (`tests.yml`) or id."
+          }
+        },
+        "additionalProperties": false
+      },
+      "RerunVariable": {
+        "type": "object",
+        "description": "A CI variable that plan starts may set (`rerun.variables`).",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "default": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "description": "`^[A-Z][A-Z0-9_]{0,63}$`, not starting with `FASTPROOF_`."
+          },
+          "values": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Allowed values (1 to 50); absent: any value of 1 to 256 bytes."
           }
         },
         "additionalProperties": false
@@ -22559,6 +25026,376 @@
             "minimum": 0
           }
         }
+      },
+      "ReviewBulk": {
+        "type": "object",
+        "description": "Body of `POST /reviews/bulk` (1 to `maxBulkReview` items).",
+        "required": [
+          "items",
+          "decision"
+        ],
+        "properties": {
+          "comment": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "decision": {
+            "$ref": "#/components/schemas/ReviewDecision"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReviewBulkItem"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "ReviewBulkItem": {
+        "type": "object",
+        "description": "One object of a bulk review.",
+        "required": [
+          "kind",
+          "number",
+          "version"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/ReviewKind"
+          },
+          "number": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ReviewBulkResult": {
+        "type": "object",
+        "description": "Outcome of a bulk review.",
+        "required": [
+          "applied",
+          "skipped"
+        ],
+        "properties": {
+          "applied": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "skipped": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReviewBulkSkip"
+            }
+          }
+        }
+      },
+      "ReviewBulkSkip": {
+        "type": "object",
+        "description": "An object a bulk review skipped: `version_moved`, `self_approval`, `not_pending`,\n`not_found` or `review_not_enabled`.",
+        "required": [
+          "kind",
+          "number",
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ReviewKind"
+          },
+          "number": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "ReviewDecision": {
+        "type": "string",
+        "description": "A reviewer's decision.",
+        "enum": [
+          "approve",
+          "request_changes"
+        ]
+      },
+      "ReviewImports": {
+        "type": "string",
+        "description": "Whether imported changes need review.",
+        "enum": [
+          "review",
+          "bypass"
+        ]
+      },
+      "ReviewKind": {
+        "type": "string",
+        "description": "What a review is about.",
+        "enum": [
+          "case",
+          "sharedStep"
+        ]
+      },
+      "ReviewMode": {
+        "type": "string",
+        "description": "Which cases need review: none, manual ones, or all.",
+        "enum": [
+          "off",
+          "manual",
+          "all"
+        ]
+      },
+      "ReviewQueue": {
+        "type": "object",
+        "description": "A page of the review queue.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReviewQueueItem"
+            }
+          },
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "ReviewQueueItem": {
+        "type": "object",
+        "description": "An object waiting for review.",
+        "required": [
+          "kind",
+          "number",
+          "name",
+          "headVersion",
+          "reviewState",
+          "changed",
+          "approvals",
+          "required",
+          "updatedAt"
+        ],
+        "properties": {
+          "approvals": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "approvedVersion": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "author": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "changed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "folderId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "headVersion": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ReviewKind"
+          },
+          "name": {
+            "type": "string"
+          },
+          "number": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "required": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "reviewState": {
+            "$ref": "#/components/schemas/ReviewState"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "ReviewResetOn": {
+        "type": "string",
+        "description": "Which changes reset an approval.",
+        "enum": [
+          "content",
+          "any"
+        ]
+      },
+      "ReviewState": {
+        "type": "string",
+        "description": "Review state of the head version of a case or shared step.",
+        "enum": [
+          "pending",
+          "changes_requested",
+          "approved"
+        ]
+      },
+      "ReviewThread": {
+        "type": "object",
+        "description": "The review of a case or shared step.",
+        "required": [
+          "kind",
+          "number",
+          "name",
+          "headVersion",
+          "approvals",
+          "required",
+          "votes",
+          "canVote",
+          "transitions"
+        ],
+        "properties": {
+          "approvals": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "approvedVersion": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "author": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "canVote": {
+            "type": "boolean"
+          },
+          "headVersion": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ReviewKind"
+          },
+          "name": {
+            "type": "string"
+          },
+          "number": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "required": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "reviewState": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ReviewState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "transitions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AllowedTransition"
+            }
+          },
+          "votes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReviewVote"
+            }
+          },
+          "whyNot": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "ReviewVote": {
+        "type": "object",
+        "description": "A review vote.",
+        "required": [
+          "reviewer",
+          "decision",
+          "comment",
+          "version",
+          "createdAt"
+        ],
+        "properties": {
+          "comment": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "decision": {
+            "$ref": "#/components/schemas/ReviewDecision"
+          },
+          "reviewer": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "ReviewVoteWrite": {
+        "type": "object",
+        "description": "Body of a vote.",
+        "required": [
+          "version",
+          "decision"
+        ],
+        "properties": {
+          "comment": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "decision": {
+            "$ref": "#/components/schemas/ReviewDecision"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32"
+          }
+        },
+        "additionalProperties": false
       },
       "RollupSettings": {
         "type": "object",
@@ -22908,7 +25745,10 @@
               "stepsHtml",
               "stepResults",
               "comment",
-              "revision"
+              "revision",
+              "sharedPins",
+              "iterations",
+              "parameterColumns"
             ],
             "properties": {
               "caseVersion": {
@@ -22932,9 +25772,21 @@
                 ],
                 "format": "date-time"
               },
+              "iterations": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/RunIteration"
+                }
+              },
               "launchId": {
                 "type": "string",
                 "format": "uuid"
+              },
+              "parameterColumns": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
               },
               "preconditions": {
                 "type": "string"
@@ -22952,6 +25804,13 @@
               "revision": {
                 "type": "integer",
                 "format": "int64"
+              },
+              "sharedPins": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/SharedPin"
+                },
+                "description": "Shared steps pinned for this item."
               },
               "startedAt": {
                 "type": [
@@ -23051,6 +25910,13 @@
         "type": "object",
         "description": "Body of `PATCH /run-items/{itemId}`.",
         "properties": {
+          "allIterations": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Apply `status` to every iteration (explicit only)."
+          },
           "assignee": {
             "type": [
               "string",
@@ -23105,10 +25971,12 @@
       },
       "RunItemSkipCode": {
         "type": "string",
-        "description": "Why a case was not added to a launch as a run item: `automated` (CI runs it; only manual\ncases become run items) or `in_launch` (it has a run item already).",
+        "description": "Why a case was not added to a launch as a run item: `automated` (CI runs it; only manual\ncases become run items), `in_launch` (it has a run item already), `not_approved` (under\nreview without an approved version) or `blocked_by_state` (its workflow state blocks runs).",
         "enum": [
           "automated",
-          "in_launch"
+          "in_launch",
+          "not_approved",
+          "blocked_by_state"
         ]
       },
       "RunItemSummary": {
@@ -23121,7 +25989,8 @@
           "folderPath",
           "status",
           "executionNo",
-          "updatedAt"
+          "updatedAt",
+          "iterationCount"
         ],
         "properties": {
           "assignee": {
@@ -23147,6 +26016,11 @@
           "id": {
             "type": "string",
             "format": "uuid"
+          },
+          "iterationCount": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Iterations of a parameterized case (0 without parameters; `run_items.iterations`).\nNamed `iterationCount` because [`RunItem`] flattens this struct next to its own\n`iterations` list."
           },
           "name": {
             "type": "string"
@@ -23179,6 +26053,10 @@
               "type": "integer",
               "format": "int64"
             }
+          },
+          "includeUnapproved": {
+            "type": "boolean",
+            "description": "Run the head version of cases whose head is not approved (needs `cases:review`)."
           },
           "planId": {
             "type": [
@@ -23213,6 +26091,133 @@
               "$ref": "#/components/schemas/RunItemSkip"
             },
             "description": "Why named cases were left out (the first 1000)."
+          }
+        }
+      },
+      "RunIteration": {
+        "type": "object",
+        "description": "An iteration of a parameterized run item.",
+        "required": [
+          "rowId",
+          "position",
+          "values",
+          "status",
+          "comment",
+          "stepResults"
+        ],
+        "properties": {
+          "comment": {
+            "type": "string"
+          },
+          "executedBy": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "finishedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "position": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "resultId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "rowId": {
+            "type": "string"
+          },
+          "startedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RunStatus"
+          },
+          "stepResults": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RunStepResult"
+            }
+          },
+          "values": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "RunIterationPatch": {
+        "type": "object",
+        "description": "Body of `PATCH /run-items/{itemId}/iterations/{rowId}`.",
+        "properties": {
+          "comment": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RunStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "untestedStepsTo": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/UntestedStepsTo"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "RunIterationStepAck": {
+        "type": "object",
+        "description": "Answer to an iteration step write.",
+        "required": [
+          "iterationStatus",
+          "itemStatus",
+          "suggestedStatus",
+          "revision"
+        ],
+        "properties": {
+          "itemStatus": {
+            "$ref": "#/components/schemas/RunStatus"
+          },
+          "iterationStatus": {
+            "$ref": "#/components/schemas/RunStatus"
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "suggestedStatus": {
+            "$ref": "#/components/schemas/RunStatus"
           }
         }
       },
@@ -23320,6 +26325,139 @@
           },
           "status": {
             "$ref": "#/components/schemas/StepStatus"
+          }
+        },
+        "additionalProperties": false
+      },
+      "SavedQuery": {
+        "type": "object",
+        "description": "A saved query.",
+        "required": [
+          "id",
+          "entity",
+          "name",
+          "query",
+          "owner",
+          "shared",
+          "position",
+          "mine",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "entity": {
+            "$ref": "#/components/schemas/QueryEntity"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "mine": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "position": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "query": {
+            "type": "string"
+          },
+          "shared": {
+            "type": "boolean"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "SavedQueryList": {
+        "type": "object",
+        "description": "Saved queries of an entity.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SavedQuery"
+            }
+          }
+        }
+      },
+      "SavedQueryPatch": {
+        "type": "object",
+        "description": "Body of `PATCH /saved-queries/{id}`.",
+        "properties": {
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "position": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "query": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "shared": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "SavedQueryWrite": {
+        "type": "object",
+        "description": "Body of `POST /saved-queries`.",
+        "required": [
+          "entity",
+          "name",
+          "query"
+        ],
+        "properties": {
+          "entity": {
+            "$ref": "#/components/schemas/QueryEntity"
+          },
+          "name": {
+            "type": "string"
+          },
+          "position": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "query": {
+            "type": "string"
+          },
+          "shared": {
+            "type": [
+              "boolean",
+              "null"
+            ]
           }
         },
         "additionalProperties": false
@@ -23549,6 +26687,579 @@
           }
         }
       },
+      "SharedPin": {
+        "type": "object",
+        "description": "A shared step pinned for a run item: `version` runs, `current` is the runnable one now.",
+        "required": [
+          "id",
+          "number",
+          "name",
+          "version",
+          "current"
+        ],
+        "properties": {
+          "current": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "number": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "SharedStep": {
+        "type": "object",
+        "description": "A shared step.",
+        "required": [
+          "id",
+          "number",
+          "name",
+          "description",
+          "steps",
+          "html",
+          "version",
+          "origin",
+          "aiUnreviewed",
+          "usage",
+          "revision",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "aiUnreviewed": {
+            "type": "boolean"
+          },
+          "approvedVersion": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "archivedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "createdBy": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "description": {
+            "type": "string"
+          },
+          "html": {
+            "$ref": "#/components/schemas/SharedStepHtml"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "number": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "origin": {
+            "$ref": "#/components/schemas/SharedStepOrigin"
+          },
+          "reviewState": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ReviewState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CaseStep"
+            }
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedBy": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "usage": {
+            "$ref": "#/components/schemas/SharedStepUsageCount"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "SharedStepBrief": {
+        "type": "object",
+        "description": "A shared step a case references, at its runnable version.",
+        "required": [
+          "id",
+          "number",
+          "name",
+          "version",
+          "archived",
+          "steps",
+          "stepsHtml"
+        ],
+        "properties": {
+          "archived": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "number": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CaseStep"
+            }
+          },
+          "stepsHtml": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CaseStepHtml"
+            }
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "SharedStepChange": {
+        "type": "object",
+        "description": "A version of a shared step a case references (the case's \"Versions\" stream).",
+        "required": [
+          "sharedStepNumber",
+          "name",
+          "version",
+          "source",
+          "changed",
+          "createdBy",
+          "createdAt"
+        ],
+        "properties": {
+          "changed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "createdBy": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "sharedStepNumber": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "source": {
+            "$ref": "#/components/schemas/VersionSource"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "SharedStepChangeList": {
+        "type": "object",
+        "description": "A page of shared step changes.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SharedStepChange"
+            }
+          },
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "SharedStepHtml": {
+        "type": "object",
+        "description": "The Markdown of a shared step rendered to sanitized HTML.",
+        "required": [
+          "description",
+          "steps"
+        ],
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CaseStepHtml"
+            }
+          }
+        }
+      },
+      "SharedStepList": {
+        "type": "object",
+        "description": "A page of shared steps.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SharedStepSummary"
+            }
+          },
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "SharedStepOrigin": {
+        "type": "string",
+        "description": "Where a shared step came from.",
+        "enum": [
+          "ui",
+          "import",
+          "ai"
+        ]
+      },
+      "SharedStepRef": {
+        "type": "object",
+        "description": "A reference of a case step to a shared step; `version` only in expanded run item steps.",
+        "required": [
+          "id",
+          "number"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "number": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "version": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          }
+        },
+        "additionalProperties": false
+      },
+      "SharedStepSnapshot": {
+        "type": "object",
+        "description": "The content of a shared step at one version.",
+        "required": [
+          "name",
+          "description",
+          "steps"
+        ],
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CaseStep"
+            }
+          }
+        }
+      },
+      "SharedStepSummary": {
+        "type": "object",
+        "description": "A shared step in lists.",
+        "required": [
+          "number",
+          "name",
+          "version",
+          "stepCount",
+          "cases",
+          "aiUnreviewed",
+          "archived",
+          "updatedAt"
+        ],
+        "properties": {
+          "aiUnreviewed": {
+            "type": "boolean"
+          },
+          "approvedVersion": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "archived": {
+            "type": "boolean"
+          },
+          "cases": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "name": {
+            "type": "string"
+          },
+          "number": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "reviewState": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ReviewState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stepCount": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "SharedStepUsage": {
+        "type": "object",
+        "description": "A case that uses a shared step.",
+        "required": [
+          "caseNumber",
+          "name",
+          "status",
+          "archived"
+        ],
+        "properties": {
+          "archived": {
+            "type": "boolean"
+          },
+          "caseNumber": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/CaseStatus"
+          }
+        }
+      },
+      "SharedStepUsageCount": {
+        "type": "object",
+        "description": "How many cases and open runs use a shared step.",
+        "required": [
+          "cases",
+          "openRuns"
+        ],
+        "properties": {
+          "cases": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "openRuns": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "SharedStepUsageList": {
+        "type": "object",
+        "description": "A page of the cases that use a shared step.",
+        "required": [
+          "items",
+          "openRuns"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SharedStepUsage"
+            }
+          },
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "openRuns": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "SharedStepVersion": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/SharedStepVersionSummary"
+          },
+          {
+            "type": "object",
+            "required": [
+              "snapshot"
+            ],
+            "properties": {
+              "snapshot": {
+                "$ref": "#/components/schemas/SharedStepSnapshot"
+              }
+            }
+          }
+        ],
+        "description": "A version of a shared step with its snapshot."
+      },
+      "SharedStepVersionList": {
+        "type": "object",
+        "description": "A page of shared step versions.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SharedStepVersionSummary"
+            }
+          },
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "SharedStepVersionSummary": {
+        "type": "object",
+        "description": "A version of a shared step in its history (`changed` within name, description, steps).",
+        "required": [
+          "version",
+          "source",
+          "changed",
+          "createdBy",
+          "createdAt"
+        ],
+        "properties": {
+          "changed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "createdBy": {
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/VersionSource"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "SharedStepWrite": {
+        "type": "object",
+        "description": "Body of creating or replacing a shared step (steps without `shared`, depth at most 2).",
+        "required": [
+          "name",
+          "steps"
+        ],
+        "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CaseStep"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
       "SimilarList": {
         "type": "object",
         "description": "Similar failures of a result.",
@@ -23624,6 +27335,17 @@
               "$ref": "#/components/schemas/PlanLaunchAttribute"
             }
           },
+          "ci": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PlanCi",
+                "description": "Dispatch the automated cases to CI."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "environment": {
             "type": [
               "object",
@@ -23645,6 +27367,17 @@
           "includeAutomated": {
             "type": "boolean",
             "description": "Absent: `false`."
+          },
+          "includeManual": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Absent: `true`; `false` creates no run items (a CI start)."
+          },
+          "includeUnapproved": {
+            "type": "boolean",
+            "description": "Run the head version of cases whose head is not approved (needs `cases:review`)."
           },
           "name": {
             "type": "string"
@@ -23998,6 +27731,13 @@
           "name": {
             "type": "string"
           },
+          "query": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "An FPQL query selecting the plan's cases (exclusive with `filter`)."
+          },
           "revision": {
             "type": "integer",
             "format": "int64"
@@ -24190,6 +27930,13 @@
               "string",
               "null"
             ]
+          },
+          "query": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "An FPQL query (exclusive with `filter`); `null` removes it."
           }
         },
         "additionalProperties": false
@@ -24249,9 +27996,25 @@
           },
           "name": {
             "type": "string"
+          },
+          "query": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "An FPQL query (exclusive with `filter`); `null` removes it."
           }
         },
         "additionalProperties": false
+      },
+      "TmGateMode": {
+        "type": "string",
+        "description": "Whether writes of new formats wait until every replica knows them.",
+        "enum": [
+          "auto",
+          "open",
+          "closed"
+        ]
       },
       "TmJob": {
         "type": "object",
@@ -24318,7 +28081,12 @@
         "enum": [
           "import",
           "export",
-          "backfill"
+          "backfill",
+          "last_status",
+          "shared_inline",
+          "workflow_remap",
+          "requirements",
+          "coverage_export"
         ]
       },
       "TmJobProgress": {
@@ -25783,6 +29551,23 @@
           "chart",
           "table"
         ]
+      },
+      "WorkflowGuard": {
+        "type": "string",
+        "description": "A condition of a workflow transition.",
+        "enum": [
+          "approved",
+          "requiredFields",
+          "notAuthor"
+        ]
+      },
+      "WorkflowPermission": {
+        "type": "string",
+        "description": "The permission a workflow transition needs.",
+        "enum": [
+          "cases:write",
+          "cases:review"
+        ]
       }
     },
     "securitySchemes": {
@@ -25843,6 +29628,22 @@
     {
       "name": "imports",
       "description": "Imports and exports of test cases"
+    },
+    {
+      "name": "shared-steps",
+      "description": "Shared steps: reusable step sequences that cases reference, with versions and usages"
+    },
+    {
+      "name": "reviews",
+      "description": "Case workflow and version review of cases and shared steps"
+    },
+    {
+      "name": "queries",
+      "description": "FPQL: validation, the query schema and saved queries"
+    },
+    {
+      "name": "requirements",
+      "description": "Requirements, their links to cases, and coverage"
     }
   ]
 }

@@ -2,8 +2,12 @@ import { Button, Chip, CloseButton, Group, Modal, MultiSelect, Pill, SegmentedCo
 import { useDebouncedValue } from '@mantine/hooks';
 import { IconFilter, IconSearch } from '@tabler/icons-react';
 import { useEffect, useState } from 'react';
+import type { QueryError } from '../../api/queries';
 import type { CaseFieldDef } from '../../api/tm';
 import { CASE_STATUSES, CASE_STATUS_LABEL, type CaseListState } from '../../lib/tm/filters';
+import { chipsToQuery } from '../../lib/tm/fpql';
+import { QueryBar } from './QueryBar';
+import { SavedQueries } from './SavedQueries';
 
 const STALE: { value: string; label: string }[] = [
   { value: '', label: 'Any time' },
@@ -22,11 +26,30 @@ function FieldFilterDialog({ fields, onAdd, onClose }: { fields: CaseFieldDef[];
   return (
     <Modal opened onClose={onClose} title="Filter by a field">
       <Stack gap="sm">
-        <Select label="Field" data={usable.map((f) => ({ value: f.key, label: f.name }))} value={key} onChange={(v) => { setKey(v); setValues([]); }} allowDeselect={false} comboboxProps={{ withinPortal: true }} data-testid="field-filter-key" />
+        <Select
+          label="Field"
+          data={usable.map((f) => ({ value: f.key, label: f.name }))}
+          value={key}
+          onChange={(v) => {
+            setKey(v);
+            setValues([]);
+          }}
+          allowDeselect={false}
+          comboboxProps={{ withinPortal: true }}
+          data-testid="field-filter-key"
+        />
         {def?.type === 'text' ? (
           <TextInput label="Value" value={text} onChange={(e) => setText(e.currentTarget.value)} data-testid="field-filter-text" />
         ) : (
-          <MultiSelect label="Any of" data={(def?.options ?? []).filter((o) => !o.archived).map((o) => o.value)} value={values} onChange={setValues} searchable comboboxProps={{ withinPortal: true }} data-testid="field-filter-values" />
+          <MultiSelect
+            label="Any of"
+            data={(def?.options ?? []).filter((o) => !o.archived).map((o) => o.value)}
+            value={values}
+            onChange={setValues}
+            searchable
+            comboboxProps={{ withinPortal: true }}
+            data-testid="field-filter-values"
+          />
         )}
         <Group justify="flex-end">
           <Button variant="default" onClick={onClose}>
@@ -41,7 +64,37 @@ function FieldFilterDialog({ fields, onAdd, onClose }: { fields: CaseFieldDef[];
   );
 }
 
-export function CaseFilters({ state, fields, onChange }: { state: CaseListState; fields: CaseFieldDef[]; onChange: (s: Partial<CaseListState>) => void }) {
+interface CaseFiltersProps {
+  project: string;
+  state: CaseListState;
+  fields: CaseFieldDef[];
+  onChange: (s: Partial<CaseListState>) => void;
+  /** The `invalid_query` error of the list request for the applied query. */
+  queryError?: QueryError | null;
+}
+
+export function CaseFilters({ project, state, fields, onChange, queryError }: CaseFiltersProps) {
+  const queryMode = state.query !== null;
+  const [draft, setDraft] = useState(state.query ?? '');
+  const [note, setNote] = useState<string | null>(null);
+  const [confirm, setConfirm] = useState(false);
+  useEffect(() => {
+    if (state.query !== null) setDraft(state.query);
+  }, [state.query]);
+  const generated = chipsToQuery(state);
+  const applyQuery = (query: string) => {
+    setDraft(query);
+    onChange({ query: query.trim() });
+  };
+  const switchMode = (v: string) => {
+    if (v === 'query' && !queryMode) {
+      setNote(generated.note);
+      applyQuery(generated.query);
+    } else if (v === 'filters' && queryMode) {
+      if (draft.trim() === generated.query.trim()) onChange({ query: null });
+      else setConfirm(true);
+    }
+  };
   const [q, setQ] = useState(state.q);
   const [debounced] = useDebouncedValue(q, 300);
   const [fieldDialog, setFieldDialog] = useState(false);
@@ -56,52 +109,111 @@ export function CaseFilters({ state, fields, onChange }: { state: CaseListState;
     const def = fields.find((d) => d.key === f.slice(0, i));
     return `${def?.name ?? f.slice(0, i)}: ${f.slice(i + 1) || '—'}`;
   };
+  const trash = <Switch size="xs" label="Trash" checked={state.archived} onChange={(e) => onChange({ archived: e.currentTarget.checked })} data-testid="toggle-archived" />;
   return (
     <Stack gap="xs" data-testid="case-filters">
-      <Group gap="xs" wrap="wrap" align="center">
-        <TextInput aria-label="Search cases" placeholder="Search by name or TC-number" leftSection={<IconSearch size={16} />} value={q} onChange={(e) => setQ(e.currentTarget.value)} style={{ flex: '1 1 220px' }} data-testid="case-search" />
+      <Group gap="sm" justify="space-between" wrap="wrap">
         <SegmentedControl
           size="xs"
-          value={state.automation ?? 'all'}
-          onChange={(v) => onChange({ automation: v === 'manual' || v === 'automated' ? v : null })}
+          value={queryMode ? 'query' : 'filters'}
+          onChange={switchMode}
           data={[
-            { value: 'all', label: 'All' },
-            { value: 'manual', label: 'Manual' },
-            { value: 'automated', label: 'Automated' },
+            { value: 'filters', label: 'Filters' },
+            { value: 'query', label: 'Query' },
           ]}
-          aria-label="Automation"
+          aria-label="Filter mode"
+          data-testid="filter-mode"
         />
+        {trash}
       </Group>
-      <Group gap={6} wrap="wrap" align="center">
-        <Chip.Group multiple value={state.statuses} onChange={(v) => onChange({ statuses: v.filter((s): s is CaseListState['statuses'][number] => (CASE_STATUSES as readonly string[]).includes(s)) })}>
-          {CASE_STATUSES.map((s) => (
-            <Chip key={s} value={s} size="xs" variant="outline" data-testid={`chip-status-${s}`}>
-              {CASE_STATUS_LABEL[s]}
+      {queryMode ? (
+        <>
+          <Group gap="xs" wrap="wrap" align="flex-start">
+            <div style={{ flex: '1 1 260px', minWidth: 0 }}>
+              <QueryBar project={project} value={draft} onChange={setDraft} onApply={applyQuery} serverError={draft.trim() === (state.query ?? '').trim() ? queryError : null} />
+            </div>
+            <SavedQueries project={project} query={draft} onApply={applyQuery} />
+          </Group>
+          {note && (
+            <Text size="xs" c="dimmed" data-testid="query-note">
+              {note}
+            </Text>
+          )}
+        </>
+      ) : (
+        <>
+          <Group gap="xs" wrap="wrap" align="center">
+            <TextInput
+              aria-label="Search cases"
+              placeholder="Search by name or TC-number"
+              leftSection={<IconSearch size={16} />}
+              value={q}
+              onChange={(e) => setQ(e.currentTarget.value)}
+              style={{ flex: '1 1 220px' }}
+              data-testid="case-search"
+            />
+            <SegmentedControl
+              size="xs"
+              value={state.automation ?? 'all'}
+              onChange={(v) => onChange({ automation: v === 'manual' || v === 'automated' ? v : null })}
+              data={[
+                { value: 'all', label: 'All' },
+                { value: 'manual', label: 'Manual' },
+                { value: 'automated', label: 'Automated' },
+              ]}
+              aria-label="Automation"
+            />
+          </Group>
+          <Group gap={6} wrap="wrap" align="center">
+            <Chip.Group
+              multiple
+              value={state.statuses}
+              onChange={(v) => onChange({ statuses: v.filter((s): s is CaseListState['statuses'][number] => (CASE_STATUSES as readonly string[]).includes(s)) })}
+            >
+              {CASE_STATUSES.map((s) => (
+                <Chip key={s} value={s} size="xs" variant="outline" data-testid={`chip-status-${s}`}>
+                  {CASE_STATUS_LABEL[s]}
+                </Chip>
+              ))}
+            </Chip.Group>
+            <Chip size="xs" variant="outline" checked={state.aiDraft} onChange={(v) => onChange({ aiDraft: v })} data-testid="chip-ai-draft">
+              AI draft
             </Chip>
-          ))}
-        </Chip.Group>
-        <Chip size="xs" variant="outline" checked={state.aiDraft} onChange={(v) => onChange({ aiDraft: v })} data-testid="chip-ai-draft">
-          AI draft
-        </Chip>
-        <Select size="xs" aria-label="Last run" data={STALE} value={state.staleDays ? String(state.staleDays) : ''} onChange={(v) => onChange({ staleDays: v ? Number(v) : null })} w={170} allowDeselect={false} comboboxProps={{ withinPortal: true }} />
-        <TagsInput size="xs" aria-label="Tags" placeholder={state.tags.length ? '' : 'Tags'} value={state.tags} onChange={(v) => onChange({ tags: v.slice(0, 20) })} w={180} clearable />
-        <Button size="compact-xs" variant="default" leftSection={<IconFilter size={12} />} onClick={() => setFieldDialog(true)} data-testid="field-filter-open">
-          Field
-        </Button>
-        <Switch size="xs" label="Trash" checked={state.archived} onChange={(e) => onChange({ archived: e.currentTarget.checked })} data-testid="toggle-archived" />
-      </Group>
-      {state.fields.length > 0 && (
-        <Group gap={4} wrap="wrap">
-          <Text size="xs" c="dimmed">
-            Fields:
-          </Text>
-          {state.fields.map((f) => (
-            <Pill key={f} withRemoveButton onRemove={() => onChange({ fields: state.fields.filter((x) => x !== f) })} removeButtonProps={{ 'aria-label': `Remove filter ${label(f)}` }} data-testid="field-filter-pill">
-              {label(f)}
-            </Pill>
-          ))}
-          <CloseButton size="xs" aria-label="Clear field filters" onClick={() => onChange({ fields: [] })} />
-        </Group>
+            <Select
+              size="xs"
+              aria-label="Last run"
+              data={STALE}
+              value={state.staleDays ? String(state.staleDays) : ''}
+              onChange={(v) => onChange({ staleDays: v ? Number(v) : null })}
+              w={170}
+              allowDeselect={false}
+              comboboxProps={{ withinPortal: true }}
+            />
+            <TagsInput size="xs" aria-label="Tags" placeholder={state.tags.length ? '' : 'Tags'} value={state.tags} onChange={(v) => onChange({ tags: v.slice(0, 20) })} w={180} clearable />
+            <Button size="compact-xs" variant="default" leftSection={<IconFilter size={12} />} onClick={() => setFieldDialog(true)} data-testid="field-filter-open">
+              Field
+            </Button>
+          </Group>
+          {state.fields.length > 0 && (
+            <Group gap={4} wrap="wrap">
+              <Text size="xs" c="dimmed">
+                Fields:
+              </Text>
+              {state.fields.map((f) => (
+                <Pill
+                  key={f}
+                  withRemoveButton
+                  onRemove={() => onChange({ fields: state.fields.filter((x) => x !== f) })}
+                  removeButtonProps={{ 'aria-label': `Remove filter ${label(f)}` }}
+                  data-testid="field-filter-pill"
+                >
+                  {label(f)}
+                </Pill>
+              ))}
+              <CloseButton size="xs" aria-label="Clear field filters" onClick={() => onChange({ fields: [] })} />
+            </Group>
+          )}
+        </>
       )}
       {fieldDialog && (
         <FieldFilterDialog
@@ -113,6 +225,26 @@ export function CaseFilters({ state, fields, onChange }: { state: CaseListState;
           }}
         />
       )}
+      <Modal opened={confirm} onClose={() => setConfirm(false)} title="Back to the filters?" attributes={{ content: { 'data-testid': 'filter-mode-confirm' } }}>
+        <Stack gap="sm">
+          <Text size="sm">The query you wrote by hand is dropped; the filters come back as they were.</Text>
+          <Group justify="flex-end">
+            <Button variant="default" onClick={() => setConfirm(false)}>
+              Keep the query
+            </Button>
+            <Button
+              data-testid="filter-mode-confirm-ok"
+              onClick={() => {
+                setConfirm(false);
+                setNote(null);
+                onChange({ query: null });
+              }}
+            >
+              Drop the query
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
     </Stack>
   );
 }

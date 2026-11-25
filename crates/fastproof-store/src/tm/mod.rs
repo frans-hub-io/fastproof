@@ -1,5 +1,6 @@
 //! Test management (stage 2a): cases on top of test identities, folders, field definitions,
-//! versions, managed plans and manual runs (`41-tm-interfaces.md`).
+//! versions, managed plans and manual runs (`41-tm-interfaces.md`); shared steps, FPQL,
+//! workflow and review, parameters, requirements and coverage on top of them.
 //!
 //! Every module owns its tables; the DTOs and limits live in [`types`]. Errors that the API
 //! answers with a specific status and code are [`TmError`]s; everything else is a plain
@@ -8,22 +9,35 @@
 pub mod ai;
 pub mod backfill;
 pub mod cases;
+pub mod coverage;
+pub mod expand;
 pub mod export;
 pub mod fields;
 pub mod folders;
+pub mod gate;
 pub mod identity;
 pub mod import;
+pub mod iterations;
 pub mod keys;
+pub mod last_status;
 pub mod lookup;
+pub mod pairwise;
+pub mod parameters;
 pub mod people;
 pub mod plans;
 pub mod projection;
+pub mod query;
+pub mod requirements;
+pub mod review;
 pub mod runs;
+pub mod saved_queries;
+pub mod shared_steps;
 pub mod sync;
 #[cfg(any(test, feature = "test-util"))]
 pub mod testutil;
 pub mod types;
 pub mod versions;
+pub mod workflow;
 
 use std::fmt;
 

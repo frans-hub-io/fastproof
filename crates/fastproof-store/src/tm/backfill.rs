@@ -281,6 +281,7 @@ impl Store {
             project_key: key,
             by: SYNC_ACTOR,
             limits,
+            can_review: false,
         };
         loop {
             if start.elapsed() >= budget {

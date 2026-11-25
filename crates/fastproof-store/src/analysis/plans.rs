@@ -44,6 +44,9 @@ pub struct NewTestPlan {
     /// Managed plans: cases added (and kept in sync) by a filter.
     #[serde(default)]
     pub filter: Option<crate::tm::CaseFilter>,
+    /// Managed plans: cases selected by an FPQL query (exclusive with `filter`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
 }
 
 /// A created plan.
@@ -94,13 +97,18 @@ impl NewTestPlan {
             name: self.name.clone(),
             description: self.description.clone(),
             filter: self.filter.clone().map(Some),
+            query: self.query.clone().map(Some),
             case_numbers: self.case_numbers.clone(),
         })
     }
 
     pub fn validate(&self) -> Result<Vec<String>, String> {
-        if self.description.is_some() || self.case_numbers.is_some() || self.filter.is_some() {
-            return Err("description, caseNumbers and filter need kind managed".into());
+        if self.description.is_some()
+            || self.case_numbers.is_some()
+            || self.filter.is_some()
+            || self.query.is_some()
+        {
+            return Err("description, caseNumbers, filter and query need kind managed".into());
         }
         if self.name.trim().is_empty() || self.name.len() > 200 {
             return Err("name must have 1 to 200 bytes".into());

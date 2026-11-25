@@ -84,6 +84,7 @@ fn ctx<'a>(s: &'a AppState, p: &'a Project, auth: &'a Auth) -> CaseCtx<'a> {
         project_key: &p.key,
         by: &auth.principal.name,
         limits: &s.cfg.tm,
+        can_review: auth.principal.allowed(&s.perms.cases_review, Some(&p.key)),
     }
 }
 
@@ -133,6 +134,10 @@ pub struct CaseListQuery {
     pub ai_unreviewed: Option<bool>,
     /// `true` lists the archived cases (the trash).
     pub archived: Option<bool>,
+    /// An FPQL query (at most 4096 bytes), ANDed with the other parameters; without
+    /// `archived=true` archived cases stay out unless the query names `archived`. An invalid
+    /// query is 400 `invalid_query` with `details: QueryError`.
+    pub query: Option<String>,
     /// `number` (default), `-number` or `updated` (most recent first).
     pub sort: Option<String>,
     pub before: Option<String>,
@@ -155,6 +160,7 @@ pub fn case_query(raw: Option<&str>) -> ApiResult<CaseQuery> {
             }
             "recursive" => q.filter.recursive = Some(parse_bool(&k, &v)?),
             "q" => q.filter.q = Some(v),
+            "query" => q.query = Some(v),
             "status" => {
                 for s in v.split(',').map(str::trim).filter(|s| !s.is_empty()) {
                     statuses.push(CaseStatus::parse(s).ok_or_else(|| {
@@ -224,7 +230,13 @@ pub async fn list_cases(
 ) -> ApiResult<Json<CaseList>> {
     let p = s.project_for(&auth, &key, &s.perms.cases_read).await?;
     crate::tm_people::note(&s, &auth, &headers);
-    let q = case_query(raw.as_deref())?;
+    let mut q = case_query(raw.as_deref())?;
+    q.me = auth.principal.name.clone();
+    q.owner = crate::limits::caller_key(&auth);
+    let _permit = match q.query.as_deref().map(str::trim) {
+        Some(src) if !src.is_empty() => Some(s.guards.heavy(&auth).await?),
+        _ => None,
+    };
     Ok(Json(s.store.list_cases(p.id, &q).await.map_err(tm_error)?))
 }
 
@@ -525,8 +537,8 @@ pub async fn restore_case(
 }
 
 #[utoipa::path(post, path = "/api/v1/projects/{key}/cases/bulk", tag = "cases", operation_id = "bulk_cases",
-    description = "One action on cases named by number or matched by a filter (at most `maxBulk`). `move` takes a folder \
-        id or null, `setStatus` a status, `setField` `{key, value}`, `addTags`/`removeTags` a list. Each changed case gets one \
+    description = "One action on cases named by number, matched by a filter or by an FPQL `query` (exactly one of them; \
+        at most `maxBulk`). `move` takes a folder id or null, `setStatus` a status, `setField` `{key, value}`, `addTags`/`removeTags` a list. Each changed case gets one \
         version with `source = bulk`; the others are listed in `skipped` with a code.",
     request_body = CaseBulk,
     params(("key" = String, Path)),
@@ -543,7 +555,11 @@ pub async fn bulk_cases(
     let _permit = s.guards.heavy(&auth).await?;
     let r = s
         .store
-        .bulk_cases(&ctx(&s, &p, &auth), &body)
+        .bulk_cases_as(
+            &ctx(&s, &p, &auth),
+            &crate::limits::caller_key(&auth),
+            &body,
+        )
         .await
         .map_err(tm_error)?;
     s.audit(
@@ -551,7 +567,7 @@ pub async fn bulk_cases(
         "case.bulk",
         Some(&p.key),
         serde_json::json!({"action": body.action, "updated": r.updated, "skipped": r.skipped.len(),
-            "byFilter": body.filter.is_some()}),
+            "byFilter": body.filter.is_some(), "query": body.query}),
     )
     .await;
     Ok(Json(r))

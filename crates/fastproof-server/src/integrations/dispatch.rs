@@ -88,6 +88,7 @@ pub fn summary(
         },
         events,
         test: false,
+        plan_check: None,
     }
 }
 
@@ -215,7 +216,15 @@ async fn process_launch(
             .manual
             .is_some_and(|m| m.state == fastproof_store::tm::ManualState::Closed),
     );
-    let sm = summary(s, &project, &launch, &ev, events);
+    let mut sm = summary(s, &project, &launch, &ev, events);
+    if launch.test_plan_id.is_some() {
+        match s.store.plan_check_of(launch.id).await {
+            Ok(c) => sm.plan_check = c,
+            Err(e) => {
+                tracing::warn!(launch = %launch.id, error = %format!("{e:#}"), "plan check failed")
+            }
+        }
+    }
     let ds = deliveries(
         &settings,
         &launch,

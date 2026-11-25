@@ -18,13 +18,13 @@ use super::folders::{folder, folder_level, folder_path};
 use super::identity::manual_identity;
 use super::keys::{case_keys, set_case_key};
 use super::lookup::{CASE_COLS, case_by_id, case_by_number, case_row};
-use super::versions::{CONTENT_KEYS, changed_keys, insert_version, last_source, snapshot_of};
+use super::versions::{changed_keys, initial_keys, insert_version, last_source, snapshot_of};
 use super::{
     AttachmentRef, Case, CaseBody, CaseBulk, CaseBulkAction, CaseBulkResult, CaseBulkSkip,
     CaseFieldDef, CaseFilter, CaseFolderRef, CaseHistoryEntry, CaseHtml, CaseIdentity, CaseKeyKind,
     CaseLink, CaseList, CaseOrigin, CasePatch, CaseProposal, CaseRow, CaseSnapshot, CaseStatus,
     CaseStep, CaseSuggestion, CaseSummary, CaseTree, CaseTreeGroupBy, CaseTreeNode, CaseWrite,
-    FieldValue, FolderCounts, IdentityKind, LastResult, MAX_TAG_BYTES, ResultSource,
+    FieldValue, FolderCounts, IdentityKind, LastResult, MAX_TAG_BYTES, QueryEntity, ResultSource,
     SuggestionStatus, TREE_ID_SEPARATOR, TestIdentity, TmError, TmLimits, TmResult, VersionSource,
     check_name, violated_constraint,
 };
@@ -64,6 +64,8 @@ pub struct CaseCtx<'a> {
     pub project_key: &'a str,
     pub by: &'a str,
     pub limits: &'a TmLimits,
+    /// The caller has `cases:review` (`false` for sync, imports, MCP and jobs).
+    pub can_review: bool,
 }
 
 /// How [`commit`] records a change.
@@ -549,6 +551,8 @@ pub async fn prepare_write(
         attachments: Vec::new(),
     };
     walk.walk(&mut body.steps, "body.steps", 1, &mut p)?;
+    super::shared_steps::validate_refs(conn, ctx, &body, current).await?;
+    super::parameters::validate_parameters(&body, l)?;
     check_links(&mut body.links, l, &mut p);
     if serde_json::to_vec(&body)?.len() > l.max_body_bytes {
         return Err(TmError::limit("maxBodyBytes", l.max_body_bytes as u64));
@@ -830,7 +834,7 @@ pub async fn commit(
     let Some(r) = r else {
         return Err(stale(conn, cur).await);
     };
-    let row = case_row(&r)?;
+    let mut row = case_row(&r)?;
     if !changed.is_empty() {
         insert_version(
             conn,
@@ -844,6 +848,9 @@ pub async fn commit(
             ctx.by,
         )
         .await?;
+        super::review::on_save(conn, ctx, Some(cur), &row, &changed, c.source).await?;
+        super::shared_steps::sync_usages(conn, ctx.project_id, row.id, &new.body).await?;
+        row = reread(conn, ctx.project_id, row.id).await?;
     }
     if cur.name != row.name {
         sqlx::query(
@@ -863,6 +870,51 @@ pub async fn commit(
     )
     .await?;
     Ok(row)
+}
+
+async fn reread(conn: &mut PgConnection, project_id: Uuid, id: Uuid) -> TmResult<CaseRow> {
+    case_by_id(conn, project_id, id)
+        .await?
+        .ok_or_else(|| TmError::Other(anyhow::anyhow!("case vanished")))
+}
+
+/// The workflow state a case takes when its status changes to `to` (§4.3): a checked
+/// transition for people (`ui`, `ai`, `restore`, `bulk`), the system state for code and
+/// imports. `None` keeps the current state.
+pub async fn state_for_status(
+    conn: &mut PgConnection,
+    ctx: &CaseCtx<'_>,
+    cur: &CaseRow,
+    to: CaseStatus,
+    source: VersionSource,
+) -> TmResult<Option<String>> {
+    if to == cur.status {
+        return Ok(None);
+    }
+    match source {
+        VersionSource::Code | VersionSource::Import => {
+            super::workflow::system_state(conn, ctx.project_id, cur.automated, to).await
+        }
+        VersionSource::Ui | VersionSource::Ai | VersionSource::Restore | VersionSource::Bulk => {
+            super::workflow::check_transition(conn, ctx, cur, to).await
+        }
+    }
+}
+
+/// Writes the workflow state of a locked case (same transaction as the change).
+pub async fn write_state(
+    conn: &mut PgConnection,
+    case_id: Uuid,
+    state: Option<&str>,
+) -> sqlx::Result<()> {
+    if let Some(st) = state {
+        sqlx::query("update cases set state = $2 where id = $1")
+            .bind(case_id)
+            .bind(no_nul(st))
+            .execute(&mut *conn)
+            .await?;
+    }
+    Ok(())
 }
 
 async fn check_case_count(
@@ -979,11 +1031,13 @@ pub async fn create_case_in(
         }
     };
     let id = Uuid::now_v7();
+    let state =
+        super::workflow::system_state(conn, ctx.project_id, meta.automated, snap.status).await?;
     sqlx::query(
         "insert into cases (id, project_id, number, name, status, automated, origin, ai_unreviewed, folder_id, \
-           body, fields, tags, search_text, code_hash, last_trusted_at, created_by, updated_by) \
+           body, fields, tags, search_text, code_hash, last_trusted_at, created_by, updated_by, state) \
          values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, \
-           case when $6 then now() end, $15, $15)",
+           case when $6 then now() end, $15, $15, $16)",
     )
     .bind(id)
     .bind(ctx.project_id)
@@ -1000,6 +1054,7 @@ pub async fn create_case_in(
     .bind(search_text(&snap.name, &snap.body))
     .bind(&meta.code_hash)
     .bind(no_nul(ctx.by))
+    .bind(state.as_deref().map(no_nul))
     .execute(&mut *conn)
     .await
     .map_err(|e| {
@@ -1010,7 +1065,7 @@ pub async fn create_case_in(
         }
     })?;
     link_attachments(conn, ctx, id, &snap.body).await?;
-    let all: Vec<String> = CONTENT_KEYS.iter().map(|k| k.to_string()).collect();
+    let all = initial_keys(&snap);
     insert_version(
         conn,
         ctx.project_id,
@@ -1041,9 +1096,10 @@ pub async fn create_case_in(
         json!({"number": number, "revision": 1, "source": meta.source.as_str()}),
     )
     .await?;
-    case_by_id(conn, ctx.project_id, id)
-        .await?
-        .ok_or_else(|| TmError::Other(anyhow::anyhow!("created case vanished")))
+    let row = reread(conn, ctx.project_id, id).await?;
+    super::review::on_save(conn, ctx, None, &row, &all, meta.source).await?;
+    super::shared_steps::sync_usages(conn, ctx.project_id, id, &snap.body).await?;
+    reread(conn, ctx.project_id, id).await
 }
 
 /// Applies a merge patch to a snapshot: `folderId` (`null` = root), `status`, `fields` (keys
@@ -1101,6 +1157,8 @@ pub async fn update_case_in(
             return Err(field_from_code(conflicts));
         }
     }
+    let state = state_for_status(conn, ctx, cur, snap.status, source).await?;
+    write_state(conn, cur.id, state.as_deref()).await?;
     let mut row = commit(
         conn,
         ctx,
@@ -1181,6 +1239,13 @@ pub struct CaseQuery {
     pub sort: CaseSort,
     pub before: Option<String>,
     pub limit: i64,
+    /// An FPQL query, ANDed with the filter (`archived` applies unless the query names it).
+    pub query: Option<String>,
+    /// The caller's principal name (`me()`).
+    pub me: String,
+    /// The caller's owner key of personal saved queries (`QueryCtx::owner`; empty: shared
+    /// saved queries only).
+    pub owner: String,
 }
 
 /// Checks the sizes of a filter.
@@ -1229,105 +1294,48 @@ pub async fn check_filter_folders(
     Ok(())
 }
 
-/// Appends the conditions of a filter on cases aliased `c` (` and ...`).
+/// Appends the conditions of a filter on cases aliased `c` (` and ...`): the filter becomes
+/// the FPQL syntax tree and goes through the one compiler.
 pub fn push_filter(qb: &mut QueryBuilder<Postgres>, project_id: Uuid, f: &CaseFilter) {
-    if let Some(ids) = f.folder_ids.as_ref().filter(|v| !v.is_empty()) {
-        if f.recursive.unwrap_or(false) {
-            qb.push(" and c.folder_id in (select d.id from case_folders d where d.project_id = ")
-                .push_bind(project_id)
-                .push(" and d.path_ids && ")
-                .push_bind(ids.clone())
-                .push(")");
-        } else {
-            qb.push(" and c.folder_id = any(")
-                .push_bind(ids.clone())
-                .push(")");
-        }
-    }
-    if let Some(s) = f.statuses.as_ref().filter(|v| !v.is_empty()) {
-        let s: Vec<String> = s.iter().map(|s| s.as_str().to_string()).collect();
-        qb.push(" and c.status = any(").push_bind(s).push(")");
-    }
-    match f.automation {
-        Some(ResultSource::Automated) => {
-            qb.push(" and c.automated");
-        }
-        Some(ResultSource::Manual) => {
-            qb.push(" and not c.automated");
-        }
-        None => {}
-    }
-    if let Some(fields) = &f.fields {
-        for (k, values) in fields {
-            if values.is_empty() {
-                qb.push(" and c.fields ? ").push_bind(no_nul(k));
-                continue;
-            }
-            qb.push(" and (false");
-            for v in values {
-                let v = no_nul(v);
-                qb.push(" or c.fields @> ")
-                    .push_bind(json!({ k.as_str(): v }))
-                    .push(" or c.fields @> ")
-                    .push_bind(json!({ k.as_str(): [v] }));
-                if let Ok(n) = v.parse::<f64>()
-                    && n.is_finite()
-                {
-                    qb.push(" or c.fields @> ")
-                        .push_bind(json!({ k.as_str(): n }));
-                }
-            }
-            qb.push(")");
-        }
-    }
-    if let Some(t) = f.tags.as_ref().filter(|v| !v.is_empty()) {
-        let t: Vec<String> = t.iter().map(|t| no_nul(t.trim())).collect();
-        qb.push(" and c.tags @> ").push_bind(t);
-    }
-    if let Some(q) = f.q.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
-        let q = no_nul(q);
-        let number = q
-            .strip_prefix("TC-")
-            .or(q.strip_prefix("tc-"))
-            .unwrap_or(&q)
-            .parse::<i64>()
-            .ok();
-        qb.push(" and (to_tsvector('simple', c.search_text) @@ plainto_tsquery('simple', ")
-            .push_bind(q.clone())
-            .push(") or c.name ilike ")
-            .push_bind(format!("%{}%", like_escape(&q)));
-        if let Some(n) = number {
-            qb.push(" or c.number = ").push_bind(n);
-        }
-        qb.push(")");
-    }
+    let q = super::query::from_filter(f);
+    super::query::compile::push_query(qb, project_id, &q);
 }
 
+/// What selects cases for a bulk action, an export or a plan: a structured filter or a
+/// resolved FPQL query.
+#[derive(Clone, Copy, Debug)]
+pub enum CaseSelection<'a> {
+    Filter(&'a CaseFilter),
+    Query(&'a super::query::ast::Query),
+}
+
+/// The case list reads the denormalized last result (`cases.last_*`, §4.6).
 const SUMMARY_SELECT: &str = "select c.id, c.number, c.name, c.status, c.automated, c.folder_id, c.fields, c.tags, \
-    c.updated_at, c.ai_unreviewed, c.archived_at is not null as archived, \
-    lr.status as lr_status, lr.at as lr_at, lr.manual as lr_manual, lr.launch_id as lr_launch, lr.id as lr_id \
-    from cases c left join lateral (select x.status, x.at, x.manual, x.launch_id, x.id from test_cases t \
-      cross join lateral (select r.status, coalesce(r.stopped_at, r.updated_at) as at, r.run_item_id is not null as manual, \
-        r.launch_id, r.id, r.launch_created_at from results r where r.test_case_id = t.id \
-        order by r.launch_created_at desc, r.updated_at desc limit 1) x \
-      where t.case_id = c.id order by x.launch_created_at desc limit 1) lr on true ";
+    c.updated_at, c.ai_unreviewed, c.archived_at is not null as archived, c.state, c.review_state, \
+    c.last_status as lr_status, c.last_status_at as lr_at, c.last_source as lr_source, \
+    c.last_launch_id as lr_launch, c.last_result_id as lr_id \
+    from cases c ";
 
 fn summary_row(r: &PgRow) -> sqlx::Result<CaseSummary> {
     let status: String = r.try_get("status")?;
     let fields: Value = r.try_get("fields")?;
-    let last = match r.try_get::<Option<String>, _>("lr_status")? {
-        Some(s) => Some(LastResult {
-            status: s,
-            at: r.try_get("lr_at")?,
-            source: if r.try_get::<bool, _>("lr_manual")? {
-                ResultSource::Manual
-            } else {
-                ResultSource::Automated
-            },
-            launch_id: r.try_get("lr_launch")?,
-            result_id: r.try_get("lr_id")?,
+    let last = match (
+        r.try_get::<Option<String>, _>("lr_status")?,
+        r.try_get::<Option<DateTime<Utc>>, _>("lr_at")?,
+        r.try_get::<Option<Uuid>, _>("lr_launch")?,
+        r.try_get::<Option<Uuid>, _>("lr_id")?,
+    ) {
+        (Some(status), Some(at), Some(launch_id), Some(result_id)) => Some(LastResult {
+            status,
+            at,
+            source: r
+                .try_get::<Option<String>, _>("lr_source")?
+                .and_then(|s| ResultSource::parse(&s))
+                .unwrap_or_default(),
+            launch_id,
+            result_id,
         }),
-        None => None,
+        _ => None,
     };
     Ok(CaseSummary {
         number: r.try_get("number")?,
@@ -1341,6 +1349,10 @@ fn summary_row(r: &PgRow) -> sqlx::Result<CaseSummary> {
         updated_at: r.try_get("updated_at")?,
         ai_unreviewed: r.try_get("ai_unreviewed")?,
         archived: r.try_get("archived")?,
+        state: r.try_get("state")?,
+        review_state: r
+            .try_get::<Option<String>, _>("review_state")?
+            .and_then(|s| super::ReviewState::parse(&s)),
     })
 }
 
@@ -1434,6 +1446,12 @@ pub async fn case_view(conn: &mut PgConnection, project_id: Uuid, row: &CaseRow)
     } else {
         Vec::new()
     };
+    let shared_steps = if row.body.steps.iter().any(|s| s.shared.is_some()) {
+        let review = super::review::review_settings(conn, project_id).await?;
+        super::shared_steps::briefs_for_case(conn, project_id, &row.body, &review).await?
+    } else {
+        Vec::new()
+    };
     Ok(Case {
         number: row.number,
         id: row.id,
@@ -1459,6 +1477,10 @@ pub async fn case_view(conn: &mut PgConnection, project_id: Uuid, row: &CaseRow)
         updated_by: row.updated_by.clone(),
         updated_at: row.updated_at,
         archived_at: row.archived_at,
+        state: row.state.clone(),
+        approved_version: row.approved_version,
+        review_state: row.review_state,
+        shared_steps,
     })
 }
 
@@ -1473,6 +1495,20 @@ pub async fn filter_numbers(
 ) -> TmResult<Vec<i64>> {
     check_filter(f)?;
     check_filter_folders(conn, project_id, f).await?;
+    selection_numbers(conn, project_id, CaseSelection::Filter(f), archived, max).await
+}
+
+/// Numbers of the cases a checked filter or a resolved query selects, by number, at most
+/// `max + 1`, restricted by `archived` (a caller that lets a query's own `archived` decide
+/// passes `None`). A query runs under the statement timeout of FPQL (the caller is in a
+/// transaction).
+pub async fn selection_numbers(
+    conn: &mut PgConnection,
+    project_id: Uuid,
+    sel: CaseSelection<'_>,
+    archived: Option<bool>,
+    max: usize,
+) -> TmResult<Vec<i64>> {
     let mut qb: QueryBuilder<Postgres> =
         QueryBuilder::new("select c.number from cases c where c.project_id = ");
     qb.push_bind(project_id);
@@ -1485,10 +1521,25 @@ pub async fn filter_numbers(
         }
         None => {}
     }
-    push_filter(&mut qb, project_id, f);
+    match sel {
+        CaseSelection::Filter(f) => push_filter(&mut qb, project_id, f),
+        CaseSelection::Query(q) => super::query::compile::push_query(&mut qb, project_id, q),
+    }
     qb.push(" order by c.number limit ")
         .push_bind(max as i64 + 1);
-    Ok(qb.build_query_scalar().fetch_all(&mut *conn).await?)
+    match sel {
+        CaseSelection::Filter(_) => Ok(qb.build_query_scalar().fetch_all(&mut *conn).await?),
+        CaseSelection::Query(q) => {
+            super::query::set_timeout(conn).await?;
+            let n = qb
+                .build_query_scalar()
+                .fetch_all(&mut *conn)
+                .await
+                .map_err(super::query::run_error(&q.src))?;
+            super::query::reset_timeout(conn).await?;
+            Ok(n)
+        }
+    }
 }
 
 /// A history request of a case.
@@ -1516,6 +1567,8 @@ pub struct IdentityQuery {
 enum BulkOp {
     Move(Option<Uuid>),
     Status(CaseStatus),
+    /// A workflow state key (its category becomes the status).
+    State(String),
     Field(String, FieldValue),
     AddTags(Vec<String>),
     RemoveTags(Vec<String>),
@@ -1564,6 +1617,10 @@ fn bulk_op(b: &CaseBulk, limits: &TmLimits) -> TmResult<BulkOp> {
         }
         CaseBulkAction::Archive => BulkOp::Archive,
         CaseBulkAction::Restore => BulkOp::Restore,
+        CaseBulkAction::SetState => match v {
+            Value::String(k) if !k.is_empty() && k.len() <= 32 => BulkOp::State(k),
+            _ => return Err(bad("a workflow state key")),
+        },
     })
 }
 
@@ -1821,6 +1878,13 @@ impl Store {
                 "the case was executed in manual runs: archive it instead",
             ));
         }
+        sqlx::query(
+            "delete from review_votes where project_id = $1 and kind = 'case' and object_id = $2",
+        )
+        .bind(ctx.project_id)
+        .bind(cur.id)
+        .execute(&mut *tx)
+        .await?;
         sqlx::query("delete from cases where id = $1 and project_id = $2")
             .bind(cur.id)
             .bind(ctx.project_id)
@@ -1840,16 +1904,31 @@ impl Store {
     /// A page of cases.
     pub async fn list_cases(&self, project_id: Uuid, q: &CaseQuery) -> TmResult<CaseList> {
         check_filter(&q.filter)?;
-        let mut conn = self.pool.acquire().await?;
+        let mut conn = self.pool.begin().await?;
         check_filter_folders(&mut conn, project_id, &q.filter).await?;
+        let src = q.query.as_deref().filter(|s| !s.trim().is_empty());
+        let fpql = match src {
+            Some(src) => {
+                super::query::set_timeout(&mut conn).await?;
+                let ctx = super::query::QueryCtx::caller(&q.me, &q.owner);
+                Some(
+                    super::query::prepare(&mut conn, project_id, QueryEntity::Cases, src, &ctx)
+                        .await?,
+                )
+            }
+            None => None,
+        };
         let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(SUMMARY_SELECT);
         qb.push("where c.project_id = ").push_bind(project_id);
-        qb.push(if q.archived {
-            " and c.archived_at is not null"
-        } else {
-            " and c.archived_at is null"
-        });
+        if q.archived {
+            qb.push(" and c.archived_at is not null");
+        } else if !fpql.as_ref().is_some_and(|f| f.mentions("archived")) {
+            qb.push(" and c.archived_at is null");
+        }
         push_filter(&mut qb, project_id, &q.filter);
+        if let Some(f) = &fpql {
+            super::query::compile::push_query(&mut qb, project_id, f);
+        }
         if let Some(d) = q.stale_days {
             qb.push(" and c.automated and (c.last_trusted_at is null or c.last_trusted_at < now() - make_interval(days => ")
                 .push_bind(d.min(36_500) as i32)
@@ -1891,7 +1970,12 @@ impl Store {
             }
         }
         qb.push(" limit ").push_bind(q.limit + 1);
-        let rows = qb.build().fetch_all(&mut *conn).await?;
+        let rows = qb
+            .build()
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(super::query::run_error(src.unwrap_or("")))?;
+        conn.commit().await?;
         let more = rows.len() as i64 > q.limit;
         let mut items = Vec::with_capacity(rows.len());
         let mut last: Option<(DateTime<Utc>, Uuid)> = None;
@@ -2004,12 +2088,51 @@ impl Store {
     /// `maxBulk`). Each changed case gets one version (`source = bulk`, archive and restore
     /// change no content and only bump the revision); cases left alone are listed with a
     /// code (`not_found`, `unchanged`, `field_from_code`, `invalid_case`, `archived`).
+    /// A `query` sees shared saved queries only; see [`Self::bulk_cases_as`].
     pub async fn bulk_cases(&self, ctx: &CaseCtx<'_>, b: &CaseBulk) -> TmResult<CaseBulkResult> {
+        self.bulk_cases_as(ctx, "", b).await
+    }
+
+    /// [`Self::bulk_cases`] for a caller whose personal saved queries (`owner`, the owner key
+    /// of `QueryCtx::owner`) a `query` may name.
+    pub async fn bulk_cases_as(
+        &self,
+        ctx: &CaseCtx<'_>,
+        owner: &str,
+        b: &CaseBulk,
+    ) -> TmResult<CaseBulkResult> {
         let l = ctx.limits;
+        let ctx_project = ctx.project_id;
         let op = bulk_op(b, l)?;
         let mut tx = self.pool.begin().await?;
-        let numbers: Vec<i64> = match (&b.numbers, &b.filter) {
-            (Some(n), None) => {
+        let numbers: Vec<i64> = match (&b.numbers, &b.filter, &b.query) {
+            (None, None, Some(src)) => {
+                if src.trim().is_empty() {
+                    return Err(TmError::bad_request("query must not be empty"));
+                }
+                super::query::set_timeout(&mut tx).await?;
+                let ctx = super::query::QueryCtx::caller(ctx.by, owner);
+                let q = super::query::prepare(&mut tx, ctx_project, QueryEntity::Cases, src, &ctx)
+                    .await?;
+                let archived = match op {
+                    _ if q.mentions("archived") => None,
+                    BulkOp::Restore => Some(true),
+                    _ => Some(false),
+                };
+                let n = selection_numbers(
+                    &mut tx,
+                    ctx_project,
+                    CaseSelection::Query(&q),
+                    archived,
+                    l.max_bulk,
+                )
+                .await?;
+                if n.len() > l.max_bulk {
+                    return Err(TmError::limit("maxBulk", l.max_bulk as u64));
+                }
+                n
+            }
+            (Some(n), None, None) => {
                 if n.len() > l.max_bulk {
                     return Err(TmError::limit("maxBulk", l.max_bulk as u64));
                 }
@@ -2018,7 +2141,7 @@ impl Store {
                 n.dedup();
                 n
             }
-            (None, Some(f)) => {
+            (None, Some(f), None) => {
                 let archived = match op {
                     BulkOp::Restore => Some(true),
                     _ => Some(false),
@@ -2030,7 +2153,9 @@ impl Store {
                 n
             }
             _ => {
-                return Err(TmError::bad_request("give either numbers or a filter"));
+                return Err(TmError::bad_request(
+                    "give exactly one of numbers, filter and query",
+                ));
             }
         };
         if let BulkOp::Move(Some(f)) = &op
@@ -2046,7 +2171,30 @@ impl Store {
                 .ok_or_else(|| invalid_case(&format!("value.{k}"), "unknown field"))?;
             check_value(def, v, l).map_err(|m| invalid_case(&format!("value.{k}"), m))?;
         }
-        let settings = case_sync_settings(&mut tx, ctx.project_id).await?;
+        let project_settings = {
+            let v: Option<Value> =
+                sqlx::query_scalar("select settings from projects where id = $1")
+                    .bind(ctx.project_id)
+                    .fetch_optional(&mut *tx)
+                    .await?;
+            ProjectSettings::from_value(v.unwrap_or(Value::Null))
+        };
+        let settings = project_settings.case_sync.clone();
+        let review_on = project_settings.case_review.mode != super::ReviewMode::Off;
+        let state_category = match &op {
+            BulkOp::State(k) => {
+                let w = project_settings
+                    .case_workflow
+                    .as_ref()
+                    .ok_or_else(|| TmError::bad_request("the project has no case workflow"))?;
+                Some(
+                    w.status(k)
+                        .ok_or_else(|| TmError::bad_request(format!("unknown state {k:?}")))?
+                        .category,
+                )
+            }
+            _ => None,
+        };
         let owned = owned_keys(&settings, &defs);
         let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
             "select {CASE_COLS} from cases where project_id = $1 and number = any($2) order by id for update"
@@ -2067,7 +2215,8 @@ impl Store {
                 code: code.to_string(),
             })
         };
-        let mut content: Vec<(CaseRow, CaseSnapshot, Vec<String>)> = Vec::new();
+        let mut content: Vec<(CaseRow, CaseSnapshot, Vec<String>, Option<String>)> = Vec::new();
+        let mut state_only: Vec<(Uuid, String)> = Vec::new();
         let mut archive_ids: Vec<Uuid> = Vec::new();
         for n in &numbers {
             let Some(cur) = by_number.get(n) else {
@@ -2094,6 +2243,11 @@ impl Store {
             match &op {
                 BulkOp::Move(f) => snap.folder_id = *f,
                 BulkOp::Status(s) => snap.status = *s,
+                BulkOp::State(_) => {
+                    if let Some(c) = state_category {
+                        snap.status = c;
+                    }
+                }
                 BulkOp::Field(k, v) => {
                     if v.is_null() {
                         snap.fields.remove(k);
@@ -2134,12 +2288,41 @@ impl Store {
                 skip(&mut out, *n, "field_from_code");
                 continue;
             }
+            let state = match &op {
+                BulkOp::Status(_) | BulkOp::State(_) => {
+                    let checked = if snap.status != cur.status {
+                        state_for_status(&mut tx, ctx, cur, snap.status, VersionSource::Bulk).await
+                    } else if let (BulkOp::State(_), Some(c)) = (&op, state_category) {
+                        super::workflow::check_transition(&mut tx, ctx, cur, c).await
+                    } else {
+                        Ok(None)
+                    };
+                    match checked {
+                        Ok(st) => match &op {
+                            BulkOp::State(k) => Some(k.clone()),
+                            _ => st,
+                        },
+                        Err(TmError::Conflict { code, .. })
+                        | Err(TmError::Forbidden { code, .. }) => {
+                            skip(&mut out, *n, code);
+                            continue;
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
+                _ => None,
+            };
             let changed = changed_keys(&snapshot_of(cur), &snap);
             if changed.is_empty() {
-                skip(&mut out, *n, "unchanged");
+                match state {
+                    Some(st) if cur.state.as_deref() != Some(st.as_str()) => {
+                        state_only.push((cur.id, st));
+                    }
+                    _ => skip(&mut out, *n, "unchanged"),
+                }
                 continue;
             }
-            content.push((cur.clone(), snap, changed));
+            content.push((cur.clone(), snap, changed, state));
         }
         let mut notify_items: Vec<Value> = Vec::new();
         for chunk in content.chunks(1000) {
@@ -2151,7 +2334,9 @@ impl Store {
             let mut versions = Vec::with_capacity(chunk.len());
             let mut changed = Vec::with_capacity(chunk.len());
             let mut snaps = Vec::with_capacity(chunk.len());
-            for (cur, snap, ch) in chunk {
+            let mut states: Vec<Option<String>> = Vec::with_capacity(chunk.len());
+            for (cur, snap, ch, st) in chunk {
+                states.push(st.clone());
                 ids.push(cur.id);
                 folders.push(snap.folder_id);
                 statuses.push(snap.status.as_str().to_string());
@@ -2165,9 +2350,9 @@ impl Store {
                 "update cases c set folder_id = t.f, status = t.s, fields = t.fl, \
                    tags = array(select jsonb_array_elements_text(t.tg)), revision = c.revision + 1, \
                    version = t.v, updated_by = $2, updated_at = now(), \
-                   ai_unreviewed = c.ai_unreviewed and t.s <> 'active' \
-                 from unnest($3::uuid[], $4::uuid[], $5::text[], $6::jsonb[], $7::jsonb[], $8::int[]) \
-                   as t(id, f, s, fl, tg, v) \
+                   ai_unreviewed = c.ai_unreviewed and t.s <> 'active', state = coalesce(t.st, c.state) \
+                 from unnest($3::uuid[], $4::uuid[], $5::text[], $6::jsonb[], $7::jsonb[], $8::int[], $9::text[]) \
+                   as t(id, f, s, fl, tg, v, st) \
                  where c.project_id = $1 and c.id = t.id returning c.number, c.revision",
             )
             .bind(ctx.project_id)
@@ -2178,6 +2363,7 @@ impl Store {
             .bind(&fields)
             .bind(&tags)
             .bind(&versions)
+            .bind(&states)
             .fetch_all(&mut *tx)
             .await?;
             sqlx::query(
@@ -2192,6 +2378,40 @@ impl Store {
             .bind(&changed)
             .bind(&snaps)
             .execute(&mut *tx)
+            .await?;
+            if review_on {
+                for (cur, _, ch, _) in chunk {
+                    let after = reread(&mut tx, ctx.project_id, cur.id).await?;
+                    super::review::on_save(
+                        &mut tx,
+                        ctx,
+                        Some(cur),
+                        &after,
+                        ch,
+                        VersionSource::Bulk,
+                    )
+                    .await?;
+                }
+            }
+            out.updated += updated.len() as i64;
+            notify_items.extend(
+                updated
+                    .into_iter()
+                    .map(|(n, r)| json!({"number": n, "revision": r, "source": "bulk"})),
+            );
+        }
+        if !state_only.is_empty() {
+            let (ids, keys): (Vec<Uuid>, Vec<String>) = state_only.into_iter().unzip();
+            let updated: Vec<(i64, i64)> = sqlx::query_as(
+                "update cases c set state = t.st, revision = c.revision + 1, updated_by = $2, updated_at = now() \
+                 from unnest($3::uuid[], $4::text[]) as t(id, st) \
+                 where c.project_id = $1 and c.id = t.id returning c.number, c.revision",
+            )
+            .bind(ctx.project_id)
+            .bind(no_nul(ctx.by))
+            .bind(&ids)
+            .bind(&keys)
+            .fetch_all(&mut *tx)
             .await?;
             out.updated += updated.len() as i64;
             notify_items.extend(
@@ -2373,7 +2593,11 @@ impl Store {
         .bind(no_nul(ctx.by))
         .fetch_one(&mut *tx)
         .await?;
-        let row = case_row(&r)?;
+        let mut row = case_row(&r)?;
+        let mut moved = vec![target.id];
+        moved.extend(old_case);
+        super::last_status::apply_manual(&mut tx, &moved).await?;
+        row = reread(&mut tx, ctx.project_id, row.id).await?;
         case_event(
             &mut tx,
             ctx.project_key,
@@ -2425,7 +2649,9 @@ impl Store {
         .bind(no_nul(ctx.by))
         .fetch_one(&mut *tx)
         .await?;
-        let row = case_row(&r)?;
+        let mut row = case_row(&r)?;
+        super::last_status::apply_manual(&mut tx, &[cur.id]).await?;
+        row = reread(&mut tx, ctx.project_id, row.id).await?;
         case_event(
             &mut tx,
             ctx.project_key,
@@ -2852,6 +3078,7 @@ mod tests {
                 ..Default::default()
             }],
             links: vec![],
+            parameters: None,
         };
         assert_eq!(
             search_text("Pay", &body),

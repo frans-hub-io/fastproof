@@ -79,6 +79,9 @@ pub struct Summary {
     /// A sample sent by `POST .../notifications/{id}/test`, not a real launch.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub test: bool,
+    /// What a launch started from a plan ran compared to the plan.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_check: Option<fastproof_store::tm::PlanCheck>,
 }
 
 /// The outcome of one delivery attempt.
@@ -236,10 +239,32 @@ pub fn text(s: &Summary) -> String {
             names.join(", ")
         ));
     }
+    if let Some(line) = plan_check_line(s) {
+        out.push(line);
+    }
     if let Some(u) = &s.launch.url {
         out.push(u.clone());
     }
     out.join("\n")
+}
+
+/// One line when the launch ran tests outside its plan or nothing of it.
+pub fn plan_check_line(s: &Summary) -> Option<String> {
+    let p = s.plan_check.as_ref().filter(|p| p.warning)?;
+    let mut line = format!(
+        "Plan check: {} of {} plan cases ran, {} missing, {} not in the plan",
+        p.ran, p.in_plan, p.missing, p.extra
+    );
+    if !p.extra_names.is_empty() {
+        let names: Vec<String> = p
+            .extra_names
+            .iter()
+            .take(5)
+            .map(|n| one_line(n, 100))
+            .collect();
+        line.push_str(&format!(" ({})", names.join(", ")));
+    }
+    Some(line)
 }
 
 fn slack_escape(s: &str) -> String {
@@ -553,6 +578,7 @@ pub fn sample_summary(project: &str, project_url: Option<String>, n: &Notificati
         },
         events: n.on.clone(),
         test: true,
+        plan_check: None,
     }
 }
 
@@ -666,6 +692,7 @@ mod tests {
             },
             events: vec!["gateFailed".into()],
             test: false,
+            plan_check: None,
         }
     }
 
@@ -696,6 +723,35 @@ mod tests {
         let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(v["event"], "gateFailed");
         assert_eq!(v["launch"]["counts"]["failed"], 2);
+    }
+
+    #[test]
+    fn plan_check_line_only_on_a_warning() {
+        let mut s = summary();
+        assert!(!text(&s).contains("Plan check"));
+        let check = fastproof_store::tm::PlanCheck {
+            plan_id: Uuid::nil(),
+            in_plan: 10,
+            ran: 8,
+            extra: 2,
+            missing: 2,
+            extra_names: vec!["shop.Extra#one".into(), "shop.Extra#two".into()],
+            warning: true,
+        };
+        s.plan_check = Some(fastproof_store::tm::PlanCheck {
+            warning: false,
+            ..check.clone()
+        });
+        assert!(!text(&s).contains("Plan check"));
+        assert!(serde_json::to_value(&s).unwrap()["planCheck"]["inPlan"] == 10);
+        s.plan_check = Some(check);
+        let t = text(&s);
+        assert!(
+            t.contains("Plan check: 8 of 10 plan cases ran, 2 missing, 2 not in the plan (shop.Extra#one, shop.Extra#two)"),
+            "{t}"
+        );
+        s.plan_check = None;
+        assert!(serde_json::to_value(&s).unwrap().get("planCheck").is_none());
     }
 
     #[test]

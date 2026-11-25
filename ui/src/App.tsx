@@ -39,6 +39,12 @@ const PlanPage = lazy(() => import('./pages/Plan'));
 const RunnerPage = lazy(() => import('./pages/Runner'));
 const CaseFieldsPage = lazy(() => import('./pages/CaseFields'));
 const MyRunsPage = lazy(() => import('./pages/MyRuns'));
+const SharedStepsPage = lazy(() => import('./pages/SharedSteps'));
+const SharedStepPage = lazy(() => import('./pages/SharedStep'));
+const ReviewsPage = lazy(() => import('./pages/Reviews'));
+const RequirementsPage = lazy(() => import('./pages/Requirements'));
+const RequirementPage = lazy(() => import('./pages/Requirement'));
+const CoveragePage = lazy(() => import('./pages/Coverage'));
 const ManualPrintPage = lazy(() => import('./pages/ManualPrint'));
 
 setLoginRedirect(navigateForAuth);
@@ -79,6 +85,12 @@ export function AppRoutes() {
         <Route path="p/:key/cases/:n" element={<CasePage />} />
         <Route path="p/:key/plans" element={<PlansPage />} />
         <Route path="p/:key/plans/:id" element={<PlanPage />} />
+        <Route path="p/:key/shared-steps" element={<SharedStepsPage />} />
+        <Route path="p/:key/shared-steps/:n" element={<SharedStepPage />} />
+        <Route path="p/:key/reviews" element={<ReviewsPage />} />
+        <Route path="p/:key/requirements" element={<RequirementsPage />} />
+        <Route path="p/:key/requirements/:n" element={<RequirementPage />} />
+        <Route path="p/:key/coverage" element={<CoveragePage />} />
         <Route path="p/:key/launches/:id/run" element={<RunnerPage />} />
         <Route path="p/:key/launches/:id/run/:itemId" element={<RunnerPage />} />
         <Route path="admin/jobs" element={<JobsPage />} />

@@ -22,6 +22,8 @@ import { Executions } from './runner/Executions';
 import { HelpModal } from './runner/HelpModal';
 import { runnerAction } from './runner/keymap';
 import { RunQueue, type QueueFilter } from './runner/RunQueue';
+import { Iterations } from './runner/Iterations';
+import { SharedRefresh } from './runner/SharedRefresh';
 import { RunSteps, StatusButtons, StepFields } from './runner/RunSteps';
 import { SaveQueue, type QueueSnapshot } from './runner/saveQueue';
 import { emptyLocal, htmlFor, isOpen, type LocalStep } from './runner/types';
@@ -475,6 +477,8 @@ export default function RunnerPage() {
   return (
     <>
       <LiveRegion message={announce} />
+      <SharedRefresh projectKey={key} launchId={id} />
+      <Iterations projectKey={key} launchId={id} />
       <PageHeader
         crumbs={[{ label: 'Projects', to: '/' }, { label: project.data?.name ?? key, to: `/p/${key}` }, { label: l ? `#${String(l.number)} ${l.name}` : 'Launch', to: `/p/${key}/launches/${id}?tab=manual` }, { label: 'Manual run' }]}
         title="Manual run"

@@ -37,6 +37,7 @@ import { RerunModal, RerunsPanel, type RerunTarget } from './launch/RerunModal';
 import { TestPlanModal } from './launch/TestPlanModal';
 import { TransitionBadge } from './launch/TransitionBadge';
 import { LaunchProgress, LiveBadge } from './Launches';
+import { PlanCheck } from './launch/PlanCheck';
 import { Manual } from './launch/Manual';
 import { ManualIcon } from './cases/common';
 
@@ -535,6 +536,7 @@ export default function LaunchPage() {
         const failingCount = scoped.failed + scoped.broken;
         return (
           <>
+            <PlanCheck projectKey={key} launchId={l.id} />
             <PageHeader
               crumbs={[{ label: 'Projects', to: '/' }, { label: project.data?.name ?? key, to: `/p/${key}` }, { label: `#${String(l.number)}` }]}
               title={`#${String(l.number)} ${l.name}`}

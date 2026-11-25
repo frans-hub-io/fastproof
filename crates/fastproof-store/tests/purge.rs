@@ -88,6 +88,8 @@ declare
     f2 uuid := gen_random_uuid();
     f3 uuid := gen_random_uuid();
     plan uuid := gen_random_uuid();
+    ss uuid := gen_random_uuid();
+    rq uuid := gen_random_uuid();
     t0 timestamptz := now();
 begin
     insert into projects (id, key, name, case_seq) values (p, k, k, 8);
@@ -175,6 +177,34 @@ begin
         select ri.id, 's' || gs, 'passed', 't' from run_items ri, generate_series(1, 4) gs where ri.launch_id = ml;
     insert into run_item_executions (run_item_id, execution_no, status, case_version, rerun_by)
         select ri.id, gs, 'passed', 1, 't' from run_items ri, generate_series(1, 2) gs where ri.launch_id = ml;
+    insert into run_iterations (run_item_id, execution_no, row_id, position, param_values, series_id)
+        select ri.id, 1, 'r_' || gs, gs, '{}', gen_random_uuid() from run_items ri, generate_series(1, 2) gs
+        where ri.launch_id = ml;
+    insert into run_iteration_step_results (run_item_id, execution_no, row_id, step_path, status, updated_by)
+        select it.run_item_id, it.execution_no, it.row_id, '1', 'passed', 't' from run_iterations it
+        join run_items ri on ri.id = it.run_item_id where ri.launch_id = ml;
+    update cases cs set last_status = 'passed', last_status_at = now(), last_source = 'manual', last_launch_id = ml
+        where cs.project_id = p and cs.number <= 4;
+    insert into shared_steps (id, project_id, number, name, steps) values (ss, p, 1, 'login', '[]');
+    insert into shared_steps (id, project_id, number, name, steps)
+        select gen_random_uuid(), p, 1 + gs, 'step ' || gs, '[]' from generate_series(1, 4) gs;
+    insert into shared_step_versions (shared_step_id, version, project_id, source, snapshot_z, created_by)
+        select s2.id, v, p, 'ui', '\x00', 't' from shared_steps s2, generate_series(1, 2) v where s2.project_id = p;
+    insert into shared_step_keys (project_id, kind, value, shared_step_id) values (p, 'external', 'ss-' || k, ss);
+    insert into shared_step_usages (shared_step_id, case_id, project_id)
+        select ss, cs.id, p from cases cs where cs.project_id = p;
+    insert into review_votes (project_id, kind, object_id, version, reviewer, decision)
+        select p, 'case', cs.id, 1, 'r', 'approve' from cases cs where cs.project_id = p;
+    insert into requirements (id, project_id, number, title, path_ids, depth) values (rq, p, 1, 'root', array[rq], 1);
+    insert into requirements (id, project_id, number, title, parent_id, path_ids, depth)
+        select gen_random_uuid(), p, 1 + gs, 'child ' || gs, rq, array[rq], 2 from generate_series(1, 4) gs;
+    insert into requirement_links (requirement_id, case_id, project_id, origin, created_by)
+        select r.id, cs.id, p, 'ui', 't' from requirements r, cases cs
+        where r.project_id = p and cs.project_id = p and cs.number <= 2;
+    insert into saved_queries (id, project_id, entity, name, query, owner)
+        select gen_random_uuid(), p, 'cases', 'q' || gs, 'status = active', 'u' from generate_series(1, 4) gs;
+    insert into plan_dispatches (id, project_id, plan_id, launch_id, provider, git_ref, requested_by)
+        select gen_random_uuid(), p, plan, l2.id, 'github', 'main', 'u' from launches l2 where l2.project_id = p;
     update results r set run_item_id = (select ri.id from run_items ri where ri.launch_id = ml limit 1)
         where r.project_id = p and r.full_name = 'T1';
     insert into tm_jobs (id, project_id, kind, params) values (gen_random_uuid(), p, 'import', '{}'), (gen_random_uuid(), p, 'export', '{}');
@@ -401,7 +431,7 @@ async fn interrupted_purge_continues_on_the_next_run() {
     let mut interrupted = 0;
     loop {
         match store
-            .purge_project_rows(gone, Some(30 + interrupted % 7))
+            .purge_project_rows(gone, Some(45 + interrupted % 7))
             .await
         {
             Ok(()) => break,

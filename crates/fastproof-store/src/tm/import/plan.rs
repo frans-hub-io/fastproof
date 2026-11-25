@@ -121,6 +121,7 @@ fn steps_of(
                     .filter_map(|a| attachments.get(a).copied())
                     .collect(),
                 steps: steps_of(&s.steps, attachments, prev.map(|p| p.steps.as_slice())),
+                shared: None,
             }
         })
         .collect()
@@ -573,6 +574,7 @@ impl Planner {
                 preconditions: rewrite(&c.preconditions, c, attachments),
                 steps: steps_of(&c.steps, attachments, cur.map(|r| r.body.steps.as_slice())),
                 links,
+                parameters: cur.and_then(|r| r.body.parameters.clone()),
             }),
             fields: Some(merged),
             tags: if tags.is_empty() && cur.is_some() {
@@ -1297,6 +1299,8 @@ async fn bulk_create(
     let mut tags = Vec::with_capacity(items.len());
     let mut search = Vec::with_capacity(items.len());
     let mut snaps = Vec::with_capacity(items.len());
+    let mut states: Vec<Option<String>> = Vec::with_capacity(items.len());
+    let mut state_of: HashMap<(bool, super::super::CaseStatus), Option<String>> = HashMap::new();
     let mut max_kept = 0i64;
     for (c, snap) in items {
         let number = match c.number {
@@ -1320,7 +1324,19 @@ async fn bulk_create(
         numbers.push(number);
         names.push(crate::no_nul(&snap.name));
         statuses.push(snap.status.as_str().to_string());
-        automated.push(planner.opts.identities && c.automated && !c.full_names.is_empty());
+        let auto = planner.opts.identities && c.automated && !c.full_names.is_empty();
+        automated.push(auto);
+        let state = match state_of.get(&(auto, snap.status)) {
+            Some(s) => s.clone(),
+            None => {
+                let s =
+                    super::super::workflow::system_state(conn, ctx.project_id, auto, snap.status)
+                        .await?;
+                state_of.insert((auto, snap.status), s.clone());
+                s
+            }
+        };
+        states.push(state);
         folders.push(snap.folder_id);
         bodies.push(crate::json_no_nul(serde_json::to_value(&snap.body)?));
         fields.push(crate::json_no_nul(serde_json::to_value(&snap.fields)?));
@@ -1346,11 +1362,11 @@ async fn bulk_create(
     }
     sqlx::query(
         "insert into cases (id, project_id, number, name, status, automated, origin, ai_unreviewed, folder_id, \
-           body, fields, tags, search_text, last_trusted_at, created_by, updated_by) \
+           body, fields, tags, search_text, last_trusted_at, created_by, updated_by, state) \
          select i, $1, n, nm, st, a, 'import', false, f, b, fl, array(select jsonb_array_elements_text(tg)), s, \
-           case when a then now() end, $2, $2 \
+           case when a then now() end, $2, $2, ws \
          from unnest($3::uuid[], $4::bigint[], $5::text[], $6::text[], $7::bool[], $8::uuid[], $9::jsonb[], \
-           $10::jsonb[], $11::jsonb[], $12::text[]) as t(i, n, nm, st, a, f, b, fl, tg, s)",
+           $10::jsonb[], $11::jsonb[], $12::text[], $13::text[]) as t(i, n, nm, st, a, f, b, fl, tg, s, ws)",
     )
     .bind(ctx.project_id)
     .bind(crate::no_nul(ctx.by))
@@ -1364,10 +1380,12 @@ async fn bulk_create(
     .bind(&fields)
     .bind(&tags)
     .bind(&search)
+    .bind(&states)
     .execute(&mut *conn)
     .await?;
     let all: Vec<String> = super::super::versions::CONTENT_KEYS
         .iter()
+        .filter(|k| **k != "parameters")
         .map(|k| k.to_string())
         .collect();
     sqlx::query(

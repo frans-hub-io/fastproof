@@ -1,6 +1,7 @@
-//! Managed test plans: explicit items plus items added by a stored [`CaseFilter`], sync of the
-//! filter with a diff, `testplan.json` computed live from the plan's automated cases, and
-//! launches started from a plan with run items for its manual cases.
+//! Managed test plans: explicit items plus items added by a stored [`CaseFilter`] or FPQL
+//! query, sync of the filter or query with a diff, `testplan.json` computed live from the
+//! plan's automated cases, and launches started from a plan with run items for its manual
+//! cases.
 //!
 //! Adhoc plans (stage 1, `analysis/plans.rs`) keep their stored `tests` and expire; managed
 //! plans never expire and are archived instead.
@@ -47,6 +48,14 @@ pub struct TestPlanPatch {
     )]
     #[schema(value_type = Option<CaseFilter>)]
     pub filter: Option<Option<CaseFilter>>,
+    /// An FPQL query (exclusive with `filter`); `null` removes it.
+    #[serde(
+        default,
+        deserialize_with = "double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schema(value_type = Option<String>)]
+    pub query: Option<Option<String>>,
 }
 
 /// Filters of the item list of a plan.
@@ -79,10 +88,65 @@ pub struct StartedPlanLaunch {
     pub run_items: i64,
     /// The plan has automated cases (CI runs them from `testplan.json`).
     pub automated: i64,
+    /// Manual cases left out (not approved, or in a state that blocks runs), the first 1000.
+    pub skips: Vec<super::RunItemSkip>,
 }
 
 fn bad(message: impl Into<String>) -> TmError {
     TmError::bad_request(message)
+}
+
+/// A plan keeps a filter or a query, never both.
+fn exclusive(filter: Option<&Option<CaseFilter>>, query: Option<&Option<String>>) -> TmResult<()> {
+    if matches!(filter, Some(Some(_))) && matches!(query, Some(Some(_))) {
+        return Err(bad("give either a filter or a query"));
+    }
+    Ok(())
+}
+
+/// A plan query parsed and resolved (under the FPQL statement timeout; the caller is in a
+/// transaction and resets the timeout before writing).
+async fn plan_query(
+    conn: &mut PgConnection,
+    project_id: Uuid,
+    src: &str,
+    by: &str,
+) -> TmResult<super::query::ast::Query> {
+    if src.trim().is_empty() {
+        return Err(bad("query must not be empty"));
+    }
+    super::query::set_timeout(conn).await?;
+    super::query::prepare(
+        conn,
+        project_id,
+        super::QueryEntity::Cases,
+        src,
+        &super::query::QueryCtx::new(by),
+    )
+    .await
+}
+
+/// Ids of the cases (not archived) a resolved query selects, at most `cap`, by number.
+pub async fn query_case_ids(
+    conn: &mut PgConnection,
+    project_id: Uuid,
+    q: &super::query::ast::Query,
+    cap: usize,
+) -> TmResult<Vec<Uuid>> {
+    let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(
+        "select c.id from cases c where c.archived_at is null and c.project_id = ",
+    );
+    qb.push_bind(project_id);
+    super::query::compile::push_query(&mut qb, project_id, q);
+    qb.push(" order by c.number limit ").push_bind(cap as i64);
+    super::query::set_timeout(conn).await?;
+    let ids = qb
+        .build_query_scalar()
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(super::query::run_error(&q.src))?;
+    super::query::reset_timeout(conn).await?;
+    Ok(ids)
 }
 
 /// An assignee: 1 to [`MAX_ASSIGNEE_BYTES`] bytes, no control characters.
@@ -163,7 +227,7 @@ pub(crate) async fn resolve_numbers(
     Ok(rows.into_iter().map(|(id, _)| id).collect())
 }
 
-const PLAN_COLS: &str = "p.id, p.kind, p.name, p.description, p.filter, p.revision, p.created_by, \
+const PLAN_COLS: &str = "p.id, p.kind, p.name, p.description, p.filter, p.query, p.revision, p.created_by, \
     p.created_at, p.updated_at, p.updated_by, p.archived_at, p.test_count, \
     coalesce(k.total, 0) as total, coalesce(k.manual, 0) as manual, coalesce(k.automated, 0) as automated";
 
@@ -208,6 +272,7 @@ fn plan_row(r: &PgRow) -> sqlx::Result<PlanRow> {
             name: r.try_get("name")?,
             description: r.try_get("description")?,
             filter: filter.and_then(|f| serde_json::from_value(f).ok()),
+            query: r.try_get("query")?,
             counts,
             revision: r.try_get("revision")?,
             created_by: r.try_get("created_by")?,
@@ -340,19 +405,35 @@ fn decode_cursor(c: &str, n: usize) -> TmResult<Vec<String>> {
 /// `{id: ALLURE_ID when the code has one, selector: full name}`; muted ones also in
 /// `mutedTests`. A plan without automated cases is a 409 `plan_has_no_automated_cases`.
 pub async fn managed_testplan(conn: &mut PgConnection, plan_id: Uuid) -> TmResult<TestPlanJson> {
-    let rows: Vec<(String, Option<String>, Option<String>, bool)> = sqlx::query_as(
-        "select tc.full_name, tc.explicit_id, tc.explicit_id_source, \
-           exists (select 1 from series s join series_mutes m on m.series_id = s.id \
-             where s.test_case_id = tc.id and (m.until is null or m.until > now())) as muted \
-         from test_plan_items i join cases c on c.id = i.case_id \
-           join test_cases tc on tc.case_id = c.id and tc.kind = 'code' \
-         where i.plan_id = $1 and c.archived_at is null and c.automated \
-         limit $2",
-    )
-    .bind(plan_id)
-    .bind(MAX_TESTPLAN_IDENTITIES)
-    .fetch_all(&mut *conn)
-    .await?;
+    let project_id: Option<Uuid> =
+        sqlx::query_scalar("select project_id from test_plans where id = $1")
+            .bind(plan_id)
+            .fetch_optional(&mut *conn)
+            .await?;
+    let rule = match project_id {
+        Some(p) => super::runs::RunnableRule::of(conn, p, false).await?,
+        None => super::runs::RunnableRule {
+            version_sql: "c.version",
+            blocking: Vec::new(),
+        },
+    };
+    let rows: Vec<(String, Option<String>, Option<String>, bool)> =
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select tc.full_name, tc.explicit_id, tc.explicit_id_source, \
+               exists (select 1 from series s join series_mutes m on m.series_id = s.id \
+                 where s.test_case_id = tc.id and (m.until is null or m.until > now())) as muted \
+             from test_plan_items i join cases c on c.id = i.case_id \
+               join test_cases tc on tc.case_id = c.id and tc.kind = 'code' \
+             where i.plan_id = $1 and c.archived_at is null and c.automated \
+               and {} is not null and (c.state is null or not (c.state = any($3))) \
+             limit $2",
+            rule.version_sql
+        )))
+        .bind(plan_id)
+        .bind(MAX_TESTPLAN_IDENTITIES)
+        .bind(&rule.blocking)
+        .fetch_all(&mut *conn)
+        .await?;
     if rows.is_empty() {
         return Err(TmError::conflict(
             "plan_has_no_automated_cases",
@@ -484,6 +565,8 @@ impl Store {
                 ),
             });
         }
+        exclusive(w.filter.as_ref(), w.query.as_ref())?;
+        let query_src = w.query.clone().flatten().filter(|q| !q.trim().is_empty());
         let filter = w.filter.clone().flatten().map(plan_filter);
         if let Some(f) = &filter {
             super::cases::check_filter(f)?;
@@ -497,11 +580,15 @@ impl Store {
         if let Some(f) = &filter {
             super::cases::check_filter_folders(&mut tx, project_id, f).await?;
         }
+        let query = match &query_src {
+            Some(src) => Some(plan_query(&mut tx, project_id, src, by).await?),
+            None => None,
+        };
         let explicit = resolve_numbers(&mut tx, project_id, &numbers).await?;
         let id = Uuid::now_v7();
         sqlx::query(
-            "insert into test_plans (id, project_id, name, kind, description, filter, created_by, updated_at, updated_by) \
-             values ($1, $2, $3, 'managed', $4, $5, $6, now(), $6)",
+            "insert into test_plans (id, project_id, name, kind, description, filter, query, created_by, updated_at, updated_by) \
+             values ($1, $2, $3, 'managed', $4, $5, $7, $6, now(), $6)",
         )
         .bind(id)
         .bind(project_id)
@@ -515,12 +602,17 @@ impl Store {
                 .map(json_no_nul),
         )
         .bind(no_nul(by))
+        .bind(query_src.as_deref().map(|q| no_nul(q.trim())))
         .execute(&mut *tx)
         .await?;
         add_items(&mut tx, id, &explicit, false, limits.max_plan_cases).await?;
         if let Some(f) = &filter {
             let matched =
                 filter_case_ids(&mut tx, project_id, f, limits.max_plan_cases + 1).await?;
+            add_items(&mut tx, id, &matched, true, limits.max_plan_cases).await?;
+        }
+        if let Some(q) = &query {
+            let matched = query_case_ids(&mut tx, project_id, q, limits.max_plan_cases + 1).await?;
             add_items(&mut tx, id, &matched, true, limits.max_plan_cases).await?;
         }
         let plan = plan_in(&mut tx, project_id, id, false)
@@ -603,6 +695,7 @@ impl Store {
                 ),
             });
         }
+        exclusive(p.filter.as_ref(), p.query.as_ref())?;
         if let Some(Some(f)) = &p.filter {
             super::cases::check_filter(f)?;
         }
@@ -618,13 +711,24 @@ impl Store {
         if let Some(Some(f)) = &p.filter {
             super::cases::check_filter_folders(&mut tx, project_id, f).await?;
         }
+        let query_src = match &p.query {
+            Some(Some(q)) if !q.trim().is_empty() => {
+                plan_query(&mut tx, project_id, q, by).await?;
+                super::query::reset_timeout(&mut tx).await?;
+                Some(q.trim().to_string())
+            }
+            _ => None,
+        };
         let filter_json = match &p.filter {
             Some(Some(f)) => Some(json_no_nul(serde_json::to_value(plan_filter(f.clone()))?)),
             _ => None,
         };
+        let set_filter = p.filter.is_some() || query_src.is_some();
+        let set_query = p.query.is_some() || matches!(p.filter, Some(Some(_)));
         sqlx::query(
             "update test_plans set name = coalesce($3, name), description = coalesce($4, description), \
              filter = case when $5 then $6 else filter end, \
+             query = case when $9 then $10 else query end, \
              revision = revision + 1, updated_at = now(), updated_by = $7 \
              where id = $1 and project_id = $2 and revision = $8",
         )
@@ -632,10 +736,12 @@ impl Store {
         .bind(project_id)
         .bind(name.as_deref().map(no_nul))
         .bind(p.description.as_deref().map(no_nul))
-        .bind(p.filter.is_some())
+        .bind(set_filter)
         .bind(filter_json)
         .bind(no_nul(by))
         .bind(revision)
+        .bind(set_query)
+        .bind(query_src.as_deref().map(no_nul))
         .execute(&mut *tx)
         .await?;
         let plan = plan_in(&mut tx, project_id, id, false)
@@ -824,11 +930,16 @@ impl Store {
     ) -> TmResult<super::PlanSyncDiff> {
         let mut tx = self.pool.begin().await?;
         let row = managed_for_change(&mut tx, project_id, plan_id, false).await?;
-        let Some(filter) = row.plan.filter else {
-            return Err(bad("the plan has no filter"));
+        let matched = match (row.plan.filter, row.plan.query) {
+            (_, Some(src)) => {
+                let q = plan_query(&mut tx, project_id, &src, by).await?;
+                query_case_ids(&mut tx, project_id, &q, limits.max_plan_cases + 1).await?
+            }
+            (Some(filter), None) => {
+                filter_case_ids(&mut tx, project_id, &filter, limits.max_plan_cases + 1).await?
+            }
+            (None, None) => return Err(bad("the plan has no filter or query")),
         };
-        let matched =
-            filter_case_ids(&mut tx, project_id, &filter, limits.max_plan_cases + 1).await?;
         if matched.len() > limits.max_plan_cases {
             return Err(TmError::limit("maxPlanCases", limits.max_plan_cases as u64));
         }
@@ -993,27 +1104,60 @@ impl Store {
                     created: false,
                     run_items: items,
                     automated: row.plan.counts.automated,
+                    skips: Vec::new(),
                 });
             }
         }
-        if row.plan.counts.manual as usize > limits.max_run_items {
+        let include_manual = req.include_manual.unwrap_or(true);
+        if include_manual && row.plan.counts.manual as usize > limits.max_run_items {
             return Err(TmError::limit("maxRunItems", limits.max_run_items as u64));
         }
-        if row.plan.counts.manual > 0 {
+        if include_manual && row.plan.counts.manual > 0 {
             check_open_plan_launches(&mut tx, project.id, by, limits).await?;
         }
-        let manual: Vec<(Uuid, i64, String, i32, Option<String>)> = sqlx::query_as(
-            "select c.id, c.number, c.name, c.version, i.assignee from test_plan_items i \
-             join cases c on c.id = i.case_id \
-             where i.plan_id = $1 and c.archived_at is null and not c.automated \
-             order by i.position, c.number limit $2",
-        )
-        .bind(plan_id)
-        .bind(limits.max_run_items as i64 + 1)
-        .fetch_all(&mut *tx)
-        .await?;
-        if manual.len() > limits.max_run_items {
+        let rule =
+            super::runs::RunnableRule::of(&mut tx, project.id, req.include_unapproved).await?;
+        type Candidate = (
+            Uuid,
+            i64,
+            String,
+            Option<i32>,
+            Option<String>,
+            Option<String>,
+        );
+        let candidates: Vec<Candidate> = if include_manual {
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "select c.id, c.number, c.name, {} as runnable, c.state, i.assignee \
+                     from test_plan_items i join cases c on c.id = i.case_id \
+                     where i.plan_id = $1 and c.archived_at is null and not c.automated \
+                     order by i.position, c.number limit $2",
+                rule.version_sql
+            )))
+            .bind(plan_id)
+            .bind(limits.max_run_items as i64 + 1)
+            .fetch_all(&mut *tx)
+            .await?
+        } else {
+            Vec::new()
+        };
+        if candidates.len() > limits.max_run_items {
             return Err(TmError::limit("maxRunItems", limits.max_run_items as u64));
+        }
+        let mut skips = Vec::new();
+        let mut manual: Vec<(Uuid, i64, String, i32, Option<String>)> =
+            Vec::with_capacity(candidates.len());
+        for (id, number, name, runnable, state, assignee) in candidates {
+            match rule.skip(runnable, state.as_deref()) {
+                Some(code) => {
+                    if skips.len() < super::runs::MAX_SKIPS_LISTED {
+                        skips.push(super::RunItemSkip {
+                            case_number: number,
+                            code,
+                        });
+                    }
+                }
+                None => manual.push((id, number, name, runnable.unwrap_or(1), assignee)),
+            }
         }
         let Some(launch_id) =
             crate::launches::insert_launch(&mut tx, project, start, by, can_sync).await?
@@ -1061,6 +1205,7 @@ impl Store {
             created: true,
             run_items: n as i64,
             automated: row.plan.counts.automated,
+            skips,
         })
     }
 }

@@ -31,6 +31,12 @@ import { mediaHandlers } from './media';
 import { historyImportHandlers, resetHistoryImports } from './historyImports';
 import { mergeHandlers, resetMerges } from './merges';
 import { analyze, analyzeDetail, isImportant, resetStageC } from './stageC';
+import { sharedStepsHandlers } from './sharedSteps';
+import { queriesHandlers } from './queries';
+import { reviewsHandlers } from './reviews';
+import { planDispatchesHandlers } from './planDispatches';
+import { parametersHandlers } from './parameters';
+import { requirementsHandlers } from './requirements';
 import { resetTm, subscribeTmEvents, tmHandlers, tmLaunchList } from './tm';
 
 const API = '/api/v1';
@@ -556,6 +562,12 @@ export const handlers = [
   ...mediaHandlers(error),
   ...mergeHandlers(error),
   ...historyImportHandlers(error),
+  ...sharedStepsHandlers,
+  ...queriesHandlers,
+  ...reviewsHandlers,
+  ...planDispatchesHandlers,
+  ...parametersHandlers,
+  ...requirementsHandlers,
 
   http.all(`${API}/*`, () => error(404, 'not_found', 'no such endpoint')),
 ];

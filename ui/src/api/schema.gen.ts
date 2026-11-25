@@ -20,6 +20,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/replicas": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Replicas seen within a day with their test-management level, and whether new data formats may be written (`FASTPROOF_TM_GATE`, `FASTPROOF_TM_GATE_SETTLE_SECONDS`). Needs `settings:write` without a project scope. */
+        get: operations["admin_replicas"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/audit": {
         parameters: {
             query?: never;
@@ -295,7 +312,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description One action on cases named by number or matched by a filter (at most `maxBulk`). `move` takes a folder id or null, `setStatus` a status, `setField` `{key, value}`, `addTags`/`removeTags` a list. Each changed case gets one version with `source = bulk`; the others are listed in `skipped` with a code. */
+        /** @description One action on cases named by number, matched by a filter or by an FPQL `query` (exactly one of them; at most `maxBulk`). `move` takes a folder id or null, `setStatus` a status, `setField` `{key, value}`, `addTags`/`removeTags` a list. Each changed case gets one version with `source = bulk`; the others are listed in `skipped` with a code. */
         post: operations["bulk_cases"];
         delete?: never;
         options?: never;
@@ -329,7 +346,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description Starts a zip export job. The answer's `downloadUrl` (shown only here) is a one-time link for the caller, valid for 24 hours once the job is `done`. A caller has at most 2 and a project at most 4 exports queued or running (else 409 `export_busy`). */
+        /** @description Starts a zip export job of the cases of `filter` or of an FPQL `query` (a query is a new format: while an upgrade is in progress it is 409 `upgrade_in_progress`). The answer's `downloadUrl` (shown only here) is a one-time link for the caller, valid for 24 hours once the job is `done`. A caller has at most 2 and a project at most 4 exports queued or running (else 409 `export_busy`). */
         post: operations["create_case_export"];
         delete?: never;
         options?: never;
@@ -1477,6 +1494,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{key}/query/schema": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description What FPQL offers for an entity: attributes with their operators and values, functions, the project's fields and the keywords (for completion). `entity=requirements` answers 400 until requirement queries exist. */
+        get: operations["query_schema"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/query/validate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Checks a query: 200 with `ok: true`, the normalized text and the number of matching cases (not archived unless the query names `archived`; at most 10 000, then `countCapped`), or 200 with `ok: false` and the `error` (position and length in UTF-16 code units). The count runs with a 5 s statement timeout. */
+        post: operations["validate_query"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{key}/results/{id}": {
         parameters: {
             query?: never;
@@ -1741,6 +1792,42 @@ export interface paths {
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/saved-queries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description The caller's saved queries and the shared ones of an entity, by position. */
+        get: operations["list_saved_queries"];
+        put?: never;
+        /** @description Saves a query of the caller (checked like a query that runs). `shared: true` needs `cases:write`. At most 100 per owner and entity and 200 shared ones per project and entity (409 `limit_reached`); a name the caller already uses is 409 `saved_query_name_taken`. */
+        post: operations["create_saved_query"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/saved-queries/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** @description Deletes a saved query: the caller's own, or a shared one with `cases:write`. Another user's personal query is 404. */
+        delete: operations["delete_saved_query"];
+        options?: never;
+        head?: never;
+        /** @description Changes a saved query: the caller's own, or a shared one with `cases:write` (sharing and unsharing: the owner with `cases:write`). Another user's personal query is 404. */
+        patch: operations["update_saved_query"];
         trace?: never;
     };
     "/api/v1/projects/{key}/search/logs": {
@@ -2219,6 +2306,13 @@ export interface components {
             id: number;
             principal: string;
         };
+        /** @description A transition from the current state, with what it still misses. */
+        AllowedTransition: {
+            allowed: boolean;
+            missing: string[];
+            name: string;
+            to: string;
+        };
         /** @description A stored attachment. */
         AttachmentCreated: {
             /** Format: uuid */
@@ -2381,6 +2475,11 @@ export interface components {
         /** @description A case. */
         Case: {
             aiUnreviewed: boolean;
+            /**
+             * Format: int32
+             * @description The newest approved version under review (`null`: none, or never reviewed).
+             */
+            approvedVersion?: number | null;
             /** Format: date-time */
             archivedAt?: string | null;
             automated: boolean;
@@ -2415,8 +2514,13 @@ export interface components {
             /** Format: int64 */
             number: number;
             origin: components["schemas"]["CaseOrigin"];
+            reviewState?: components["schemas"]["ReviewState"] | null;
             /** Format: int64 */
             revision: number;
+            /** @description Shared steps the case references, at their runnable version. */
+            sharedSteps: components["schemas"]["SharedStepBrief"][];
+            /** @description The key of the configured workflow status (`null` without `caseWorkflow`). */
+            state?: string | null;
             status: components["schemas"]["CaseStatus"];
             tags: string[];
             /** Format: date-time */
@@ -2429,6 +2533,7 @@ export interface components {
         CaseBody: {
             description: string;
             links: components["schemas"]["CaseLink"][];
+            parameters?: components["schemas"]["CaseParameters"] | null;
             preconditions: string;
             steps: components["schemas"]["CaseStep"][];
         };
@@ -2440,13 +2545,15 @@ export interface components {
             action: components["schemas"]["CaseBulkAction"];
             filter?: components["schemas"]["CaseFilter"] | null;
             numbers?: number[] | null;
+            /** @description An FPQL query (exclusive with `numbers` and `filter`). */
+            query?: string | null;
             value?: unknown;
         };
         /**
          * @description Action of `POST /cases/bulk`.
          * @enum {string}
          */
-        CaseBulkAction: "move" | "setStatus" | "setField" | "addTags" | "removeTags" | "archive" | "restore";
+        CaseBulkAction: "move" | "setStatus" | "setField" | "addTags" | "removeTags" | "archive" | "restore" | "setState";
         /** @description Outcome of a bulk action. */
         CaseBulkResult: {
             skipped: components["schemas"]["CaseBulkSkip"][];
@@ -2466,6 +2573,8 @@ export interface components {
             filter?: components["schemas"]["CaseFilter"] | null;
             /** @description `zip` (the default and only value): `cases.ndjson`, `cases.csv` and `attachments/`. */
             format?: string;
+            /** @description An FPQL query selecting the cases (exclusive with `filter`). */
+            query?: string | null;
         };
         /** @description A case field definition. */
         CaseFieldDef: {
@@ -2663,6 +2772,12 @@ export interface components {
          * @enum {string}
          */
         CaseOrigin: "ui" | "code" | "import" | "ai";
+        /** @description Parameters of a data-driven case: `${column}` in preconditions, action, expected and data. */
+        CaseParameters: {
+            columns: string[];
+            generator?: components["schemas"]["ParameterGenerator"] | null;
+            rows: components["schemas"]["ParameterRow"][];
+        };
         /** @description Body of `PATCH /cases/{n}` (merge): absent keys are kept, `folderId: null` moves to the root. */
         CasePatch: {
             fields?: {
@@ -2677,6 +2792,28 @@ export interface components {
         CaseProposal: components["schemas"]["CasePatch"] & {
             body?: components["schemas"]["CaseBody"] | null;
             name?: string | null;
+        };
+        /** @description A requirement of a case. */
+        CaseRequirement: {
+            linkStatus: components["schemas"]["RequirementLinkStatus"];
+            /** Format: int64 */
+            number: number;
+            origin: components["schemas"]["RequirementLinkOrigin"];
+            status: components["schemas"]["RequirementStatus"];
+            title: string;
+            type: string;
+        };
+        /** @description `caseReview` of the project settings: version review of cases and shared steps. */
+        CaseReviewSettings: {
+            allowSelfApproval: boolean;
+            /**
+             * Format: int32
+             * @description Distinct approvals a head version needs (1 to 5).
+             */
+            approvals: number;
+            imports: components["schemas"]["ReviewImports"];
+            mode: components["schemas"]["ReviewMode"];
+            resetOn: components["schemas"]["ReviewResetOn"];
         };
         /** @description The content of a case at one version (stored zstd-compressed in `case_versions.snapshot_z`). */
         CaseSnapshot: {
@@ -2704,6 +2841,7 @@ export interface components {
             expected: string;
             /** @description Stable id across versions (`s_<ulid>`); an empty id on write is assigned by the server. */
             id: string;
+            shared?: components["schemas"]["SharedStepRef"] | null;
             steps: components["schemas"]["CaseStep"][];
         };
         /** @description A step rendered to sanitized HTML. */
@@ -2755,6 +2893,9 @@ export interface components {
             name: string;
             /** Format: int64 */
             number: number;
+            reviewState?: components["schemas"]["ReviewState"] | null;
+            /** @description The key of the configured workflow status (`null` without `caseWorkflow`). */
+            state?: string | null;
             status: components["schemas"]["CaseStatus"];
             tags: string[];
             /** Format: date-time */
@@ -2834,6 +2975,13 @@ export interface components {
              */
             matchTmsLinks?: boolean;
             /**
+             * @description Allure link types whose links name requirements (skipped when the default).
+             * @default [
+             *       "requirement"
+             *     ]
+             */
+            requirementLinkTypes?: string[];
+            /**
              * @description Folder under which created cases are placed.
              * @default Automated
              */
@@ -2849,6 +2997,10 @@ export interface components {
              * @default true
              */
             useCiDefaultBranch?: boolean;
+        };
+        /** @description Body of `POST /cases/{n}/transition`: a state key. */
+        CaseTransition: {
+            to: string;
         };
         /** @description One level of the case tree. */
         CaseTree: {
@@ -2890,6 +3042,56 @@ export interface components {
             source: components["schemas"]["VersionSource"];
             /** Format: int32 */
             version: number;
+        };
+        /** @description The workflow of manual or of automated cases. */
+        CaseWorkflowFlow: {
+            initial: string;
+            transitions: components["schemas"]["CaseWorkflowTransition"][];
+        };
+        /**
+         * @description Body of `PUT /case-workflow`: `null` removes the workflow; `remap` moves cases of removed
+         *     states (old key to new key) in a job.
+         */
+        CaseWorkflowPut: {
+            remap?: {
+                [key: string]: string;
+            } | null;
+            workflow?: components["schemas"]["CaseWorkflowSettings"] | null;
+        };
+        /** @description Answer of `PUT /case-workflow`. */
+        CaseWorkflowSaved: {
+            job?: components["schemas"]["TmJob"] | null;
+            view: components["schemas"]["CaseWorkflowView"];
+        };
+        /** @description `caseWorkflow` of the project settings. */
+        CaseWorkflowSettings: {
+            automated: components["schemas"]["CaseWorkflowFlow"];
+            manual: components["schemas"]["CaseWorkflowFlow"];
+            statuses: components["schemas"]["CaseWorkflowStatus"][];
+        };
+        /** @description A configured workflow status: a key within a category (`cases.status`). */
+        CaseWorkflowStatus: {
+            /** @description Cases in this state do not enter run items or `testplan.json`. */
+            blocksRuns?: boolean | null;
+            category: components["schemas"]["CaseStatus"];
+            /** @description `#rrggbb`. */
+            color?: string | null;
+            key: string;
+            name: string;
+        };
+        /** @description A workflow transition: from any of `from` (keys or `*`) to `to` (a key or `*`). */
+        CaseWorkflowTransition: {
+            from: string[];
+            permission?: components["schemas"]["WorkflowPermission"] | null;
+            requires?: components["schemas"]["WorkflowGuard"][] | null;
+            to: string;
+        };
+        /** @description `GET /case-workflow`. */
+        CaseWorkflowView: {
+            /** @description Whether the project has `caseWorkflow` (else `workflow` is the suggested one). */
+            configured: boolean;
+            review: components["schemas"]["CaseReviewSettings"];
+            workflow: components["schemas"]["CaseWorkflowSettings"];
         };
         /** @description Body of `POST /cases` and `PUT /cases/{n}`. */
         CaseWrite: {
@@ -2993,6 +3195,64 @@ export interface components {
             /** Format: int64 */
             unknown: number;
         };
+        /** @description Cases of a requirement by their newest result in the scope. */
+        CoverageCounts: {
+            /** Format: int64 */
+            failed: number;
+            /** Format: int64 */
+            notRun: number;
+            /** Format: int64 */
+            passed: number;
+            /** Format: int64 */
+            skipped: number;
+            /** Format: int64 */
+            total: number;
+        };
+        /**
+         * @description File format of a coverage export.
+         * @enum {string}
+         */
+        CoverageExportFormat: "csv" | "xlsx";
+        /** @description Body of `POST /coverage/exports`. */
+        CoverageExportRequest: {
+            branch?: string | null;
+            /** Format: int32 */
+            days?: number | null;
+            environment?: string | null;
+            format: components["schemas"]["CoverageExportFormat"];
+            launchIds?: string[] | null;
+            /** Format: uuid */
+            planId?: string | null;
+        };
+        /** @description A page of requirement coverage. */
+        CoveragePage: {
+            items: components["schemas"]["RequirementCoverage"][];
+            next?: string | null;
+            scope: components["schemas"]["CoverageScopeView"];
+        };
+        /**
+         * @description Which results a coverage page counts.
+         * @enum {string}
+         */
+        CoverageScopeKind: "default" | "plan" | "launches" | "window";
+        /** @description The results a coverage page counts. */
+        CoverageScopeView: {
+            branch?: string | null;
+            /** Format: int32 */
+            days?: number | null;
+            environment?: string | null;
+            kind: components["schemas"]["CoverageScopeKind"];
+            launchIds?: string[] | null;
+            /** Format: int64 */
+            launches: number;
+            /** Format: uuid */
+            planId?: string | null;
+        };
+        /**
+         * @description Coverage of a requirement with its children.
+         * @enum {string}
+         */
+        CoverageStatus: "uncovered" | "failed" | "notRun" | "partial" | "passed";
         /** @description Body of `POST /tracker-issues`. */
         CreateTrackerIssue: components["schemas"]["IssueFor"] & {
             /** @description Attach screenshots; default from the tracker settings. */
@@ -3295,6 +3555,17 @@ export interface components {
             expected?: string | null;
             message?: string | null;
             trace?: string | null;
+        };
+        /** @description Body of `POST /cases/{n}/extract-shared`: adjacent top-level step ids. */
+        ExtractSharedStep: {
+            description?: string | null;
+            name: string;
+            stepIds: string[];
+        };
+        /** @description The shared step extracted from a case, and the case after it. */
+        ExtractedSharedStep: {
+            case: components["schemas"]["Case"];
+            sharedStep: components["schemas"]["SharedStep"];
         };
         FailingTest: {
             /** Format: int64 */
@@ -4397,6 +4668,8 @@ export interface components {
             fromLaunchId?: string | null;
             kind?: components["schemas"]["TestPlanKind"] | null;
             name: string;
+            /** @description Managed plans: cases selected by an FPQL query (exclusive with `filter`). */
+            query?: string | null;
             /** @description Statuses picked from the launch (default `failed`, `broken`). */
             statuses?: string[] | null;
             /** @description Test cases added to the plan. */
@@ -4426,7 +4699,7 @@ export interface components {
             id: string;
             /** @description `webhook`, `slack`, `teams`, `email` or `telegram`. */
             kind: string;
-            /** @description `launchFinished`, `gateFailed`, `newFailures`, `manualRunClosed`. */
+            /** @description `launchFinished`, `gateFailed`, `newFailures`, `manualRunClosed`, `caseReviewRequested`. */
             on: string[];
             /**
              * @description Webhook: the HMAC signing key (purpose `webhook`); Telegram: the bot token (purpose
@@ -4690,6 +4963,13 @@ export interface components {
                 folderPath: string[];
                 /** Format: uuid */
                 id: string;
+                /**
+                 * Format: int32
+                 * @description Iterations of a parameterized case (0 without parameters; `run_items.iterations`).
+                 *     Named `iterationCount` because [`RunItem`] flattens this struct next to its own
+                 *     `iterations` list.
+                 */
+                iterationCount: number;
                 name: string;
                 status: components["schemas"]["RunStatus"];
                 /** Format: date-time */
@@ -4712,6 +4992,8 @@ export interface components {
                 id: string;
                 kind: components["schemas"]["TestPlanKind"];
                 name: string;
+                /** @description An FPQL query selecting the plan's cases (exclusive with `filter`). */
+                query?: string | null;
                 /** Format: int64 */
                 revision: number;
                 /** Format: date-time */
@@ -4774,11 +5056,37 @@ export interface components {
             name: string;
             value?: string | null;
         };
+        /** @description Body of `POST /cases/{n}/parameters/generate`. */
+        ParameterGenerate: {
+            mode: components["schemas"]["ParameterMode"];
+            values: {
+                [key: string]: string[];
+            };
+        };
+        /** @description The generator that filled the rows. */
+        ParameterGenerator: {
+            mode: components["schemas"]["ParameterMode"];
+            values: {
+                [key: string]: string[];
+            };
+        };
         /**
          * @description How a parameter value may be shown.
          * @enum {string}
          */
         ParameterMode: "default" | "masked" | "hidden";
+        /** @description A row of parameter values (`id` `r_<ulid>`). */
+        ParameterRow: {
+            enabled: boolean;
+            id: string;
+            values: {
+                [key: string]: string;
+            };
+        };
+        /** @description Generated parameter rows (nothing saved). */
+        ParameterRows: {
+            rows: components["schemas"]["ParameterRow"][];
+        };
         /** @description A displayable parameter (masked and hidden ones are never returned). */
         ParameterView: {
             name: string;
@@ -4825,10 +5133,84 @@ export interface components {
          * @enum {string}
          */
         PlanAssign: "plan" | "me" | "none";
+        /**
+         * @description What a finished launch of a plan ran compared to the plan: `extraNames` holds the first 20;
+         *     `warning` when `extra > 0` or nothing of a non-empty plan ran.
+         */
+        PlanCheck: {
+            /** Format: int64 */
+            extra: number;
+            extraNames: string[];
+            /** Format: int64 */
+            inPlan: number;
+            /** Format: int64 */
+            missing: number;
+            /** Format: uuid */
+            planId: string;
+            /** Format: int64 */
+            ran: number;
+            warning: boolean;
+        };
+        /** @description CI dispatch of a plan start. */
+        PlanCi: {
+            dispatch: boolean;
+            environments?: components["schemas"]["PlanCiEnvironment"][] | null;
+            ref?: string | null;
+            variables?: {
+                [key: string]: string;
+            } | null;
+        };
+        /** @description A CI environment of a plan start (`name` `^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`). */
+        PlanCiEnvironment: {
+            name: string;
+            variables?: {
+                [key: string]: string;
+            } | null;
+        };
+        /** @description A CI dispatch of a plan launch. */
+        PlanDispatch: {
+            ciRef?: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            dispatchedAt?: string | null;
+            environment?: string | null;
+            error?: string | null;
+            gitRef: string;
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            launchId: string;
+            /** Format: int64 */
+            launchNumber?: number | null;
+            /** Format: uuid */
+            planId: string;
+            provider: string;
+            requestedBy: string;
+            status: components["schemas"]["PlanDispatchStatus"];
+            variables: {
+                [key: string]: string;
+            };
+        };
+        /** @description A page of plan dispatches. */
+        PlanDispatchList: {
+            items: components["schemas"]["PlanDispatch"][];
+            next?: string | null;
+        };
+        /**
+         * @description State of a CI dispatch from a plan.
+         * @enum {string}
+         */
+        PlanDispatchStatus: "dispatching" | "dispatched" | "failed";
         /** @description A launch started from a plan, with the CI hand-off. */
         PlanLaunch: {
             ciHint: string;
+            dispatches: components["schemas"]["PlanDispatch"][];
             launch: components["schemas"]["Launch"];
+            /** @description One launch per CI environment; the first is `launch`. */
+            launches: components["schemas"]["Launch"][];
+            /** @description Cases left out (the first 1000). */
+            skips: components["schemas"]["RunItemSkip"][];
             testplanUrl: string;
         };
         /** @description A launch attribute given when starting a launch from a plan. */
@@ -4868,6 +5250,17 @@ export interface components {
          */
         ProjectSettings: {
             /**
+             * @description Version review of cases and shared steps (skipped when the default, review off).
+             * @default {
+             *       "mode": "off",
+             *       "approvals": 1,
+             *       "resetOn": "content",
+             *       "allowSelfApproval": false,
+             *       "imports": "review"
+             *     }
+             */
+            caseReview?: components["schemas"]["CaseReviewSettings"];
+            /**
              * @description Code sync of test cases.
              * @default {
              *       "enabled": true,
@@ -4899,6 +5292,7 @@ export interface components {
              *     }
              */
             caseSync?: components["schemas"]["CaseSyncSettings"];
+            caseWorkflow?: components["schemas"]["CaseWorkflowSettings"] | null;
             fastmock?: components["schemas"]["FastMockSettings"] | null;
             /**
              * @default {
@@ -4941,6 +5335,69 @@ export interface components {
             rollup?: components["schemas"]["RollupSettings"];
             vcs?: components["schemas"]["VcsSettings"] | null;
         };
+        /** @description An attribute of FPQL. */
+        QueryAttribute: {
+            description: string;
+            name: string;
+            operators: string[];
+            type: components["schemas"]["QueryAttributeType"];
+            values?: string[] | null;
+        };
+        /**
+         * @description Type of an FPQL attribute.
+         * @enum {string}
+         */
+        QueryAttributeType: "number" | "string" | "text" | "enum" | "bool" | "date" | "user" | "folder" | "field" | "ref";
+        /**
+         * @description What an FPQL query selects.
+         * @enum {string}
+         */
+        QueryEntity: "cases" | "requirements";
+        /** @description An FPQL error; `position` and `length` in UTF-16 code units, 0-based. */
+        QueryError: {
+            expected: string[];
+            /** Format: int32 */
+            length: number;
+            message: string;
+            near: string;
+            /** Format: int32 */
+            position: number;
+        };
+        /** @description A case field usable as `field[key]` in FPQL. */
+        QueryField: {
+            key: string;
+            name: string;
+            type: components["schemas"]["FieldType"];
+            values?: string[] | null;
+        };
+        /** @description A function of FPQL. */
+        QueryFunction: {
+            description: string;
+            name: string;
+            signature: string;
+        };
+        /** @description What FPQL offers for an entity (completion and help). */
+        QuerySchema: {
+            attributes: components["schemas"]["QueryAttribute"][];
+            entity: components["schemas"]["QueryEntity"];
+            fields: components["schemas"]["QueryField"][];
+            functions: components["schemas"]["QueryFunction"][];
+            keywords: string[];
+        };
+        /** @description Body of `POST /query/validate`. */
+        QueryValidate: {
+            entity: components["schemas"]["QueryEntity"];
+            query: string;
+        };
+        /** @description Outcome of validating a query. */
+        QueryValidation: {
+            /** Format: int64 */
+            count?: number | null;
+            countCapped?: boolean | null;
+            error?: components["schemas"]["QueryError"] | null;
+            normalized?: string | null;
+            ok: boolean;
+        };
         /** @description A result that was not accepted. */
         Rejected: {
             /**
@@ -4949,6 +5406,28 @@ export interface components {
              */
             index: number;
             message: string;
+        };
+        /** @description The test-management level a replica reported. */
+        ReplicaLevel: {
+            instance: string;
+            /** Format: date-time */
+            seenAt: string;
+            /** Format: date-time */
+            startedAt: string;
+            /** Format: int32 */
+            tmLevel: number;
+            version: string;
+        };
+        /**
+         * @description `GET /api/v1/admin/replicas`: replicas seen within a day and whether new formats may be
+         *     written.
+         */
+        ReplicaLevels: {
+            gateOpen: boolean;
+            mode: components["schemas"]["TmGateMode"];
+            replicas: components["schemas"]["ReplicaLevel"][];
+            /** Format: date-time */
+            settleUntil?: string | null;
         };
         /** @description A reference to an attachment uploaded with `POST .../attachments`. */
         ReportAttachment: {
@@ -5048,6 +5527,170 @@ export interface components {
              */
             stop?: number | null;
         };
+        /** @description A requirement. */
+        Requirement: {
+            /** Format: date-time */
+            archivedAt?: string | null;
+            /** Format: int64 */
+            cases: number;
+            /** Format: int64 */
+            children: number;
+            /** Format: date-time */
+            contentChangedAt: string;
+            /** Format: date-time */
+            createdAt: string;
+            createdBy?: string | null;
+            /** Format: int32 */
+            depth: number;
+            description: string;
+            descriptionHtml: string;
+            /** Format: uuid */
+            id: string;
+            /** Format: int64 */
+            number: number;
+            origin: components["schemas"]["RequirementOrigin"];
+            /** Format: uuid */
+            parentId?: string | null;
+            path: components["schemas"]["RequirementPathEntry"][];
+            /** Format: int64 */
+            revision: number;
+            status: components["schemas"]["RequirementStatus"];
+            title: string;
+            tracker?: components["schemas"]["RequirementTracker"] | null;
+            type: string;
+            /** Format: date-time */
+            updatedAt: string;
+            updatedBy?: string | null;
+        };
+        /** @description Coverage of a requirement with its children. */
+        RequirementCoverage: {
+            cases: components["schemas"]["CoverageCounts"];
+            changedAfterRun: boolean;
+            coverage: components["schemas"]["CoverageStatus"];
+            /** Format: int32 */
+            depth: number;
+            hasChildren: boolean;
+            /** Format: int64 */
+            number: number;
+            status: components["schemas"]["RequirementStatus"];
+            title: string;
+            type: string;
+        };
+        /** @description Body of `POST /requirements/import` (a dry run first). */
+        RequirementImport: {
+            /** Format: int64 */
+            parentNumber?: number | null;
+            query: string;
+            trackerId: string;
+        };
+        /** @description A case linked to a requirement. */
+        RequirementLink: {
+            automated: boolean;
+            /** Format: int64 */
+            caseNumber: number;
+            /** Format: date-time */
+            createdAt: string;
+            createdBy: string;
+            lastResult?: components["schemas"]["LastResult"] | null;
+            linkStatus: components["schemas"]["RequirementLinkStatus"];
+            name: string;
+            origin: components["schemas"]["RequirementLinkOrigin"];
+            status: components["schemas"]["CaseStatus"];
+        };
+        /** @description A page of the cases of a requirement. */
+        RequirementLinkList: {
+            items: components["schemas"]["RequirementLink"][];
+            next?: string | null;
+        };
+        /**
+         * @description Where a requirement link came from.
+         * @enum {string}
+         */
+        RequirementLinkOrigin: "ui" | "code" | "import" | "ai";
+        /**
+         * @description Whether a requirement link is confirmed or an AI proposal.
+         * @enum {string}
+         */
+        RequirementLinkStatus: "active" | "proposed";
+        /** @description Body of `POST /requirements/{n}/links`: case numbers. */
+        RequirementLinksChange: {
+            add?: number[] | null;
+            confirm?: number[] | null;
+            remove?: number[] | null;
+        };
+        /** @description A page of requirements. */
+        RequirementList: {
+            items: components["schemas"]["RequirementSummary"][];
+            next?: string | null;
+        };
+        /**
+         * @description Where a requirement came from.
+         * @enum {string}
+         */
+        RequirementOrigin: "ui" | "import" | "tracker" | "ai";
+        /** @description Body of `PATCH /requirements/{n}`. */
+        RequirementPatch: {
+            description?: string | null;
+            /** Format: int64 */
+            parentNumber?: number | null;
+            status?: components["schemas"]["RequirementStatus"] | null;
+            title?: string | null;
+            type?: string | null;
+        };
+        /** @description A requirement on the path of another. */
+        RequirementPathEntry: {
+            /** Format: uuid */
+            id: string;
+            /** Format: int64 */
+            number: number;
+            title: string;
+        };
+        /**
+         * @description Lifecycle of a requirement.
+         * @enum {string}
+         */
+        RequirementStatus: "draft" | "active" | "done" | "obsolete";
+        /** @description A requirement in lists. */
+        RequirementSummary: {
+            archived: boolean;
+            /** Format: int64 */
+            cases: number;
+            /** Format: int32 */
+            depth: number;
+            externalState?: string | null;
+            hasChildren: boolean;
+            issueKey?: string | null;
+            /** Format: int64 */
+            number: number;
+            /** Format: uuid */
+            parentId?: string | null;
+            status: components["schemas"]["RequirementStatus"];
+            title: string;
+            type: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        /** @description The tracker issue a requirement comes from. */
+        RequirementTracker: {
+            externalState?: string | null;
+            issueKey: string;
+            /** Format: date-time */
+            syncedAt?: string | null;
+            trackerId?: string | null;
+            url?: string | null;
+        };
+        /** @description Body of creating or replacing a requirement. */
+        RequirementWrite: {
+            description?: string | null;
+            issueKey?: string | null;
+            /** Format: int64 */
+            parentNumber?: number | null;
+            status?: components["schemas"]["RequirementStatus"] | null;
+            title: string;
+            trackerId?: string | null;
+            type?: string | null;
+            url?: string | null;
+        };
         /** @description A rerun as listed. */
         Rerun: {
             /** @description A reference the CI returned (a pipeline id or URL on the configured origin). */
@@ -5117,6 +5760,11 @@ export interface components {
              *     It is never taken from the launch, whose branch comes from the uploader.
              */
             ref?: string | null;
+            /**
+             * @description Branch globs a plan's CI dispatch may run on (0 to 20; `*` within a segment, `**`
+             *     across `/`). Absent: only `ref`.
+             */
+            refs?: string[] | null;
             /** @description `owner/repo` (GitHub) or `group/sub/app` (GitLab); not used by a webhook. */
             repository?: string | null;
             /**
@@ -5137,8 +5785,19 @@ export interface components {
              *     fragment; GitHub and GitLab take no other path.
              */
             url: string;
+            /** @description CI variables a plan's CI dispatch may set, by name (0 to 20). */
+            variables?: components["schemas"]["RerunVariable"][] | null;
             /** @description GitHub: the workflow file name (`tests.yml`) or id. */
             workflow?: string | null;
+        };
+        /** @description A CI variable that plan starts may set (`rerun.variables`). */
+        RerunVariable: {
+            default?: string | null;
+            description?: string | null;
+            /** @description `^[A-Z][A-Z0-9_]{0,63}$`, not starting with `FASTPROOF_`. */
+            name: string;
+            /** @description Allowed values (1 to 50); absent: any value of 1 to 256 bytes. */
+            values?: string[] | null;
         };
         /** @description A result with its attempts, steps and history. */
         ResultDetail: components["schemas"]["ResultSummary"] & {
@@ -5276,6 +5935,131 @@ export interface components {
              */
             rawDays?: number;
         };
+        /** @description Body of `POST /reviews/bulk` (1 to `maxBulkReview` items). */
+        ReviewBulk: {
+            comment?: string | null;
+            decision: components["schemas"]["ReviewDecision"];
+            items: components["schemas"]["ReviewBulkItem"][];
+        };
+        /** @description One object of a bulk review. */
+        ReviewBulkItem: {
+            kind: components["schemas"]["ReviewKind"];
+            /** Format: int64 */
+            number: number;
+            /** Format: int32 */
+            version: number;
+        };
+        /** @description Outcome of a bulk review. */
+        ReviewBulkResult: {
+            /** Format: int64 */
+            applied: number;
+            skipped: components["schemas"]["ReviewBulkSkip"][];
+        };
+        /**
+         * @description An object a bulk review skipped: `version_moved`, `self_approval`, `not_pending`,
+         *     `not_found` or `review_not_enabled`.
+         */
+        ReviewBulkSkip: {
+            code: string;
+            kind: components["schemas"]["ReviewKind"];
+            /** Format: int64 */
+            number: number;
+        };
+        /**
+         * @description A reviewer's decision.
+         * @enum {string}
+         */
+        ReviewDecision: "approve" | "request_changes";
+        /**
+         * @description Whether imported changes need review.
+         * @enum {string}
+         */
+        ReviewImports: "review" | "bypass";
+        /**
+         * @description What a review is about.
+         * @enum {string}
+         */
+        ReviewKind: "case" | "sharedStep";
+        /**
+         * @description Which cases need review: none, manual ones, or all.
+         * @enum {string}
+         */
+        ReviewMode: "off" | "manual" | "all";
+        /** @description A page of the review queue. */
+        ReviewQueue: {
+            items: components["schemas"]["ReviewQueueItem"][];
+            next?: string | null;
+        };
+        /** @description An object waiting for review. */
+        ReviewQueueItem: {
+            /** Format: int64 */
+            approvals: number;
+            /** Format: int32 */
+            approvedVersion?: number | null;
+            author?: string | null;
+            changed: string[];
+            /** Format: uuid */
+            folderId?: string | null;
+            /** Format: int32 */
+            headVersion: number;
+            kind: components["schemas"]["ReviewKind"];
+            name: string;
+            /** Format: int64 */
+            number: number;
+            /** Format: int32 */
+            required: number;
+            reviewState: components["schemas"]["ReviewState"];
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        /**
+         * @description Which changes reset an approval.
+         * @enum {string}
+         */
+        ReviewResetOn: "content" | "any";
+        /**
+         * @description Review state of the head version of a case or shared step.
+         * @enum {string}
+         */
+        ReviewState: "pending" | "changes_requested" | "approved";
+        /** @description The review of a case or shared step. */
+        ReviewThread: {
+            /** Format: int64 */
+            approvals: number;
+            /** Format: int32 */
+            approvedVersion?: number | null;
+            author?: string | null;
+            canVote: boolean;
+            /** Format: int32 */
+            headVersion: number;
+            kind: components["schemas"]["ReviewKind"];
+            name: string;
+            /** Format: int64 */
+            number: number;
+            /** Format: int32 */
+            required: number;
+            reviewState?: components["schemas"]["ReviewState"] | null;
+            transitions: components["schemas"]["AllowedTransition"][];
+            votes: components["schemas"]["ReviewVote"][];
+            whyNot?: string | null;
+        };
+        /** @description A review vote. */
+        ReviewVote: {
+            comment: string;
+            /** Format: date-time */
+            createdAt: string;
+            decision: components["schemas"]["ReviewDecision"];
+            reviewer: string;
+            /** Format: int32 */
+            version: number;
+        };
+        /** @description Body of a vote. */
+        ReviewVoteWrite: {
+            comment?: string | null;
+            decision: components["schemas"]["ReviewDecision"];
+            /** Format: int32 */
+            version: number;
+        };
         /** @description When launches are aggregated into daily history. */
         RollupSettings: {
             /**
@@ -5383,14 +6167,18 @@ export interface components {
             executedBy?: string | null;
             /** Format: date-time */
             finishedAt?: string | null;
+            iterations: components["schemas"]["RunIteration"][];
             /** Format: uuid */
             launchId: string;
+            parameterColumns: string[];
             preconditions: string;
             preconditionsHtml: string;
             /** Format: uuid */
             resultId?: string | null;
             /** Format: int64 */
             revision: number;
+            /** @description Shared steps pinned for this item. */
+            sharedPins: components["schemas"]["SharedPin"][];
             /** Format: date-time */
             startedAt?: string | null;
             stepResults: components["schemas"]["RunStepResult"][];
@@ -5419,6 +6207,8 @@ export interface components {
         };
         /** @description Body of `PATCH /run-items/{itemId}`. */
         RunItemPatch: {
+            /** @description Apply `status` to every iteration (explicit only). */
+            allIterations?: boolean | null;
             assignee?: string | null;
             comment?: string | null;
             status?: components["schemas"]["RunStatus"] | null;
@@ -5432,10 +6222,11 @@ export interface components {
         };
         /**
          * @description Why a case was not added to a launch as a run item: `automated` (CI runs it; only manual
-         *     cases become run items) or `in_launch` (it has a run item already).
+         *     cases become run items), `in_launch` (it has a run item already), `not_approved` (under
+         *     review without an approved version) or `blocked_by_state` (its workflow state blocks runs).
          * @enum {string}
          */
-        RunItemSkipCode: "automated" | "in_launch";
+        RunItemSkipCode: "automated" | "in_launch" | "not_approved" | "blocked_by_state";
         /** @description A run item in lists. */
         RunItemSummary: {
             assignee?: string | null;
@@ -5446,6 +6237,13 @@ export interface components {
             folderPath: string[];
             /** Format: uuid */
             id: string;
+            /**
+             * Format: int32
+             * @description Iterations of a parameterized case (0 without parameters; `run_items.iterations`).
+             *     Named `iterationCount` because [`RunItem`] flattens this struct next to its own
+             *     `iterations` list.
+             */
+            iterationCount: number;
             name: string;
             status: components["schemas"]["RunStatus"];
             /** Format: date-time */
@@ -5455,6 +6253,8 @@ export interface components {
         RunItemsAdd: {
             assignee?: string | null;
             caseNumbers?: number[] | null;
+            /** @description Run the head version of cases whose head is not approved (needs `cases:review`). */
+            includeUnapproved?: boolean;
             /** Format: uuid */
             planId?: string | null;
         };
@@ -5469,6 +6269,39 @@ export interface components {
             skipped: number;
             /** @description Why named cases were left out (the first 1000). */
             skips?: components["schemas"]["RunItemSkip"][];
+        };
+        /** @description An iteration of a parameterized run item. */
+        RunIteration: {
+            comment: string;
+            executedBy?: string | null;
+            /** Format: date-time */
+            finishedAt?: string | null;
+            /** Format: int32 */
+            position: number;
+            /** Format: uuid */
+            resultId?: string | null;
+            rowId: string;
+            /** Format: date-time */
+            startedAt?: string | null;
+            status: components["schemas"]["RunStatus"];
+            stepResults: components["schemas"]["RunStepResult"][];
+            values: {
+                [key: string]: string;
+            };
+        };
+        /** @description Body of `PATCH /run-items/{itemId}/iterations/{rowId}`. */
+        RunIterationPatch: {
+            comment?: string | null;
+            status?: components["schemas"]["RunStatus"] | null;
+            untestedStepsTo?: components["schemas"]["UntestedStepsTo"] | null;
+        };
+        /** @description Answer to an iteration step write. */
+        RunIterationStepAck: {
+            itemStatus: components["schemas"]["RunStatus"];
+            iterationStatus: components["schemas"]["RunStatus"];
+            /** Format: int64 */
+            revision: number;
+            suggestedStatus: components["schemas"]["RunStatus"];
         };
         /**
          * @description Status of a run item.
@@ -5502,6 +6335,44 @@ export interface components {
             attachmentIds?: string[] | null;
             comment?: string | null;
             status: components["schemas"]["StepStatus"];
+        };
+        /** @description A saved query. */
+        SavedQuery: {
+            /** Format: date-time */
+            createdAt: string;
+            entity: components["schemas"]["QueryEntity"];
+            /** Format: uuid */
+            id: string;
+            mine: boolean;
+            name: string;
+            owner: string;
+            /** Format: int32 */
+            position: number;
+            query: string;
+            shared: boolean;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        /** @description Saved queries of an entity. */
+        SavedQueryList: {
+            items: components["schemas"]["SavedQuery"][];
+        };
+        /** @description Body of `PATCH /saved-queries/{id}`. */
+        SavedQueryPatch: {
+            name?: string | null;
+            /** Format: int32 */
+            position?: number | null;
+            query?: string | null;
+            shared?: boolean | null;
+        };
+        /** @description Body of `POST /saved-queries`. */
+        SavedQueryWrite: {
+            entity: components["schemas"]["QueryEntity"];
+            name: string;
+            /** Format: int32 */
+            position?: number | null;
+            query: string;
+            shared?: boolean | null;
         };
         /** @description A periodic job of the scheduler. */
         ScheduledJob: {
@@ -5586,6 +6457,174 @@ export interface components {
             startedAt?: string | null;
             status: string;
         };
+        /** @description A shared step pinned for a run item: `version` runs, `current` is the runnable one now. */
+        SharedPin: {
+            /** Format: int32 */
+            current: number;
+            /** Format: uuid */
+            id: string;
+            name: string;
+            /** Format: int64 */
+            number: number;
+            /** Format: int32 */
+            version: number;
+        };
+        /** @description A shared step. */
+        SharedStep: {
+            aiUnreviewed: boolean;
+            /** Format: int32 */
+            approvedVersion?: number | null;
+            /** Format: date-time */
+            archivedAt?: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            createdBy?: string | null;
+            description: string;
+            html: components["schemas"]["SharedStepHtml"];
+            /** Format: uuid */
+            id: string;
+            name: string;
+            /** Format: int64 */
+            number: number;
+            origin: components["schemas"]["SharedStepOrigin"];
+            reviewState?: components["schemas"]["ReviewState"] | null;
+            /** Format: int64 */
+            revision: number;
+            steps: components["schemas"]["CaseStep"][];
+            /** Format: date-time */
+            updatedAt: string;
+            updatedBy?: string | null;
+            usage: components["schemas"]["SharedStepUsageCount"];
+            /** Format: int32 */
+            version: number;
+        };
+        /** @description A shared step a case references, at its runnable version. */
+        SharedStepBrief: {
+            archived: boolean;
+            /** Format: uuid */
+            id: string;
+            name: string;
+            /** Format: int64 */
+            number: number;
+            steps: components["schemas"]["CaseStep"][];
+            stepsHtml: components["schemas"]["CaseStepHtml"][];
+            /** Format: int32 */
+            version: number;
+        };
+        /** @description A version of a shared step a case references (the case's "Versions" stream). */
+        SharedStepChange: {
+            changed: string[];
+            /** Format: date-time */
+            createdAt: string;
+            createdBy: string;
+            name: string;
+            /** Format: int64 */
+            sharedStepNumber: number;
+            source: components["schemas"]["VersionSource"];
+            /** Format: int32 */
+            version: number;
+        };
+        /** @description A page of shared step changes. */
+        SharedStepChangeList: {
+            items: components["schemas"]["SharedStepChange"][];
+            next?: string | null;
+        };
+        /** @description The Markdown of a shared step rendered to sanitized HTML. */
+        SharedStepHtml: {
+            description: string;
+            steps: components["schemas"]["CaseStepHtml"][];
+        };
+        /** @description A page of shared steps. */
+        SharedStepList: {
+            items: components["schemas"]["SharedStepSummary"][];
+            next?: string | null;
+        };
+        /**
+         * @description Where a shared step came from.
+         * @enum {string}
+         */
+        SharedStepOrigin: "ui" | "import" | "ai";
+        /** @description A reference of a case step to a shared step; `version` only in expanded run item steps. */
+        SharedStepRef: {
+            /** Format: uuid */
+            id: string;
+            /** Format: int64 */
+            number: number;
+            /** Format: int32 */
+            version?: number | null;
+        };
+        /** @description The content of a shared step at one version. */
+        SharedStepSnapshot: {
+            description: string;
+            name: string;
+            steps: components["schemas"]["CaseStep"][];
+        };
+        /** @description A shared step in lists. */
+        SharedStepSummary: {
+            aiUnreviewed: boolean;
+            /** Format: int32 */
+            approvedVersion?: number | null;
+            archived: boolean;
+            /** Format: int64 */
+            cases: number;
+            name: string;
+            /** Format: int64 */
+            number: number;
+            reviewState?: components["schemas"]["ReviewState"] | null;
+            /** Format: int64 */
+            stepCount: number;
+            /** Format: date-time */
+            updatedAt: string;
+            /** Format: int32 */
+            version: number;
+        };
+        /** @description A case that uses a shared step. */
+        SharedStepUsage: {
+            archived: boolean;
+            /** Format: int64 */
+            caseNumber: number;
+            name: string;
+            status: components["schemas"]["CaseStatus"];
+        };
+        /** @description How many cases and open runs use a shared step. */
+        SharedStepUsageCount: {
+            /** Format: int64 */
+            cases: number;
+            /** Format: int64 */
+            openRuns: number;
+        };
+        /** @description A page of the cases that use a shared step. */
+        SharedStepUsageList: {
+            items: components["schemas"]["SharedStepUsage"][];
+            next?: string | null;
+            /** Format: int64 */
+            openRuns: number;
+        };
+        /** @description A version of a shared step with its snapshot. */
+        SharedStepVersion: components["schemas"]["SharedStepVersionSummary"] & {
+            snapshot: components["schemas"]["SharedStepSnapshot"];
+        };
+        /** @description A page of shared step versions. */
+        SharedStepVersionList: {
+            items: components["schemas"]["SharedStepVersionSummary"][];
+            next?: string | null;
+        };
+        /** @description A version of a shared step in its history (`changed` within name, description, steps). */
+        SharedStepVersionSummary: {
+            changed: string[];
+            /** Format: date-time */
+            createdAt: string;
+            createdBy: string;
+            source: components["schemas"]["VersionSource"];
+            /** Format: int32 */
+            version: number;
+        };
+        /** @description Body of creating or replacing a shared step (steps without `shared`, depth at most 2). */
+        SharedStepWrite: {
+            description?: string | null;
+            name: string;
+            steps: components["schemas"]["CaseStep"][];
+        };
         /** @description Similar failures of a result. */
         SimilarList: {
             items: components["schemas"]["SimilarResult"][];
@@ -5612,12 +6651,17 @@ export interface components {
             /** @description Absent: `none`. */
             assign?: components["schemas"]["PlanAssign"];
             attributes?: components["schemas"]["PlanLaunchAttribute"][] | null;
+            ci?: components["schemas"]["PlanCi"] | null;
             environment?: {
                 [key: string]: string;
             } | null;
             externalId?: string | null;
             /** @description Absent: `false`. */
             includeAutomated?: boolean;
+            /** @description Absent: `true`; `false` creates no run items (a CI start). */
+            includeManual?: boolean | null;
+            /** @description Run the head version of cases whose head is not approved (needs `cases:review`). */
+            includeUnapproved?: boolean;
             name: string;
         };
         /**
@@ -5731,6 +6775,8 @@ export interface components {
             id: string;
             kind: components["schemas"]["TestPlanKind"];
             name: string;
+            /** @description An FPQL query selecting the plan's cases (exclusive with `filter`). */
+            query?: string | null;
             /** Format: int64 */
             revision: number;
             /** Format: date-time */
@@ -5788,6 +6834,8 @@ export interface components {
             description?: string | null;
             filter?: components["schemas"]["CaseFilter"] | null;
             name?: string | null;
+            /** @description An FPQL query (exclusive with `filter`); `null` removes it. */
+            query?: string | null;
         };
         /** @description One test of an Allure test plan. */
         TestPlanTest: {
@@ -5802,7 +6850,14 @@ export interface components {
             description?: string | null;
             filter?: components["schemas"]["CaseFilter"] | null;
             name: string;
+            /** @description An FPQL query (exclusive with `filter`); `null` removes it. */
+            query?: string | null;
         };
+        /**
+         * @description Whether writes of new formats wait until every replica knows them.
+         * @enum {string}
+         */
+        TmGateMode: "auto" | "open" | "closed";
         /** @description A background job (import, export, backfill). */
         TmJob: {
             /** Format: date-time */
@@ -5822,7 +6877,7 @@ export interface components {
          * @description Kind of a background test-management job.
          * @enum {string}
          */
-        TmJobKind: "import" | "export" | "backfill";
+        TmJobKind: "import" | "export" | "backfill" | "last_status" | "shared_inline" | "workflow_remap" | "requirements" | "coverage_export";
         /** @description Progress of a job. */
         TmJobProgress: {
             /** Format: int64 */
@@ -6327,6 +7382,16 @@ export interface components {
         WidgetType: "launch-statistics" | "overall-statistics" | "investigated-percentage" | "launches-comparison" | "launches-duration" | "launches-table" | "failed-trend" | "non-passed-trend" | "test-cases-growth" | "passing-rate-per-launch" | "passing-rate-summary" | "flaky-tests" | "most-failing-tests" | "popular-patterns" | "launch-execution" | "component-health" | "cumulative-trend" | "unique-bugs" | "activity-stream" | "pass-rate-trend" | "durations" | "defect-trend" | "launches-per-day";
         /** @enum {string} */
         WidgetView: "chart" | "table";
+        /**
+         * @description A condition of a workflow transition.
+         * @enum {string}
+         */
+        WorkflowGuard: "approved" | "requiredFields" | "notAuthor";
+        /**
+         * @description The permission a workflow transition needs.
+         * @enum {string}
+         */
+        WorkflowPermission: "cases:write" | "cases:review";
     };
     responses: never;
     parameters: never;
@@ -6351,6 +7416,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["JobList"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    admin_replicas: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReplicaLevels"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
                 };
             };
             403: {
@@ -7487,6 +8587,12 @@ export interface operations {
                 aiUnreviewed?: boolean;
                 /** @description `true` lists the archived cases (the trash). */
                 archived?: boolean;
+                /**
+                 * @description An FPQL query (at most 4096 bytes), ANDed with the other parameters; without
+                 *     `archived=true` archived cases stay out unless the query names `archived`. An invalid
+                 *     query is 400 `invalid_query` with `details: QueryError`.
+                 */
+                query?: string;
                 /** @description `number` (default), `-number` or `updated` (most recent first). */
                 sort?: string;
                 before?: string;
@@ -7701,6 +8807,8 @@ export interface operations {
                 status?: string;
                 field?: string;
                 tag?: string;
+                /** @description An FPQL query (exclusive with the filter parameters). */
+                query?: string;
             };
             header?: never;
             path: {
@@ -12599,6 +13707,111 @@ export interface operations {
             };
         };
     };
+    query_schema: {
+        parameters: {
+            query?: {
+                /** @description `cases` (default) or `requirements`. */
+                entity?: string;
+            };
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QuerySchema"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    validate_query: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["QueryValidate"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QueryValidation"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     results_detail: {
         parameters: {
             query?: never;
@@ -13624,6 +14837,207 @@ export interface operations {
             };
         };
     };
+    list_saved_queries: {
+        parameters: {
+            query?: {
+                /** @description `cases` (default) or `requirements`. */
+                entity?: string;
+            };
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SavedQueryList"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    create_saved_query: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SavedQueryWrite"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SavedQuery"];
+                };
+            };
+            /** @description `invalid_query` */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    delete_saved_query: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    update_saved_query: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SavedQueryPatch"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SavedQuery"];
+                };
+            };
+            /** @description `invalid_query` */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     logs_search: {
         parameters: {
             query: {
@@ -13881,7 +15295,7 @@ export interface operations {
             };
             cookie?: never;
         };
-        /** @description The areas to change. Each top-level area present in the body (`flaky`, `retention`, `rollup`, `gates`, `notifications`, `issueTrackers`, `fastmock`, `vcs`, `rerun`) replaces the stored one as a whole; areas left out are kept; `null` resets an area to its default (removes it). `caseSync` is merged by key instead (and its `fields` by field): keys left out keep their values, a `null` key returns to its default. The answer is the whole stored document. */
+        /** @description The areas to change. Each top-level area present in the body (`flaky`, `retention`, `rollup`, `gates`, `notifications`, `issueTrackers`, `fastmock`, `vcs`, `rerun`, `caseWorkflow`, `caseReview`) replaces the stored one as a whole; areas left out are kept; `null` resets an area to its default (removes it). `caseSync` is merged by key instead (and its `fields` by field): keys left out keep their values, a `null` key returns to its default. New formats (`caseSync.requirementLinkTypes` other than the default, `rerun.variables`, `rerun.refs`, the `caseReviewRequested` notification event) answer 409 `upgrade_in_progress` while an older replica runs. The answer is the whole stored document. */
         requestBody: {
             content: {
                 "application/json": components["schemas"]["ProjectSettings"];
@@ -13913,6 +15327,15 @@ export interface operations {
                 };
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `upgrade_in_progress`, `workflow_status_in_use` */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -91,6 +91,7 @@ async fn rendered(s: &AppState, p: &Project, id: Uuid) -> ApiResult<RunItem> {
             preconditions: item.preconditions.clone(),
             steps: item.steps.clone(),
             links: Vec::new(),
+            parameters: None,
         },
         &p.key,
     );
@@ -121,6 +122,9 @@ pub async fn add_run_items(
     ApiJson(body): ApiJson<RunItemsAdd>,
 ) -> ApiResult<Json<RunItemsAdded>> {
     let p = s.project_for(&auth, &key, &s.perms.runs_execute).await?;
+    if body.include_unapproved {
+        franshub_auth::require(&auth, &s.perms.cases_review, Some(&p.key))?;
+    }
     crate::tm_rate::admit(&s, &auth)?;
     let _permit = s.guards.heavy(&auth).await?;
     let out = s

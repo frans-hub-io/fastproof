@@ -1,11 +1,12 @@
 import { AppShellLayout, useCan, type CommandItem, type NavItem } from '@franshub/ui-shell';
-import { IconAdjustments, IconBell, IconBug, IconChartLine, IconChecklist, IconClipboardList, IconClockCog, IconFlask2, IconGitCompare, IconKey, IconLayoutDashboard, IconListCheck, IconListDetails, IconShieldCheck, IconShieldSearch, IconWand, IconWaveSine } from '@tabler/icons-react';
+import { IconAdjustments, IconChecks, IconLink, IconPuzzle, IconTargetArrow, IconBell, IconBug, IconChartLine, IconChecklist, IconClipboardList, IconClockCog, IconFlask2, IconGitCompare, IconKey, IconLayoutDashboard, IconListCheck, IconListDetails, IconShieldCheck, IconShieldSearch, IconWand, IconWaveSine } from '@tabler/icons-react';
 import { useQueryClient, type InfiniteData } from '@tanstack/react-query';
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { matchPath, useLocation, useNavigate } from 'react-router';
 import { useProjects, useServerVersion } from './api/hooks';
 import { useCaseIndex } from './api/tm';
 import type { Launch, Page } from './api/types';
+import { FEATURES } from './features';
 import { readRecent, type RecentLaunch } from './lib/recent';
 
 function useRecent(): RecentLaunch[] {
@@ -59,10 +60,16 @@ export function Shell({ children }: { children: ReactNode }) {
       const base = `/p/${projectKey}`;
       const section = (s: string) => path === `${base}/${s}` || path.startsWith(`${base}/${s}/`);
       const sections = ['dashboard', 'dashboards', 'flaky', 'compare', 'rules', 'gates', 'notifications', 'settings', 'issues'];
-      sections.push('cases', 'plans', 'my-runs');
+      sections.push('cases', 'plans', 'my-runs', 'shared-steps', 'reviews', 'requirements', 'coverage');
       items.push({ label: `${name}: launches`, href: base, icon: <IconListDetails size={18} />, active: path.startsWith(base) && !sections.some(section) });
       items.push({ label: 'Test cases', href: `${base}/cases`, icon: <IconClipboardList size={18} />, active: section('cases'), permission: 'cases:read', scope: projectKey });
       items.push({ label: 'Test plans', href: `${base}/plans`, icon: <IconChecklist size={18} />, active: section('plans'), permission: 'cases:read', scope: projectKey });
+      items.push({ label: 'Shared steps', href: `${base}/shared-steps`, icon: <IconPuzzle size={18} />, active: section('shared-steps'), permission: 'cases:read', scope: projectKey });
+      items.push({ label: 'Reviews', href: `${base}/reviews`, icon: <IconChecks size={18} />, active: section('reviews'), permission: 'cases:read', scope: projectKey });
+      if (FEATURES.requirements) {
+        items.push({ label: 'Requirements', href: `${base}/requirements`, icon: <IconLink size={18} />, active: section('requirements'), permission: 'cases:read', scope: projectKey });
+        items.push({ label: 'Coverage', href: `${base}/coverage`, icon: <IconTargetArrow size={18} />, active: section('coverage'), permission: 'cases:read', scope: projectKey });
+      }
       items.push({ label: 'My runs', href: `${base}/my-runs`, icon: <IconListCheck size={18} />, active: section('my-runs'), permission: 'runs:execute', scope: projectKey });
       items.push({ label: 'Dashboard', href: `${base}/dashboard`, icon: <IconChartLine size={18} />, active: section('dashboard') });
       items.push({ label: 'Dashboards', href: `${base}/dashboards`, icon: <IconLayoutDashboard size={18} />, active: section('dashboards') });

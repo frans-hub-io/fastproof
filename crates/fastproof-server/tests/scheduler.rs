@@ -53,7 +53,9 @@ async fn every_standard_job_runs_through_the_scheduler() {
         .unwrap()
         .names();
     let rows = first_runs(&db, &[]).await;
-    assert_eq!(rows.iter().map(|r| r.0.clone()).collect::<Vec<_>>(), {
+    let mut seen = rows.iter().map(|r| r.0.clone()).collect::<Vec<_>>();
+    seen.sort();
+    assert_eq!(seen, {
         let mut n = names.clone();
         n.sort();
         n

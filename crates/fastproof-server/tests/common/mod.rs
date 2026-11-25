@@ -111,29 +111,52 @@ impl TestDb {
         }
     }
 
-    /// Sessions of this database that wait for a lock.
-    pub async fn lock_waiters(&self) -> i64 {
+    /// The backend process of a connection (to name it as the holder of a lock).
+    pub async fn backend_pid(conn: &mut sqlx::PgConnection) -> i32 {
+        sqlx::query_scalar("select pg_backend_pid()")
+            .fetch_one(conn)
+            .await
+            .unwrap()
+    }
+
+    /// The sessions that wait for a lock `holder` (a backend pid; any when `None`) holds,
+    /// running a statement that matches `query_like` (SQL `like`). Naming both matters:
+    /// background work of the server (an index built concurrently, a scheduled job) may wait
+    /// for the same holder.
+    pub async fn lock_waiters(&self, holder: Option<i32>, query_like: &str) -> Vec<i32> {
         sqlx::query_scalar(
-            "select count(*) from pg_stat_activity \
-             where datname = current_database() and wait_event_type = 'Lock'",
+            "select pid from pg_stat_activity where datname = current_database() \
+             and wait_event_type = 'Lock' and query like $2 \
+             and ($1::int is null or $1 = any(pg_blocking_pids(pid)))",
         )
-        .fetch_one(&self.pool)
+        .bind(holder)
+        .bind(query_like)
+        .fetch_all(&self.pool)
         .await
         .unwrap()
     }
 
-    /// Waits until a session of this database waits for a lock: a request the test holds up
-    /// with a lock of its own has got that far (instead of sleeping and hoping it did).
-    pub async fn wait_for_lock_waiter(&self) {
+    /// Waits until a request the test holds up with a lock has reached that lock (instead of
+    /// sleeping and hoping it did); returns the waiting backend. `holder` as in
+    /// [`TestDb::lock_waiters`].
+    pub async fn wait_for_lock_waiter(&self, holder: Option<i32>, query_like: &str) -> i32 {
         let deadline = std::time::Instant::now() + Duration::from_secs(60);
         loop {
-            if self.lock_waiters().await > 0 {
-                return;
+            if let Some(pid) = self.lock_waiters(holder, query_like).await.first() {
+                return *pid;
             }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "nothing waits for the held lock"
-            );
+            if std::time::Instant::now() >= deadline {
+                let waits: Vec<String> = sqlx::query_scalar(
+                    "select pid || ' [' || left(query, 80) || '] waits for ' || wait_event \
+                       || ' held by ' || pg_blocking_pids(pid)::text \
+                     from pg_stat_activity where datname = current_database() \
+                       and wait_event_type = 'Lock'",
+                )
+                .fetch_all(&self.pool)
+                .await
+                .unwrap();
+                panic!("no {query_like:?} waits for a lock of {holder:?}; waiting: {waits:?}");
+            }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }

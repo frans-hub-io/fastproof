@@ -610,7 +610,7 @@ pub async fn sync_items(
     ids.dedup();
     let linked: HashMap<Uuid, Option<Uuid>> = sqlx::query_as::<_, (Uuid, Option<Uuid>)>(
         "select id, case_id from test_cases where project_id = $1 and id = any($2) and kind = 'code' \
-         order by id for update",
+         order by id for no key update",
     )
     .bind(ctx.project_id)
     .bind(&ids)

@@ -1028,12 +1028,10 @@ async fn guards_numbers_and_the_log_budget() {
     );
 }
 
-#[tokio::test]
-async fn ingest_of_other_launches_is_not_blocked_by_a_merge() {
-    let Some(db) = TestDb::new().await else {
-        return;
-    };
-    let s = Server::start_paused(&db, &["launches.merges"]).await;
+/// Two shards of the same 200 tests and a third launch, in a server whose merge and case
+/// jobs are paused (the tests run them when they want).
+async fn merge_setup(db: &TestDb) -> (Server, String, String, String) {
+    let s = Server::start_paused(db, &["launches.merges", "cases.sync", "cases.backfill"]).await;
     s.project("nb").await;
     let tests: Vec<Value> = (0..200)
         .map(|i| res(&format!("a{i}"), &format!("t{i}"), "passed", T0 + i))
@@ -1041,28 +1039,57 @@ async fn ingest_of_other_launches_is_not_blocked_by_a_merge() {
     let a = shard(&s, "nb", "a", ADMIN_TOKEN, tests.clone()).await;
     let b = shard(&s, "nb", "b", ADMIN_TOKEN, tests.clone()).await;
     let other = launch(&s, "nb", "other", ADMIN_TOKEN).await;
+    (s, a, b, other)
+}
 
-    // Hold the merge in its first phase: it waits for this lock when it copies containers,
-    // after it copied the attempts of all the shared tests.
+/// Holds the merge of `a` and `b` in its first phase: it waits for the held lock when it copies
+/// containers, after it copied the attempts of all the shared tests. Returns the holding
+/// transaction and the merge request.
+async fn held_merge(
+    db: &TestDb,
+    s: &Server,
+    a: &str,
+    b: &str,
+) -> (
+    sqlx::Transaction<'static, sqlx::Postgres>,
+    tokio::task::JoinHandle<(StatusCode, Value)>,
+) {
     let mut hold = db.pool.begin().await.unwrap();
+    let holder = TestDb::backend_pid(&mut hold).await;
     sqlx::query("lock table launch_containers in exclusive mode")
         .execute(&mut *hold)
         .await
         .unwrap();
     let base = s.base.clone();
-    let (a2, b2) = (a.clone(), b.clone());
+    let (a2, b2) = (a.to_string(), b.to_string());
     let merging = tokio::spawn(async move {
         let c = Server::client_only(&base);
         merge(&c, "nb", ADMIN_TOKEN, json!({"launchIds": [a2, b2]})).await
     });
-    db.wait_for_lock_waiter().await;
+    db.wait_for_lock_waiter(Some(holder), "insert into launch_containers%")
+        .await;
     assert!(!merging.is_finished(), "the merge waits for the held lock");
+    (hold, merging)
+}
+
+/// Posts 200 failed results of the same tests into `other` and returns how long it took.
+async fn post_same_tests(s: &Server, other: &str) -> Duration {
     let started = Instant::now();
     let items: Vec<Value> = (0..200)
         .map(|i| res(&format!("o{i}"), &format!("t{i}"), "failed", T0 + 1000 + i))
         .collect();
-    post(&s, "nb", &other, ADMIN_TOKEN, items).await;
-    let took = started.elapsed();
+    post(s, "nb", other, ADMIN_TOKEN, items).await;
+    started.elapsed()
+}
+
+#[tokio::test]
+async fn ingest_of_other_launches_is_not_blocked_by_a_merge() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let (s, a, b, other) = merge_setup(&db).await;
+    let (hold, merging) = held_merge(&db, &s, &a, &b).await;
+    let took = post_same_tests(&s, &other).await;
     assert!(
         !merging.is_finished(),
         "the merge is still in its first phase"
@@ -1073,5 +1100,52 @@ async fn ingest_of_other_launches_is_not_blocked_by_a_merge() {
     assert!(
         took < Duration::from_secs(3),
         "ingest of the same tests into another launch took {took:?} during a merge"
+    );
+}
+
+/// Code sync of the shards while their merge runs: the sync locks the test identities it links
+/// and then waits for the case numbers it takes, which wait for the project row the merge holds
+/// (it took a launch number). Ingest of the same tests into another launch must not queue
+/// behind that sync, and so behind the merge. Fails today: the sync locks the identities
+/// `for update`, which conflicts with ingest's `for key share`.
+#[tokio::test]
+async fn ingest_is_not_blocked_by_a_code_sync_that_waits_for_a_merge() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let (s, a, b, other) = merge_setup(&db).await;
+    let (hold, merging) = held_merge(&db, &s, &a, &b).await;
+    // One round of the `cases.sync` job right away, while the merge waits (the scheduler's
+    // tick could fall between two attempts of the merge, which gives up a wait after 5 s).
+    let state = s.running.as_ref().unwrap().state.clone();
+    let sync = tokio::spawn(async move {
+        fastproof_server::scheduler::case_sync(&state, Duration::from_secs(60)).await
+    });
+    db.wait_for_lock_waiter(None, "update projects set case_seq%")
+        .await;
+    let ingest = {
+        let c = Server::client_only(&s.base);
+        let other = other.clone();
+        tokio::spawn(async move { post_same_tests(&c, &other).await })
+    };
+    // Ingest share-locks the test identities it uses; it must not wait for the sync's lock.
+    let mut queued = false;
+    while !ingest.is_finished() {
+        queued |= !db
+            .lock_waiters(None, "select id, test_case_hash, %")
+            .await
+            .is_empty();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let took = ingest.await.unwrap();
+    hold.rollback().await.unwrap();
+    let (st, m) = merging.await.unwrap();
+    assert_eq!(st, StatusCode::CREATED, "{m}");
+    let synced = sync.await.unwrap().unwrap();
+    assert!(synced.created > 0, "the sync created cases: {synced:?}");
+    assert!(
+        !queued && took < Duration::from_secs(3),
+        "ingest of the same tests into another launch waited for a code sync that waited for \
+         a merge (queued: {queued}, took {took:?})"
     );
 }

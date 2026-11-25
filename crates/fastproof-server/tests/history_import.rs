@@ -739,6 +739,7 @@ async fn a1_a3_the_statistics_are_locked_and_a_failed_chunk_leaves_nothing_to_re
     let before = stats(&db, "lk", "com.example.CartTest.addsItem").await;
 
     let mut blocker = db.pool.begin().await.unwrap();
+    let holder = TestDb::backend_pid(&mut blocker).await;
     sqlx::query("select 1 from series_stats for update")
         .fetch_all(&mut *blocker)
         .await
@@ -765,7 +766,12 @@ async fn a1_a3_the_statistics_are_locked_and_a_failed_chunk_leaves_nothing_to_re
             j["status"] == "queued" || j["status"] == "running",
             "the import waits for the statistics rows: {j}"
         );
-        if j["status"] == "running" && db.lock_waiters().await > 0 {
+        if j["status"] == "running"
+            && !db
+                .lock_waiters(Some(holder), "%series_stats%")
+                .await
+                .is_empty()
+        {
             break;
         }
         assert!(

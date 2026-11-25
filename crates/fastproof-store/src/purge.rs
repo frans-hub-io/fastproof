@@ -82,7 +82,9 @@ const CASE_LEAVES: [Leaf; 5] = [
 /// Tables of a project with nothing left under them once launches, plans, test cases and
 /// cases are gone, by `project_id`. Attachments come after cases (case attachments restrict
 /// their deletion) and after their media rows; the last ones are normally empty by then.
-const PROJECT_LEAVES: [&str; 21] = [
+const PROJECT_LEAVES: [&str; 23] = [
+    "rp_items",
+    "rp_launches",
     "history_imports",
     "launch_exports",
     "tracker_issue_links",
@@ -324,6 +326,9 @@ impl<'c> Purge<'c> {
         self.leaves(leaf("launch_log_bytes"), "launch_id", launches)
             .await?;
         self.leaves(leaf("launch_reruns"), "source_launch_id", launches)
+            .await?;
+        self.leaves(leaf("rp_items"), "launch_id", launches).await?;
+        self.leaves(leaf("rp_launches"), "launch_id", launches)
             .await?;
         self.leaves(leaf("explorer_gen"), "launch_id", launches)
             .await?;

@@ -238,6 +238,29 @@ Limits of `POST /api/v1/projects/{key}/launches/{id}/logs` (see [Live logs](../g
 A message over the line limit is cut at a character boundary and ends with ` …[truncated]`; the line is
 stored. A request over the line-count, request or per-launch limit gets `413` naming the limit.
 
+## ReportPortal endpoint
+
+Settings of `/rp/api/{v1,v2}`, the endpoint for unchanged ReportPortal agents (see
+[Migrating from ReportPortal](../guide/migrating-from-reportportal.md)).
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `FASTPROOF_RP_ENABLED` | `true` | Serve the endpoint; `false` answers `501` to every `/rp` request |
+| `FASTPROOF_RP_SETTLE_MS` | `2000` | Quiet time after a test's finish or last log line before its result is written, 0 to 60000 |
+| `FASTPROOF_RP_ERROR_WAIT_MS` | `30000` | How long a failed test without an error message waits for its ERROR log line, after its finish and again after the launch finish, 0 to 600000 (never less than the settle time) |
+| `FASTPROOF_RP_FINISH_GRACE_SECONDS` | `120` | How long a finishing launch waits for open tests, which then become broken `interrupted`, 0 to 86400 |
+| `FASTPROOF_RP_LAUNCH_IDLE_TIMEOUT` | `1h` | A launch without calls for this long finishes as interrupted (`3600`, `30m`, `1h`, `1d`; 60 s to 7 days) |
+| `FASTPROOF_RP_MAX_REQUEST_BYTES` | `67108864` (64 MiB) | Body of one multipart log request |
+| `FASTPROOF_RP_MAX_ATTACHMENT_BYTES` | `67108864` (64 MiB) | One file of a log request; a larger one fails only its log entry |
+| `FASTPROOF_RP_MAX_ITEMS_PER_LAUNCH` | `1000000` | Test items of one launch; later starts get `413` |
+| `FASTPROOF_RP_MAX_INFLIGHT` | `256` | Requests served at once per replica; others wait up to 2 s, then get `503` with `Retry-After: 1` |
+
+Log lines also follow `FASTPROOF_LOG_MAX_LINE_BYTES` and `FASTPROOF_LOG_MAX_BYTES_PER_LAUNCH`, and files take
+spool slots (`FASTPROOF_MAX_CONCURRENT_SPOOLS`). Projects map ReportPortal project names with the `rp.aliases`
+setting, launch attributes to CI and VCS fields with `rp.attributeMap`, and may name an environment attribute
+with `rp.environmentAttribute`. Metrics: `fastproof_rp_requests_total{endpoint,code}`, `fastproof_rp_items{state}`,
+`fastproof_rp_settle_lag_seconds`, `fastproof_rp_late_total{kind}`, `fastproof_rp_pending_parents`.
+
 ## Test management
 
 Limits of test cases, plans, manual runs and imports are set with `FASTPROOF_TM_<NAME>` variables, for example

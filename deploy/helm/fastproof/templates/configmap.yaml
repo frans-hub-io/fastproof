@@ -84,6 +84,15 @@ data:
   FASTPROOF_LOG_MAX_LINES_PER_REQUEST: {{ .Values.server.logs.maxLinesPerRequest | int64 | quote }}
   FASTPROOF_LOG_MAX_REQUEST_BYTES: {{ .Values.server.logs.maxRequestBytes | int64 | quote }}
   FASTPROOF_LOG_MAX_BYTES_PER_LAUNCH: {{ .Values.server.logs.maxBytesPerLaunch | int64 | quote }}
+  FASTPROOF_RP_ENABLED: {{ .Values.server.rp.enabled | quote }}
+  FASTPROOF_RP_SETTLE_MS: {{ .Values.server.rp.settleMs | int64 | quote }}
+  FASTPROOF_RP_ERROR_WAIT_MS: {{ .Values.server.rp.errorWaitMs | int64 | quote }}
+  FASTPROOF_RP_FINISH_GRACE_SECONDS: {{ .Values.server.rp.finishGraceSeconds | int64 | quote }}
+  FASTPROOF_RP_LAUNCH_IDLE_TIMEOUT: {{ .Values.server.rp.launchIdleTimeout | quote }}
+  FASTPROOF_RP_MAX_REQUEST_BYTES: {{ .Values.server.rp.maxRequestBytes | int64 | quote }}
+  FASTPROOF_RP_MAX_ATTACHMENT_BYTES: {{ .Values.server.rp.maxAttachmentBytes | int64 | quote }}
+  FASTPROOF_RP_MAX_ITEMS_PER_LAUNCH: {{ .Values.server.rp.maxItemsPerLaunch | int64 | quote }}
+  FASTPROOF_RP_MAX_INFLIGHT: {{ .Values.server.rp.maxInflight | int64 | quote }}
   FASTPROOF_INGEST_MODE: {{ .Values.ingest.mode | quote }}
   FASTPROOF_SEARCH_BACKEND: {{ .Values.search.backend | quote }}
   FASTPROOF_SINKS: {{ include "fastproof.sinks" . | quote }}

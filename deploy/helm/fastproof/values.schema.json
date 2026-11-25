@@ -512,6 +512,54 @@
             }
           }
         },
+        "rp": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "settleMs": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 60000
+            },
+            "errorWaitMs": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 600000
+            },
+            "finishGraceSeconds": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 86400
+            },
+            "launchIdleTimeout": {
+              "type": "string",
+              "pattern": "^[0-9]+[smhd]?$"
+            },
+            "maxRequestBytes": {
+              "type": "integer",
+              "minimum": 1024,
+              "maximum": 4294967296
+            },
+            "maxAttachmentBytes": {
+              "type": "integer",
+              "minimum": 1024,
+              "maximum": 4294967296
+            },
+            "maxItemsPerLaunch": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100000000
+            },
+            "maxInflight": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100000
+            }
+          }
+        },
         "extraEnv": {
           "type": "array",
           "items": {

@@ -1,0 +1,67 @@
+{
+  "launch": {
+    "status": "finished",
+    "counts": {
+      "total": 1,
+      "passed": 1,
+      "failed": 0,
+      "broken": 0,
+      "skipped": 0,
+      "unknown": 0,
+      "flaky": 0,
+      "muted": 0
+    },
+    "logLines": 3
+  },
+  "results": [
+    {
+      "name": "passes with steps",
+      "fullName": "basic.spec.js/checkout/passes with steps",
+      "status": "passed",
+      "message": null,
+      "flakyInRun": false,
+      "suitePath": [
+        "basic.spec.js",
+        "checkout"
+      ],
+      "labels": [
+        "parentSuite=basic.spec.js",
+        "suite=checkout"
+      ],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "passed",
+          "error": null,
+          "steps": [
+            "Before Hooks [passed] step",
+            "  Fixture \"browser\" [passed] step",
+            "    Launch browser [passed] step",
+            "  Fixture \"context\" [passed] step",
+            "    Create context [passed] step",
+            "  Fixture \"page\" [passed] step",
+            "    Create page [passed] step",
+            "open page [passed] step",
+            "  Set content [passed] step",
+            "check heading [passed] step",
+            "  inner step [passed] step",
+            "    Expect \"toHaveText\" [passed] step",
+            "After Hooks [passed] step files=1",
+            "  Fixture \"page\" [passed] step",
+            "  Fixture \"context\" [passed] step",
+            "    Close context [passed] step"
+          ],
+          "attachments": [
+            "passes-with-steps_screenshot image 5732",
+            "passes-with-steps_trace trace 7846"
+          ]
+        }
+      ],
+      "logLevels": {
+        "info": 3
+      }
+    }
+  ]
+}

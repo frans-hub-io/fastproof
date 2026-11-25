@@ -12,6 +12,20 @@
   Cypress and pytest reporters (and of the new JUnit 5, TestNG, NUnit and xUnit reporters) sends only attachments
   whose content matches their recorded hash, never follows links in the spool directory and skips sessions with
   an invalid project key. Update the reporters; no server change is needed.
+- **ReportPortal agents report to FastProof.** The official ReportPortal agents (Java JUnit 5 and TestNG, pytest,
+  Robot Framework, Playwright and the others built on the ReportPortal clients) report into a FastProof project
+  without changes to the tests: point their endpoint at `https://<your FastProof>/rp`, set the project and use a
+  FastProof token with the `uploader` role as the API key. Both API versions (`v1`, `v2`) work. Test items become
+  results, retries become attempts of one result (a test that passes on retry is flaky, not two tests), nested
+  steps become steps, log lines become live logs, files become attachments, and Playwright traces open in the
+  trace viewer. Failure messages come from the ERROR log lines, also when the agent sends them shortly after the
+  launch finish. Shards and parallel jobs can report into one launch started with `fastproof launch start`.
+  ReportPortal project names map to FastProof projects through the `rp.aliases` project setting. An `issue` sent by
+  the agent becomes triage when the token may triage, otherwise a label; its external issues become issue links.
+  The endpoint is on by default and is tuned with the `FASTPROOF_RP_*` settings (Helm values `server.rp.*`). Only
+  reporting is covered: dashboards, the analyzer, Quality Gates and the rest of the ReportPortal UI API answer
+  `501`. See [Migrating from ReportPortal](guide/migrating-from-reportportal.md). The release adds migration
+  `0830`.
 
 ## 0.2.0-dev2
 

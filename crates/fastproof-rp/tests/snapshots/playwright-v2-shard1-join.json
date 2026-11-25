@@ -1,0 +1,428 @@
+{
+  "launch": {
+    "status": "finished",
+    "counts": {
+      "total": 9,
+      "passed": 7,
+      "failed": 1,
+      "broken": 0,
+      "skipped": 1,
+      "unknown": 0,
+      "flaky": 1,
+      "muted": 0
+    },
+    "logLines": 34
+  },
+  "results": [
+    {
+      "name": "always fails",
+      "fullName": "basic.spec.js/checkout/always fails",
+      "status": "failed",
+      "message": "Error: expect(locator).toHaveText(expected) failed",
+      "flakyInRun": false,
+      "suitePath": [
+        "basic.spec.js",
+        "checkout"
+      ],
+      "labels": [
+        "parentSuite=basic.spec.js",
+        "suite=checkout"
+      ],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "failed",
+          "error": "Error: expect(locator).toHaveText(expected) failed",
+          "steps": [
+            "Before Hooks [passed] step",
+            "  Fixture \"context\" [passed] step",
+            "    Create context [passed] step",
+            "  Fixture \"page\" [passed] step",
+            "    Create page [passed] step",
+            "Set content [passed] step",
+            "Expect \"toHaveText\" [failed] step",
+            "After Hooks [passed] step files=1",
+            "  Fixture \"page\" [passed] step",
+            "  Fixture \"context\" [passed] step",
+            "    Close context [passed] step",
+            "Worker Cleanup [passed] step",
+            "  Fixture \"browser\" [passed] step"
+          ],
+          "attachments": [
+            "always-fails_error-context text 57",
+            "always-fails_screenshot image 5396",
+            "always-fails_trace trace 7656"
+          ]
+        },
+        {
+          "no": 2,
+          "status": "failed",
+          "error": "Error: expect(locator).toHaveText(expected) failed",
+          "steps": [
+            "Before Hooks [passed] step",
+            "  Fixture \"browser\" [passed] step",
+            "    Launch browser [passed] step",
+            "  Fixture \"context\" [passed] step",
+            "    Create context [passed] step",
+            "  Fixture \"page\" [passed] step",
+            "    Create page [passed] step",
+            "Set content [passed] step",
+            "Expect \"toHaveText\" [failed] step",
+            "After Hooks [passed] step files=1",
+            "  Fixture \"page\" [passed] step",
+            "  Fixture \"context\" [passed] step",
+            "    Close context [passed] step",
+            "Worker Cleanup [passed] step",
+            "  Fixture \"browser\" [passed] step"
+          ],
+          "attachments": [
+            "always-fails_error-context text 57",
+            "always-fails_screenshot image 5396",
+            "always-fails_trace trace 7811"
+          ]
+        }
+      ],
+      "logLevels": {
+        "error": 2,
+        "info": 8
+      }
+    },
+    {
+      "name": "annotated @smoke",
+      "fullName": "basic.spec.js/checkout/annotated @smoke",
+      "status": "passed",
+      "message": null,
+      "flakyInRun": false,
+      "suitePath": [
+        "basic.spec.js",
+        "checkout"
+      ],
+      "labels": [
+        "parentSuite=basic.spec.js",
+        "suite=checkout"
+      ],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "passed",
+          "error": null,
+          "steps": [
+            "Before Hooks [passed] step",
+            "After Hooks [passed] step"
+          ],
+          "attachments": [
+            "annotated-smoke_trace trace 410"
+          ]
+        }
+      ],
+      "logLevels": {
+        "info": 1
+      }
+    },
+    {
+      "name": "fails on first attempt then passes",
+      "fullName": "basic.spec.js/checkout/fails on first attempt then passes",
+      "status": "passed",
+      "message": null,
+      "flakyInRun": true,
+      "suitePath": [
+        "basic.spec.js",
+        "checkout"
+      ],
+      "labels": [
+        "parentSuite=basic.spec.js",
+        "suite=checkout"
+      ],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "failed",
+          "error": "Error: expect(received).toBeGreaterThan(expected)",
+          "steps": [
+            "Before Hooks [passed] step",
+            "  Fixture \"context\" [passed] step",
+            "    Create context [passed] step",
+            "  Fixture \"page\" [passed] step",
+            "    Create page [passed] step",
+            "Set content [passed] step",
+            "Expect \"toBeGreaterThan\" [failed] step",
+            "After Hooks [passed] step files=1",
+            "  Fixture \"page\" [passed] step",
+            "  Fixture \"context\" [passed] step",
+            "    Close context [passed] step",
+            "Worker Cleanup [passed] step",
+            "  Fixture \"browser\" [passed] step"
+          ],
+          "attachments": [
+            "fails-on-first-attempt-then-passes_error-context text 56",
+            "fails-on-first-attempt-then-passes_screenshot image 5022",
+            "fails-on-first-attempt-then-passes_trace trace 6593"
+          ]
+        },
+        {
+          "no": 2,
+          "status": "passed",
+          "error": null,
+          "steps": [
+            "Before Hooks [passed] step",
+            "  Fixture \"browser\" [passed] step",
+            "    Launch browser [passed] step",
+            "  Fixture \"context\" [passed] step",
+            "    Create context [passed] step",
+            "  Fixture \"page\" [passed] step",
+            "    Create page [passed] step",
+            "Set content [passed] step",
+            "Expect \"toBeGreaterThan\" [passed] step",
+            "After Hooks [passed] step files=1",
+            "  Fixture \"page\" [passed] step",
+            "  Fixture \"context\" [passed] step",
+            "    Close context [passed] step"
+          ],
+          "attachments": [
+            "fails-on-first-attempt-then-passes_screenshot image 5022",
+            "fails-on-first-attempt-then-passes_trace trace 5674"
+          ]
+        }
+      ],
+      "logLevels": {
+        "error": 1,
+        "info": 7
+      }
+    },
+    {
+      "name": "nested pass",
+      "fullName": "basic.spec.js/checkout/nested group/nested pass",
+      "status": "passed",
+      "message": null,
+      "flakyInRun": false,
+      "suitePath": [
+        "basic.spec.js",
+        "checkout",
+        "nested group"
+      ],
+      "labels": [
+        "parentSuite=basic.spec.js",
+        "subSuite=nested group",
+        "suite=checkout"
+      ],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "passed",
+          "error": null,
+          "steps": [
+            "Before Hooks [passed] step",
+            "After Hooks [passed] step"
+          ],
+          "attachments": [
+            "nested-pass_trace trace 411"
+          ]
+        }
+      ],
+      "logLevels": {
+        "info": 1
+      }
+    },
+    {
+      "name": "skipped by code",
+      "fullName": "basic.spec.js/checkout/nested group/skipped by code",
+      "status": "skipped",
+      "message": null,
+      "flakyInRun": false,
+      "suitePath": [
+        "basic.spec.js",
+        "checkout",
+        "nested group"
+      ],
+      "labels": [
+        "parentSuite=basic.spec.js",
+        "subSuite=nested group",
+        "suite=checkout"
+      ],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "skipped",
+          "error": null,
+          "steps": [],
+          "attachments": []
+        }
+      ],
+      "logLevels": {}
+    },
+    {
+      "name": "passes with steps",
+      "fullName": "basic.spec.js/checkout/passes with steps",
+      "status": "passed",
+      "message": null,
+      "flakyInRun": false,
+      "suitePath": [
+        "basic.spec.js",
+        "checkout"
+      ],
+      "labels": [
+        "parentSuite=basic.spec.js",
+        "suite=checkout"
+      ],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "passed",
+          "error": null,
+          "steps": [
+            "Before Hooks [passed] step",
+            "  Fixture \"browser\" [passed] step",
+            "    Launch browser [passed] step",
+            "  Fixture \"context\" [passed] step",
+            "    Create context [passed] step",
+            "  Fixture \"page\" [passed] step",
+            "    Create page [passed] step",
+            "open page [passed] step",
+            "  Set content [passed] step",
+            "check heading [passed] step",
+            "  inner step [passed] step",
+            "    Expect \"toHaveText\" [passed] step",
+            "After Hooks [passed] step files=1",
+            "  Fixture \"page\" [passed] step",
+            "  Fixture \"context\" [passed] step",
+            "    Close context [passed] step"
+          ],
+          "attachments": [
+            "passes-with-steps_screenshot image 5732",
+            "passes-with-steps_trace trace 7422"
+          ]
+        }
+      ],
+      "logLevels": {
+        "info": 3
+      }
+    },
+    {
+      "name": "with attachment and logs",
+      "fullName": "basic.spec.js/checkout/with attachment and logs",
+      "status": "passed",
+      "message": null,
+      "flakyInRun": false,
+      "suitePath": [
+        "basic.spec.js",
+        "checkout"
+      ],
+      "labels": [
+        "parentSuite=basic.spec.js",
+        "suite=checkout"
+      ],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "passed",
+          "error": null,
+          "steps": [
+            "Before Hooks [passed] step",
+            "  Fixture \"browser\" [passed] step",
+            "    Launch browser [passed] step",
+            "  Fixture \"context\" [passed] step",
+            "    Create context [passed] step",
+            "  Fixture \"page\" [passed] step",
+            "    Create page [passed] step",
+            "Attach \"note.txt\" [passed] step files=1",
+            "Attach \"data.json\" [passed] step files=1",
+            "After Hooks [passed] step files=1",
+            "  Fixture \"page\" [passed] step",
+            "  Fixture \"context\" [passed] step",
+            "    Close context [passed] step"
+          ],
+          "attachments": [
+            "with-attachment-and-logs_data.json json 7",
+            "with-attachment-and-logs_note.txt text 16",
+            "with-attachment-and-logs_screenshot image 4253",
+            "with-attachment-and-logs_trace trace 4584"
+          ]
+        }
+      ],
+      "logLevels": {
+        "info": 8,
+        "warn": 1
+      }
+    },
+    {
+      "name": "parametrized 1",
+      "fullName": "basic.spec.js/parametrized 1",
+      "status": "passed",
+      "message": null,
+      "flakyInRun": false,
+      "suitePath": [
+        "basic.spec.js"
+      ],
+      "labels": [
+        "suite=basic.spec.js"
+      ],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "passed",
+          "error": null,
+          "steps": [
+            "Before Hooks [passed] step",
+            "After Hooks [passed] step",
+            "Expect \"toBeGreaterThan\" [passed] step"
+          ],
+          "attachments": [
+            "parametrized-1_trace trace 1379"
+          ]
+        }
+      ],
+      "logLevels": {
+        "info": 1
+      }
+    },
+    {
+      "name": "parametrized 2",
+      "fullName": "basic.spec.js/parametrized 2",
+      "status": "passed",
+      "message": null,
+      "flakyInRun": false,
+      "suitePath": [
+        "basic.spec.js"
+      ],
+      "labels": [
+        "suite=basic.spec.js"
+      ],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "passed",
+          "error": null,
+          "steps": [
+            "Before Hooks [passed] step",
+            "Expect \"toBeGreaterThan\" [passed] step",
+            "After Hooks [passed] step"
+          ],
+          "attachments": [
+            "parametrized-2_trace trace 1380"
+          ]
+        }
+      ],
+      "logLevels": {
+        "info": 1
+      }
+    }
+  ]
+}

@@ -56,6 +56,36 @@ over a limit is refused with `413` and a message that names the limit with its u
 
 See [Live logs](../guide/live-logs.md) for the log fields.
 
+## ReportPortal endpoint
+
+Limits of `/rp/api/{v1,v2}` (see [Migrating from ReportPortal](../guide/migrating-from-reportportal.md)).
+
+| Limit | Default | Setting or behaviour |
+|---|---|---|
+| JSON body of a launch, item or single log call | 1 MiB | Fixed; `413` |
+| Body of a multipart log request | 64 MiB | `FASTPROOF_RP_MAX_REQUEST_BYTES`; `413` |
+| One file of a log request | 64 MiB | `FASTPROOF_RP_MAX_ATTACHMENT_BYTES`; only that entry fails |
+| Files attached to one item | 1000 | Fixed (the native per-result limit); further entries fail, the log line is kept |
+| `json_request_part` | 8 MiB, 1000 log entries | Fixed; `413` |
+| Parts of a multipart request | 1001 | Fixed; `413` |
+| Header of one part | 8 KiB | Fixed; `400` |
+| Items per launch | 1 000 000 | `FASTPROOF_RP_MAX_ITEMS_PER_LAUNCH`; counted every 100 items per replica and on every item once fewer than 100 are left, then `413` for every further item (finishes and log lines still pass) |
+| Depth of the item tree | 64 | Fixed; `400` |
+| Steps per result | 10 000 | Fixed; more are dropped with a warning in the server log |
+| Attributes and parameters per item | 100 each, keys 256 B, values 1 KiB | Fixed; the rest is dropped or cut |
+| Names | 4 KiB | Cut |
+| Container names above a test (suite labels, full name without `codeRef`) | 1 KiB each, 4 KiB in all | Fixed; deeper containers are left out |
+| Client uuids | 64 B of letters, digits, `.`, `_`, `-` | `400` |
+| Times | 1970 to 5 minutes from now | Clamped |
+| Requests at once per replica | 256 | `FASTPROOF_RP_MAX_INFLIGHT`; `503` with `Retry-After: 1` after a 2 s wait |
+| A child whose parent did not arrive | 2 minutes | Then it becomes a root item |
+| A failed test waiting for its error message | 30 s after its finish and after the launch finish | `FASTPROOF_RP_ERROR_WAIT_MS`; then it is written without one. The message is the first line of the last ERROR or FATAL line (4 KiB), the trace its whole text (1 MiB) |
+| Working set of a launch | a day after it finished | Item rows are deleted; the results stay |
+
+Log lines follow the [live log limits](#results-api-and-live-logs). `Content-Encoding` other than `identity`
+gets `415`. A request without a valid token is answered `401` before its body is read and takes no slot of
+`FASTPROOF_RP_MAX_INFLIGHT`.
+
 ## Allure history import
 
 `POST .../history-imports` and `fastproof import allure-history` have their own fixed limits: `history.json` 32 MiB,

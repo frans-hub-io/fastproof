@@ -20,6 +20,7 @@ pub mod mcp_tm;
 pub mod media_prepare;
 pub mod merges;
 pub mod ops;
+pub mod rp;
 pub mod scheduler;
 pub mod schema;
 pub mod state;

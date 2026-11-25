@@ -9,6 +9,7 @@ members = [
     "crates/fastproof-stream",
     "crates/fastproof-tm-import",
     "crates/fastproof-media",
+    "crates/fastproof-rp",
 ]
 
 [workspace.package]
@@ -25,6 +26,7 @@ fastproof-store = { path = "crates/fastproof-store" }
 fastproof-stream = { path = "crates/fastproof-stream" }
 fastproof-tm-import = { path = "crates/fastproof-tm-import" }
 fastproof-media = { path = "crates/fastproof-media" }
+fastproof-rp = { path = "crates/fastproof-rp" }
 franshub-access = { path = "../franshub-platform/crates/franshub-access" }
 franshub-auth = { path = "../franshub-platform/crates/franshub-auth" }
 franshub-oidc = { path = "../franshub-platform/crates/franshub-oidc" }
@@ -65,6 +67,7 @@ ammonia = "4.2.5"
 pulldown-cmark = { version = "=0.13.6", default-features = false, features = ["html"] }
 flate2 = "1.1.11"
 md-5 = "0.11.0"
+memchr = "2.8.3"
 quick-xml = "0.42.0"
 regex = "1.13.1"
 sha1 = "0.11.0"

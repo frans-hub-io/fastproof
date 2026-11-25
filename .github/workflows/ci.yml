@@ -267,6 +267,14 @@ jobs:
       - name: install the browser for the Playwright integration tests
         working-directory: fastproof/reporters/playwright
         run: npx playwright install --with-deps chromium
+      - name: ReportPortal agents for the compatibility tests
+        run: |
+          agents="$RUNNER_TEMP/rp-agents"
+          mkdir -p "$agents"
+          pip install --target "$agents/py" pytest==9.2.0 pytest-reportportal==5.6.13 pytest-rerunfailures==16.7 pytest-xdist==3.8.0
+          npm install --prefix "$agents" @playwright/test@1.56.1 @reportportal/agent-js-playwright@5.5.0
+          "$agents/node_modules/.bin/playwright" install --with-deps chromium
+          echo "FASTPROOF_TEST_RP_AGENTS=$agents" >> "$GITHUB_ENV"
       - name: integration tests against the real server
         env:
           FASTPROOF_TEST_BROWSER: "1"

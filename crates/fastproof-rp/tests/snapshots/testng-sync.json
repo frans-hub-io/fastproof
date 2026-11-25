@@ -1,0 +1,515 @@
+{
+  "launch": {
+    "status": "finished",
+    "counts": {
+      "total": 16,
+      "passed": 8,
+      "failed": 3,
+      "broken": 1,
+      "skipped": 4,
+      "unknown": 0,
+      "flaky": 0,
+      "muted": 0
+    },
+    "logLines": 203
+  },
+  "results": [
+    {
+      "name": "neverRuns",
+      "fullName": "example.BrokenSetupTest.neverRuns",
+      "status": "skipped",
+      "message": null,
+      "flakyInRun": false,
+      "suitePath": [
+        "Surefire suite",
+        "Surefire test"
+      ],
+      "labels": [
+        "parentSuite=Surefire suite",
+        "suite=Surefire test"
+      ],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "skipped",
+          "error": null,
+          "steps": [],
+          "attachments": []
+        }
+      ],
+      "logLevels": {}
+    },
+    {
+      "name": "neverRunsEither",
+      "fullName": "example.BrokenSetupTest.neverRunsEither",
+      "status": "skipped",
+      "message": null,
+      "flakyInRun": false,
+      "suitePath": [
+        "Surefire suite",
+        "Surefire test"
+      ],
+      "labels": [
+        "parentSuite=Surefire suite",
+        "suite=Surefire test"
+      ],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "skipped",
+          "error": null,
+          "steps": [],
+          "attachments": []
+        }
+      ],
+      "logLevels": {
+        "debug": 2
+      }
+    },
+    {
+      "name": "Surefire test: setUp",
+      "fullName": "example.BrokenSetupTest.setUp",
+      "status": "broken",
+      "message": "java.lang.IllegalStateException: class setup exploded",
+      "flakyInRun": false,
+      "suitePath": [
+        "Surefire suite",
+        "Surefire test"
+      ],
+      "labels": [
+        "kind=fixture",
+        "parentSuite=Surefire suite",
+        "suite=Surefire test"
+      ],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "broken",
+          "error": "java.lang.IllegalStateException: class setup exploded",
+          "steps": [],
+          "attachments": []
+        }
+      ],
+      "logLevels": {}
+    },
+    {
+      "name": "addsItem",
+      "fullName": "example.CartTest.addsItem",
+      "status": "passed",
+      "message": null,
+      "flakyInRun": false,
+      "suitePath": [
+        "Surefire suite",
+        "Surefire test"
+      ],
+      "labels": [
+        "parentSuite=Surefire suite",
+        "suite=Surefire test"
+      ],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "passed",
+          "error": null,
+          "steps": [],
+          "attachments": []
+        }
+      ],
+      "logLevels": {
+        "debug": 2,
+        "info": 1
+      }
+    },
+    {
+      "name": "failsWithAssertion",
+      "fullName": "example.CartTest.failsWithAssertion",
+      "status": "failed",
+      "message": "java.lang.AssertionError: sum is wrong expected [3] but found [2]",
+      "flakyInRun": false,
+      "suitePath": [
+        "Surefire suite",
+        "Surefire test"
+      ],
+      "labels": [
+        "parentSuite=Surefire suite",
+        "suite=Surefire test"
+      ],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "failed",
+          "error": "java.lang.AssertionError: sum is wrong expected [3] but found [2]",
+          "steps": [],
+          "attachments": []
+        }
+      ],
+      "logLevels": {
+        "debug": 25,
+        "error": 1,
+        "warn": 1
+      }
+    },
+    {
+      "name": "flakyThenPasses",
+      "fullName": "example.CartTest.flakyThenPasses",
+      "status": "passed",
+      "message": null,
+      "flakyInRun": false,
+      "suitePath": [
+        "Surefire suite",
+        "Surefire test"
+      ],
+      "labels": [
+        "parentSuite=Surefire suite",
+        "suite=Surefire test"
+      ],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "skipped",
+          "error": null,
+          "steps": [],
+          "attachments": []
+        },
+        {
+          "no": 2,
+          "status": "skipped",
+          "error": null,
+          "steps": [],
+          "attachments": []
+        },
+        {
+          "no": 3,
+          "status": "passed",
+          "error": null,
+          "steps": [],
+          "attachments": []
+        }
+      ],
+      "logLevels": {}
+    },
+    {
+      "name": "logsWithAttachment",
+      "fullName": "example.CartTest.logsWithAttachment",
+      "status": "passed",
+      "message": "21:04:20.399 [rp-io-11] ERROR - error with exception",
+      "flakyInRun": false,
+      "suitePath": [
+        "Surefire suite",
+        "Surefire test"
+      ],
+      "labels": [
+        "parentSuite=Surefire suite",
+        "suite=Surefire test"
+      ],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "passed",
+          "error": "21:04:20.399 [rp-io-11] ERROR - error with exception",
+          "steps": [],
+          "attachments": [
+            "00000000-0000-4000-8000-0000000000ec text 17"
+          ]
+        }
+      ],
+      "logLevels": {
+        "debug": 2,
+        "error": 1,
+        "info": 1,
+        "warn": 1
+      }
+    },
+    {
+      "name": "parametrized",
+      "fullName": "example.CartTest.parametrized",
+      "status": "failed",
+      "message": "java.lang.AssertionError: did not expect [5] but found [5]",
+      "flakyInRun": false,
+      "suitePath": [
+        "Surefire suite",
+        "Surefire test"
+      ],
+      "labels": [
+        "parentSuite=Surefire suite",
+        "suite=Surefire test"
+      ],
+      "links": [],
+      "parameters": [
+        "int=5",
+        "int=5"
+      ],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "failed",
+          "error": "java.lang.AssertionError: did not expect [5] but found [5]",
+          "steps": [],
+          "attachments": []
+        }
+      ],
+      "logLevels": {
+        "debug": 10,
+        "error": 1,
+        "info": 1
+      }
+    },
+    {
+      "name": "parametrized",
+      "fullName": "example.CartTest.parametrized",
+      "status": "passed",
+      "message": null,
+      "flakyInRun": false,
+      "suitePath": [
+        "Surefire suite",
+        "Surefire test"
+      ],
+      "labels": [
+        "parentSuite=Surefire suite",
+        "suite=Surefire test"
+      ],
+      "links": [],
+      "parameters": [
+        "int=1",
+        "int=2"
+      ],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "passed",
+          "error": null,
+          "steps": [],
+          "attachments": []
+        }
+      ],
+      "logLevels": {
+        "info": 1
+      }
+    },
+    {
+      "name": "parametrized",
+      "fullName": "example.CartTest.parametrized",
+      "status": "passed",
+      "message": null,
+      "flakyInRun": false,
+      "suitePath": [
+        "Surefire suite",
+        "Surefire test"
+      ],
+      "labels": [
+        "parentSuite=Surefire suite",
+        "suite=Surefire test"
+      ],
+      "links": [],
+      "parameters": [
+        "int=3",
+        "int=4"
+      ],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "passed",
+          "error": null,
+          "steps": [],
+          "attachments": []
+        }
+      ],
+      "logLevels": {
+        "info": 1
+      }
+    },
+    {
+      "name": "repeated",
+      "fullName": "example.CartTest.repeated",
+      "status": "passed",
+      "message": null,
+      "flakyInRun": false,
+      "suitePath": [
+        "Surefire suite",
+        "Surefire test"
+      ],
+      "labels": [
+        "parentSuite=Surefire suite",
+        "suite=Surefire test"
+      ],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "passed",
+          "error": null,
+          "steps": [],
+          "attachments": []
+        },
+        {
+          "no": 2,
+          "status": "passed",
+          "error": null,
+          "steps": [],
+          "attachments": []
+        }
+      ],
+      "logLevels": {
+        "info": 2
+      }
+    },
+    {
+      "name": "skippedByDependency",
+      "fullName": "example.CartTest.skippedByDependency",
+      "status": "skipped",
+      "message": null,
+      "flakyInRun": false,
+      "suitePath": [
+        "Surefire suite",
+        "Surefire test"
+      ],
+      "labels": [
+        "parentSuite=Surefire suite",
+        "suite=Surefire test"
+      ],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "skipped",
+          "error": null,
+          "steps": [],
+          "attachments": []
+        }
+      ],
+      "logLevels": {
+        "debug": 1
+      }
+    },
+    {
+      "name": "skippedByException",
+      "fullName": "example.CartTest.skippedByException",
+      "status": "skipped",
+      "message": null,
+      "flakyInRun": false,
+      "suitePath": [
+        "Surefire suite",
+        "Surefire test"
+      ],
+      "labels": [
+        "parentSuite=Surefire suite",
+        "suite=Surefire test"
+      ],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "skipped",
+          "error": null,
+          "steps": [],
+          "attachments": []
+        }
+      ],
+      "logLevels": {
+        "debug": 8
+      }
+    },
+    {
+      "name": "throwsException",
+      "fullName": "example.CartTest.throwsException",
+      "status": "failed",
+      "message": "java.lang.IllegalStateException: unexpected",
+      "flakyInRun": false,
+      "suitePath": [
+        "Surefire suite",
+        "Surefire test"
+      ],
+      "labels": [
+        "parentSuite=Surefire suite",
+        "suite=Surefire test"
+      ],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "failed",
+          "error": "java.lang.IllegalStateException: unexpected",
+          "steps": [],
+          "attachments": []
+        }
+      ],
+      "logLevels": {
+        "error": 1
+      }
+    },
+    {
+      "name": "innerPass",
+      "fullName": "example.OuterTest$InnerTest.innerPass",
+      "status": "passed",
+      "message": null,
+      "flakyInRun": false,
+      "suitePath": [
+        "Surefire suite",
+        "Surefire test"
+      ],
+      "labels": [
+        "parentSuite=Surefire suite",
+        "suite=Surefire test"
+      ],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "passed",
+          "error": null,
+          "steps": [],
+          "attachments": []
+        }
+      ],
+      "logLevels": {}
+    },
+    {
+      "name": "outerPass",
+      "fullName": "example.OuterTest.outerPass",
+      "status": "passed",
+      "message": null,
+      "flakyInRun": false,
+      "suitePath": [
+        "Surefire suite",
+        "Surefire test"
+      ],
+      "labels": [
+        "parentSuite=Surefire suite",
+        "suite=Surefire test"
+      ],
+      "links": [],
+      "parameters": [],
+      "attempts": [
+        {
+          "no": 1,
+          "status": "passed",
+          "error": null,
+          "steps": [],
+          "attachments": []
+        }
+      ],
+      "logLevels": {
+        "debug": 1
+      }
+    }
+  ]
+}

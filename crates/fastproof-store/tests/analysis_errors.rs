@@ -987,3 +987,216 @@ async fn error_states_of_a_large_launch_take_under_a_second() {
         "the last launch took {last:?}"
     );
 }
+
+/// The step reads the catalog rows without row locks and writes the states at the end in the
+/// writers' order: an ingest that updates the same rows while the step computes does not wait
+/// for the whole step (a background job holding rows that ingest writes made ingest wait).
+#[tokio::test]
+async fn the_errors_step_leaves_catalog_rows_to_ingest_while_it_computes() {
+    let Some((db, store)) = TestDb::migrated().await else {
+        return;
+    };
+    let p = project(&store, "lk").await;
+    let s = settings(10);
+    let base = Utc::now() - Duration::hours(1);
+    let (a, b) = (fp(1), fp(2));
+    let l1 = launch(&db, &p, Some("main"), "c1", base, false).await;
+    fail(&db, &p, l1, &[a.clone(), b.clone()]).await;
+    step(&db, &store, &p, l1, &s).await;
+    let l2 = launch(
+        &db,
+        &p,
+        Some("main"),
+        "c2",
+        base + Duration::seconds(1),
+        false,
+    )
+    .await;
+    fail(&db, &p, l2, &[a.clone(), b.clone()]).await;
+    finish(&db, l2).await;
+    let launch2 = store.launch(p.id, l2).await.unwrap().unwrap();
+    let limits = AnalysisLimits::default();
+    let ctx = LaunchCtx {
+        project_id: p.id,
+        project_key: &p.key,
+        launch: &launch2,
+        settings: &s,
+        limits: &limits,
+        now: Utc::now(),
+    };
+    // Parks the step inside its computation: it reads the issue links after the catalog rows.
+    let mut parker = db.pool.begin().await.unwrap();
+    sqlx::query("lock table tracker_issue_links in access exclusive mode")
+        .execute(&mut *parker)
+        .await
+        .unwrap();
+    let (pool, pid, fps) = (db.pool.clone(), p.id, vec![a.clone(), b.clone()]);
+    let probe = async move {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            let waiting: i64 = sqlx::query_scalar(
+                "select count(*) from pg_stat_activity where datname = current_database() \
+                   and pid <> pg_backend_pid() and wait_event_type = 'Lock' \
+                   and query like '%join tracker_issue_links k on%'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            if waiting > 0 {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the step never reached the issue links"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let mut ingest = pool.begin().await.unwrap();
+        sqlx::query("set local lock_timeout = '2s'")
+            .execute(&mut *ingest)
+            .await
+            .unwrap();
+        let r = sqlx::query(
+            "update failure_fingerprints set occurrences = occurrences + 1 \
+             where project_id = $1 and fingerprint = any($2)",
+        )
+        .bind(pid)
+        .bind(&fps)
+        .execute(&mut *ingest)
+        .await;
+        match &r {
+            Ok(_) => ingest.commit().await.unwrap(),
+            Err(_) => ingest.rollback().await.unwrap(),
+        }
+        parker.commit().await.unwrap();
+        r.map(|done| done.rows_affected())
+    };
+    let (out, ingested) = tokio::join!(store.error_step(&ctx), probe);
+    assert_eq!(
+        ingested.expect("ingest updated the catalog rows while the step computed"),
+        2
+    );
+    let out = out.unwrap();
+    assert_eq!(out.evaluated, 2);
+    assert_eq!(state_of(&db, &p, &a).await, "active");
+    assert_eq!(state_of(&db, &p, &b).await, "active");
+    let occ: i64 = sqlx::query_scalar(
+        "select occurrences from failure_fingerprints where project_id = $1 and fingerprint = $2",
+    )
+    .bind(p.id)
+    .bind(&a)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(occ, 3, "the step keeps what ingest wrote");
+}
+
+/// A cluster carries its canonical fingerprint: triaging it and listing its results reach the
+/// results of its aliases too, and never another project's.
+#[tokio::test]
+async fn triage_and_the_results_filter_follow_aliases() {
+    let Some((db, store)) = TestDb::migrated().await else {
+        return;
+    };
+    let p = project(&store, "ta").await;
+    let other = project(&store, "tb").await;
+    let s = settings(10);
+    let base = Utc::now() - Duration::hours(1);
+    let (a, b, c) = (fp(1), fp(2), fp(3));
+    let l1 = launch(&db, &p, Some("main"), "c1", base, false).await;
+    fail(&db, &p, l1, &[a.clone(), b.clone(), c.clone()]).await;
+    step(&db, &store, &p, l1, &s).await;
+    let lo = launch(&db, &other, Some("main"), "x", base, false).await;
+    fail(&db, &other, lo, &[a.clone(), b.clone()]).await;
+    // The result list joins the series (both projects' fixtures share the test ids).
+    sqlx::query(
+        "insert into test_cases (id, project_id, test_case_hash, full_name, display_name) \
+         select distinct r.test_case_id, $1, r.test_case_id::text, r.full_name, r.name from results r \
+         where r.project_id = $1 on conflict do nothing",
+    )
+    .bind(p.id)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "insert into series (id, project_id, test_case_id, series_key, parameters_hash) \
+         select distinct r.series_id, $1, r.test_case_id, r.series_id::text, '' from results r \
+         where r.project_id = $1 on conflict do nothing",
+    )
+    .bind(p.id)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    store
+        .patch_error(
+            p.id,
+            &b,
+            &ErrorPatch {
+                state: None,
+                alias_of: Some(Some(a.clone())),
+            },
+            "u",
+        )
+        .await
+        .unwrap();
+    let launch1 = store.launch(p.id, l1).await.unwrap().unwrap();
+    let listed = store
+        .results(
+            &launch1,
+            &fastproof_store::results::ResultFilter {
+                fingerprint: Some(a.clone()),
+                limit: 50,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let mut got: Vec<String> = listed
+        .items
+        .iter()
+        .filter_map(|r| r.fingerprint.clone())
+        .collect();
+    got.sort();
+    assert_eq!(got, vec![a.clone(), b.clone()]);
+    let alias_only = store
+        .results(
+            &launch1,
+            &fastproof_store::results::ResultFilter {
+                fingerprint: Some(b.clone()),
+                limit: 50,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(alias_only.items.len(), 1);
+    let req = fastproof_store::analysis::triage::TriageRequest {
+        launch_id: Some(l1),
+        fingerprint: Some(a.clone()),
+        comment: Some("one error".into()),
+        ..Default::default()
+    };
+    let done = store
+        .triage(p.id, &p.key, &req, "u")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(done.updated, 2, "the canonical error and its alias");
+    let launch_o = store.launch(other.id, lo).await.unwrap().unwrap();
+    let theirs = store
+        .results(
+            &launch_o,
+            &fastproof_store::results::ResultFilter {
+                fingerprint: Some(a.clone()),
+                limit: 50,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        theirs.items.len(),
+        1,
+        "the aliases of another project are not followed"
+    );
+}

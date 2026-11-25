@@ -507,6 +507,7 @@ pub struct ResultQuery {
     /// `name:value` label.
     pub label: Option<String>,
     pub flaky: Option<bool>,
+    /// Results with this fingerprint or one of its aliases (a unique error).
     pub fingerprint: Option<String>,
     /// `manual` (projected from run items) or `automated`.
     pub source: Option<ResultSource>,

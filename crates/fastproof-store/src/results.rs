@@ -1385,7 +1385,14 @@ impl Store {
             qb.push(" and r.flaky_in_run = ").push_bind(fl);
         }
         if let Some(fp) = &f.fingerprint {
-            qb.push(" and r.fingerprint = ").push_bind(no_nul(fp));
+            let fp = no_nul(fp);
+            qb.push(" and r.fingerprint = any(array(select ")
+                .push_bind(fp.clone())
+                .push("::text union all select a.fingerprint from failure_fingerprints a where a.project_id = ")
+                .push_bind(launch.project_id)
+                .push(" and a.alias_of = ")
+                .push_bind(fp)
+                .push("))");
         }
         if let Some(p) = &f.pattern {
             crate::analysis::log_rules::result_pattern_filter(&mut qb, p);

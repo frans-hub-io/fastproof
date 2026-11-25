@@ -40,8 +40,12 @@ pub const LAUNCHES_SINCE_CAP: i64 = 1000;
 pub const SPARK_DAYS: i64 = 14;
 /// Days the `tests` count of the list and the test list of the detail look back.
 pub const TESTS_DAYS: i64 = 30;
-/// Results read per error for the sparkline, the tests and the test list, newest first.
+/// Results read per fingerprint for the sparkline, the tests and the test list, newest first,
+/// at most.
 pub const ENRICH_ROWS: i64 = 20_000;
+/// Results one list or detail request reads for those, at most: shared by the fingerprints of
+/// the page (errors and their aliases), each reading at least one.
+pub const ENRICH_BUDGET: i64 = 200_000;
 /// Least time between two `errorRegressed` deliveries of one channel of a project.
 pub const EVENT_THROTTLE: std::time::Duration = std::time::Duration::from_secs(600);
 /// Errors listed in one `errorRegressed` delivery.
@@ -401,7 +405,7 @@ async fn catalog_rows(
 ) -> anyhow::Result<HashMap<String, CatalogRow>> {
     let rows: Vec<CatalogTuple> = sqlx::query_as(
         "select fingerprint, message, state, state_at, resolved_at, regressed_count, first_commit, last_good_commit \
-         from failure_fingerprints where project_id = $1 and fingerprint = any($2) for update",
+         from failure_fingerprints where project_id = $1 and fingerprint = any($2)",
     )
     .bind(project_id)
     .bind(fps)
@@ -438,30 +442,44 @@ async fn previous_occurrence(
     tracked: &BTreeSet<String>,
 ) -> anyhow::Result<Option<(DateTime<Utc>, i64)>> {
     let tracked: Vec<String> = tracked.iter().cloned().collect();
-    let mut best: Option<(DateTime<Utc>, i64)> = None;
-    for m in members {
-        let row: Option<(DateTime<Utc>, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "select l.created_at, l.number from results r join launches l on l.id = r.launch_id \
-             where r.project_id = $1 and r.fingerprint = $2 and r.launch_created_at < $3 \
-               and r.status in {FAILING} and l.status = 'finished' and not l.debug and l.merged_into is null \
-               and case when $4 = '*' then not (coalesce(l.branch, '') = any($5)) \
-                 else coalesce(l.branch, '') = $4 end \
-             order by r.launch_created_at desc limit 1"
-        )))
-        .bind(project_id)
-        .bind(m)
-        .bind(before)
-        .bind(branch)
-        .bind(&tracked)
-        .fetch_optional(&mut *conn)
-        .await?;
-        if let Some(r) = row
-            && best.is_none_or(|b| r.0 > b.0)
-        {
-            best = Some(r);
-        }
+    Ok(sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "select x.created_at, x.number from unnest($2::text[]) as m(f) \
+         cross join lateral (select l.created_at, l.number from results r join launches l on l.id = r.launch_id \
+           where r.project_id = $1 and r.fingerprint = m.f and r.launch_created_at < $3 \
+             and r.status in {FAILING} and l.status = 'finished' and not l.debug and l.merged_into is null \
+             and case when $4 = '*' then not (coalesce(l.branch, '') = any($5)) \
+               else coalesce(l.branch, '') = $4 end \
+           order by r.launch_created_at desc limit 1) x \
+         order by x.created_at desc limit 1"
+    )))
+    .bind(project_id)
+    .bind(members)
+    .bind(before)
+    .bind(branch)
+    .bind(&tracked)
+    .fetch_optional(&mut *conn)
+    .await?)
+}
+
+/// Locks the catalog rows of these fingerprints in one fixed order (the order of the ingest
+/// writers), so that two writers of the same rows wait for each other instead of deadlocking.
+async fn lock_catalog_rows(
+    conn: &mut PgConnection,
+    project_id: Uuid,
+    fps: &[String],
+) -> anyhow::Result<()> {
+    if fps.is_empty() {
+        return Ok(());
     }
-    Ok(best)
+    sqlx::query(
+        "select 1 from failure_fingerprints where project_id = $1 and fingerprint = any($2) \
+         order by fingerprint collate \"C\" for update",
+    )
+    .bind(project_id)
+    .bind(fps)
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
 }
 
 /// The newest finished, non-debug launch of a branch before a launch number: its commit.
@@ -741,6 +759,7 @@ async fn recompute(
     let count = |key: &CountKey| counts.get(key).copied().unwrap_or(0);
 
     let mut out = Vec::new();
+    let mut writes: Vec<StateWrite> = Vec::new();
     for p in plans {
         let Some(row) = catalog.get(&p.canon) else {
             continue;
@@ -859,21 +878,15 @@ async fn recompute(
             && row.first_commit == first_commit
             && row.last_good_commit == last_good_commit;
         if !unchanged {
-            sqlx::query(
-                "update failure_fingerprints set state = $3, state_at = $4, resolved_at = $5, \
-                   regressed_count = $6, first_commit = $7, last_good_commit = $8 \
-                 where project_id = $1 and fingerprint = $2",
-            )
-            .bind(project_id)
-            .bind(&p.canon)
-            .bind(new.as_str())
-            .bind(state_at)
-            .bind(resolved_at)
-            .bind(regressed_count)
-            .bind(first_commit.as_deref().map(no_nul))
-            .bind(last_good_commit.as_deref().map(no_nul))
-            .execute(&mut *conn)
-            .await?;
+            writes.push(StateWrite {
+                fingerprint: p.canon.clone(),
+                state: new.as_str().to_string(),
+                state_at,
+                resolved_at,
+                regressed_count,
+                first_commit: first_commit.as_deref().map(no_nul),
+                last_good_commit: last_good_commit.as_deref().map(no_nul),
+            });
         }
         out.push(Computed {
             canon: p.canon,
@@ -882,7 +895,81 @@ async fn recompute(
             message: row.message.clone(),
         });
     }
+    write_states(conn, project_id, writes).await?;
     Ok(out)
+}
+
+/// Locks the catalog rows a patch changes (`fps` and, with `aliases_of`, that error's aliases)
+/// in the writers' order before it changes them.
+async fn lock_patch_rows(
+    conn: &mut PgConnection,
+    project_id: Uuid,
+    fps: &[String],
+    aliases_of: Option<&str>,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "select 1 from failure_fingerprints where project_id = $1 \
+           and (fingerprint = any($2) or alias_of = $3) \
+         order by fingerprint collate \"C\" for update",
+    )
+    .bind(project_id)
+    .bind(fps)
+    .bind(aliases_of)
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
+/// A computed state of a catalog row, written at the end of [`recompute`].
+struct StateWrite {
+    fingerprint: String,
+    state: String,
+    state_at: DateTime<Utc>,
+    resolved_at: Option<DateTime<Utc>>,
+    regressed_count: i32,
+    first_commit: Option<String>,
+    last_good_commit: Option<String>,
+}
+
+/// Writes the computed states in one statement. The catalog rows are read without row locks
+/// (their state columns change only under the errors lock) and locked here, at the end of the
+/// transaction, in the writers' order: ingest updates the same rows (occurrences, last seen)
+/// and must not wait for the whole computation, nor deadlock with it.
+async fn write_states(
+    conn: &mut PgConnection,
+    project_id: Uuid,
+    mut writes: Vec<StateWrite>,
+) -> anyhow::Result<()> {
+    if writes.is_empty() {
+        return Ok(());
+    }
+    writes.sort_by(|a, b| a.fingerprint.cmp(&b.fingerprint));
+    let fps: Vec<String> = writes.iter().map(|w| w.fingerprint.clone()).collect();
+    lock_catalog_rows(conn, project_id, &fps).await?;
+    let states: Vec<String> = writes.iter().map(|w| w.state.clone()).collect();
+    let state_at: Vec<DateTime<Utc>> = writes.iter().map(|w| w.state_at).collect();
+    let resolved_at: Vec<Option<DateTime<Utc>>> = writes.iter().map(|w| w.resolved_at).collect();
+    let regressed: Vec<i32> = writes.iter().map(|w| w.regressed_count).collect();
+    let first: Vec<Option<String>> = writes.iter().map(|w| w.first_commit.clone()).collect();
+    let good: Vec<Option<String>> = writes.iter().map(|w| w.last_good_commit.clone()).collect();
+    sqlx::query(
+        "update failure_fingerprints f set state = u.s, state_at = u.sa, resolved_at = u.ra, \
+           regressed_count = u.rc, first_commit = u.fc, last_good_commit = u.lg \
+         from unnest($2::text[], $3::text[], $4::timestamptz[], $5::timestamptz[], $6::int[], \
+           $7::text[], $8::text[]) as u(f, s, sa, ra, rc, fc, lg) \
+         where f.project_id = $1 and f.fingerprint = u.f",
+    )
+    .bind(project_id)
+    .bind(&fps)
+    .bind(&states)
+    .bind(&state_at)
+    .bind(&resolved_at)
+    .bind(&regressed)
+    .bind(&first)
+    .bind(&good)
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
 }
 
 /// Facts of a list or detail row, merged over the members of each error.
@@ -890,6 +977,11 @@ async fn recompute(
 struct Enrich {
     tests: i64,
     spark: Vec<i64>,
+}
+
+/// Results read per fingerprint when `members` fingerprints share [`ENRICH_BUDGET`].
+pub fn enrich_rows_per_member(members: usize) -> i64 {
+    (ENRICH_BUDGET / members.max(1) as i64).clamp(1, ENRICH_ROWS)
 }
 
 fn spark_days(today: NaiveDate) -> Vec<NaiveDate> {
@@ -913,16 +1005,29 @@ pub fn compare_url(vcs: &Value, last_good: &str, first: &str) -> Option<String> 
     let last_good = sanitize_commit(last_good)?;
     let first = sanitize_commit(first)?;
     let provider = vcs.get("provider")?.as_str()?;
-    let url = vcs.get("url")?.as_str()?.trim_end_matches('/');
     let repo = vcs.get("repository")?.as_str()?.trim_matches('/');
     if repo.is_empty()
         || !repo
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'/'))
-        || !(url.starts_with("https://") || url.starts_with("http://"))
+        || repo
+            .split('/')
+            .any(|s| s.is_empty() || s == "." || s == "..")
     {
         return None;
     }
+    // Only the origin and the path of the configured URL: credentials, a query or a fragment
+    // in it never reach the readers of the error.
+    let mut parsed = url::Url::parse(vcs.get("url")?.as_str()?.trim()).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+        return None;
+    }
+    parsed.set_username("").ok()?;
+    parsed.set_password(None).ok()?;
+    parsed.set_query(None);
+    parsed.set_fragment(None);
+    let full = parsed.to_string();
+    let url = full.trim_end_matches('/');
     match provider {
         "gitlab" => Some(format!("{url}/{repo}/-/compare/{last_good}...{first}")),
         "github" => {
@@ -1338,7 +1443,7 @@ impl Store {
             .bind(project_id)
             .bind(q.state.map(|s| s.as_str()))
             .bind(search)
-            .bind(q.branch.as_deref())
+            .bind(q.branch.as_deref().map(no_nul))
             .bind(limit + 1)
             .bind(
                 cursor
@@ -1448,7 +1553,7 @@ impl Store {
             .bind(&pm)
             .bind(since_tests)
             .bind(since_spark)
-            .bind(ENRICH_ROWS)
+            .bind(enrich_rows_per_member(pm.len()))
             .fetch_all(&mut *conn)
             .await?;
         let mut enrich: HashMap<String, Enrich> = HashMap::new();
@@ -1660,7 +1765,7 @@ impl Store {
         .bind(project_id)
         .bind(&members)
         .bind(Utc::now() - Duration::days(TESTS_DAYS))
-        .bind(ENRICH_ROWS)
+        .bind(enrich_rows_per_member(members.len()))
         .fetch_all(&mut *conn)
         .await?;
         let mut test_list: Vec<ErrorTest> = tests
@@ -1806,7 +1911,7 @@ impl Store {
         let mut tx = self.pool.begin().await?;
         lock(&mut tx, project_id).await?;
         let row: Option<(String, Option<String>)> = sqlx::query_as(
-            "select state, alias_of from failure_fingerprints where project_id = $1 and fingerprint = $2 for update",
+            "select state, alias_of from failure_fingerprints where project_id = $1 and fingerprint = $2",
         )
         .bind(project_id)
         .bind(fingerprint)
@@ -1841,6 +1946,9 @@ impl Store {
                         "aliasOf would make the error an alias of itself",
                     ));
                 }
+                let mut rows = vec![fingerprint.to_string(), canon.clone()];
+                rows.extend(alias_of.clone());
+                lock_patch_rows(&mut tx, project_id, &rows, Some(fingerprint)).await?;
                 sqlx::query(
                     "update failure_fingerprints set alias_of = $3 where project_id = $1 \
                        and (fingerprint = $2 or alias_of = $2)",
@@ -1857,6 +1965,13 @@ impl Store {
             }
             Some(None) => {
                 if let Some(old) = alias_of {
+                    lock_patch_rows(
+                        &mut tx,
+                        project_id,
+                        &[fingerprint.to_string(), old.clone()],
+                        None,
+                    )
+                    .await?;
                     sqlx::query(
                         "update failure_fingerprints set alias_of = null, state = 'active', state_at = null \
                          where project_id = $1 and fingerprint = $2",
@@ -1884,6 +1999,7 @@ impl Store {
                     "an alias has no state of its own: change its canonical error",
                 ));
             }
+            lock_patch_rows(&mut tx, project_id, &[fingerprint.to_string()], None).await?;
             match s {
                 ErrorPatchState::Ignored => {
                     sqlx::query(
@@ -2069,7 +2185,32 @@ mod tests {
         assert_eq!(compare_url(&gh, "a", "c?x=<script>"), None);
         let bad = serde_json::json!({"provider": "github", "url": "javascript:alert(1)", "repository": "o/r"});
         assert_eq!(compare_url(&bad, "a", "b"), None);
+        let creds = serde_json::json!({"provider": "gitlab",
+            "url": "https://oauth2:glpat-secret@gitlab.example.com/sub/?private_token=x#f", "repository": "g/app"});
+        assert_eq!(
+            compare_url(&creds, "a", "b").as_deref(),
+            Some("https://gitlab.example.com/sub/g/app/-/compare/a...b")
+        );
+        let up = serde_json::json!({"provider": "gitlab", "url": "https://gitlab.example.com", "repository": "../../x"});
+        assert_eq!(compare_url(&up, "a", "b"), None);
+        let nohost =
+            serde_json::json!({"provider": "gitlab", "url": "https://", "repository": "g/app"});
+        assert_eq!(compare_url(&nohost, "a", "b"), None);
         assert_eq!(compare_url(&serde_json::json!({}), "a", "b"), None);
+    }
+
+    #[test]
+    fn one_request_reads_a_bounded_number_of_results() {
+        assert_eq!(enrich_rows_per_member(1), ENRICH_ROWS);
+        assert_eq!(enrich_rows_per_member(0), ENRICH_ROWS);
+        for n in [50usize, 500, 5_000, 200_000, 1_000_000] {
+            let per = enrich_rows_per_member(n);
+            assert!((1..=ENRICH_ROWS).contains(&per));
+            assert!(
+                per * n as i64 <= ENRICH_BUDGET.max(n as i64),
+                "{n} fingerprints read {per} each"
+            );
+        }
     }
 
     #[test]

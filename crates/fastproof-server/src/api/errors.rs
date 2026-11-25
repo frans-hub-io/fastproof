@@ -59,7 +59,7 @@ pub struct ListQuery {
         message, at least 3 characters); `sort`; paged with `before`. Needs `launches:read`.",
     params(("key" = String, Path), ListQuery),
     responses((status = 200, body = ErrorList), (status = 400, body = ErrorBody),
-        (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
+        (status = 403, body = ErrorBody), (status = 404, body = ErrorBody), (status = 429, body = ErrorBody)))]
 pub async fn list(
     State(s): State<AppState>,
     auth: Auth,
@@ -75,6 +75,7 @@ pub async fn list(
         before: q.before,
         limit: super::page_limit(q.limit)?,
     };
+    let _permit = s.guards.heavy(&auth).await?;
     Ok(Json(s.store.errors(p.id, &query).await.map_err(tm_error)?))
 }
 
@@ -122,13 +123,14 @@ async fn full_detail(
         Needs `launches:read`.",
     params(("key" = String, Path), ("fingerprint" = String, Path)),
     responses((status = 200, body = ErrorDetail), (status = 403, body = ErrorBody),
-        (status = 404, body = ErrorBody)))]
+        (status = 404, body = ErrorBody), (status = 429, body = ErrorBody)))]
 pub async fn detail(
     State(s): State<AppState>,
     auth: Auth,
     P((key, fingerprint)): P<(String, String)>,
 ) -> ApiResult<Json<ErrorDetail>> {
     let p = s.project_for(&auth, &key, &s.perms.launches_read).await?;
+    let _permit = s.guards.heavy(&auth).await?;
     Ok(Json(full_detail(&s, &p, &fingerprint).await?))
 }
 

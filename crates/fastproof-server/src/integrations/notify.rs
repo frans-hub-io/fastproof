@@ -977,10 +977,8 @@ pub fn error_text(d: &ErrorDigest) -> String {
 /// The Teams card of regressed errors (plain text runs only).
 pub fn error_card(d: &ErrorDigest) -> serde_json::Value {
     use super::teams::plain;
-    let mut body = vec![
-        serde_json::json!({"type": "TextBlock", "text": plain(&error_headline(d), 300),
-        "weight": "Bolder", "wrap": true, "size": "Medium"}),
-    ];
+    let mut body = vec![serde_json::json!({"type": "RichTextBlock", "inlines": [
+        {"type": "TextRun", "text": plain(&error_headline(d), 300), "weight": "Bolder", "size": "Medium"}]})];
     for i in &d.items {
         body.push(
             serde_json::json!({"type": "RichTextBlock", "spacing": "Small", "inlines": [
@@ -1538,6 +1536,23 @@ mod tests {
         assert!(t.ends_with("errors?state=regressed"));
         let card = serde_json::to_string(&error_card(&d)).unwrap();
         assert!(card.contains("Open errors"));
+        // Launch text (the branch is in the headline) is never in a Markdown TextBlock.
+        let mut md = d.clone();
+        md.launch.branch = Some("**x** [y](https://evil.example)".into());
+        let card = error_card(&md);
+        let blocks = card["attachments"][0]["content"]["body"]
+            .as_array()
+            .unwrap();
+        assert!(
+            blocks.iter().all(|b| b["type"] == "RichTextBlock"),
+            "{card}"
+        );
+        assert!(
+            blocks[0]["inlines"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("**x**")
+        );
         let body: serde_json::Value =
             serde_json::from_slice(&error_webhook_body(Uuid::nil(), &d)).unwrap();
         assert_eq!(body["event"], ERROR_EVENT);

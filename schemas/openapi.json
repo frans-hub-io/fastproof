@@ -5339,6 +5339,15 @@
                 }
               }
             }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         }
       }
@@ -5388,6 +5397,15 @@
             }
           },
           "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
             "content": {
               "application/json": {
                 "schema": {
@@ -9055,6 +9073,7 @@
           {
             "name": "fingerprint",
             "in": "query",
+            "description": "Results with this fingerprint or one of its aliases (a unique error).",
             "required": false,
             "schema": {
               "type": "string"
@@ -34818,7 +34837,7 @@
               "string",
               "null"
             ],
-            "description": "With `launchId`: every result of the launch with this fingerprint."
+            "description": "With `launchId`: every result of the launch with this fingerprint or one of its aliases\n(the fingerprint of a cluster is its canonical error)."
           },
           "issue": {
             "oneOf": [

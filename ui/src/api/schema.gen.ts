@@ -8689,7 +8689,10 @@ export interface components {
             comment?: string | null;
             /** Format: uuid */
             defectTypeId?: string | null;
-            /** @description With `launchId`: every result of the launch with this fingerprint. */
+            /**
+             * @description With `launchId`: every result of the launch with this fingerprint or one of its aliases
+             *     (the fingerprint of a cluster is its canonical error).
+             */
             fingerprint?: string | null;
             issue?: components["schemas"]["TriageIssue"] | null;
             /** Format: uuid */
@@ -12634,6 +12637,14 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
         };
     };
     analysis_error: {
@@ -12665,6 +12676,14 @@ export interface operations {
                 };
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -15105,6 +15124,7 @@ export interface operations {
                 /** @description `name:value` label. */
                 label?: string;
                 flaky?: boolean;
+                /** @description Results with this fingerprint or one of its aliases (a unique error). */
                 fingerprint?: string;
                 /** @description `manual` (projected from run items) or `automated`. */
                 source?: components["schemas"]["ResultSource"];

@@ -49,7 +49,8 @@ on this branch (`newOnBranch`), and its current state (`errorState`).
 When an error appears (or comes back) FastProof records the commit of that launch and the commit of the
 previous finished launch of the same branch, which did not have it: "appeared between `a1b2c3d` and
 `d4e5f6a`". With a GitHub or GitLab connection in the project's `vcs` settings the error page links to the
-compare view of the two commits.
+compare view of the two commits. The link is built from the scheme, host and path of `vcs.url` only: user
+names, passwords, a query or a fragment in that URL never appear in it.
 
 ### Time to resolve
 
@@ -61,7 +62,9 @@ without it, once it is resolved.
 A change of the message normalizer or of the stack frames can split one real error into two fingerprints.
 **Merge into another error** on the error page (or `PATCH` with `aliasOf`) makes a fingerprint an alias of
 another: from then on the list, the launch clusters, triage suggestions and `newErrors` count both as one
-error, and its occurrences, branches and decisions are shown together. Merging is one level deep: merging into
+error, and its occurrences, branches and decisions are shown together. Triaging a launch's cluster
+(`launchId` with `fingerprint`) and the results filter `?fingerprint=` of a launch include the results of the
+error's aliases. Merging is one level deep: merging into
 an alias merges into that alias's error, and errors already merged into the one you merge move along. A
 fingerprint cannot be merged into itself or into an error of another project (409 `alias_cycle`). **Split**
 (`aliasOf: null`) undoes it; both errors get their states computed again.
@@ -110,6 +113,10 @@ Patches are written to the audit log as `error.update`.
 ## Limits
 
 - The list answers within 200 ms for 50 000 errors of a project.
-- The sparkline, the test count and the test list read at most 20 000 recent occurrences of an error.
+- The sparkline, the test count and the test list read at most 20 000 recent occurrences of a fingerprint,
+  and one list page or error page at most 200 000 in all (shared by its errors and their aliases), so the
+  sparkline of a very frequent error on a page of 500 shows its most recent occurrences.
+- The list and the error page count as heavy requests of the caller (`429` beyond
+  `FASTPROOF_HEAVY_QUERIES_PER_CALLER`, 4 by default).
 - A launch with more than `FASTPROOF_ANALYSIS_MAX_CLUSTERS` (2000) errors is processed for its largest ones;
   the analysis step is then marked `partial`.

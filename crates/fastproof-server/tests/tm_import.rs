@@ -1484,10 +1484,7 @@ async fn deleting_a_project_removes_its_job_files() {
         )
         .await;
     assert!(st.is_success(), "{st}");
-    sqlx::query("update scheduled_jobs set next_run_at = now() where name = 'projects.purge'")
-        .execute(&db.pool)
-        .await
-        .unwrap();
+    db.trigger_job("projects.purge").await;
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         let left = tm_job_files(&s);

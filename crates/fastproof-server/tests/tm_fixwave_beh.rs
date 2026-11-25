@@ -1054,9 +1054,16 @@ async fn rerun_needs_if_match_and_keeps_earlier_executions_after_a_partition_dro
     let Some(db) = TestDb::new().await else {
         return;
     };
-    let s = Server::start(&db).await;
-    db.hold_jobs(&["history.rollup", "retention.apply", "partitions.ensure"])
-        .await;
+    let s = Server::start_paused(
+        &db,
+        &[
+            "history.rollup",
+            "retention.apply",
+            "partitions.ensure",
+            "analysis.indexes",
+        ],
+    )
+    .await;
     s.project("rr").await;
     let (st, b) = put_settings(
         &s,

@@ -468,8 +468,7 @@ async fn busy_late_final_and_deleted_targets() {
     let Some(db) = TestDb::new().await else {
         return;
     };
-    let s = Server::start(&db).await;
-    db.hold_jobs(&["launches.merges"]).await;
+    let s = Server::start_paused(&db, &["launches.merges"]).await;
     s.project("bz").await;
     let store = Store::new(db.pool.clone());
     let a = launch(&s, "bz", "a", ADMIN_TOKEN, None).await;

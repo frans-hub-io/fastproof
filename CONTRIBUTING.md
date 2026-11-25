@@ -20,6 +20,13 @@ cd ui && npm ci && npm run lint && npm run typecheck && npm test && npm run buil
 Integration tests run when the `FASTPROOF_TEST_*` variables point to PostgreSQL, an S3-compatible server
 (Garage works well) and, optionally, Valkey; see `.github/workflows/ci.yml` for the exact setup.
 
+The server tests start a real server, and its scheduler runs every periodic job (sweeps, retention, media
+preparation, backfills and so on) at start and on its schedule. A test that does a job's work itself (calls
+its function), ages rows that a job acts on, or checks a state a job changes starts the server with those
+jobs paused: `Server::start_paused(&db, &["retention.apply"])` (see `crates/fastproof-server/tests/common`).
+A paused job runs only when the test makes it due with `db.run_scheduled("retention.apply")`, which
+exercises the job through the real scheduler. Wait for a state rather than sleeping a fixed time.
+
 Helm chart checks:
 
 ```sh

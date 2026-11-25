@@ -584,8 +584,7 @@ async fn backfill_fills_old_results_in_batches() {
     let Some(db) = TestDb::new().await else {
         return;
     };
-    let s = Server::start(&db).await;
-    db.hold_jobs(&["explorer.backfill"]).await;
+    let s = Server::start_paused(&db, &["explorer.backfill"]).await;
     s.project("bf").await;
     let launch = s.launch("bf", None).await;
     let lid = launch["id"].as_str().unwrap();
@@ -1231,8 +1230,7 @@ async fn backfill_skips_locked_rows_and_comes_back() {
     let Some(db) = TestDb::new().await else {
         return;
     };
-    let s = Server::start(&db).await;
-    db.hold_jobs(&["explorer.backfill"]).await;
+    let s = Server::start_paused(&db, &["explorer.backfill"]).await;
     s.project("lk").await;
     let launch = s.launch("lk", None).await;
     let lid = launch["id"].as_str().unwrap();
@@ -1304,16 +1302,18 @@ async fn rollup_invalidates_the_cache_of_kept_launches() {
     let Some(db) = TestDb::new().await else {
         return;
     };
-    let s = Server::start(&db).await;
-    let store = fastproof_store::Store::new(db.pool.clone());
-    db.hold_jobs(&[
-        "history.rollup",
-        "retention.apply",
-        "analysis.indexes",
-        "partitions.ensure",
-        "explorer.backfill",
-    ])
+    let s = Server::start_paused(
+        &db,
+        &[
+            "history.rollup",
+            "retention.apply",
+            "analysis.indexes",
+            "partitions.ensure",
+            "explorer.backfill",
+        ],
+    )
     .await;
+    let store = fastproof_store::Store::new(db.pool.clone());
     store.ensure_partitions(6, 1).await.unwrap();
     s.project("ru").await;
     let (st, _) = s
@@ -1382,7 +1382,8 @@ async fn suite_groups_are_read_through_the_suite_index() {
     let Some(db) = TestDb::new().await else {
         return;
     };
-    let s = Server::start(&db).await;
+    // The test builds the partition indexes itself, not at the same time as the job.
+    let s = Server::start_paused(&db, &["analysis.indexes"]).await;
     s.project("si").await;
     let launch = s.launch("si", None).await;
     let lid = launch["id"].as_str().unwrap();
@@ -1503,9 +1504,16 @@ async fn finished_launches_get_their_first_tree_built() {
     let Some(db) = TestDb::new().await else {
         return;
     };
-    let s = Server::start(&db).await;
-    db.hold_jobs(&["explorer.warm"]).await;
+    let s = Server::start_paused(&db, &["explorer.warm", "explorer.cache.prune"]).await;
     let store = fastproof_store::Store::new(db.pool.clone());
+    assert_eq!(
+        store
+            .warm_explorer_trees(Duration::ZERO, 10, 20, Duration::from_secs(30))
+            .await
+            .unwrap(),
+        0,
+        "the first run starts the walk at the present"
+    );
     s.project("warm").await;
     let launch = s.launch("warm", None).await;
     let lid = launch["id"].as_str().unwrap();

@@ -224,8 +224,12 @@ async fn mr_token_cannot_change_cases_through_a_trusted_launch() {
     };
     let dir = tempfile::tempdir().unwrap();
     let file = mr_access_file(dir.path());
-    let s = Server::start_with(&db, &[("FASTPROOF_ACCESS_FILE", &file)]).await;
-    db.hold_jobs(&["cases.sync", "cases.backfill"]).await;
+    let s = Server::start_with_paused(
+        &db,
+        &[("FASTPROOF_ACCESS_FILE", &file)],
+        &["cases.sync", "cases.backfill"],
+    )
+    .await;
     s.project("mr").await;
     let ci = s.token("ci", "uploader", &["mr"]).await;
     let mr = s.token("mr-pipeline", "mr-uploader", &["mr"]).await;
@@ -599,8 +603,7 @@ async fn imports_are_claimed_apart_from_exports() {
     let Some(db) = TestDb::new().await else {
         return;
     };
-    let s = Server::start(&db).await;
-    db.hold_jobs(&["cases.jobs"]).await;
+    let s = Server::start_paused(&db, &["cases.jobs"]).await;
     s.project("pool").await;
     let p = state(&s).store.project("pool").await.unwrap().unwrap();
     let store = &state(&s).store;
@@ -642,8 +645,7 @@ async fn import_jobs_need_cases_import() {
     let Some(db) = TestDb::new().await else {
         return;
     };
-    let s = Server::start(&db).await;
-    db.hold_jobs(&["cases.jobs"]).await;
+    let s = Server::start_paused(&db, &["cases.jobs"]).await;
     s.project("ij").await;
     let viewer = s.token("v", "viewer", &["ij"]).await;
     let p = state(&s).store.project("ij").await.unwrap().unwrap();

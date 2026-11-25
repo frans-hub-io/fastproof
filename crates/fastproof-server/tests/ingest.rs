@@ -385,6 +385,7 @@ async fn two_replicas_process_each_upload_once() {
     let shared = tempfile::tempdir().unwrap();
     let blobs = shared.path().to_string_lossy().to_string();
     let extra = [("FASTPROOF_BLOB_DIR", blobs.as_str())];
+    let started = std::time::Instant::now();
     let (a, b) = tokio::join!(
         Server::start_with(&db, &extra),
         Server::start_with(&db, &extra)
@@ -434,14 +435,29 @@ async fn two_replicas_process_each_upload_once() {
 
     let deadline = std::time::Instant::now() + Duration::from_secs(20);
     loop {
-        let jobs: Vec<(String, i64, Option<String>)> =
-            sqlx::query_as("select name, run_count, last_status from scheduled_jobs order by name")
-                .fetch_all(&db.pool)
-                .await
-                .unwrap();
-        if jobs.len() >= 4 && jobs.iter().all(|j| j.2.is_some()) {
-            for (name, runs, status) in &jobs {
-                assert_eq!(*runs, 1, "{name} ran once across both replicas");
+        let jobs: Vec<(String, String, i64, Option<String>)> = sqlx::query_as(
+            "select name, schedule, run_count, last_status from scheduled_jobs order by name",
+        )
+        .fetch_all(&db.pool)
+        .await
+        .unwrap();
+        if jobs.len() >= 4 && jobs.iter().all(|j| j.3.is_some()) {
+            // A job is due once at the start and then an interval after each run finished, so
+            // across both replicas it ran at most once per interval that has passed: two
+            // replicas running the same due time would show one run too many (jobs due every
+            // few seconds may well have run again by now, on either replica).
+            let elapsed = started.elapsed();
+            for (name, schedule, runs, status) in &jobs {
+                let most = match fastproof_server::scheduler::Schedule::parse(schedule).unwrap() {
+                    fastproof_server::scheduler::Schedule::Every(d) => {
+                        1 + (elapsed.as_secs_f64() / d.as_secs_f64()) as i64
+                    }
+                    fastproof_server::scheduler::Schedule::Cron(_) => i64::MAX,
+                };
+                assert!(
+                    (1..=most).contains(runs),
+                    "{name} ({schedule}) ran {runs} times in {elapsed:?} across both replicas"
+                );
                 assert_eq!(status.as_deref(), Some("ok"), "{name}");
             }
             break;

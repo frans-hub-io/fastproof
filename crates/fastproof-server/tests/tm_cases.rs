@@ -1336,8 +1336,7 @@ async fn code_sync_trust_allure_id_and_rename() {
     let Some(db) = TestDb::new().await else {
         return;
     };
-    let s = Server::start(&db).await;
-    db.hold_jobs(&["cases.sync", "cases.backfill"]).await;
+    let s = Server::start_paused(&db, &["cases.sync", "cases.backfill"]).await;
     s.project("sy").await;
     let up = s.token("ci", "uploader", &["sy"]).await;
     let base = "/api/v1/projects/sy/cases";
@@ -1701,8 +1700,7 @@ async fn backfill_route_creates_cases_from_trusted_history() {
     let Some(db) = TestDb::new().await else {
         return;
     };
-    let s = Server::start(&db).await;
-    db.hold_jobs(&["cases.sync", "cases.backfill"]).await;
+    let s = Server::start_paused(&db, &["cases.sync", "cases.backfill"]).await;
     s.project("bf").await;
     let (st, l) = s
         .post(

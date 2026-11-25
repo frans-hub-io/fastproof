@@ -207,6 +207,9 @@ pub struct Config {
     pub direct_uploads: crate::direct_uploads::DirectSettings,
     /// The ReportPortal endpoint (`FASTPROOF_RP_*`).
     pub rp: crate::rp::RpConfig,
+    /// Scheduled jobs this replica registers paused ([`crate::scheduler::Scheduler::pause`]):
+    /// none from the environment; tests pause the jobs whose work they do or time themselves.
+    pub paused_jobs: Vec<String>,
 }
 
 /// Default of `FASTPROOF_SHUTDOWN_TIMEOUT_SECONDS`: below the 30 s Kubernetes gives by default.
@@ -434,6 +437,7 @@ impl fmt::Debug for Config {
             .field("tm_backfill_delay", &self.tm_backfill_delay)
             .field("direct_uploads", &self.direct_uploads)
             .field("rp", &self.rp)
+            .field("paused_jobs", &self.paused_jobs)
             .finish_non_exhaustive()
     }
 }
@@ -895,6 +899,7 @@ impl Config {
             shutdown_timeout,
             direct_uploads,
             rp,
+            paused_jobs: Vec::new(),
         })
     }
 }

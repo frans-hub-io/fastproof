@@ -717,16 +717,8 @@ async fn a_launch_without_finish_is_interrupted_by_the_idle_timeout() {
         .execute(&db.pool)
         .await
         .unwrap();
-    let n = s
-        .running
-        .as_ref()
-        .unwrap()
-        .state
-        .store
-        .rp_expire_idle(3600)
-        .await
-        .unwrap();
-    assert_eq!(n, 1);
+    // Through the server's own `rp.maintain` job (with the default idle timeout of an hour).
+    db.run_scheduled("rp.maintain").await;
     let results = settled_results(&s, l).await;
     assert_eq!(results.len(), 19);
     assert_eq!(s.launch_get(PROJECT, l).await["status"], "interrupted");

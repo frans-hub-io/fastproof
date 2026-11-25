@@ -1112,9 +1112,8 @@ async fn the_cumulative_trend_sums_launches_by_attribute_value() {
     let Some(db) = TestDb::new().await else {
         return;
     };
-    let s = Server::start(&db).await;
+    let s = Server::start_paused(&db, &["launch.attributes.index"]).await;
     s.project("cum").await;
-    db.hold_jobs(&["launch.attributes.index"]).await;
     let l1 = launch_with(&s, "cum", "one", "1.0", "main").await;
     launch_with(&s, "cum", "two", "1.0", "main").await;
     launch_with(&s, "cum", "three", "1.1", "dev").await;
@@ -1472,10 +1471,9 @@ async fn the_attribute_index_is_fair_between_projects_and_drops_old_launches() {
     let Some(db) = TestDb::new().await else {
         return;
     };
-    let s = Server::start(&db).await;
+    let s = Server::start_paused(&db, &["launch.attributes.index"]).await;
     s.project("fa").await;
     s.project("fb").await;
-    db.hold_jobs(&["launch.attributes.index"]).await;
     let (a, b) = (project_id(&db, "fa").await, project_id(&db, "fb").await);
     bulk_launches(&db, a, 1200, 0, true).await;
     bulk_launches(&db, b, 3, 86_400 * 5, true).await;
@@ -1527,9 +1525,8 @@ async fn the_cumulative_trend_filters_before_its_row_limit() {
     let Some(db) = TestDb::new().await else {
         return;
     };
-    let s = Server::start(&db).await;
+    let s = Server::start_paused(&db, &["launch.attributes.index"]).await;
     s.project("flt").await;
-    db.hold_jobs(&["launch.attributes.index"]).await;
     let pid = project_id(&db, "flt").await;
     launch_with(&s, "flt", "dev run", "old-build", "dev").await;
     bulk_launches(&db, pid, 5001, -86_400, false).await;

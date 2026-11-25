@@ -366,8 +366,7 @@ async fn old_indexes_are_replaced_by_the_job() {
     let Some(db) = TestDb::new().await else {
         return;
     };
-    let s = Server::start(&db).await;
-    db.hold_jobs(&["analysis.indexes"]).await;
+    let s = Server::start_paused(&db, &["analysis.indexes"]).await;
     s.project("lo").await;
     let launch = s.launch("lo", None).await;
     let lid = launch["id"].as_str().unwrap();
@@ -458,8 +457,11 @@ async fn the_index_job_does_not_queue_writers() {
     let Some(db) = TestDb::new().await else {
         return;
     };
-    let _s = Server::start(&db).await;
-    db.hold_jobs(&["analysis.indexes"]).await;
+    let _s = Server::start_paused(&db, &["analysis.indexes"]).await;
+    // What the job's first run does on a new database: builds the indexes.
+    fastproof_store::analysis::indexes::ensure_analysis_indexes(&db.pool)
+        .await
+        .unwrap();
     let hold = || async {
         let mut tx = db.pool.begin().await.unwrap();
         sqlx::query("lock table results in row exclusive mode")

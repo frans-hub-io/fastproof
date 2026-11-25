@@ -102,8 +102,7 @@ async fn a_held_target_does_not_hold_up_the_merges_of_other_projects() {
     let Some(db) = TestDb::new().await else {
         return;
     };
-    let s = Server::start(&db).await;
-    db.hold_jobs(&["launches.merges"]).await;
+    let s = Server::start_paused(&db, &["launches.merges"]).await;
     let first = merged(&s, &db, "i1").await;
     let second = merged(&s, &db, "i2").await;
     let hold = held(&db, first["targetId"].as_str().unwrap()).await;
@@ -204,8 +203,7 @@ async fn mutes_of_other_projects_end_around_a_held_launch() {
     let Some(db) = TestDb::new().await else {
         return;
     };
-    let s = Server::start(&db).await;
-    db.hold_jobs(&["mutes.expire"]).await;
+    let s = Server::start_paused(&db, &["mutes.expire"]).await;
     let store = Store::new(db.pool.clone());
     s.project("m1").await;
     s.project("m2").await;
@@ -278,8 +276,7 @@ async fn the_job_rotates_projects_and_insists_on_a_merge_kept_busy() {
     let Some(db) = TestDb::new().await else {
         return;
     };
-    let s = Server::start(&db).await;
-    db.hold_jobs(&["launches.merges"]).await;
+    let s = Server::start_paused(&db, &["launches.merges"]).await;
     let first = merged(&s, &db, "t1").await;
     let second = merged(&s, &db, "t2").await;
     let store = Store::new(db.pool.clone());
@@ -387,8 +384,7 @@ async fn mute_expiry_waits_once_for_a_busy_project() {
     let Some(db) = TestDb::new().await else {
         return;
     };
-    let s = Server::start(&db).await;
-    db.hold_jobs(&["mutes.expire"]).await;
+    let s = Server::start_paused(&db, &["mutes.expire"]).await;
     let store = Store::new(db.pool.clone());
     s.project("mb").await;
     s.project("mc").await;

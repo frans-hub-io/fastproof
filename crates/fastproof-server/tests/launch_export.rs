@@ -345,7 +345,7 @@ async fn active_exports_are_bounded_per_caller_and_stale_ones_fail() {
     let Some(db) = TestDb::new().await else {
         return;
     };
-    let s = Server::start(&db).await;
+    let s = Server::start_paused(&db, &["launch.exports"]).await;
     let id = hostile_launch(&s).await;
     let path = format!("/api/v1/projects/exp/launches/{id}/exports?format=html");
     let (st, first) = s.call(Method::POST, &path, Some(ADMIN_TOKEN), None).await;
@@ -493,7 +493,8 @@ async fn a1_a_job_failed_during_upload_leaves_no_blob_and_heartbeat_keeps_it_ali
     let Some(db) = TestDb::new().await else {
         return;
     };
-    let s = Server::start(&db).await;
+    // The test fails stale jobs itself and counts them.
+    let s = Server::start_paused(&db, &["launch.exports"]).await;
     let id = hostile_launch(&s).await;
     let (project,): (uuid::Uuid,) = sqlx::query_as("select id from projects where key = 'exp'")
         .fetch_one(&db.pool)
@@ -531,16 +532,13 @@ async fn a1_a_job_failed_during_upload_leaves_no_blob_and_heartbeat_keeps_it_ali
     .execute(&db.pool)
     .await
     .unwrap();
-    assert!(app(&s).store.fail_stale_launch_exports().await.unwrap() <= 1);
+    assert_eq!(app(&s).store.fail_stale_launch_exports().await.unwrap(), 1);
     let (status,): (String,) = sqlx::query_as("select status from launch_exports where id = $1")
         .bind(job)
         .fetch_one(&db.pool)
         .await
         .unwrap();
-    assert_eq!(
-        status, "failed",
-        "the scheduler or this call fails the lost job"
-    );
+    assert_eq!(status, "failed", "the lost job failed");
     let key = BlobKey::tm_job(&job.to_string(), "launch-export.html").unwrap();
     app(&s)
         .blobs
@@ -695,7 +693,8 @@ async fn a4_expired_download_is_refused_and_a_failing_delete_does_not_block_expi
     let Some(db) = TestDb::new().await else {
         return;
     };
-    let s = Server::start(&db).await;
+    // Expiry runs when the test makes the `launch.exports` job due.
+    let s = Server::start_paused(&db, &["launch.exports"]).await;
     let id = hostile_launch(&s).await;
     let (st, job) = s
         .call(
@@ -733,7 +732,7 @@ async fn a4_expired_download_is_refused_and_a_failing_delete_does_not_block_expi
     assert_eq!(
         r.status(),
         StatusCode::NOT_FOUND,
-        "past 24 hours, whatever the scheduler did"
+        "past 24 hours, before the job expired it"
     );
     let (_, j) = s.get(&base, ADMIN_TOKEN).await;
     assert!(j.get("downloadUrl").is_none());
@@ -754,9 +753,7 @@ async fn a4_expired_download_is_refused_and_a_failing_delete_does_not_block_expi
     .execute(&db.pool)
     .await
     .unwrap();
-    fastproof_server::launch_export::tick(app(&s))
-        .await
-        .unwrap();
+    db.run_scheduled("launch.exports").await;
     let status: String =
         sqlx::query_scalar("select status from launch_exports where id = $1::uuid")
             .bind(jid.clone())

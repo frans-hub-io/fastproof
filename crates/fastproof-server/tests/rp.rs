@@ -814,7 +814,8 @@ async fn joins_reruns_late_logs_and_idle_launches() {
     let Some(db) = TestDb::new().await else {
         return;
     };
-    let s = Server::start_with(&db, FAST).await;
+    // The test ends an idle launch itself and counts it.
+    let s = Server::start_with_paused(&db, FAST, &["rp.maintain"]).await;
     s.project("ci").await;
     let token = s.token("ci", "uploader", &["ci"]).await;
     let other = s.token("other", "uploader", &["ci"]).await;
@@ -1238,19 +1239,25 @@ async fn security_review_regressions() {
         .execute(pool)
         .await
         .unwrap();
-    let orphans = s
-        .running
-        .as_ref()
-        .unwrap()
-        .state
-        .store
-        .rp_expired_pending(120_000, 100)
-        .await
-        .unwrap();
-    assert!(
-        orphans.iter().any(|r| r.uuid == planted),
-        "a parent in another launch does not keep an item pending"
-    );
+    // The server's watcher places expired pending items as roots (it may already have).
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    let (state, owner) = loop {
+        let (state, owner): (String, Option<String>) =
+            sqlx::query_as("select state, owner_uuid from rp_items where uuid = $1")
+                .bind(&planted)
+                .fetch_one(pool)
+                .await
+                .unwrap();
+        if state != "pending" {
+            break (state, owner);
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "a parent in another launch keeps the item pending"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+    assert_eq!(owner, None, "the item became a root ({state})");
 
     // An unauthenticated request that never sends its body takes no slot: with one slot, an
     // authenticated call still goes through at once.

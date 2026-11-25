@@ -146,6 +146,7 @@ struct Registered {
     text: String,
     schedule: Schedule,
     run: JobFn,
+    paused: bool,
 }
 
 /// The registered jobs of this replica.
@@ -154,6 +155,10 @@ pub struct Scheduler {
     jobs: Vec<Registered>,
     registered: bool,
 }
+
+/// How far ahead a paused job is due: it runs only when something sets it due
+/// (`update scheduled_jobs set next_run_at = now() where name = ...`).
+const PAUSED_FOR: chrono::Duration = chrono::Duration::days(36_500);
 
 /// Lease of a running job; renewed every third of it.
 pub const LEASE: Duration = Duration::from_secs(120);
@@ -182,7 +187,20 @@ impl Scheduler {
             text: schedule.to_string(),
             schedule: Schedule::parse(schedule).with_context(|| format!("scheduled job {name}"))?,
             run: Arc::new(move |s| Box::pin(f(s))),
+            paused: false,
         });
+        Ok(())
+    }
+
+    /// Pauses jobs (`Config::paused_jobs`): they stay registered and listed but are due only
+    /// when made due by hand, once per time, so tests run their work when they want it.
+    pub fn pause(&mut self, names: &[String]) -> anyhow::Result<()> {
+        for n in names {
+            let Some(j) = self.jobs.iter_mut().find(|j| &j.name == n) else {
+                bail!("cannot pause {n:?}: no such scheduled job");
+            };
+            j.paused = true;
+        }
         Ok(())
     }
 
@@ -193,10 +211,18 @@ impl Scheduler {
     /// Upserts every job into `scheduled_jobs`, so they are listed before the first tick.
     pub async fn register_all(&mut self, store: &fastproof_store::Store) -> anyhow::Result<()> {
         for j in &self.jobs {
+            let first = if j.paused {
+                Utc::now() + PAUSED_FOR
+            } else {
+                Utc::now()
+            };
             store
-                .register_scheduled_job(&j.name, &j.text, Utc::now())
+                .register_scheduled_job(&j.name, &j.text, first)
                 .await
                 .with_context(|| format!("registering scheduled job {}", j.name))?;
+            if j.paused {
+                store.set_scheduled_job_next_run(&j.name, first).await?;
+            }
         }
         self.registered = true;
         Ok(())
@@ -269,7 +295,11 @@ async fn run_one(s: AppState, jobs: Arc<Vec<Registered>>, idx: usize, owner: Str
     metrics::counter!("fastproof_scheduler_runs_total", "job" => job.name.clone(), "outcome" => outcome).increment(1);
     metrics::histogram!("fastproof_scheduler_duration_seconds", "job" => job.name.clone())
         .record(elapsed.as_secs_f64());
-    let next = job.schedule.next_after(Utc::now());
+    let next = if job.paused {
+        Utc::now() + PAUSED_FOR
+    } else {
+        job.schedule.next_after(Utc::now())
+    };
     if let Err(e) = s
         .store
         .finish_scheduled_job(&job.name, &owner, error.as_deref(), elapsed, next)

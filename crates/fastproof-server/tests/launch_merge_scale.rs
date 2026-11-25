@@ -91,8 +91,7 @@ async fn a_large_merge_is_linear() {
     let Some(db) = TestDb::new().await else {
         return;
     };
-    let s = Server::start(&db).await;
-    db.hold_jobs(&["launches.merges"]).await;
+    let s = Server::start_paused(&db, &["launches.merges"]).await;
     s.project("scale").await;
     let store = Store::new(db.pool.clone());
     let project = store.project("scale").await.unwrap().unwrap();

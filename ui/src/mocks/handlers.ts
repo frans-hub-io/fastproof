@@ -39,7 +39,7 @@ import { parametersHandlers } from './parameters';
 import { requirementsHandlers } from './requirements';
 import { resetTm, subscribeTmEvents, tmHandlers, tmLaunchList } from './tm';
 import { analysisHandlers, resetAnalysis } from './analysis';
-import { suggestionsHandlers } from './suggestions';
+import { resetSuggestions, suggestionsHandlers } from './suggestions';
 import { errorsHandlers } from './errors';
 import { gatesHistoryHandlers } from './gatesHistory';
 import { analyticsHandlers } from './analytics';
@@ -88,6 +88,7 @@ export function resetMockState(): void {
   resetHistoryImports();
   resetTrackers();
   resetAnalysis();
+  resetSuggestions();
 }
 
 function error(status: number, code: string, message: string, details?: unknown) {

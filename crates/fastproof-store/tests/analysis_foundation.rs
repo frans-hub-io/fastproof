@@ -1424,3 +1424,105 @@ async fn prune_and_capabilities() {
         v["features"].get("crossProjectSimilar").is_some() && v.get("withClickHouse").is_some()
     );
 }
+
+/// A launch or a task whose worker stopped during each run (a crash on it) is failed when its
+/// lease runs out after the last retry, instead of being claimed again and again.
+#[tokio::test]
+async fn launches_and_tasks_that_stop_their_workers_are_failed_not_claimed_forever() {
+    let Some((db, store)) = TestDb::migrated().await else {
+        return;
+    };
+    let p = project(&store, "cr").await;
+    let l = launch(&db, &p, "finished").await;
+    assert!(
+        store
+            .enqueue_analysis_launch(p.id, l.0, QueueReason::Recompute, Duration::ZERO)
+            .await
+            .unwrap()
+    );
+    let expire = |launch: Uuid| {
+        let pool = db.pool.clone();
+        async move {
+            sqlx::query(
+                "update analysis_launches set lease_until = now() - interval '1 second' where launch_id = $1",
+            )
+            .bind(launch)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+    };
+    // The worker dies during every run: its lease runs out and the launch is claimed again,
+    // up to the retries a failed run gets.
+    for n in 1..=(fastproof_store::analysis::queue::MAX_RETRIES + 1) {
+        let row = store
+            .claim_analysis_launch("w", Duration::from_secs(60))
+            .await
+            .unwrap()
+            .unwrap_or_else(|| panic!("claim {n}"));
+        assert_eq!((row.launch_id, row.attempts), (l.0, n));
+        expire(l.0).await;
+    }
+    assert!(
+        store
+            .claim_analysis_launch("w", Duration::from_secs(60))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let row = store.analysis_launch_row(l.0).await.unwrap().unwrap();
+    assert_eq!(row.state, AnalysisLaunchState::Failed);
+    assert_eq!(
+        row.error.as_deref(),
+        Some(fastproof_store::analysis::queue::WORKER_LOST)
+    );
+    assert!(row.lease_owner.is_none());
+
+    // A task whose worker stopped and that first started over an hour ago is failed too.
+    let t = store
+        .enqueue_task(p.id, "backtest", json!({}), "alice")
+        .await
+        .unwrap()
+        .unwrap();
+    let c = store
+        .claim_analysis_task("w", &["backtest"], Duration::from_secs(600))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(c.id, t.id);
+    sqlx::query(
+        "update analysis_tasks set lease_until = now() - interval '1 second', \
+         started_at = now() - interval '30 minutes' where id = $1",
+    )
+    .bind(t.id)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let again = store
+        .claim_analysis_task("w2", &["backtest"], Duration::from_secs(600))
+        .await
+        .unwrap()
+        .expect("a task whose worker stopped recently is claimed again");
+    assert_eq!(again.id, t.id);
+    sqlx::query(
+        "update analysis_tasks set lease_until = now() - interval '1 second', \
+         started_at = now() - interval '2 hours' where id = $1",
+    )
+    .bind(t.id)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    assert!(
+        store
+            .claim_analysis_task("w3", &["backtest"], Duration::from_secs(600))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let task = store.task(p.id, t.id).await.unwrap().unwrap();
+    assert_eq!(task.status, "failed");
+    assert_eq!(
+        task.error.as_deref(),
+        Some(fastproof_store::analysis::queue::TASK_WORKER_LOST)
+    );
+}

@@ -828,3 +828,82 @@ async fn new_metrics_wait_for_the_analysis_gate_in_settings() {
     .await;
     assert_eq!(st, StatusCode::OK, "{b}");
 }
+
+/// The first page of the history computes the aggregates of the whole window: it takes a heavy
+/// slot of the caller (429 when they are taken); later pages carry no aggregates and do not.
+#[tokio::test]
+async fn the_history_aggregates_are_a_heavy_read() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = start(&db, &[("FASTPROOF_HEAVY_QUERIES_PER_CALLER", "1")]).await;
+    s.project("gh").await;
+    let mut h = axum::http::HeaderMap::new();
+    h.insert(
+        "authorization",
+        format!("Bearer {ADMIN_TOKEN}").parse().unwrap(),
+    );
+    let state = &s.running.as_ref().unwrap().state;
+    let auth = state
+        .platform
+        .authenticate(&h, &axum::http::Method::GET)
+        .await
+        .unwrap();
+    let held = state.guards.heavy(&auth).await.unwrap();
+    let (st, b) = history(&s, "gh", ADMIN_TOKEN, "").await;
+    assert_eq!(st, StatusCode::TOO_MANY_REQUESTS, "{b}");
+    let cursor = format!("{}_{}", Utc::now().timestamp_micros(), Uuid::nil().simple());
+    let (st, b) = history(&s, "gh", ADMIN_TOKEN, &format!("before={cursor}")).await;
+    assert_eq!(st, StatusCode::OK, "a later page is no heavy read: {b}");
+    drop(held);
+    let (st, b) = history(&s, "gh", ADMIN_TOKEN, "").await;
+    assert_eq!(st, StatusCode::OK, "{b}");
+}
+
+/// A simulation has a wall-time budget: past it the request answers 503 `timeout` instead of
+/// holding a heavy slot for as long as 200 large launches take.
+#[tokio::test]
+async fn a_simulation_stops_at_its_budget() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = start(&db, &[]).await;
+    s.project("gt").await;
+    launch(&s, "gt", "main", &[("a", "failed", "red")]).await;
+    let state = &s.running.as_ref().unwrap().state;
+    let project = state.store.project("gt").await.unwrap().unwrap();
+    let mut settings = fastproof_server::integrations::settings::IntegrationSettings::parse(
+        &json!({"gates": [gate_def()]}),
+    )
+    .unwrap();
+    let gate = settings.gates.pop().unwrap();
+    let e = fastproof_server::integrations::gates::simulate_within(
+        state,
+        &project,
+        &gate,
+        10,
+        None,
+        Duration::ZERO,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        e.downcast_ref::<fastproof_server::integrations::gates::SimulationTooLong>()
+            .is_some(),
+        "{e:#}"
+    );
+    let api = fastproof_server::api::gates_history::simulation_error(e);
+    let r = axum::response::IntoResponse::into_response(api);
+    assert_eq!(r.status().as_u16(), 503);
+    let sim = fastproof_server::integrations::gates::simulate_within(
+        state,
+        &project,
+        &gate,
+        10,
+        None,
+        Duration::from_secs(60),
+    )
+    .await
+    .unwrap();
+    assert_eq!(sim.evaluated, 1);
+}

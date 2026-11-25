@@ -864,7 +864,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** @description The stored quality gate evaluations of the project, newest first: status and failed rules per launch, and (on the first page) per gate the evaluations, failures, flips between passed and failed on a branch, the mean time from the first failure of a streak to the next pass, and the metric that failed most, and per branch the evaluations and failures. The window is 30 days by default and at most 365; the aggregates cover the newest 20000 evaluations of it. Needs `launches:read`. */
+        /** @description The stored quality gate evaluations of the project, newest first: status and failed rules per launch, and (on the first page) per gate the evaluations, failures, flips between passed and failed on a branch, the mean time from the first failure of a streak to the next pass, and the metric that failed most, and per branch the evaluations and failures. The window is 30 days by default and at most 365; the aggregates cover the newest 20000 evaluations of it (a heavy read: 429 past the caller's concurrent heavy reads). Needs `launches:read`. */
         get: operations["analysis_gate_history"];
         put?: never;
         post?: never;
@@ -12704,6 +12704,14 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
         };
     };
     analysis_simulate_gate: {
@@ -12754,6 +12762,15 @@ export interface operations {
                 };
             };
             429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `timeout`: the simulation took longer than 20 s */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

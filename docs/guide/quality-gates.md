@@ -118,7 +118,8 @@ rule does not hold.
 
 With Analysis on, the Gates page has a **History** tab and
 `GET /api/v1/projects/{key}/gates/history` answers the same data (`launches:read`). Every stored verdict is
-listed newest first, with the failed rules and the measured value, and the first page carries aggregates for the window:
+listed newest first, with the failed rules and the measured value, and the first page carries aggregates for the window
+(so the first page takes a heavy-query slot of the caller, 429 when they are used up):
 
 - per gate: evaluations, failures, **flips** (how often the verdict changed between passed and failed on a
   branch), the mean time **to green** (from the first failed launch of a streak to the next passing one on the
@@ -170,7 +171,8 @@ The answer has `evaluated`, `failed`, `skipped` and, per launch, the `status` an
 unprocessed uploads, or when its results are no longer stored (retention). For a launch the result is the
 one the real evaluation gives at the time you ask, so a metric that depends on history (`newErrors`) is
 computed from today's history of errors, not the history at the time the launch finished. A simulation counts
-against the per-minute limit for expensive writes and takes a heavy-query slot (429 when either is used up).
+against the per-minute limit for expensive writes and takes a heavy-query slot (429 when either is used up);
+one that takes longer than 20 seconds stops with 503 `timeout` (simulate fewer launches or one branch).
 
 ## In CI
 

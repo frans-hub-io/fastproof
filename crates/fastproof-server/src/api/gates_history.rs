@@ -74,10 +74,11 @@ fn text(v: Option<String>, what: &str, max: usize) -> ApiResult<Option<String>> 
         launch, and (on the first page) per gate the evaluations, failures, flips between passed and failed on a \
         branch, the mean time from the first failure of a streak to the next pass, and the metric that failed \
         most, and per branch the evaluations and failures. The window is 30 days by default and at most 365; the \
-        aggregates cover the newest 20000 evaluations of it. Needs `launches:read`.",
+        aggregates cover the newest 20000 evaluations of it (a heavy read: 429 past the caller's concurrent heavy \
+        reads). Needs `launches:read`.",
     params(("key" = String, Path), HistoryQuery),
     responses((status = 200, body = GateHistory), (status = 400, body = ErrorBody),
-        (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
+        (status = 403, body = ErrorBody), (status = 404, body = ErrorBody), (status = 429, body = ErrorBody)))]
 pub async fn history(
     State(s): State<AppState>,
     auth: Auth,
@@ -95,6 +96,13 @@ pub async fn history(
             "from must not be after to, and the window is at most {MAX_WINDOW_DAYS} days"
         )));
     }
+    // The first page carries the aggregates of the whole window (up to 20000 stored reports
+    // expanded rule by rule): a heavy read.
+    let _permit = if q.before.is_none() {
+        Some(s.guards.heavy(&auth).await?)
+    } else {
+        None
+    };
     let query = GateHistoryQuery {
         gate: text(q.gate, "gate", 100)?,
         branch: text(q.branch, "branch", 256)?,
@@ -108,6 +116,19 @@ pub async fn history(
     ))
 }
 
+/// 503 `timeout` for a simulation past its budget, as for a heavy read past its statement
+/// timeout.
+pub fn simulation_error(e: anyhow::Error) -> ApiError {
+    if let Some(t) = e.downcast_ref::<gates::SimulationTooLong>() {
+        return ApiError::new(
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "timeout",
+            t.to_string(),
+        );
+    }
+    crate::limits::heavy_error(e)
+}
+
 #[utoipa::path(post, path = "/api/v1/projects/{key}/gates/simulate", tag = "analysis",
     operation_id = "analysis_simulate_gate", request_body = GateSimulate,
     description = "Evaluates a draft gate (validated like the project settings, enabled or not) on the newest \
@@ -116,7 +137,8 @@ pub async fn history(
         whose results are gone are counted as `skipped`. Needs `launches:read`.",
     params(("key" = String, Path)),
     responses((status = 200, body = GateSimulation), (status = 400, body = ErrorBody),
-        (status = 403, body = ErrorBody), (status = 404, body = ErrorBody), (status = 429, body = ErrorBody)))]
+        (status = 403, body = ErrorBody), (status = 404, body = ErrorBody), (status = 429, body = ErrorBody),
+        (status = 503, body = ErrorBody, description = "`timeout`: the simulation took longer than 20 s")))]
 pub async fn simulate(
     State(s): State<AppState>,
     auth: Auth,
@@ -141,6 +163,6 @@ pub async fn simulate(
     Ok(Json(
         gates::simulate(&s, &p, &gate, launches, branch.as_deref())
             .await
-            .map_err(crate::limits::heavy_error)?,
+            .map_err(simulation_error)?,
     ))
 }

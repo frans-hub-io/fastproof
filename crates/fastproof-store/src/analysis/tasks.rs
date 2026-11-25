@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-use super::hook::{is_protected, record_fingerprints, rule_defect, type_refs, upsert_mutes};
+use super::hook::{add_retro_mutes, is_protected, record_fingerprints, rule_defect, type_refs};
 use super::rules::{self, Budget, CompiledRule, MATCH_INPUT_BYTES, Rule, Subject};
 use super::triage::recount_muted;
 use crate::{Defect, Store, json_no_nul, no_nul};
@@ -360,7 +360,7 @@ impl Store {
                 .iter()
                 .map(|s| (*s, (until, format!("rule {}", rule.rule.name))))
                 .collect();
-            upsert_mutes(&mut tx, project_id, &mutes, super::hook::SYSTEM, false).await?;
+            add_retro_mutes(&mut tx, project_id, &mutes, by).await?;
             sqlx::query(
                 "update results r set muted = true, \
                    mute_until = (select m.until from series_mutes m where m.series_id = r.series_id), updated_at = now() \

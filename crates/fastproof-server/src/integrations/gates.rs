@@ -340,6 +340,27 @@ pub const MAX_SIMULATED_LAUNCHES: u32 = 200;
 /// Default number of launches of a simulation.
 pub const DEFAULT_SIMULATED_LAUNCHES: u32 = 50;
 
+/// Wall time one simulation spends, at most. Each launch costs a few reads of whole launches
+/// (its counts, its previous launch and each baseline, new failures and new errors against
+/// them), so 200 large launches with five baselines can take far longer than a request should.
+pub const SIMULATION_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// A simulation that did not finish within its budget.
+#[derive(Debug)]
+pub struct SimulationTooLong;
+
+impl std::fmt::Display for SimulationTooLong {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the simulation took longer than {} s; simulate fewer launches or one branch",
+            SIMULATION_BUDGET.as_secs()
+        )
+    }
+}
+
+impl std::error::Error for SimulationTooLong {}
+
 /// Evaluates a draft gate on the newest finished launches of a project, from stored data
 /// only (nothing is written). The gate is evaluated whether or not it is enabled; launches on
 /// branches its `branches` do not match, with unprocessed uploads, or whose results are gone
@@ -351,6 +372,20 @@ pub async fn simulate(
     launches: u32,
     branch: Option<&str>,
 ) -> anyhow::Result<GateSimulation> {
+    simulate_within(s, project, gate, launches, branch, SIMULATION_BUDGET).await
+}
+
+/// [`simulate`] within `budget` of wall time: past it, the simulation stops with
+/// [`SimulationTooLong`] (checked before each launch).
+pub async fn simulate_within(
+    s: &AppState,
+    project: &Project,
+    gate: &Gate,
+    launches: u32,
+    branch: Option<&str>,
+    budget: std::time::Duration,
+) -> anyhow::Result<GateSimulation> {
+    let started = std::time::Instant::now();
     let inputs = s
         .store
         .simulation_inputs(project.id, branch, i64::from(launches))
@@ -362,6 +397,9 @@ pub async fn simulate(
         items: Vec::new(),
     };
     for input in inputs {
+        if started.elapsed() >= budget {
+            return Err(SimulationTooLong.into());
+        }
         let l = &input.launch;
         let Some(counts) = input.counts else {
             sim.skipped += 1;

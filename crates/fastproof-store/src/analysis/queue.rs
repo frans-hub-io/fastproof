@@ -29,6 +29,15 @@ pub const UNMATCHED_SIGNAL_DAYS: i64 = 2;
 const PRUNE_BATCH: i64 = 5000;
 /// Candidates one claim looks at, at most (launches waiting for uploads are passed over).
 const CLAIM_TRIES: usize = 20;
+/// The error of a launch whose worker stopped during each of its last runs.
+pub const WORKER_LOST: &str =
+    "the worker stopped while analysing the launch (it may have crashed on it)";
+/// A task whose lease ran out this long after it first started is not claimed again: its
+/// worker stopped while running it, again and again (it may crash on it).
+pub const TASK_GIVE_UP: Duration = Duration::from_secs(3600);
+/// The error of such a task.
+pub const TASK_WORKER_LOST: &str =
+    "the worker stopped while running the task (it may have crashed on it)";
 
 /// Depth of the analysis queue.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -169,6 +178,18 @@ impl Store {
         owner: &str,
         lease: Duration,
     ) -> anyhow::Result<Option<AnalysisLaunchRow>> {
+        // A launch whose lease ran out was being analysed by a worker that stopped; a launch
+        // that stopped its workers on every run (a crash on it) is failed rather than claimed
+        // again forever. Claims count as attempts, like failed runs.
+        sqlx::query(
+            "update analysis_launches set state = 'failed', error = $2, lease_owner = null, \
+               lease_until = null, finished_at = now() \
+             where state = 'running' and lease_until < now() and attempts > $1",
+        )
+        .bind(MAX_RETRIES)
+        .bind(WORKER_LOST)
+        .execute(&self.pool)
+        .await?;
         for _ in 0..CLAIM_TRIES {
             let mut tx = self.pool.begin().await?;
             let pick: Option<(Uuid, bool)> = sqlx::query_as(
@@ -322,6 +343,17 @@ impl Store {
         lease: Duration,
     ) -> anyhow::Result<Option<ClaimedTask>> {
         let kinds: Vec<String> = kinds.iter().map(|k| k.to_string()).collect();
+        sqlx::query(
+            "update analysis_tasks set status = 'failed', error = $3, finished_at = now(), \
+               lease_owner = null, lease_until = null \
+             where kind = any($1) and status = 'running' and lease_until < now() \
+               and started_at < now() - make_interval(secs => $2)",
+        )
+        .bind(&kinds)
+        .bind(TASK_GIVE_UP.as_secs_f64())
+        .bind(TASK_WORKER_LOST)
+        .execute(&self.pool)
+        .await?;
         let r: Option<(Uuid, Uuid, String, serde_json::Value, Option<String>)> = sqlx::query_as(
             "update analysis_tasks set status = 'running', lease_owner = $1, \
                lease_until = now() + make_interval(secs => $3), started_at = coalesce(started_at, now()) \

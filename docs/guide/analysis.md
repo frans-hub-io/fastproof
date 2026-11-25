@@ -104,8 +104,11 @@ Settings → Analysis → Auto-apply (off by default). After each launch, cluste
 whose first suggestion is `same` get its defect type by themselves: no comment, issue or mute,
 recorded as source `auto` by `fastproof-analysis`, one batch per launch (undoable), audited as
 `suggestion.autoApply`. Automatic decisions are treated like rule decisions: later rules, people
-and agents overwrite them. It stays off while replicas of an older version still run (the
-analysis gate). Check the backtest first.
+and agents overwrite them. One batch changes at most 20 000 results, so it can always be undone;
+larger `same` clusters are left to people. A result whose automatic decision someone undid is
+not decided automatically again when the launch is analysed again (its suggestion stays open). It
+stays off while replicas of an older version still run (the analysis gate). Check the backtest
+first.
 
 ## Backtest
 
@@ -120,7 +123,10 @@ most frequent mistakes.
   latest report shows there; with `backtest.nightly` (on by default) a backtest runs every night
   when there are new decisions.
 - **Over the API:** `POST /api/v1/projects/{key}/analysis/backtest {"days": 180}` (needs
-  `settings:write`) queues it; `GET …/analysis/backtest/latest` reads the report.
+  `settings:write`) queues it; `GET …/analysis/backtest/latest` reads the report. A project has
+  one backtest queued or running at a time (409 `limit_reached` for another). A backtest replays
+  for at most 10 minutes and holds about 512 MiB of memory at most; beyond either, the report
+  covers the decisions replayed so far and is marked `truncated`.
 - **From the CLI**, with exactly one source:
 
 ```sh
@@ -139,9 +145,11 @@ fastproof analysis backtest --synthetic s --json
 
 `--json` prints the report; `--min-precision same=0.97,high=0.85` makes the command exit 1 when
 a band is below its minimum (for CI). The export (`settings:write`) writes one JSON decision
-event per line, with the author replaced by the first 16 hex digits of
-sha256(`<project id>:<author>`); a full page carries the `after` of the next one in the
-`x-fastproof-next-after` header. The offline report of an export equals the server's report for
+event per line, with the author replaced by the first 16 hex digits of a sha256 of the author
+and a random secret of the project that the API never shows: the same person has the same hash
+in every export of the project, and a guessed name cannot be checked against the file. A page
+holds at most `limit` events and 8 MiB; when events are left it carries the `after` of the next
+page in the `x-fastproof-next-after` header. The offline report of an export equals the server's report for
 the same events.
 
 ### Running it later on real history
@@ -169,9 +177,10 @@ message changed form) and a person who is right 90% of the time on a new error.
 The instance limits (`FASTPROOF_ANALYSIS_MAX_CLUSTERS`, `FASTPROOF_ANALYSIS_CANDIDATE_ROWS`,
 `FASTPROOF_ANALYSIS_MEMORY_MAX_ROWS`, `FASTPROOF_ANALYSIS_RECOMPUTE_SECONDS`,
 `FASTPROOF_ANALYSIS_BACKTEST_MAX_EVENTS`) are in [Configuration](../operations/configuration.md).
-With the PostgreSQL extension `pg_trgm`, similar messages are fetched by an index; without it the
-newest `FASTPROOF_ANALYSIS_CANDIDATE_ROWS` memory entries are compared. The final score is the
-same either way.
+With the PostgreSQL extension `pg_trgm`, similar messages are fetched by an index (built when the
+server starts); without it, or when that search of a launch takes more than 10 seconds, the
+newest `FASTPROOF_ANALYSIS_CANDIDATE_ROWS` memory entries are compared. The final score is
+computed the same way either way.
 
 ## Permissions
 

@@ -25,6 +25,8 @@ pub const SEED_BUDGET: Duration = Duration::from_secs(40);
 pub const SEED_PROJECTS: i64 = 20;
 /// Projects backtested per nightly run, at most.
 pub const NIGHTLY_PROJECTS: i64 = 200;
+/// Wall time of one nightly run, at most (the projects left come first the next night).
+pub const NIGHTLY_BUDGET: Duration = Duration::from_secs(1800);
 /// Clusters asked of ClickHouse history per launch, at most.
 pub const HISTORY_LIMIT: usize = 20;
 
@@ -55,7 +57,8 @@ pub async fn on_launch(s: &AppState, job: &LaunchJob) -> anyhow::Result<StepOutc
     if let Some(a) = s.store.auto_apply(&c).await? {
         out.detail.insert(
             "autoApplied".into(),
-            json!({"clusters": a.clusters, "results": a.results, "batchId": a.batch_id}),
+            json!({"clusters": a.clusters, "results": a.results, "batchId": a.batch_id,
+                "capped": a.capped}),
         );
         if a.clusters > 0 {
             let mut e = franshub_access::AuditEvent::anonymous(
@@ -136,14 +139,20 @@ pub async fn precision_gauge(s: &AppState) -> anyhow::Result<()> {
 /// Job `analysis.backtest.nightly` (`17 3 * * *`): a backtest of the default window for each
 /// project with `analysis.backtest.nightly` and decisions newer than its latest report.
 pub async fn backtest_nightly(s: &AppState) -> anyhow::Result<()> {
+    let started = std::time::Instant::now();
     for (p, _) in s.store.backtest_due_projects(NIGHTLY_PROJECTS).await? {
+        let left = NIGHTLY_BUDGET.saturating_sub(started.elapsed());
+        if left.is_zero() {
+            break;
+        }
         match s
             .store
-            .run_backtest(
+            .run_backtest_within(
                 p,
                 &BacktestRequest::default(),
                 AUTO_PRINCIPAL,
                 &s.cfg.analysis.limits,
+                left.min(fastproof_store::analysis::backtest::BACKTEST_BUDGET),
             )
             .await
         {

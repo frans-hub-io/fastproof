@@ -5,6 +5,7 @@ import { mockCapabilities, resetAnalysis } from '../mocks/analysis';
 import { launchDef, RICH_LAUNCH_ID } from '../mocks/fixtures';
 import { resetSuggestions } from '../mocks/suggestions';
 import { Clusters } from '../pages/launch/Clusters';
+import { SuggestionCard } from '../pages/launch/ClusterSuggestion';
 import { AnalysisSettings } from '../pages/settings/AnalysisSettings';
 import { Providers } from '../test/render';
 import { request } from './client';
@@ -56,6 +57,26 @@ describe('suggestions', () => {
     await userEvent.click(within(card).getByTestId('suggestion-why-toggle'));
     await waitFor(() => expect(within(card).getByTestId('suggestion-why')).toBeVisible());
     expect(within(card).getByText(/nearest-decision search/)).toBeInTheDocument();
+  });
+
+  it('links only http(s) issue and compare URLs in the why', async () => {
+    const v = await request<LaunchSuggestions>(`/api/v1/projects/web-shop/launches/${RICH_LAUNCH_ID}/suggestions`);
+    const c = v.clusters.find((x) => x.suggestions.length);
+    const base = c?.suggestions[0];
+    if (!c || !base) throw new Error('no suggestion');
+    const s = { ...base, comment: 'remembered', issueUrl: 'javascript:alert(1)', issueKey: 'PAY-1' } as Suggestion;
+    const cluster = { ...c, commits: { first: 'abcdef1234', lastGood: '1234abcdef', compareUrl: 'javascript:alert(2)' } };
+    render(
+      <Providers route="/p/web-shop">
+        <SuggestionCard project="web-shop" s={s} cluster={cluster} canTriage canRule />
+      </Providers>,
+    );
+    await userEvent.click(screen.getByTestId('suggestion-why-toggle'));
+    await waitFor(() => expect(screen.getByTestId('suggestion-why')).toBeVisible());
+    expect(screen.queryByTestId('suggestion-issue')).not.toBeInTheDocument();
+    expect(screen.getByTestId('suggestion-why').textContent).toContain('"remembered" · PAY-1');
+    expect(screen.queryByText('compare')).not.toBeInTheDocument();
+    expect(document.querySelector('a[href^="javascript:"]')).toBeNull();
   });
 
   it('renders nothing while the feature is off', async () => {

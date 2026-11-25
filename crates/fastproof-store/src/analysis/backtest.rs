@@ -23,6 +23,11 @@ pub const DEFAULT_DAYS: u32 = 180;
 pub const MAX_DAYS: u32 = 730;
 /// Events read per page.
 pub const PAGE: i64 = 5000;
+/// Wall time of one backtest, at most: the events left then are not replayed and the report
+/// is `truncated` (the replay is CPU work of the analysis role, which all projects share).
+pub const BACKTEST_BUDGET: std::time::Duration = std::time::Duration::from_secs(600);
+/// Queued or running backtests of one project, at most.
+pub const MAX_OPEN_BACKTESTS: i64 = 1;
 
 /// A report from a summary of the harness.
 pub fn report_of(
@@ -135,7 +140,7 @@ impl<'a> PgSource<'a> {
 
 impl Store {
     /// Runs a backtest over the project's decision events of the last `days` (default 180)
-    /// and stores the report (the newest 20 per project are kept).
+    /// within [`BACKTEST_BUDGET`] and stores the report (the newest 20 per project are kept).
     pub async fn run_backtest(
         &self,
         project_id: Uuid,
@@ -143,6 +148,21 @@ impl Store {
         by: &str,
         limits: &AnalysisLimits,
     ) -> anyhow::Result<BacktestReport> {
+        self.run_backtest_within(project_id, req, by, limits, BACKTEST_BUDGET)
+            .await
+    }
+
+    /// [`Store::run_backtest`] with its wall budget: the replay runs on a blocking thread,
+    /// page by page, and stops (`truncated`) when the budget is spent.
+    pub async fn run_backtest_within(
+        &self,
+        project_id: Uuid,
+        req: &BacktestRequest,
+        by: &str,
+        limits: &AnalysisLimits,
+        budget: std::time::Duration,
+    ) -> anyhow::Result<BacktestReport> {
+        let deadline = std::time::Instant::now() + budget;
         let days = req.days.unwrap_or(DEFAULT_DAYS).clamp(1, MAX_DAYS);
         let settings = self.project_settings(project_id).await?;
         let opts = options_of(&settings, limits);
@@ -157,11 +177,16 @@ impl Store {
                 break;
             }
             read += page.len() as u64;
-            harness.feed(&page);
-            if read > opts.max_events {
+            let (h, whole) = tokio::task::spawn_blocking(move || {
+                let mut h = harness;
+                let whole = h.feed_until(&page, deadline);
+                (h, whole)
+            })
+            .await?;
+            harness = h;
+            if !whole || read > opts.max_events || harness.truncated() {
                 break;
             }
-            tokio::task::yield_now().await;
         }
         let report = report_of(
             harness.finish(),
@@ -214,6 +239,17 @@ impl Store {
         Ok(())
     }
 
+    /// Backtests of a project queued or running.
+    pub async fn open_backtests(&self, project_id: Uuid) -> anyhow::Result<i64> {
+        Ok(sqlx::query_scalar(
+            "select count(*) from analysis_tasks where project_id = $1 and kind = 'backtest' \
+               and status in ('queued', 'running')",
+        )
+        .bind(project_id)
+        .fetch_one(self.pool())
+        .await?)
+    }
+
     /// The newest backtest report of a project.
     pub async fn latest_backtest(
         &self,
@@ -229,7 +265,9 @@ impl Store {
     }
 
     /// Projects with `analysis.backtest.nightly` whose decision events are newer than their
-    /// latest report (the nightly job's work), with when that report was made.
+    /// latest report (the nightly job's work), with when that report was made: the ones
+    /// never backtested first, then the oldest report first, so a job cut by its budget
+    /// continues with the others the next night.
     pub async fn backtest_due_projects(
         &self,
         limit: i64,
@@ -239,7 +277,7 @@ impl Store {
              from projects p where exists (select 1 from triage_memory_events e where e.project_id = p.id \
                and e.id > coalesce((select max((b.params->>'lastEventId')::bigint) from analysis_backtests b \
                  where b.project_id = p.id and b.params ? 'lastEventId'), 0)) \
-             order by p.id limit $1",
+             order by 3 nulls first, p.id limit $1",
         )
         .bind(limit)
         .fetch_all(self.pool())

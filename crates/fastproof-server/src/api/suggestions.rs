@@ -47,6 +47,40 @@ pub fn router() -> OpenApiRouter<AppState> {
 const DEFAULT_EVENTS_PAGE: i64 = 1000;
 /// The header naming the `after` of the next export page (absent on the last page).
 pub const NEXT_HEADER: &str = "x-fastproof-next-after";
+/// Bytes of one export page, at most (a page then ends early and names the next one).
+pub const MAX_EXPORT_BYTES: usize = 8 << 20;
+
+/// One export page: the events as NDJSON with their author hashed, at most `max_bytes` (at
+/// least one event), with how many it holds and the `after` of the next page (`None` when
+/// `events` held the last ones: fewer than `limit` and none left out).
+pub fn ndjson_page(
+    events: Vec<(i64, fastproof_store::analysis::types::DecisionEvent)>,
+    key: &str,
+    limit: i64,
+    max_bytes: usize,
+) -> anyhow::Result<(String, usize, Option<i64>)> {
+    let total = events.len();
+    let mut body = String::new();
+    let mut last: Option<i64> = None;
+    let mut n = 0usize;
+    for (id, mut e) in events {
+        e.by = hashed_by(key, &e.by);
+        let line = serde_json::to_string(&e)?;
+        if n > 0 && body.len() + line.len() + 1 > max_bytes {
+            break;
+        }
+        body.push_str(&line);
+        body.push('\n');
+        last = Some(id);
+        n += 1;
+    }
+    let next = if n < total || total as i64 == limit {
+        last
+    } else {
+        None
+    };
+    Ok((body, n, next))
+}
 
 fn disabled() -> ApiError {
     ApiError::new(
@@ -332,9 +366,10 @@ pub async fn memory(
     description = "Queues a backtest of the project's decision history of the last `days` (1 to 730, default \
         180): every person's decision is replayed in time order against the memory folded from the decisions \
         before it, with the live scoring, and the report gives the precision per band and the coverage \
-        (`GET .../analysis/backtest/latest`). Answers the task (202). 409 `analysis_disabled` while Analysis is \
-        off, 409 `upgrade_in_progress` while older replicas run, 409 `limit_reached` with too many open tasks. \
-        Needs `settings:write`.",
+        (`GET .../analysis/backtest/latest`). Answers the task (202). A backtest replays for at most 10 minutes \
+        (the report is then `truncated`). 409 `analysis_disabled` while Analysis is off, 409 \
+        `upgrade_in_progress` while older replicas run, 409 `limit_reached` while a backtest of the project is \
+        queued or running, or with too many open tasks. Needs `settings:write`.",
     params(("key" = String, Path)),
     responses((status = 202, body = Task), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),
         (status = 404, body = ErrorBody), (status = 409, body = ErrorBody), (status = 429, body = ErrorBody),
@@ -365,6 +400,13 @@ pub async fn backtest(
     }
     crate::tm_rate::admit(&s, &auth)?;
     let _permit = s.guards.heavy(&auth).await?;
+    let max = fastproof_store::analysis::backtest::MAX_OPEN_BACKTESTS;
+    if s.store.open_backtests(p.id).await? >= max {
+        return Err(tm_error(fastproof_store::tm::TmError::limit(
+            "openBacktests",
+            max as u64,
+        )));
+    }
     let days = body
         .days
         .unwrap_or(fastproof_store::analysis::backtest::DEFAULT_DAYS);
@@ -427,8 +469,9 @@ pub struct EventsQuery {
     operation_id = "analysis_decision_events",
     description = "Exports the project's decision events (what the memory learned, one JSON `DecisionEvent` per \
         line) for an offline backtest (`fastproof analysis backtest --events <file>`). The author is the first 16 \
-        hex digits of sha256(\"<project id>:<author>\"). A full page carries the `after` of the next one in \
-        `x-fastproof-next-after`. 409 `analysis_disabled` while Analysis is off. Needs `settings:write`.",
+        hex digits of sha256 of a random secret of the project and the author (stable within the project, not \
+        testable without the server's database). A page holds at most `limit` events and 8 MiB; when more are \
+        left it carries the `after` of the next one in `x-fastproof-next-after`. 409 `analysis_disabled` while Analysis is off. Needs `settings:write`.",
     params(("key" = String, Path), EventsQuery),
     responses((status = 200, content_type = "application/x-ndjson", body = String,
         description = "One DecisionEvent per line"),
@@ -453,17 +496,13 @@ pub async fn decision_events(
     require_enabled(&s, &p).await?;
     let _permit = s.guards.heavy(&auth).await?;
     let events = s.store.decision_events(p.id, q.after, limit).await?;
-    let mut body = String::new();
-    for (_, mut e) in events.iter().cloned() {
-        e.by = hashed_by(p.id, &e.by);
-        body.push_str(&serde_json::to_string(&e).map_err(anyhow::Error::from)?);
-        body.push('\n');
-    }
+    let key = s.store.export_key(p.id).await?;
+    let (body, count, next) = ndjson_page(events, &key, limit, MAX_EXPORT_BYTES)?;
     s.audit(
         &auth,
         "analysis.events.export",
         Some(&p.key),
-        serde_json::json!({"after": q.after, "count": events.len()}),
+        serde_json::json!({"after": q.after, "count": count}),
     )
     .await;
     let mut r = Body::from(body).into_response();
@@ -472,11 +511,56 @@ pub async fn decision_events(
         header::CONTENT_TYPE,
         HeaderValue::from_static("application/x-ndjson"),
     );
-    if events.len() as i64 == limit
-        && let Some((last, _)) = events.last()
-        && let Ok(v) = HeaderValue::from_str(&last.to_string())
+    if let Some(n) = next
+        && let Ok(v) = HeaderValue::from_str(&n.to_string())
     {
         h.insert(NEXT_HEADER, v);
     }
     Ok(r)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fastproof_store::analysis::types::DecisionEvent;
+
+    fn ev(by: &str) -> DecisionEvent {
+        DecisionEvent {
+            v: 1,
+            at: chrono::Utc::now(),
+            fingerprint: "aaaaaaaaaaaaaaaa".into(),
+            message_norm: "x".repeat(100),
+            frames: Vec::new(),
+            test_case_id: None,
+            env_key: None,
+            branch: None,
+            defect_type_id: Uuid::nil(),
+            group: "productBug".into(),
+            previous_type_id: None,
+            by: by.into(),
+            results: 1,
+        }
+    }
+
+    #[test]
+    fn an_export_page_has_a_byte_budget_and_names_the_next_page() {
+        let key = "0123456789abcdef0123456789abcdef";
+        let evs: Vec<(i64, DecisionEvent)> = (1..=10).map(|i| (i, ev("ann"))).collect();
+        let (body, n, next) = ndjson_page(evs.clone(), key, 1000, usize::MAX).unwrap();
+        assert_eq!((n, next), (10, None), "the last page");
+        assert!(!body.contains("ann"));
+        assert!(body.contains(&hashed_by(key, "ann")));
+        let (_, n, next) = ndjson_page(evs.clone(), key, 10, usize::MAX).unwrap();
+        assert_eq!((n, next), (10, Some(10)), "a full page");
+        let line = body.lines().next().unwrap().len() + 1;
+        let (body, n, next) = ndjson_page(evs.clone(), key, 1000, line * 3 + 1).unwrap();
+        assert_eq!(
+            (n, next),
+            (3, Some(3)),
+            "cut by bytes, the rest on the next page"
+        );
+        assert!(body.len() <= line * 3 + 1);
+        let (_, n, _) = ndjson_page(evs, key, 1000, 1).unwrap();
+        assert_eq!(n, 1, "one event at least");
+    }
 }

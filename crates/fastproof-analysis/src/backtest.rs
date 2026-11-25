@@ -21,6 +21,11 @@ use crate::score::{MIN_MESSAGE_SIMILARITY, RankOptions, rank, score};
 
 /// Confusions listed in a report, at most.
 pub const MAX_CONFUSIONS: usize = 10;
+/// Bytes the memory of one backtest may hold, about (messages, trigram keys, frames); the
+/// events after it is full only mark the report `truncated`.
+pub const MAX_MEMORY_BYTES: usize = 512 << 20;
+/// Bytes of the similar-rows cache, about; it is dropped beyond (the answers do not change).
+const MAX_CACHE_BYTES: usize = 128 << 20;
 
 /// Options of a backtest.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -150,6 +155,18 @@ pub struct Memory {
     changed: Vec<(u64, usize)>,
     version: u64,
     similar: HashMap<String, SimilarCache>,
+    /// Bytes of the rows and their keys, about.
+    bytes: usize,
+    /// Bytes of `similar`, about.
+    cache_bytes: usize,
+}
+
+fn row_bytes(row: &MemoryRow, keys: &[u64]) -> usize {
+    256 + row.fingerprint.len()
+        + row.message_norm.len()
+        + keys.len() * 8
+        + row.frames.iter().map(|f| f.len() + 24).sum::<usize>()
+        + row.last_decided_by.len()
 }
 
 fn push_front_capped<T: PartialEq + Clone>(list: &mut Vec<T>, v: T, cap: usize) {
@@ -164,6 +181,11 @@ impl Memory {
         &self.rows
     }
 
+    /// Bytes the rows hold, about.
+    pub fn bytes(&self) -> usize {
+        self.bytes
+    }
+
     /// Folds one decision (as the live fold does, through [`new_row`] and [`fold_row`]): the
     /// row of (fingerprint, type) gains a confirmation, the newest test case, environment and
     /// branch, the message and frames and the author; the row of the previous type, when the
@@ -172,6 +194,7 @@ impl Memory {
         let key = (ev.fingerprint.clone(), ev.defect_type_id);
         match self.by_key.get(&key) {
             Some(&idx) => {
+                let old = row_bytes(&self.rows[idx], &self.keys[idx]);
                 let before = self.rows[idx].message_norm.clone();
                 fold_row(&mut self.rows[idx], ev);
                 if self.rows[idx].message_norm != before {
@@ -179,11 +202,15 @@ impl Memory {
                     self.version += 1;
                     self.changed.push((self.version, idx));
                 }
+                self.bytes =
+                    self.bytes.saturating_sub(old) + row_bytes(&self.rows[idx], &self.keys[idx]);
             }
             None => {
                 let i = self.rows.len();
                 let row = new_row(ev);
-                self.keys.push(trigram_keys(&row.message_norm));
+                let keys = trigram_keys(&row.message_norm);
+                self.bytes += row_bytes(&row, &keys);
+                self.keys.push(keys);
                 self.rows.push(row);
                 self.by_key.insert(key, i);
                 self.by_fingerprint
@@ -211,18 +238,28 @@ impl Memory {
         if !cluster.message_norm.is_empty() {
             let n = self.rows.len();
             let version = self.version;
+            if self.cache_bytes > MAX_CACHE_BYTES {
+                self.similar.clear();
+                self.cache_bytes = 0;
+            }
+            let cache_bytes = &mut self.cache_bytes;
             let entry = self
                 .similar
                 .entry(cluster.message_norm.clone())
-                .or_insert_with(|| SimilarCache {
-                    keys: trigram_keys(&cluster.message_norm),
-                    checked: 0,
-                    version,
-                    rows: Vec::new(),
+                .or_insert_with(|| {
+                    let keys = trigram_keys(&cluster.message_norm);
+                    *cache_bytes += 128 + cluster.message_norm.len() + keys.len() * 8;
+                    SimilarCache {
+                        keys,
+                        checked: 0,
+                        version,
+                        rows: Vec::new(),
+                    }
                 });
             for (i, k) in self.keys.iter().enumerate().take(n).skip(entry.checked) {
                 if similar(&entry.keys, k) {
                     entry.rows.push(i);
+                    *cache_bytes += 8;
                 }
             }
             entry.checked = n;
@@ -397,11 +434,29 @@ impl Backtest {
         }
     }
 
+    /// [`Backtest::feed`] until `deadline`: the events left when it passes are not replayed
+    /// and the report is `truncated`. Returns whether the whole page was replayed.
+    pub fn feed_until(&mut self, events: &[DecisionEvent], deadline: std::time::Instant) -> bool {
+        for ev in events {
+            if std::time::Instant::now() >= deadline {
+                self.truncated = true;
+                return false;
+            }
+            self.step(ev);
+        }
+        true
+    }
+
+    /// Whether the report is truncated so far (event cap, memory cap or deadline).
+    pub fn truncated(&self) -> bool {
+        self.truncated
+    }
+
     /// Replays one event: what the memory so far suggests (the rank-1 candidate, returned),
     /// counted against the decision, then the decision folded. `None` also when the event is
     /// beyond `max_events` (it is then only counted as truncation).
     pub fn step(&mut self, ev: &DecisionEvent) -> Option<Candidate> {
-        if self.decisions >= self.opts.max_events {
+        if self.decisions >= self.opts.max_events || self.memory.bytes() > MAX_MEMORY_BYTES {
             self.truncated = true;
             return None;
         }
@@ -502,26 +557,41 @@ pub fn run(events: &[DecisionEvent], opts: &BacktestOptions) -> BacktestSummary 
 }
 
 /// Reads NDJSON decision events (the export format), one per line; blank lines are skipped.
-/// Lines longer than `max_line` bytes or of another format version are errors that name the
-/// line.
+/// Lines longer than `max_line` bytes (found without reading them whole) or of another
+/// format version are errors that name the line.
 pub fn read_events(
-    r: impl std::io::BufRead,
+    mut r: impl std::io::BufRead,
     max_line: usize,
     mut each: impl FnMut(DecisionEvent) -> crate::Result<()>,
 ) -> crate::Result<u64> {
+    use std::io::BufRead as _;
     let mut n = 0;
-    for (i, line) in r.lines().enumerate() {
-        let line = line?;
+    let mut i = 0usize;
+    let mut buf: Vec<u8> = Vec::new();
+    loop {
+        buf.clear();
+        let got = std::io::Read::take(&mut r, max_line as u64 + 2).read_until(b'\n', &mut buf)?;
+        if got == 0 {
+            break;
+        }
+        i += 1;
+        if buf.last() == Some(&b'\n') {
+            buf.pop();
+            if buf.last() == Some(&b'\r') {
+                buf.pop();
+            }
+        }
+        if buf.len() > max_line {
+            anyhow::bail!("line {i}: longer than {max_line} bytes");
+        }
+        let line = std::str::from_utf8(&buf).map_err(|_| anyhow::anyhow!("line {i}: not UTF-8"))?;
         if line.trim().is_empty() {
             continue;
         }
-        if line.len() > max_line {
-            anyhow::bail!("line {}: longer than {max_line} bytes", i + 1);
-        }
-        let ev: DecisionEvent = serde_json::from_str(&line)
-            .map_err(|e| anyhow::anyhow!("line {}: not a decision event: {e}", i + 1))?;
+        let ev: DecisionEvent = serde_json::from_str(line)
+            .map_err(|e| anyhow::anyhow!("line {i}: not a decision event: {e}"))?;
         if ev.v != 1 {
-            anyhow::bail!("line {}: format version {} is not 1", i + 1, ev.v);
+            anyhow::bail!("line {i}: format version {} is not 1", ev.v);
         }
         each(ev)?;
         n += 1;
@@ -728,5 +798,47 @@ mod tests {
         assert!(bad.unwrap_err().to_string().contains("line 1"));
         let long = read_events("x".repeat(100).as_bytes(), 10, |_| Ok(()));
         assert!(long.unwrap_err().to_string().contains("longer"));
+    }
+
+    #[test]
+    fn an_endless_line_is_refused_without_reading_it_whole() {
+        let endless = std::io::BufReader::new(std::io::Read::take(std::io::repeat(b'x'), 1 << 40));
+        let r = read_events(endless, 1024, |_| Ok(()));
+        assert!(r.unwrap_err().to_string().contains("line 1: longer"));
+        let crlf = format!("{}\r\n", serde_json::to_string(&events()[0]).unwrap());
+        assert_eq!(read_events(crlf.as_bytes(), 4096, |_| Ok(())).unwrap(), 1);
+    }
+
+    #[test]
+    fn a_backtest_stops_at_its_deadline_and_its_memory_cap() {
+        let evs = events();
+        let mut b = Backtest::new(&BacktestOptions::default());
+        assert!(!b.feed_until(&evs, std::time::Instant::now()));
+        assert!(b.truncated());
+        let s = b.finish();
+        assert!(s.truncated);
+        assert_eq!(s.decisions, 0);
+        let mut b = Backtest::new(&BacktestOptions::default());
+        let far = std::time::Instant::now() + std::time::Duration::from_secs(3600);
+        assert!(b.feed_until(&evs, far));
+        assert_eq!(b.finish(), run(&evs, &BacktestOptions::default()));
+        // Every row costs its message, its trigram keys and its frames.
+        let mut m = Memory::default();
+        let long: String = (0..150).map(|i| format!("w{i} ")).collect();
+        m.fold(&ev(0, "aaaa", &long, 1, "productBug", 1));
+        assert!(m.bytes() > long.len() * 2, "{}", m.bytes());
+        let one = m.bytes();
+        m.fold(&ev(1, "aaaa", &long, 1, "productBug", 2));
+        assert_eq!(
+            m.bytes(),
+            one,
+            "a confirmation of the same row costs nothing more"
+        );
+        let mut b = Backtest::new(&BacktestOptions::default());
+        b.memory.bytes = MAX_MEMORY_BYTES + 1;
+        b.feed(&evs);
+        let s = b.finish();
+        assert!(s.truncated);
+        assert_eq!(s.decisions, 0);
     }
 }

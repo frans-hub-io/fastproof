@@ -829,6 +829,224 @@ async fn auto_apply_takes_only_same_with_the_gate_open_and_is_undoable() {
             .await
             .unwrap();
     assert!(restored.is_none());
+    // Analysing the launch again does not put back what a person undid: the suggestion
+    // stays open for people.
+    store
+        .compute_suggestions(&ctx(&p, &l, &settings, &open), &[])
+        .await
+        .unwrap();
+    let again = store
+        .auto_apply(&ctx(&p, &l, &settings, &open))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!((again.clusters, again.results), (0, 0), "{again:?}");
+    let still: Option<serde_json::Value> =
+        sqlx::query_scalar("select defect from results where id = $1")
+            .bind(a)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert!(
+        still.is_none(),
+        "an undone auto decision is not applied again"
+    );
+    let open_same: i64 = sqlx::query_scalar(
+        "select count(*) from triage_suggestions where launch_id = $1 and fingerprint = $2 \
+           and state = 'open' and band = 'same'",
+    )
+    .bind(l.id)
+    .bind(FA)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(open_same, 1);
+    // Superseded suggestions do not pile up: those older than an hour go at the next run.
+    sqlx::query(
+        "update triage_suggestions set decided_at = now() - interval '2 hours' \
+         where launch_id = $1 and state = 'superseded'",
+    )
+    .bind(l.id)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    store
+        .compute_suggestions(&ctx(&p, &l, &settings, &open), &[])
+        .await
+        .unwrap();
+    let (old, fresh): (i64, i64) = sqlx::query_as(
+        "select count(*) filter (where decided_at < now() - interval '1 hour'), \
+           count(*) filter (where decided_at >= now() - interval '1 hour') \
+         from triage_suggestions where launch_id = $1 and state = 'superseded'",
+    )
+    .bind(l.id)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(old, 0, "old superseded suggestions are deleted");
+    assert!(fresh > 0, "the ones just superseded stay for the fold");
+}
+
+#[tokio::test]
+async fn an_auto_apply_batch_stays_undoable() {
+    let Some((db, store)) = TestDb::migrated().await else {
+        return;
+    };
+    let p = project(&store, "autocap").await;
+    let t = Uuid::now_v7();
+    teach(&db, &store, &p, t).await;
+    let l = launch(&db, &store, &p).await;
+    let a = result(&db, &p, &l, FA, t).await;
+    let big = fastproof_store::analysis::suggest::AUTO_APPLY_MAX_RESULTS;
+    sqlx::query(
+        "insert into results (id, launch_created_at, project_id, launch_id, test_case_id, series_id, name, \
+           full_name, status, fingerprint, message) \
+         select gen_random_uuid(), $1, $2, $3, gen_random_uuid(), gen_random_uuid(), 'b' || g, 'b' || g, \
+           'failed', $4, 'boom' from generate_series(1, $5) g",
+    )
+    .bind(l.created_at)
+    .bind(p.id)
+    .bind(l.id)
+    .bind(FB)
+    .bind(big)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let mut settings = store.project_settings(p.id).await.unwrap();
+    settings.analysis.auto_apply.enabled = true;
+    store.put_project_settings(p.id, &settings).await.unwrap();
+    let open = AnalysisLimits {
+        gate_mode: TmGateMode::Open,
+        ..Default::default()
+    };
+    store
+        .compute_suggestions(&ctx(&p, &l, &settings, &open), &[])
+        .await
+        .unwrap();
+    let same: i64 = sqlx::query_scalar(
+        "select count(*) from triage_suggestions where launch_id = $1 and state = 'open' and rank = 1 \
+           and band = 'same'",
+    )
+    .bind(l.id)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(same, 2, "both clusters are `same`");
+    let applied = store
+        .auto_apply(&ctx(&p, &l, &settings, &open))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (applied.clusters, applied.results, applied.capped),
+        (1, 1, 1),
+        "the big cluster would make the batch too large to undo: {applied:?}"
+    );
+    let auto_b: i64 = sqlx::query_scalar(
+        "select count(*) from results where launch_id = $1 and fingerprint = $2 and defect is not null",
+    )
+    .bind(l.id)
+    .bind(FB)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(auto_b, 0);
+    let u = store
+        .undo_triage(
+            p.id,
+            &p.key,
+            applied.batch_id.unwrap(),
+            "ann",
+            &person("ann"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(u.restored, 1);
+    let restored: Option<serde_json::Value> =
+        sqlx::query_scalar("select defect from results where id = $1")
+            .bind(a)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert!(restored.is_none());
+}
+
+#[tokio::test]
+async fn the_trigram_search_is_indexed_and_bounded_in_time() {
+    let Some((db, store)) = TestDb::migrated().await else {
+        return;
+    };
+    let available: bool = sqlx::query_scalar(
+        "select exists(select 1 from pg_available_extensions where name = 'pg_trgm')",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    if !available {
+        eprintln!("pg_trgm is not available: nothing to check");
+        return;
+    }
+    assert_eq!(
+        fastproof_store::search::ensure_trigram(&db.pool).await,
+        fastproof_store::search::Trigram::Enabled
+    );
+    let indexed: bool = sqlx::query_scalar(
+        "select exists(select 1 from pg_indexes where tablename = 'triage_memory' \
+           and indexname = 'triage_memory_message_trgm')",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert!(indexed, "the memory's messages have a trigram index");
+    let p = project(&store, "trgmcost").await;
+    let pb = type_of(&store, &p, "productBug").await;
+    sqlx::query(
+        "insert into triage_memory (project_id, fingerprint, defect_type_id, grp, message_norm, confirmed, \
+           first_decided_at, last_decided_at, last_decided_by) \
+         select $1, lpad(to_hex(g), 16, '0'), $2, 'productBug', \
+           'request failed with status <n> for order ' || g || ' after retry ' || (g % 97), 1, now(), now(), 'ann' \
+         from generate_series(1, 20000) g",
+    )
+    .bind(p.id)
+    .bind(pb)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    sqlx::query("drop index triage_memory_message_trgm")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let messages: Vec<String> = (0..200)
+        .map(|i| format!("request failed with status <n> for order {i} after retry {i}"))
+        .collect();
+    let cut = store
+        .similar_by_trigram(p.id, &messages, Duration::from_millis(1))
+        .await
+        .unwrap();
+    assert!(
+        cut.is_none(),
+        "past its time the search gives up instead of running on"
+    );
+    let got = store
+        .similar_by_trigram(p.id, &messages[..2], Duration::from_secs(60))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(got.len(), 2);
+    assert!(got.iter().all(|rows| !rows.is_empty() && rows.len() <= 20));
+}
+
+#[tokio::test]
+async fn projects_with_analysis_off_do_not_hold_the_seed_back() {
+    let Some((_db, store)) = TestDb::migrated().await else {
+        return;
+    };
+    let off = project(&store, "seedoff").await;
+    let mut s = store.project_settings(off.id).await.unwrap();
+    s.analysis.enabled = false;
+    store.put_project_settings(off.id, &s).await.unwrap();
+    let on = project(&store, "seedon").await;
+    assert_eq!(store.memory_seed_pending(1).await.unwrap(), vec![on.id]);
 }
 
 #[tokio::test]
@@ -951,8 +1169,22 @@ async fn the_backtest_on_stored_events_is_the_pure_harness() {
         );
     }
     assert_eq!(report.source, BacktestSource::Project);
+    assert!(!report.truncated);
     let latest = store.latest_backtest(p.id).await.unwrap().unwrap();
     assert_eq!(latest.id, report.id);
+    // A backtest stops at its wall budget and says so.
+    let cut = store
+        .run_backtest_within(
+            p.id,
+            &BacktestRequest::default(),
+            "ann",
+            &limits,
+            Duration::ZERO,
+        )
+        .await
+        .unwrap();
+    assert!(cut.truncated, "{cut:?}");
+    assert_eq!(cut.decisions, 0);
     // Window: only the last day.
     let short = store
         .run_backtest(p.id, &BacktestRequest { days: Some(1) }, "ann", &limits)

@@ -283,12 +283,12 @@ async fn remote(a: &BacktestArgs, project: &str) -> anyhow::Result<BacktestRepor
         .await?;
     let id = task["id"].as_str().context("the server answered no task")?;
     let deadline = Instant::now() + Duration::from_secs(a.timeout.max(1));
-    loop {
+    let made = loop {
         let t: Value = c
             .send(c.request(Method::GET, &format!("api/v1/projects/{key}/tasks/{id}"))?)
             .await?;
         match t["status"].as_str() {
-            Some("done") => break,
+            Some("done") => break t["progress"]["backtestId"].as_str().map(str::to_string),
             Some("failed") => bail!(
                 "the backtest failed on the server: {}",
                 t["error"].as_str().unwrap_or("unknown error")
@@ -299,12 +299,18 @@ async fn remote(a: &BacktestArgs, project: &str) -> anyhow::Result<BacktestRepor
             bail!("the backtest did not finish within {} s", a.timeout);
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
+    };
+    let report: BacktestReport = c
+        .send(c.request(
+            Method::GET,
+            &format!("api/v1/projects/{key}/analysis/backtest/latest"),
+        )?)
+        .await?;
+    // A nightly backtest finishing in between would answer its report for this one.
+    if made.as_deref().is_some_and(|m| m != report.id.to_string()) {
+        bail!("a newer backtest replaced the report of this one; run it again");
     }
-    c.send(c.request(
-        Method::GET,
-        &format!("api/v1/projects/{key}/analysis/backtest/latest"),
-    )?)
-    .await
+    Ok(report)
 }
 
 #[cfg(test)]

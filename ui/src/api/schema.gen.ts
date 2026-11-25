@@ -143,7 +143,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description Queues a backtest of the project's decision history of the last `days` (1 to 730, default 180): every person's decision is replayed in time order against the memory folded from the decisions before it, with the live scoring, and the report gives the precision per band and the coverage (`GET .../analysis/backtest/latest`). Answers the task (202). 409 `analysis_disabled` while Analysis is off, 409 `upgrade_in_progress` while older replicas run, 409 `limit_reached` with too many open tasks. Needs `settings:write`. */
+        /** @description Queues a backtest of the project's decision history of the last `days` (1 to 730, default 180): every person's decision is replayed in time order against the memory folded from the decisions before it, with the live scoring, and the report gives the precision per band and the coverage (`GET .../analysis/backtest/latest`). Answers the task (202). A backtest replays for at most 10 minutes (the report is then `truncated`). 409 `analysis_disabled` while Analysis is off, 409 `upgrade_in_progress` while older replicas run, 409 `limit_reached` while a backtest of the project is queued or running, or with too many open tasks. Needs `settings:write`. */
         post: operations["analysis_backtest"];
         delete?: never;
         options?: never;
@@ -192,7 +192,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** @description Exports the project's decision events (what the memory learned, one JSON `DecisionEvent` per line) for an offline backtest (`fastproof analysis backtest --events <file>`). The author is the first 16 hex digits of sha256("<project id>:<author>"). A full page carries the `after` of the next one in `x-fastproof-next-after`. 409 `analysis_disabled` while Analysis is off. Needs `settings:write`. */
+        /** @description Exports the project's decision events (what the memory learned, one JSON `DecisionEvent` per line) for an offline backtest (`fastproof analysis backtest --events <file>`). The author is the first 16 hex digits of sha256 of a random secret of the project and the author (stable within the project, not testable without the server's database). A page holds at most `limit` events and 8 MiB; when more are left it carries the `after` of the next one in `x-fastproof-next-after`. 409 `analysis_disabled` while Analysis is off. Needs `settings:write`. */
         get: operations["analysis_decision_events"];
         put?: never;
         post?: never;

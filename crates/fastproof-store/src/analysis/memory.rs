@@ -34,6 +34,8 @@ pub const MAX_MEMORY_ENTRIES: i64 = 50;
 pub const MAX_EVENTS_PAGE: i64 = 10_000;
 /// The `analysis_state` name prefix of the per-project seed marker.
 pub const SEED_MARKER: &str = "memory.seed:";
+/// The `analysis_state` name prefix of the per-project secret the export hashes authors with.
+pub const EXPORT_KEY: &str = "events.key:";
 
 type JournalRow = (
     i64,
@@ -348,12 +350,27 @@ async fn learn(conn: &mut PgConnection, l: &Learned) -> anyhow::Result<bool> {
 /// Takes back what a batch taught (it was undone): its events go, each confirmation and the
 /// override it counted are subtracted, rows left without confirmations go.
 async fn unlearn(conn: &mut PgConnection, project_id: Uuid, batch: Uuid) -> anyhow::Result<u64> {
+    // The batch's events were decided within the times of its journal rows: the range keeps
+    // the delete on the `(project_id, decided_at, id)` index instead of scanning every event.
+    let (from, to): (Option<DateTime<Utc>>, Option<DateTime<Utc>>) = sqlx::query_as(
+        "select min(at), max(at) from triage_decisions where project_id = $1 and batch_id = $2",
+    )
+    .bind(project_id)
+    .bind(batch)
+    .fetch_one(&mut *conn)
+    .await?;
+    let (Some(from), Some(to)) = (from, to) else {
+        return Ok(0);
+    };
     let gone: Vec<(String, Uuid, Option<Uuid>)> = sqlx::query_as(
-        "delete from triage_memory_events where project_id = $1 and batch_id = $2 \
+        "delete from triage_memory_events where project_id = $1 and decided_at between $3 and $4 \
+           and batch_id = $2 \
          returning fingerprint, defect_type_id, previous_type_id",
     )
     .bind(project_id)
     .bind(batch)
+    .bind(from)
+    .bind(to)
     .fetch_all(&mut *conn)
     .await?;
     for (fp, t, prev) in &gone {
@@ -685,11 +702,13 @@ impl Store {
         Ok(rows.len() as u64)
     }
 
-    /// Projects whose memory was never seeded (no done marker), oldest first.
+    /// Projects with Analysis on whose memory was never seeded (no done marker), oldest
+    /// first (projects with Analysis off do not hold the others back).
     pub async fn memory_seed_pending(&self, limit: i64) -> anyhow::Result<Vec<Uuid>> {
         Ok(sqlx::query_scalar(
             "select p.id from projects p where not exists (select 1 from analysis_state s \
                where s.name = $1 || p.id::text and (s.value->>'done')::boolean) \
+               and (p.settings->'analysis'->'enabled') is distinct from 'false'::jsonb \
              order by p.created_at, p.id limit $2",
         )
         .bind(SEED_MARKER)
@@ -987,12 +1006,41 @@ pub(crate) fn event_of(r: EventRow) -> DecisionEvent {
 }
 
 /// The exported author of a decision: the first 16 hex digits of sha256 of
-/// `"<project id>:<by>"` (the same person has the same hash within a project and none
-/// outside it).
-pub fn hashed_by(project_id: Uuid, by: &str) -> String {
+/// `"<project secret>:<by>"` ([`Store::export_key`]). The same person has the same hash
+/// within a project and none outside it, and nobody without the database can test a guessed
+/// name against it (the project id alone, which every reader knows, would allow that).
+pub fn hashed_by(key: &str, by: &str) -> String {
     use sha2::Digest;
-    let d = sha2::Sha256::digest(format!("{project_id}:{by}").as_bytes());
+    let d = sha2::Sha256::digest(format!("{key}:{by}").as_bytes());
     hex::encode(&d[..8])
+}
+
+impl Store {
+    /// The project's secret for [`hashed_by`]: 244 random bits made on first use and kept in
+    /// `analysis_state`; never shown by the API.
+    pub async fn export_key(&self, project_id: Uuid) -> anyhow::Result<String> {
+        let name = format!("{EXPORT_KEY}{project_id}");
+        let fresh = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
+        sqlx::query(
+            "insert into analysis_state (name, value, updated_at) values ($1, $2, now()) \
+             on conflict (name) do nothing",
+        )
+        .bind(&name)
+        .bind(serde_json::json!({ "key": fresh }))
+        .execute(&self.pool)
+        .await?;
+        let v: Value = sqlx::query_scalar("select value from analysis_state where name = $1")
+            .bind(&name)
+            .fetch_one(&self.pool)
+            .await?;
+        v.get("key")
+            .and_then(Value::as_str)
+            .filter(|k| k.len() >= 32)
+            .map(str::to_string)
+            .ok_or_else(|| {
+                anyhow::anyhow!("the export key of project {project_id} is not readable")
+            })
+    }
 }
 
 #[cfg(test)]
@@ -1001,12 +1049,12 @@ mod tests {
 
     #[test]
     fn authors_are_hashed_per_project() {
-        let p = Uuid::from_u128(1);
-        let a = hashed_by(p, "ann");
+        let k = "0123456789abcdef0123456789abcdef";
+        let a = hashed_by(k, "ann");
         assert_eq!(a.len(), 16);
-        assert_eq!(a, hashed_by(p, "ann"));
-        assert_ne!(a, hashed_by(Uuid::from_u128(2), "ann"));
-        assert_ne!(a, hashed_by(p, "bob"));
+        assert_eq!(a, hashed_by(k, "ann"));
+        assert_ne!(a, hashed_by("fedcba9876543210fedcba9876543210", "ann"));
+        assert_ne!(a, hashed_by(k, "bob"));
         assert_eq!(cut("abcdef", 3), "abc");
     }
 }

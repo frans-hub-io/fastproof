@@ -44,6 +44,15 @@ pub const CLUSTER_RESULTS: usize = 1000;
 pub const MAX_REJECT_REASON: usize = 500;
 /// Who auto-apply decides as.
 pub const AUTO_PRINCIPAL: &str = "fastproof-analysis";
+/// Statement time of the `pg_trgm` search of one launch, at most; past it the step uses the
+/// bounded Rust search over the newest `candidate_rows` rows.
+pub const TRIGRAM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// How long superseded suggestions are kept (the memory fold reads which suggestion was open
+/// when a person decided), before they are deleted.
+pub const SUPERSEDED_KEEP_HOURS: i32 = 1;
+/// Results one auto-apply batch changes, at most: an auto batch must stay undoable, so the
+/// clusters beyond are left to people.
+pub const AUTO_APPLY_MAX_RESULTS: i64 = super::types::MAX_UNDO_ROWS;
 
 /// A cluster of a launch: failed and broken results under one canonical fingerprint.
 #[derive(Clone, Debug)]
@@ -178,44 +187,56 @@ fn signal_facts(signals: &[super::types::AttemptSignal]) -> Vec<SignalFact> {
 }
 
 /// Memory rows similar by message to each of `messages` (`pg_trgm`, at most
-/// [`TRIGRAM_ROWS`] each), by message index.
+/// [`TRIGRAM_ROWS`] each), by message index; `None` when the search ran past `timeout`.
 async fn trigram_rows(
     conn: &mut PgConnection,
     project_id: Uuid,
     messages: &[String],
-) -> anyhow::Result<HashMap<usize, Vec<MemoryRow>>> {
+    timeout: std::time::Duration,
+) -> anyhow::Result<Option<HashMap<usize, Vec<MemoryRow>>>> {
     if messages.is_empty() {
-        return Ok(HashMap::new());
+        return Ok(Some(HashMap::new()));
     }
     sqlx::query("set local pg_trgm.similarity_threshold = 0.4")
         .execute(&mut *conn)
         .await?;
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "set local statement_timeout = '{}ms'",
+        timeout.as_millis().clamp(1, i32::MAX as u128)
+    )))
+    .execute(&mut *conn)
+    .await?;
     let cols: String = MEMORY_COLUMNS
         .split(',')
         .map(|c| format!("m.{}", c.trim()))
         .collect::<Vec<_>>()
         .join(", ");
-    let rows: Vec<TrigramRow> = sqlx::query_as::<_, TrigramRow>(sqlx::AssertSqlSafe(
-        format!(
-            "select u.i, {cols} from unnest($2::text[]) with ordinality as u(msg, i) \
-             cross join lateral (select {MEMORY_COLUMNS} from triage_memory \
-               where project_id = $1 and message_norm % u.msg \
-               order by similarity(message_norm, u.msg) desc, last_decided_at desc, fingerprint, defect_type_id \
-               limit $3) m"
-        ),
-    ))
+    let rows = sqlx::query_as::<_, TrigramRow>(sqlx::AssertSqlSafe(format!(
+        "select u.i, {cols} from unnest($2::text[]) with ordinality as u(msg, i) \
+         cross join lateral (select {MEMORY_COLUMNS} from triage_memory \
+           where project_id = $1 and message_norm % u.msg \
+           order by similarity(message_norm, u.msg) desc, last_decided_at desc, fingerprint, defect_type_id \
+           limit $3) m"
+    )))
     .bind(project_id)
     .bind(messages)
     .bind(TRIGRAM_ROWS)
     .fetch_all(&mut *conn)
-    .await?;
+    .await;
+    let rows = match rows {
+        Ok(r) => r,
+        Err(sqlx::Error::Database(e)) if e.code().as_deref() == Some("57014") => {
+            return Ok(None);
+        }
+        Err(e) => return Err(e.into()),
+    };
     let mut out: HashMap<usize, Vec<MemoryRow>> = HashMap::new();
     for r in rows {
         out.entry((r.i - 1) as usize)
             .or_default()
             .push(memory_row(r.m));
     }
-    Ok(out)
+    Ok(Some(out))
 }
 
 #[derive(sqlx::FromRow)]
@@ -279,6 +300,9 @@ pub struct AutoApplied {
     pub batch_id: Option<Uuid>,
     pub clusters: u64,
     pub results: u64,
+    /// `same` clusters left to people because the batch would have grown past
+    /// [`AUTO_APPLY_MAX_RESULTS`] (it must stay undoable).
+    pub capped: u64,
 }
 
 type SuggestionDbRow = (
@@ -422,6 +446,31 @@ impl Store {
         })
     }
 
+    /// Memory rows of a project similar by message to each of `messages` with `pg_trgm`
+    /// (at most [`TRIGRAM_ROWS`] each, in the order of `messages`), or `None` when the search
+    /// ran past `timeout` (the caller then uses the bounded search in Rust).
+    pub async fn similar_by_trigram(
+        &self,
+        project_id: Uuid,
+        messages: &[String],
+        timeout: std::time::Duration,
+    ) -> anyhow::Result<Option<Vec<Vec<MemoryRow>>>> {
+        let mut tx = self.pool.begin().await?;
+        let got = trigram_rows(&mut tx, project_id, messages, timeout).await?;
+        tx.rollback().await?;
+        let Some(mut got) = got else {
+            metrics::counter!("fastproof_analysis_budget_exhausted_total", "kind" => "trigram")
+                .increment(1);
+            tracing::warn!(project = %project_id, "the pg_trgm search of a launch ran out of time; the newest memory rows are searched instead");
+            return Ok(None);
+        };
+        Ok(Some(
+            (0..messages.len())
+                .map(|i| got.remove(&i).unwrap_or_default())
+                .collect(),
+        ))
+    }
+
     /// The undecided clusters of a launch as scoring sees them, without frames (what
     /// ClickHouse history is asked for), at most `max_clusters`.
     pub async fn cluster_facts(&self, ctx: &LaunchCtx<'_>) -> anyhow::Result<Vec<ClusterFacts>> {
@@ -552,16 +601,17 @@ impl Store {
                 .collect()
         };
         // Rows similar by message.
+        let messages: Vec<String> = facts.iter().map(|f| f.message_norm.clone()).collect();
+        let by_trigram = if facts.is_empty() || !self.trigram_installed().await? {
+            None
+        } else {
+            self.similar_by_trigram(ctx.project_id, &messages, TRIGRAM_TIMEOUT)
+                .await?
+        };
         let similar: Vec<Vec<MemoryRow>> = if facts.is_empty() {
             Vec::new()
-        } else if self.trigram_installed().await? {
-            let messages: Vec<String> = facts.iter().map(|f| f.message_norm.clone()).collect();
-            let mut tx = self.pool.begin().await?;
-            let mut got = trigram_rows(&mut tx, ctx.project_id, &messages).await?;
-            tx.commit().await?;
-            (0..facts.len())
-                .map(|i| got.remove(&i).unwrap_or_default())
-                .collect()
+        } else if let Some(got) = by_trigram {
+            got
         } else {
             let recent = recent_rows(&mut conn, ctx.project_id, ctx.limits.candidate_rows).await?;
             let keys: Vec<Vec<u64>> = recent
@@ -712,8 +762,18 @@ impl Store {
                     .collect(),
             });
         }
-        // Persist: the launch's open suggestions superseded, the new ones inserted.
+        // Persist: superseded suggestions of the launch older than an hour deleted (each
+        // recompute would otherwise keep up to 3 × max_clusters more rows), the open ones
+        // superseded, the new ones inserted.
         let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            "delete from triage_suggestions where launch_id = $1 and state = 'superseded' \
+               and decided_at < now() - make_interval(hours => $2)",
+        )
+        .bind(ctx.launch.id)
+        .bind(SUPERSEDED_KEEP_HOURS)
+        .execute(&mut *tx)
+        .await?;
         let superseded = sqlx::query(
             "update triage_suggestions set state = 'superseded', decided_at = now() \
              where launch_id = $1 and state = 'open'",
@@ -1255,6 +1315,7 @@ impl Store {
                 batch_id: None,
                 clusters: 0,
                 results: 0,
+                capped: 0,
             }));
         }
         let mut conn = self.pool.acquire().await?;
@@ -1265,14 +1326,31 @@ impl Store {
             .map(|c| (c.fingerprint.as_str(), c))
             .collect();
         let mut chosen: Vec<(Uuid, &LaunchCluster, Uuid)> = Vec::new();
+        let mut total = 0i64;
+        let mut capped = 0u64;
         for (sid, fp, t) in &picks {
             if let Some(c) = by_fp.get(fp.as_str())
                 && c.decided.is_none()
             {
+                if total + c.count > AUTO_APPLY_MAX_RESULTS {
+                    capped += 1;
+                    continue;
+                }
+                total += c.count;
                 chosen.push((*sid, c, *t));
             }
         }
-        let out = self.write_auto(ctx, &chosen).await?;
+        let mut out = if chosen.is_empty() {
+            AutoApplied {
+                batch_id: None,
+                clusters: 0,
+                results: 0,
+                capped: 0,
+            }
+        } else {
+            self.write_auto(ctx, &chosen).await?
+        };
+        out.capped = capped;
         Ok(Some(out))
     }
 
@@ -1340,20 +1418,36 @@ impl Store {
         let keys: Vec<(Uuid, DateTime<Utc>)> =
             targets.iter().map(|t| (t.0, launch.created_at)).collect();
         let mut before = read_states(&mut tx, &keys).await?;
+        // A person's or an agent's decision is kept, and so is a result whose auto decision
+        // someone undid: the undo says the remembered type is wrong here.
+        let undone: BTreeSet<Uuid> = sqlx::query_scalar::<_, Uuid>(
+            "select distinct u.result_id from triage_decisions u \
+             join triage_decisions a on a.project_id = u.project_id and a.batch_id = u.reverts_batch \
+               and a.result_id = u.result_id \
+             where u.result_id = any($1) and u.via = 'undo' and a.via = 'auto'",
+        )
+        .bind(targets.iter().map(|t| t.0).collect::<Vec<_>>())
+        .fetch_all(&mut *tx)
+        .await?
+        .into_iter()
+        .collect();
         let protected: BTreeSet<Uuid> = before
             .iter()
-            .filter(|b| matches!(b.defect_source(), Some("user" | "ai")))
+            .filter(|b| {
+                matches!(b.defect_source(), Some("user" | "ai")) || undone.contains(&b.result_id)
+            })
             .map(|b| b.result_id)
             .collect();
-        before.retain(|b| !protected.contains(&b.result_id));
         let (by_id, _) = type_refs(&mut tx, ctx.project_id).await?;
         let now = Utc::now();
         let mut ids = Vec::new();
         let mut defects = Vec::new();
+        let mut applied_fps: BTreeSet<&str> = BTreeSet::new();
         for (rid, fp, d) in targets.iter().filter(|t| !protected.contains(&t.0)) {
             let Some(t) = type_of.get(fp).and_then(|t| by_id.get(t)) else {
                 continue;
             };
+            applied_fps.insert(fp.as_str());
             let existing: Option<Defect> = d.clone().and_then(|d| serde_json::from_value(d).ok());
             let defect = Defect {
                 type_id: t.id,
@@ -1377,8 +1471,21 @@ impl Store {
                 batch_id: None,
                 clusters: 0,
                 results: 0,
+                capped: 0,
             });
         }
+        let changed: BTreeSet<Uuid> = ids.iter().copied().collect();
+        before.retain(|b| changed.contains(&b.result_id));
+        // Only clusters with a result changed count as applied; the others keep their
+        // suggestion open for people.
+        let chosen: Vec<&(Uuid, &LaunchCluster, Uuid)> = chosen
+            .iter()
+            .filter(|c| {
+                c.1.fingerprints
+                    .iter()
+                    .any(|f| applied_fps.contains(f.as_str()))
+            })
+            .collect();
         sqlx::query(
             "update results r set defect = t.d, updated_at = now() \
              from unnest($1::uuid[], $2::jsonb[]) as t(i, d) \
@@ -1440,6 +1547,7 @@ impl Store {
             batch_id,
             clusters: chosen.len() as u64,
             results: ids.len() as u64,
+            capped: 0,
         })
     }
 }

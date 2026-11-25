@@ -393,6 +393,12 @@ async fn suggestions_over_http_with_permissions_and_cross_project_ids() {
         .await;
     assert_eq!(st, StatusCode::ACCEPTED, "{t}");
     assert_eq!(t["kind"], "backtest");
+    // One backtest of a project at a time: the replay is CPU of the shared analysis role.
+    let (st, b) = s
+        .post("/api/v1/projects/sg/analysis/backtest", &owner, json!({}))
+        .await;
+    assert_eq!(st, StatusCode::CONFLICT, "{b}");
+    assert_eq!(b["code"], "limit_reached", "{b}");
     let (st, _) = s
         .get("/api/v1/projects/sg/analysis/backtest/latest", &viewer)
         .await;
@@ -433,11 +439,31 @@ async fn suggestions_over_http_with_permissions_and_cross_project_ids() {
         .collect();
     assert_eq!(lines.len(), 2);
     assert!(next.is_some());
+    let sg_id: uuid::Uuid = sqlx::query_scalar("select id from projects where key = 'sg'")
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
     for e in &lines {
         let by = e["by"].as_str().unwrap();
         assert_eq!(by.len(), 16, "hashed: {e}");
         assert_ne!(by, "ed");
+        // Not a hash of the project id and the name, which anyone who can read the
+        // project could compute for a guessed name.
+        assert_ne!(
+            by,
+            fastproof_store::analysis::memory::hashed_by(&sg_id.to_string(), "ed")
+        );
     }
+    let (_, again, _) = get_text(
+        &s,
+        "/api/v1/projects/sg/analysis/decision-events?limit=2",
+        &owner,
+    )
+    .await;
+    assert_eq!(
+        again, text,
+        "the same author has the same hash in every export"
+    );
     let (st, text, _) = get_text(
         &s,
         "/api/v1/projects/op/analysis/decision-events",

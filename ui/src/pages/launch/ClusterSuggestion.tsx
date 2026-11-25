@@ -9,7 +9,7 @@ import { useTriage } from '../../api/stageC';
 import { bandLabel, suggestionChip, useAcceptSuggestion, useClusterSuggestions, useRecomputeSuggestions, useRejectSuggestion, useSuggestionRule, type ClusterSuggestions, type Suggestion } from '../../api/suggestions';
 import type { Launch } from '../../api/types';
 import type { Cluster, DefectInfo } from '../../api/types-next';
-import { formatDate } from '../../lib/format';
+import { formatDate, isHttpUrl } from '../../lib/format';
 
 const BAND_COLOR: Record<string, string> = { same: 'teal', high: 'blue', low: 'gray' };
 
@@ -76,7 +76,7 @@ function Why({ project, s, cluster }: { project: string; s: Suggestion; cluster:
       {commits && (commits.lastGood || commits.first) && (
         <Text size="xs" c="dimmed" data-testid="suggestion-commits">
           Commits between {commits.lastGood?.slice(0, 7) ?? '?'} and {commits.first?.slice(0, 7) ?? '?'}
-          {commits.compareUrl ? (
+          {isHttpUrl(commits.compareUrl) ? (
             <>
               {' · '}
               <Anchor href={commits.compareUrl} target="_blank" rel="noopener noreferrer" size="xs">
@@ -89,14 +89,14 @@ function Why({ project, s, cluster }: { project: string; s: Suggestion; cluster:
       {(s.comment || s.issueUrl) && (
         <Text size="xs" c="dimmed">
           {s.comment ? `"${s.comment}"` : ''}
-          {s.issueUrl ? (
+          {isHttpUrl(s.issueUrl) ? (
             <>
               {s.comment ? ' · ' : ''}
-              <Anchor href={s.issueUrl} target="_blank" rel="noopener noreferrer" size="xs">
+              <Anchor href={s.issueUrl} target="_blank" rel="noopener noreferrer" size="xs" data-testid="suggestion-issue">
                 {s.issueKey ?? 'issue'}
               </Anchor>
             </>
-          ) : null}
+          ) : s.issueKey ? `${s.comment ? ' · ' : ''}${s.issueKey}` : null}
         </Text>
       )}
     </Stack>

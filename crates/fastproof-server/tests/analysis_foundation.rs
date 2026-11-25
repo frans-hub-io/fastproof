@@ -741,6 +741,72 @@ async fn the_role_analyses_finished_launches() {
     );
 }
 
+/// Launches finished behind a burst of other outbox events (the ingest of other launches writes
+/// thousands) are queued and analysed by the next round of `analysis.consume`, not one round
+/// per 500 events of noise.
+#[tokio::test]
+async fn one_round_queues_launches_finished_behind_a_burst_of_events() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = Server::start_with_paused(
+        &db,
+        &[
+            ("FASTPROOF_ANALYSIS", "on"),
+            ("FASTPROOF_ANALYSIS_WORKERS", "0"),
+            ("FASTPROOF_ANALYSIS_SETTLE_SECONDS", "0"),
+        ],
+        ROLE_JOBS,
+    )
+    .await;
+    let state = s.running.as_ref().unwrap().state.clone();
+    s.project("bu").await;
+    let first = fastproof_server::analysis::run_once(&state).await.unwrap();
+    assert_eq!(first.consumed, Some(0));
+    let noise = |n: i64| {
+        sqlx::query(
+            "insert into events (type, project, payload) \
+             select case when i % 2 = 0 then 'results.created' else 'log.chunk' end, 'bu', \
+               jsonb_build_object('n', i) from generate_series(1, $1::bigint) as i",
+        )
+        .bind(n)
+        .execute(&db.pool)
+    };
+    let mut launches = Vec::new();
+    for _ in 0..2 {
+        let l = launch(&s, "bu").await;
+        noise(12_000).await.unwrap();
+        let (st, _) = s
+            .post(
+                &format!("/api/v1/projects/bu/launches/{l}/finish"),
+                ADMIN_TOKEN,
+                json!({}),
+            )
+            .await;
+        assert!(st.is_success());
+        launches.push(l);
+    }
+    noise(3_000).await.unwrap();
+    let once = fastproof_server::analysis::run_once(&state).await.unwrap();
+    assert_eq!(
+        once,
+        fastproof_server::analysis::RunOnce {
+            consumed: Some(2),
+            processed: 2
+        }
+    );
+    for l in &launches {
+        let (st, a) = s
+            .get(
+                &format!("/api/v1/projects/bu/launches/{l}/analysis"),
+                ADMIN_TOKEN,
+            )
+            .await;
+        assert_eq!(st, StatusCode::OK);
+        assert_eq!(a["state"], "done", "{a}");
+    }
+}
+
 async fn put(s: &Server, body: Value) -> (StatusCode, Value) {
     s.call(
         Method::PUT,

@@ -1,4 +1,4 @@
-//! FastProof Analysis foundation on a real PostgreSQL: the upgrade to migration 1011, the
+//! FastProof Analysis foundation on a real PostgreSQL: the upgrade to migration 1012, the
 //! analysis replica gate, the decision journal with history and undo, the analysis queue and
 //! its outbox consumer, the rule hardening, the task kinds of the standard job, the defect-type
 //! clean-up, pruning and capabilities. They need `FASTPROOF_TEST_DATABASE_URL`; without it they
@@ -234,10 +234,18 @@ async fn upgrade_from_the_tm_level_keeps_data_and_queries() {
     .execute(&db.pool)
     .await
     .unwrap();
+    sqlx::query(
+        "insert into events (type, project, payload) values ('results.created', 'old', '{}'), \
+         ('launch.finished', 'old', jsonb_build_object('id', $1::uuid))",
+    )
+    .bind(lid)
+    .execute(&db.pool)
+    .await
+    .unwrap();
 
     let mut applied = fastproof_store::migrate(&db.pool).await.unwrap();
     applied.sort();
-    assert_eq!(applied, (1000..=1011).collect::<Vec<i64>>());
+    assert_eq!(applied, (1000..=1012).collect::<Vec<i64>>());
     fastproof_store::check_schema(&db.pool).await.unwrap();
     let (state, regressed): (String, i32) = sqlx::query_as(
         "select state, regressed_count from failure_fingerprints where project_id = $1",
@@ -262,7 +270,8 @@ async fn upgrade_from_the_tm_level_keeps_data_and_queries() {
     assert!(invalid.is_empty(), "{invalid:?}");
     let indexes: Vec<(String, bool)> = sqlx::query_as(
         "select c.relname::text, i.indisvalid from pg_index i join pg_class c on c.oid = i.indexrelid \
-         where c.relname in ('failure_fingerprints_state', 'failure_fingerprints_alias', 'launch_gates_history') order by 1",
+         where c.relname in ('failure_fingerprints_state', 'failure_fingerprints_alias', 'launch_gates_history', \
+           'events_launch_finished') order by 1",
     )
     .fetch_all(&db.pool)
     .await
@@ -270,6 +279,7 @@ async fn upgrade_from_the_tm_level_keeps_data_and_queries() {
     assert_eq!(
         indexes,
         vec![
+            ("events_launch_finished".to_string(), true),
             ("failure_fingerprints_alias".to_string(), true),
             ("failure_fingerprints_state".to_string(), true),
             ("launch_gates_history".to_string(), true)
@@ -1039,6 +1049,137 @@ async fn the_consumer_queues_finished_launches_and_workers_claim_them() {
         (AnalysisLaunchState::Queued, QueueReason::Recompute, 0, None)
     );
     assert!(row.due_at > Utc::now() + chrono::Duration::seconds(20));
+}
+
+/// Writes `n` outbox events that are not `launch.finished`, as the ingest of a launch does
+/// (results, log chunks).
+async fn other_events(db: &TestDb, key: &str, n: i64) {
+    sqlx::query(
+        "insert into events (type, project, payload) \
+         select case when i % 2 = 0 then 'results.created' else 'log.chunk' end, $1, \
+           jsonb_build_object('launchId', gen_random_uuid(), 'n', i) \
+         from generate_series(1, $2::bigint) as i",
+    )
+    .bind(key)
+    .bind(n)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+}
+
+async fn finished_event(db: &TestDb, key: &str, launch: Uuid) -> i64 {
+    let mut conn = db.pool.acquire().await.unwrap();
+    fastproof_store::events::emit(
+        &mut conn,
+        "launch.finished",
+        Some(key),
+        json!({"id": launch, "status": "finished"}),
+    )
+    .await
+    .unwrap();
+    sqlx::query_scalar("select max(id) from events where type = 'launch.finished'")
+        .fetch_one(&mut *conn)
+        .await
+        .unwrap()
+}
+
+async fn cursor_of(db: &TestDb, consumer: &str) -> i64 {
+    sqlx::query_scalar("select last_event_id from integration_cursors where name = $1")
+        .bind(consumer)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap()
+}
+
+/// A 5000-result launch writes about 10 000 outbox events. The consumers of finished launches
+/// (Analysis and the gates share one) read 500 rows per 2 s round; they used to read 500 events
+/// of any kind, so a launch finished behind a burst was queued minutes late. Now they read only
+/// `launch.finished` rows, through a partial index: one round queues every launch behind any
+/// burst, the cursor moves past it in order, and the noise is never read again.
+#[tokio::test]
+async fn a_burst_of_other_events_does_not_delay_finished_launches() {
+    let Some((db, store)) = TestDb::migrated().await else {
+        return;
+    };
+    let p = project(&store, "bu").await;
+    let analysis = |batch: i64| store.consume_analysis_launches("analysis", Duration::ZERO, batch);
+    let gates = |batch: i64| store.consume_finished_launches("integrations", Duration::ZERO, batch);
+    assert_eq!(analysis(500).await.unwrap(), Some(0));
+    assert_eq!(gates(500).await.unwrap(), Some(0));
+
+    let a = launch(&db, &p, "finished").await;
+    let b = launch(&db, &p, "finished").await;
+    other_events(&db, &p.key, 12_000).await;
+    finished_event(&db, &p.key, a.0).await;
+    other_events(&db, &p.key, 12_000).await;
+    let last = finished_event(&db, &p.key, b.0).await;
+    other_events(&db, &p.key, 3_000).await;
+
+    // One round each: the old read needed 49 rounds (24 002 events up to `b`, 500 a round),
+    // about 98 s at one round per 2 s.
+    assert_eq!(analysis(500).await.unwrap(), Some(2));
+    assert_eq!(gates(500).await.unwrap(), Some(2));
+    for l in [a.0, b.0] {
+        let row = store.analysis_launch_row(l).await.unwrap().unwrap();
+        assert_eq!(
+            (row.state, row.reason),
+            (AnalysisLaunchState::Queued, QueueReason::Finished)
+        );
+    }
+    let gated: i64 =
+        sqlx::query_scalar("select count(*) from launch_gates where launch_id = any($1)")
+            .bind(vec![a.0, b.0])
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(gated, 2);
+    assert_eq!(cursor_of(&db, "analysis").await, last);
+    assert_eq!(cursor_of(&db, "integrations").await, last);
+    assert_eq!(analysis(500).await.unwrap(), Some(0));
+    assert_eq!(gates(500).await.unwrap(), Some(0));
+    assert_eq!(
+        cursor_of(&db, "analysis").await,
+        last,
+        "noise does not move it"
+    );
+
+    // Rounds smaller than the backlog take the launches in event order, one round each.
+    let c = launch(&db, &p, "finished").await;
+    let d = launch(&db, &p, "finished").await;
+    other_events(&db, &p.key, 2_000).await;
+    let at_c = finished_event(&db, &p.key, c.0).await;
+    other_events(&db, &p.key, 2_000).await;
+    let at_d = finished_event(&db, &p.key, d.0).await;
+    assert_eq!(gates(1).await.unwrap(), Some(1));
+    assert_eq!(cursor_of(&db, "integrations").await, at_c);
+    let queued: Vec<Uuid> =
+        sqlx::query_scalar("select launch_id from launch_gates where launch_id = any($1)")
+            .bind(vec![c.0, d.0])
+            .fetch_all(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(queued, vec![c.0]);
+    assert_eq!(gates(1).await.unwrap(), Some(1));
+    assert_eq!(cursor_of(&db, "integrations").await, at_d);
+    assert_eq!(analysis(500).await.unwrap(), Some(2));
+
+    // The read goes through the partial index, not through every event after the cursor.
+    sqlx::query("analyze events")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let plan: serde_json::Value = sqlx::query_scalar(
+        "explain (format json) select id, payload->>'id' from events where id > 0 \
+         and type = 'launch.finished' and created_at < now() order by id limit 500",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert!(
+        plan.to_string()
+            .contains("\"Index Name\":\"events_launch_finished\""),
+        "{plan}"
+    );
 }
 
 #[tokio::test]

@@ -150,7 +150,8 @@ curl -fsS -X PUT "$api/settings" -H "$auth" -H 'Content-Type: application/json' 
 - With both set, a version is pruned only when it is beyond the newest `caseVersionsKeep` **and** older than
   `caseVersionsDays`; with one set, that one decides; with neither (both `0`), nothing is pruned.
 - Never pruned: the current version, the approved version of a case under
-  [review](workflows-and-review.md#version-review), the versions that run items (and their earlier executions) were run
+  [review](workflows-and-review.md#version-review) and the versions after it while a change waits for review,
+  the versions that run items (and their earlier executions) were run
   against, so manual runs always show the steps that were executed, a version replaced less than an hour ago
   (a launch being started may still record it), and on cases made from code the newest version that a person
   or an import wrote.

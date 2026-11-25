@@ -173,7 +173,10 @@ fn rule_missing(
         let fails = match g {
             WorkflowGuard::Approved => !facts.approved,
             WorkflowGuard::RequiredFields => !facts.required_ok,
-            WorkflowGuard::NotAuthor => facts.author.as_deref() == Some(by),
+            WorkflowGuard::NotAuthor => facts
+                .author
+                .as_deref()
+                .is_some_and(|a| super::review::same_principal(a, by)),
         };
         if fails {
             out.push(g.as_str().to_string());
@@ -231,6 +234,19 @@ pub async fn check_transition(
     cur: &CaseRow,
     to: CaseStatus,
 ) -> TmResult<Option<String>> {
+    check_transition_for(conn, ctx, cur, to, false).await
+}
+
+/// [`check_transition`] for a write that also changes content: when `needs_review` (the same
+/// write makes a head that waits for review), the `approved` guard fails, as the version that
+/// takes the new state is not approved.
+pub async fn check_transition_for(
+    conn: &mut PgConnection,
+    ctx: &CaseCtx<'_>,
+    cur: &CaseRow,
+    to: CaseStatus,
+    needs_review: bool,
+) -> TmResult<Option<String>> {
     let s = settings_of(conn, ctx.project_id).await?;
     let Some(w) = s.case_workflow.as_ref() else {
         return Ok(None);
@@ -249,7 +265,8 @@ pub async fn check_transition(
     let from = current_key(w, cur);
     let flow = flow_of(w, cur.automated);
     let (req, auth) = guard_needs(flow, from.as_deref().unwrap_or(""), None);
-    let facts = guard_facts(conn, ctx.project_id, cur, &s.case_review, req, auth).await?;
+    let mut facts = guard_facts(conn, ctx.project_id, cur, &s.case_review, req, auth).await?;
+    facts.approved &= !needs_review;
     let mut first: Option<(String, Vec<String>)> = None;
     for c in candidates {
         let m = missing(

@@ -458,7 +458,8 @@ pub async fn start_plan_launch(
             "run.start",
             Some(&p.key),
             serde_json::json!({"planId": id, "launchId": launch.id, "number": launch.number,
-                "externalId": launch.external_id, "runItems": started.run_items, "assign": body.assign}),
+                "externalId": launch.external_id, "runItems": started.run_items, "assign": body.assign,
+                "includeUnapproved": body.include_unapproved}),
         )
         .await;
     }

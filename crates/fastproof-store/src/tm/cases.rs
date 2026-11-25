@@ -901,6 +901,23 @@ pub async fn state_for_status(
     }
 }
 
+/// [`state_for_status`] for a write of new content `new`: a person's write that changes content
+/// needing review and the status at once does not pass an `approved` guard with the approval
+/// of the version it replaces.
+pub async fn state_for_write(
+    conn: &mut PgConnection,
+    ctx: &CaseCtx<'_>,
+    cur: &CaseRow,
+    new: &CaseSnapshot,
+    source: VersionSource,
+) -> TmResult<Option<String>> {
+    if new.status == cur.status || matches!(source, VersionSource::Code | VersionSource::Import) {
+        return state_for_status(conn, ctx, cur, new.status, source).await;
+    }
+    let pending = super::review::write_needs_review(conn, ctx.project_id, cur, new).await?;
+    super::workflow::check_transition_for(conn, ctx, cur, new.status, pending).await
+}
+
 /// Writes the workflow state of a locked case (same transaction as the change).
 pub async fn write_state(
     conn: &mut PgConnection,
@@ -1157,7 +1174,7 @@ pub async fn update_case_in(
             return Err(field_from_code(conflicts));
         }
     }
-    let state = state_for_status(conn, ctx, cur, snap.status, source).await?;
+    let state = state_for_write(conn, ctx, cur, &snap, source).await?;
     write_state(conn, cur.id, state.as_deref()).await?;
     let mut row = commit(
         conn,

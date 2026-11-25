@@ -1529,12 +1529,104 @@ async fn imports_need_review_unless_the_policy_bypasses_it() {
         "pending",
         "a person's edit still needs review"
     );
+    let edited = case(&s, "imb", n).await.body["version"].as_i64().unwrap();
     import(&s, "imb", "upsert").await;
     let c = case(&s, "imb", n).await.body;
-    assert_eq!(c["reviewState"], "approved", "{c}");
+    assert!(c["version"].as_i64().unwrap() > edited, "{c}");
     assert_eq!(
-        c["approvedVersion"], c["version"],
-        "an upsert with bypass approves its head"
+        (c["reviewState"].clone(), c["approvedVersion"].clone()),
+        (json!("pending"), json!(1)),
+        "an upsert with bypass does not approve the person's change waiting for review: {c}"
+    );
+}
+
+#[tokio::test]
+async fn later_versions_and_unapproved_starts_leave_a_trace() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let (s, _dir) = start(&db, &[]).await;
+    s.project("fe").await;
+    let erin = s.token("erin", "editor", &["fe"]).await;
+    let rita = s.token("rita", "editor", &["fe"]).await;
+    let ruth = s.token("ruth", "editor", &["fe"]).await;
+    assert_eq!(
+        put_settings(&s, "fe", review("manual", 1, false, "review"))
+            .await
+            .status,
+        StatusCode::OK
+    );
+    let c = create(
+        &s,
+        "fe",
+        &erin,
+        json!({"name": "Pay", "body": {"steps": [{"action": "Pay"}]}}),
+    )
+    .await;
+    let n = c["number"].as_i64().unwrap();
+    let r = patch(&s, "fe", n, &rita, json!({"tags": ["smoke"]})).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert_eq!(r.body["version"], 2);
+    let r = vote(&s, "fe", "cases", n, &erin, 2, "approve").await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN, "{}", r.body);
+    assert_eq!(
+        r.body["code"], "self_approval",
+        "rita's tag on top does not let erin approve her own steps"
+    );
+    let r = send(
+        &s,
+        Method::POST,
+        "/api/v1/projects/fe/reviews/bulk",
+        &erin,
+        None,
+        Some(
+            json!({"items": [{"kind": "case", "number": n, "version": 2}], "decision": "approve"}),
+        ),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert_eq!(r.body["skipped"][0]["code"], "self_approval", "{}", r.body);
+
+    let (st, plan) = s
+        .post(
+            "/api/v1/projects/fe/test-plans",
+            ADMIN_TOKEN,
+            json!({"kind": "managed", "name": "p", "caseNumbers": [n]}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{plan}");
+    let path = format!(
+        "/api/v1/projects/fe/test-plans/{}/launches",
+        plan["id"].as_str().unwrap()
+    );
+    let (st, b) = s
+        .post(
+            &path,
+            &ruth,
+            json!({"name": "run", "externalId": "u-1", "includeUnapproved": true}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{b}");
+    let launch = b["launch"]["id"].as_str().unwrap().to_string();
+    let (st, b) = s
+        .post(
+            &format!("/api/v1/projects/fe/launches/{launch}/run-items"),
+            &ruth,
+            json!({"caseNumbers": [n], "includeUnapproved": true}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{b}");
+    let items = audit_has(&s, &["run.start"]).await;
+    let starts: Vec<&Value> = items
+        .iter()
+        .filter(|i| i["action"] == "run.start" && i["scope"] == "fe")
+        .collect();
+    assert_eq!(starts.len(), 2, "{starts:?}");
+    assert!(
+        starts
+            .iter()
+            .all(|i| i["detail"]["includeUnapproved"] == true),
+        "starts with unapproved versions are audited as such: {starts:?}"
     );
 }
 

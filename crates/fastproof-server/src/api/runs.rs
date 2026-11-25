@@ -136,7 +136,8 @@ pub async fn add_run_items(
         &auth,
         "run.start",
         Some(&p.key),
-        serde_json::json!({"launchId": id, "planId": body.plan_id, "added": out.added, "skipped": out.skipped}),
+        serde_json::json!({"launchId": id, "planId": body.plan_id, "added": out.added, "skipped": out.skipped,
+            "includeUnapproved": body.include_unapproved}),
     )
     .await;
     Ok(Json(out))

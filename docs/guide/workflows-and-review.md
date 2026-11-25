@@ -78,7 +78,8 @@ Other ways of changing the status follow the same rules:
 
 - `PUT` and `PATCH` of a case and `setStatus` in [bulk changes](test-management.md#bulk-changes) move the
   case to the state whose key equals the new status, or else to the first state of that category the person may
-  move it to;
+  move it to; a `PUT` (or a version restore) that changes content needing review and the status at once does
+  not pass an `approved` guard, as the new head is not approved yet;
 - bulk `setState` (`{"action": "setState", "value": "active"}`) checks the transition to that exact state for
   every case; cases that may not move are listed in `skipped` with `invalid_transition`;
 - code sync, imports and new cases are system changes: they take the flow's `initial` state when it has the
@@ -124,7 +125,7 @@ workflow starts a job that clears every state. One remap per project runs at a t
 | `approvals` | 1 to 5 distinct people who approve a version |
 | `resetOn` | `content`: a change of the name, preconditions, steps or parameters needs a new review; `any`: every change except the status does |
 | `allowSelfApproval` | Whether the author of a version may approve it (for teams of one) |
-| `imports` | `review`: imported changes wait for review like any other; `bypass`: an import approves what it writes (audited with `reviewBypassed: true`) |
+| `imports` | `review`: imported changes wait for review like any other; `bypass`: an import approves what it writes (audited with `reviewBypassed: true`), except on a case or shared step that already waits for review: a person's change is never approved by an import |
 
 Save it in **Settings › Workflow** or with `PUT $api/settings` (`settings:write`).
 
@@ -139,15 +140,19 @@ Save it in **Settings › Workflow** or with `PUT $api/settings` (`settings:writ
   optional comment (up to 4000 bytes). A later vote of the same person on the same version replaces the earlier
   one. Any request for changes sets the head to `changes_requested` until a new version or until that person
   changes the vote; `approvals` distinct approvals make it `approved`.
-- The author of the head does not vote on it (403 `self_approval`) unless `allowSelfApproval`; the principal that
-  created an unreviewed AI draft never does (403 `ai_self_review`). AI agents have no `cases:review` and cannot
-  vote at all.
+- Nobody who wrote part of the change votes on it (403 `self_approval`) unless `allowSelfApproval`: not the
+  author of the head, nor the author of any version since the approved one that changed what needs review (a
+  tag or a transition someone else adds on top does not hand the review back to the author). Names compare
+  without case, so `Alice` and `alice` are one person and count as one approver. The principal that created an
+  unreviewed AI draft never votes on it (403 `ai_self_review`). AI agents have no `cases:review` and cannot vote
+  at all.
 
 Runs started from a plan or by adding cases take each case's **runnable** version: the head when review is off,
 when the case is out of scope (an automated case in `manual` mode), or when it was never changed under review;
 otherwise the approved version. Cases without one are skipped with `not_approved`; `includeUnapproved: true`
-runs the heads instead and needs `cases:review`. Shared steps follow the same rule. Version pruning never
-deletes the approved version.
+runs the heads instead, needs `cases:review` and is audited (`run.start` with `includeUnapproved: true`).
+Shared steps follow the same rule. Version pruning never deletes the approved version, nor the versions after
+it while a change waits for review.
 
 ### Review of one case
 

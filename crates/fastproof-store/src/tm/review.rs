@@ -44,6 +44,15 @@ pub const MAX_THREAD_VOTES: i64 = 200;
 pub const MAX_REQUEST_ITEMS: i64 = 10;
 /// Authors of new review requests read for the "never to the actor alone" rule, at most.
 pub const MAX_REQUEST_AUTHORS: i64 = 50;
+/// How far back the throttle of review requests looks for a notification's last delivery.
+pub const REQUEST_HORIZON: std::time::Duration = std::time::Duration::from_secs(25 * 3600);
+
+/// The smallest UUIDv7 of a time: deliveries (whose ids are UUIDv7) newer than it are read
+/// through the `(project_id, id)` index instead of every delivery of the project.
+fn v7_floor(t: DateTime<Utc>) -> Uuid {
+    uuid::Builder::from_unix_timestamp_millis(t.timestamp_millis().max(0) as u64, &[0; 10])
+        .into_uuid()
+}
 
 /// Content keys of a case that reset an approval with `resetOn: content`.
 pub const CONTENT_RESET_KEYS: &[&str] = &["name", "preconditions", "steps", "parameters"];
@@ -156,14 +165,24 @@ pub fn shared_change_counts(
     }
 }
 
-/// The review state and approved version of a head after a save (§7.3).
+/// The review state and approved version of a head after a save (§7.3). `bypass` (an import
+/// with `imports: bypass`) approves the new head only when nothing else waits for review: an
+/// import never approves earlier unreviewed changes of people along with its own.
 pub fn next_state(
     before: Option<(Option<ReviewState>, Option<i32>, i32)>,
     new_version: i32,
     relevant: bool,
     bypass: bool,
 ) -> (Option<ReviewState>, Option<i32>) {
-    if bypass {
+    let waiting = matches!(
+        before,
+        Some((
+            Some(ReviewState::Pending | ReviewState::ChangesRequested),
+            _,
+            _
+        ))
+    );
+    if bypass && !waiting {
         return (Some(ReviewState::Approved), Some(new_version));
     }
     let (state, approved, prev_version) = match before {
@@ -190,6 +209,29 @@ pub fn next_state(
             (Some(ReviewState::Pending), approved)
         }
     }
+}
+
+/// Whether writing `new` over the case `cur` makes a head that waits for review (the policy's
+/// scope and reset keys, code-owned keys of automated cases left out).
+pub async fn write_needs_review(
+    conn: &mut PgConnection,
+    project_id: Uuid,
+    cur: &CaseRow,
+    new: &CaseSnapshot,
+) -> TmResult<bool> {
+    let policy = review_settings(conn, project_id).await?;
+    if !policy.in_scope(cur.automated) {
+        return Ok(false);
+    }
+    let owned = if cur.automated {
+        code_owned_keys(conn, project_id).await?
+    } else {
+        Vec::new()
+    };
+    let before = snapshot_of(cur);
+    Ok(changed_keys(&before, new)
+        .iter()
+        .any(|k| case_key_counts(&policy, k, &owned, &before, new)))
 }
 
 /// After a case version was written: moves the review state of the head (§7.3). Nothing is
@@ -418,11 +460,18 @@ impl Refusal {
     }
 }
 
-/// The first rule a vote of `by` on `version` breaks, if any.
+/// Whether two principal names are the same principal (names compare without case: an
+/// identity provider or a token name may spell one principal in several ways).
+pub fn same_principal(a: &str, b: &str) -> bool {
+    a.to_lowercase() == b.to_lowercase()
+}
+
+/// The first rule a vote of `by` on `version` breaks, if any. `authors` are the authors (in
+/// lower case) of the change under review ([`change_authors`]).
 fn refusal(
     policy: &CaseReviewSettings,
     s: &Subject,
-    author: Option<&str>,
+    authors: &BTreeSet<String>,
     by: &str,
     version: i32,
 ) -> Option<Refusal> {
@@ -442,13 +491,85 @@ fn refusal(
     ) {
         return Some(Refusal::NotPending);
     }
-    if s.ai_draft_by.as_deref() == Some(by) {
+    if s.ai_draft_by
+        .as_deref()
+        .is_some_and(|a| same_principal(a, by))
+    {
         return Some(Refusal::AiSelfReview);
     }
-    if !policy.allow_self_approval && author == Some(by) {
+    if !policy.allow_self_approval && authors.contains(&by.to_lowercase()) {
         return Some(Refusal::SelfApproval);
     }
     None
+}
+
+/// The version keys whose change makes the author of a version an author of the change under
+/// review (`None`: every change counts): the keys that reset an approval under the policy.
+fn authored_keys(policy: &CaseReviewSettings, kind: ReviewKind) -> Option<Vec<String>> {
+    let keys: &[&str] = match (policy.reset_on, kind) {
+        (ReviewResetOn::Content, ReviewKind::Case) => CONTENT_RESET_KEYS,
+        (ReviewResetOn::Content, ReviewKind::SharedStep) => SHARED_CONTENT_RESET_KEYS,
+        (ReviewResetOn::Any, ReviewKind::Case) => super::versions::CONTENT_KEYS,
+        (ReviewResetOn::Any, ReviewKind::SharedStep) => return None,
+    };
+    Some(
+        keys.iter()
+            .filter(|k| **k != "status")
+            .map(|k| k.to_string())
+            .collect(),
+    )
+}
+
+/// The lowest version (exclusive) whose author wrote part of the change under review: the
+/// approved version, else none; the head always counts.
+fn change_floor(s: &Subject) -> i32 {
+    s.approved_version.unwrap_or(0).min(s.version - 1)
+}
+
+/// The authors (in lower case) of the change under review of each subject: who wrote the head
+/// and every version after the approved one that changed keys [`authored_keys`] names. A
+/// person who made any part of the change does not approve it, even when someone else wrote a
+/// later version (a tag, a transition, a remap) on top.
+async fn change_authors(
+    conn: &mut PgConnection,
+    policy: &CaseReviewSettings,
+    kind: ReviewKind,
+    subjects: &[Subject],
+) -> sqlx::Result<HashMap<Uuid, BTreeSet<String>>> {
+    let mut out: HashMap<Uuid, BTreeSet<String>> = HashMap::new();
+    if subjects.is_empty() {
+        return Ok(out);
+    }
+    let ids: Vec<Uuid> = subjects.iter().map(|s| s.id).collect();
+    let floors: Vec<i32> = subjects.iter().map(change_floor).collect();
+    let heads: Vec<i32> = subjects.iter().map(|s| s.version).collect();
+    let (table, col) = versions_table(kind);
+    let rows: Vec<(Uuid, String)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "select v.{col}, lower(v.created_by) from {table} v \
+         join unnest($1::uuid[], $2::int[], $3::int[]) as h(id, lo, hi) \
+           on v.{col} = h.id and v.version > h.lo and v.version <= h.hi \
+         where v.version = h.hi or $4::text[] is null or cardinality(v.changed) = 0 \
+           or v.changed && $4::text[] \
+         group by 1, 2"
+    )))
+    .bind(&ids)
+    .bind(&floors)
+    .bind(&heads)
+    .bind(authored_keys(policy, kind))
+    .fetch_all(&mut *conn)
+    .await?;
+    for (id, a) in rows {
+        out.entry(id).or_default().insert(a);
+    }
+    Ok(out)
+}
+
+/// The version table of a kind and its object column.
+fn versions_table(kind: ReviewKind) -> (&'static str, &'static str) {
+    match kind {
+        ReviewKind::Case => ("case_versions", "case_id"),
+        ReviewKind::SharedStep => ("shared_step_versions", "shared_step_id"),
+    }
 }
 
 /// The state the votes on a head give it.
@@ -578,7 +699,8 @@ async fn authors(
     Ok(rows.into_iter().collect())
 }
 
-/// Votes on heads: object id → reviewer → decision.
+/// Votes on heads: object id → reviewer (in lower case: one principal counts once however it
+/// is spelled, its request for changes winning) → decision.
 async fn head_votes(
     conn: &mut PgConnection,
     kind: ReviewKind,
@@ -601,7 +723,14 @@ async fn head_votes(
     .await?;
     for (id, reviewer, d) in rows {
         if let Some(d) = ReviewDecision::parse(&d) {
-            out.entry(id).or_default().insert(reviewer, d);
+            let e = out
+                .entry(id)
+                .or_default()
+                .entry(reviewer.to_lowercase())
+                .or_insert(d);
+            if d == ReviewDecision::RequestChanges {
+                *e = d;
+            }
         }
     }
     Ok(out)
@@ -838,25 +967,37 @@ fn push_queue_filters(
             ));
         }
     }
+    let me = me.to_lowercase();
     if q.author_me {
-        qb.push(" and v.created_by = ").push_bind(me.to_string());
+        qb.push(" and lower(v.created_by) = ").push_bind(me.clone());
     }
     if q.reviewer_me {
         qb.push(format!(
             " and not exists (select 1 from review_votes rv where rv.kind = '{}' \
-             and rv.object_id = {alias}.id and rv.version = {alias}.version and rv.reviewer = ",
+             and rv.object_id = {alias}.id and rv.version = {alias}.version and lower(rv.reviewer) = ",
             kind.as_str()
         ))
-        .push_bind(me.to_string())
+        .push_bind(me.clone())
         .push(")");
         if !policy.allow_self_approval {
-            qb.push(" and v.created_by is distinct from ")
-                .push_bind(me.to_string());
+            let (table, col) = versions_table(kind);
+            qb.push(format!(
+                " and not exists (select 1 from {table} av where av.{col} = {alias}.id \
+                 and av.version > least(coalesce({alias}.approved_version, 0), {alias}.version - 1) \
+                 and av.version <= {alias}.version and lower(av.created_by) = "
+            ))
+            .push_bind(me.clone())
+            .push(" and (av.version = ")
+            .push(format!("{alias}.version or "))
+            .push_bind(authored_keys(policy, kind))
+            .push("::text[] is null or cardinality(av.changed) = 0 or av.changed && ")
+            .push_bind(authored_keys(policy, kind))
+            .push("::text[]))");
         }
         qb.push(format!(
-            " and not ({alias}.origin = 'ai' and {alias}.ai_unreviewed and {alias}.created_by is not distinct from "
+            " and not ({alias}.origin = 'ai' and {alias}.ai_unreviewed and lower({alias}.created_by) is not distinct from "
         ))
-        .push_bind(me.to_string())
+        .push_bind(me)
         .push(")");
     }
     if let Some((t, id)) = cursor {
@@ -947,6 +1088,10 @@ impl Store {
         let author = authors(&mut conn, kind, &[(s.id, s.version)])
             .await?
             .remove(&s.id);
+        let changed_by = change_authors(&mut conn, &policy, kind, std::slice::from_ref(&s))
+            .await?
+            .remove(&s.id)
+            .unwrap_or_default();
         let rows: Vec<(String, String, String, i32, DateTime<Utc>)> = sqlx::query_as(
             "select reviewer, decision, comment, version, created_at from review_votes \
              where kind = $1 and object_id = $2 order by created_at desc, reviewer limit $3",
@@ -968,17 +1113,17 @@ impl Store {
                 })
             })
             .collect();
-        let approvals: i64 = sqlx::query_scalar(
-            "select count(*) from review_votes where kind = $1 and object_id = $2 and version = $3 \
-             and decision = 'approve'",
-        )
-        .bind(kind.as_str())
-        .bind(s.id)
-        .bind(s.version)
-        .fetch_one(&mut *conn)
-        .await?;
+        let approvals = head_votes(&mut conn, kind, &[(s.id, s.version)])
+            .await?
+            .remove(&s.id)
+            .map(|v| {
+                v.values()
+                    .filter(|d| **d == ReviewDecision::Approve)
+                    .count() as i64
+            })
+            .unwrap_or(0);
         let why_not = if can_review {
-            refusal(&policy, &s, author.as_deref(), me, s.version).map(|r| r.code().to_string())
+            refusal(&policy, &s, &changed_by, me, s.version).map(|r| r.code().to_string())
         } else {
             Some("permission".to_string())
         };
@@ -1031,10 +1176,11 @@ impl Store {
         let mut tx = self.pool.begin().await?;
         let policy = review_settings(&mut tx, ctx.project_id).await?;
         let s = lock_subject(&mut tx, ctx.project_id, kind, n, Some(expected)).await?;
-        let author = authors(&mut tx, kind, &[(s.id, s.version)])
+        let changed_by = change_authors(&mut tx, &policy, kind, std::slice::from_ref(&s))
             .await?
-            .remove(&s.id);
-        if let Some(r) = refusal(&policy, &s, author.as_deref(), ctx.by, w.version) {
+            .remove(&s.id)
+            .unwrap_or_default();
+        if let Some(r) = refusal(&policy, &s, &changed_by, ctx.by, w.version) {
             return Err(r.error());
         }
         apply_votes(
@@ -1123,8 +1269,8 @@ impl Store {
             };
             let by_number: HashMap<i64, &Subject> =
                 subjects.iter().map(|s| (s.number, s)).collect();
-            let heads: Vec<(Uuid, i32)> = subjects.iter().map(|s| (s.id, s.version)).collect();
-            let author_of = authors(&mut tx, kind, &heads).await?;
+            let author_of = change_authors(&mut tx, &policy, kind, &subjects).await?;
+            let none = BTreeSet::new();
             let mut ok: Vec<Subject> = Vec::new();
             for i in items.iter().filter(|i| i.kind == kind) {
                 let Some(s) = by_number.get(&i.number) else {
@@ -1134,7 +1280,7 @@ impl Store {
                 match refusal(
                     &policy,
                     s,
-                    author_of.get(&s.id).map(String::as_str),
+                    author_of.get(&s.id).unwrap_or(&none),
                     ctx.by,
                     i.version,
                 ) {
@@ -1354,7 +1500,8 @@ impl Store {
         .await?)
     }
 
-    /// When the last `caseReviewRequested` delivery of a notification was queued.
+    /// When the last `caseReviewRequested` delivery of a notification was queued, within
+    /// [`REQUEST_HORIZON`].
     pub async fn last_review_delivery(
         &self,
         project_id: Uuid,
@@ -1362,10 +1509,13 @@ impl Store {
     ) -> anyhow::Result<Option<DateTime<Utc>>> {
         Ok(sqlx::query_scalar(
             "select max(created_at) from integration_deliveries where project_id = $1 \
-             and target_id = $2 and events @> array['caseReviewRequested']",
+             and id >= $3 and target_id = $2 and events @> array['caseReviewRequested']",
         )
         .bind(project_id)
         .bind(no_nul(target_id))
+        .bind(v7_floor(
+            Utc::now() - chrono::Duration::from_std(REQUEST_HORIZON).unwrap_or_default(),
+        ))
         .fetch_one(&self.pool)
         .await?)
     }
@@ -1391,12 +1541,16 @@ impl Store {
         .execute(&mut *tx)
         .await?;
         let recent: bool = sqlx::query_scalar(
-            "select exists (select 1 from integration_deliveries where project_id = $1 and target_id = $2 \
-             and events @> array['caseReviewRequested'] and created_at > now() - make_interval(secs => $3))",
+            "select exists (select 1 from integration_deliveries where project_id = $1 and id >= $4 \
+             and target_id = $2 and events @> array['caseReviewRequested'] \
+             and created_at > now() - make_interval(secs => $3))",
         )
         .bind(project_id)
         .bind(no_nul(target_id))
         .bind(throttle.as_secs_f64())
+        .bind(v7_floor(
+            Utc::now() - chrono::Duration::from_std(throttle * 2).unwrap_or_default(),
+        ))
         .fetch_one(&mut *tx)
         .await?;
         if recent {
@@ -1454,6 +1608,19 @@ mod tests {
         );
         assert_eq!(
             next_state(Some((Some(Pending), Some(2), 5)), 6, false, true),
+            (Some(Pending), Some(2)),
+            "an import does not approve changes that wait for review"
+        );
+        assert_eq!(
+            next_state(Some((Some(ChangesRequested), Some(2), 5)), 6, true, true),
+            (Some(Pending), Some(2))
+        );
+        assert_eq!(
+            next_state(Some((Some(Approved), Some(5), 5)), 6, true, true),
+            (Some(Approved), Some(6))
+        );
+        assert_eq!(
+            next_state(Some((None, None, 5)), 6, true, true),
             (Some(Approved), Some(6))
         );
     }
@@ -1469,6 +1636,14 @@ mod tests {
         assert_eq!(decide(&v, 1), ReviewState::ChangesRequested);
         v.insert("b".to_string(), ReviewDecision::Approve);
         assert_eq!(decide(&v, 2), ReviewState::Approved, "a vote is replaced");
+    }
+
+    #[test]
+    fn v7_floors_order_before_ids_of_their_time() {
+        let t = Utc::now() - chrono::Duration::hours(25);
+        assert!(v7_floor(t) <= Uuid::now_v7());
+        assert!(v7_floor(t) > v7_floor(t - chrono::Duration::seconds(1)));
+        assert_eq!(v7_floor(t).get_version_num(), 7);
     }
 
     #[test]

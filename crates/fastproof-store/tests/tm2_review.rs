@@ -509,18 +509,351 @@ async fn pruning_keeps_the_approved_version() {
     .execute(&db.pool)
     .await
     .unwrap();
-    let n = store
-        .prune_case_versions(std::time::Duration::from_secs(30), 100, 0)
+    let prune = || async {
+        sqlx::query(
+            "update case_versions set created_at = now() - interval '2 days' where case_id = $1",
+        )
+        .bind(c.id)
+        .execute(&db.pool)
         .await
         .unwrap();
-    assert_eq!(n, 2, "v2 and v3 go");
-    let left: Vec<i32> =
-        sqlx::query_scalar("select version from case_versions where case_id = $1 order by version")
-            .bind(c.id)
-            .fetch_all(&db.pool)
+        store
+            .prune_case_versions(std::time::Duration::from_secs(30), 100, 0)
+            .await
+            .unwrap()
+    };
+    let left = || async {
+        sqlx::query_scalar::<_, i32>(
+            "select version from case_versions where case_id = $1 order by version",
+        )
+        .bind(c.id)
+        .fetch_all(&db.pool)
+        .await
+        .unwrap()
+    };
+    assert_eq!(
+        prune().await,
+        0,
+        "the versions of a change waiting for review stay (their authors may not approve it)"
+    );
+    assert_eq!(left().await, vec![1, 2, 3, 4]);
+    store
+        .vote(
+            &ctx(&p, "bob", &limits, true),
+            ReviewKind::Case,
+            c.number,
+            cur.revision,
+            &ReviewVoteWrite {
+                version: 4,
+                decision: ReviewDecision::Approve,
+                comment: None,
+            },
+        )
+        .await
+        .unwrap();
+    let cur = store.case_view(p.id, c.number).await.unwrap();
+    store
+        .update_case(
+            &alice,
+            c.number,
+            cur.revision,
+            &CaseWrite {
+                name: "v5".into(),
+                ..Default::default()
+            },
+            true,
+        )
+        .await
+        .unwrap();
+    assert_eq!(prune().await, 3, "v1 to v3 go once v4 is approved");
+    assert_eq!(
+        left().await,
+        vec![4, 5],
+        "the approved version stays runnable"
+    );
+}
+
+/// Four eyes (TM next §7.3, security review): whoever wrote part of the change under review
+/// does not approve it, even when someone else wrote a later version on top; names compare
+/// without case; an import with `imports: bypass` approves only its own change; a write that
+/// changes content and status at once does not pass the `approved` guard with the old head's
+/// approval.
+#[tokio::test]
+async fn four_eyes_hold_across_versions_names_imports_and_guards() {
+    let Some((_db, store)) = TestDb::migrated().await else {
+        return;
+    };
+    let p = project(&store, "fe").await;
+    let limits = TmLimits::default();
+    let alice = ctx(&p, "alice", &limits, true);
+    let bob = ctx(&p, "bob", &limits, true);
+    let carol = ctx(&p, "carol", &limits, true);
+    let mut s = ProjectSettings {
+        case_review: policy(ReviewResetOn::Content),
+        ..Default::default()
+    };
+    store.put_project_settings(p.id, &s).await.unwrap();
+    let approve = |version: i32| ReviewVoteWrite {
+        version,
+        decision: ReviewDecision::Approve,
+        comment: None,
+    };
+    let code = |e: TmError| match e {
+        TmError::Forbidden { code, .. } | TmError::Conflict { code, .. } => code,
+        other => panic!("unexpected {other:?}"),
+    };
+
+    let c = store
+        .create_case(
+            &alice,
+            &CaseWrite {
+                name: "Pay".into(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let (_, tagged) = store
+        .patch_case(
+            &bob,
+            c.number,
+            c.revision,
+            &CasePatch {
+                tags: Some(vec!["smoke".into()]),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        (tagged.version, tagged.review_state),
+        (2, Some(ReviewState::Pending))
+    );
+    let e = store
+        .vote(
+            &alice,
+            ReviewKind::Case,
+            c.number,
+            tagged.revision,
+            &approve(2),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        code(e),
+        "self_approval",
+        "alice wrote v1 under review although bob wrote the head"
+    );
+    let e = store
+        .vote(
+            &ctx(&p, "ALICE", &limits, true),
+            ReviewKind::Case,
+            c.number,
+            tagged.revision,
+            &approve(2),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(code(e), "self_approval", "names compare without case");
+    let r = store
+        .bulk_review(
+            &alice,
+            &tm::ReviewBulk {
+                items: vec![tm::ReviewBulkItem {
+                    kind: ReviewKind::Case,
+                    number: c.number,
+                    version: 2,
+                }],
+                decision: ReviewDecision::Approve,
+                comment: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        (r.applied, r.skipped[0].code.as_str()),
+        (0, "self_approval")
+    );
+    let q = tm::review::ReviewQueueQuery {
+        reviewer_me: true,
+        limit: 50,
+        ..Default::default()
+    };
+    let mine = store.review_queue(p.id, &q, "Alice", true).await.unwrap();
+    assert!(mine.items.is_empty(), "not in alice's queue: {mine:?}");
+    let t = store
+        .review_thread(p.id, ReviewKind::Case, c.number, "alice", true)
+        .await
+        .unwrap();
+    assert_eq!(t.why_not.as_deref(), Some("self_approval"));
+    let theirs = store.review_queue(p.id, &q, "carol", true).await.unwrap();
+    assert_eq!(theirs.items.len(), 1);
+    let e = store
+        .vote(
+            &bob,
+            ReviewKind::Case,
+            c.number,
+            tagged.revision,
+            &approve(2),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(code(e), "self_approval", "bob wrote the head");
+    let (t, _) = store
+        .vote(
+            &carol,
+            ReviewKind::Case,
+            c.number,
+            tagged.revision,
+            &approve(2),
+        )
+        .await
+        .unwrap();
+    assert_eq!(t.review_state, Some(ReviewState::Approved));
+
+    s.case_review.approvals = 2;
+    store.put_project_settings(p.id, &s).await.unwrap();
+    let d = store
+        .create_case(
+            &alice,
+            &CaseWrite {
+                name: "Refund".into(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let (_, rev) = store
+        .vote(&carol, ReviewKind::Case, d.number, d.revision, &approve(1))
+        .await
+        .unwrap();
+    let (t, _) = store
+        .vote(
+            &ctx(&p, "Carol", &limits, true),
+            ReviewKind::Case,
+            d.number,
+            rev,
+            &approve(1),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        (t.review_state, t.approvals),
+        (Some(ReviewState::Pending), 1),
+        "carol and Carol are one approver"
+    );
+
+    s.case_review.approvals = 1;
+    s.case_review.imports = ReviewImports::Bypass;
+    store.put_project_settings(p.id, &s).await.unwrap();
+    let cur = store.case_view(p.id, c.number).await.unwrap();
+    let (_, edited) = store
+        .update_case(
+            &alice,
+            c.number,
+            cur.revision,
+            &CaseWrite {
+                name: "Pay twice".into(),
+                ..Default::default()
+            },
+            true,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        (edited.review_state, edited.approved_version),
+        (Some(ReviewState::Pending), Some(2))
+    );
+    let import = ctx(&p, "importer", &limits, false);
+    let imported = {
+        let mut tx = store.pool().begin().await.unwrap();
+        let cur = tm::cases::lock_case_by_number(&mut tx, p.id, c.number, None)
             .await
             .unwrap();
-    assert_eq!(left, vec![1, 4], "the approved version stays runnable");
+        let w = CaseWrite {
+            name: cur.name.clone(),
+            folder_id: cur.folder_id,
+            status: Some(cur.status),
+            body: Some(cur.body.clone()),
+            fields: Some(cur.fields.clone()),
+            tags: Some(vec!["imported".into()]),
+        };
+        let row = tm::cases::update_case_in(&mut tx, &import, &cur, &w, VersionSource::Import)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        row
+    };
+    assert_eq!(imported.version, edited.version + 1);
+    assert_eq!(
+        (imported.review_state, imported.approved_version),
+        (Some(ReviewState::Pending), Some(2)),
+        "the import does not approve alice's waiting change"
+    );
+
+    s.case_review.imports = ReviewImports::Review;
+    s.case_workflow = Some(CaseWorkflowSettings::default());
+    store.put_project_settings(p.id, &s).await.unwrap();
+    let w = store
+        .create_case(
+            &alice,
+            &CaseWrite {
+                name: "Ship".into(),
+                status: Some(tm::CaseStatus::Draft),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let (_, rev) = store
+        .vote(&bob, ReviewKind::Case, w.number, w.revision, &approve(1))
+        .await
+        .unwrap();
+    let (_, ready) = store
+        .transition_case(&alice, w.number, rev, "ready_for_review")
+        .await
+        .unwrap();
+    let e = store
+        .update_case(
+            &alice,
+            w.number,
+            ready.revision,
+            &CaseWrite {
+                name: "Ship anything".into(),
+                status: Some(tm::CaseStatus::Active),
+                ..Default::default()
+            },
+            true,
+        )
+        .await
+        .unwrap_err();
+    match e {
+        TmError::Conflict { code, details, .. } => {
+            assert_eq!(code, "invalid_transition");
+            assert_eq!(details.unwrap()["missing"], serde_json::json!(["approved"]));
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+    let cur = store.case_view(p.id, w.number).await.unwrap();
+    let (_, active) = store
+        .update_case(
+            &alice,
+            w.number,
+            cur.revision,
+            &CaseWrite {
+                name: "Ship".into(),
+                status: Some(tm::CaseStatus::Active),
+                ..Default::default()
+            },
+            true,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        (active.state.as_deref(), active.review_state),
+        (Some("active"), Some(ReviewState::Approved)),
+        "the status alone passes with the approved head"
+    );
 }
 
 /// §14 targets at 20k cases with 5k waiting for review: the queue of 50 < 150 ms p95 and a bulk

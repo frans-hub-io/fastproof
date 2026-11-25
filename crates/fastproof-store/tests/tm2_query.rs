@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use fastproof_store::projects::CreateProject;
 use fastproof_store::tm::cases::{CaseCtx, CaseQuery};
+use fastproof_store::tm::query::QueryCtx;
 use fastproof_store::tm::{
     self, CaseBody, CaseBulk, CaseBulkAction, CaseFilter, CaseStatus, QueryEntity, ResultSource,
     SavedQueryPatch, SavedQueryWrite, TestPlanWrite, TmError, TmLimits,
@@ -240,12 +241,22 @@ async fn numbers(store: &Store, pid: Uuid, query: &str, me: &str) -> Result<Vec<
             &CaseQuery {
                 query: Some(query.to_string()),
                 me: me.to_string(),
+                owner: if me.is_empty() {
+                    String::new()
+                } else {
+                    format!("user:{me}")
+                },
                 limit: 100,
                 ..Default::default()
             },
         )
         .await?;
     Ok(l.items.iter().map(|c| c.number).collect())
+}
+
+/// A signed-in user as a query caller.
+fn who(name: &str) -> QueryCtx {
+    QueryCtx::caller(name, &format!("user:{name}"))
 }
 
 fn query_error(e: TmError) -> tm::QueryError {
@@ -269,7 +280,7 @@ async fn every_case_attribute_against_a_seeded_project() {
     let smoke = store
         .create_saved_query(
             pid,
-            "alice",
+            &who("alice"),
             true,
             &SavedQueryWrite {
                 entity: QueryEntity::Cases,
@@ -567,7 +578,7 @@ async fn queries_stop_after_five_seconds() {
         "{took:?}"
     );
     let r = store
-        .validate_query(p.id, QueryEntity::Cases, "name ~ \"slow\"", "alice")
+        .validate_query(p.id, QueryEntity::Cases, "name ~ \"slow\"", &who("alice"))
         .await
         .unwrap();
     assert!(!r.ok && r.error.unwrap().message.contains("5s"));
@@ -594,30 +605,35 @@ async fn validation_counts_up_to_the_cap() {
     )
     .await;
     let v = store
-        .validate_query(p.id, QueryEntity::Cases, "Name ~ 'bulk'", "alice")
+        .validate_query(p.id, QueryEntity::Cases, "Name ~ 'bulk'", &who("alice"))
         .await
         .unwrap();
     assert!(v.ok);
     assert_eq!(v.normalized.as_deref(), Some("name ~ \"bulk\""));
     assert_eq!((v.count, v.count_capped), (Some(10_000), Some(true)));
     let v = store
-        .validate_query(p.id, QueryEntity::Cases, "number <= 12", "alice")
+        .validate_query(p.id, QueryEntity::Cases, "number <= 12", &who("alice"))
         .await
         .unwrap();
     assert_eq!((v.count, v.count_capped), (Some(12), Some(false)));
     let v = store
-        .validate_query(p.id, QueryEntity::Cases, "number <= ", "alice")
+        .validate_query(p.id, QueryEntity::Cases, "number <= ", &who("alice"))
         .await
         .unwrap();
     assert!(!v.ok && v.normalized.is_none());
     assert_eq!(v.error.unwrap().position, 10);
     let v = store
-        .validate_query(p.id, QueryEntity::Cases, "folder = \"x\"", "alice")
+        .validate_query(p.id, QueryEntity::Cases, "folder = \"x\"", &who("alice"))
         .await
         .unwrap();
     assert_eq!(v.error.unwrap().message, "unknown folder \"x\"");
     let e = store
-        .validate_query(p.id, QueryEntity::Requirements, "title ~ \"abc\"", "alice")
+        .validate_query(
+            p.id,
+            QueryEntity::Requirements,
+            "title ~ \"abc\"",
+            &who("alice"),
+        )
         .await
         .unwrap_err();
     assert!(e.to_string().contains("not available"), "{e}");
@@ -662,7 +678,7 @@ async fn saved_queries_visibility_sharing_cycles_and_limits() {
     let mine = store
         .create_saved_query(
             pid,
-            "alice",
+            &who("alice"),
             false,
             &w("Mine", "automated = true", false),
             &limits,
@@ -673,7 +689,7 @@ async fn saved_queries_visibility_sharing_cycles_and_limits() {
     let e = store
         .create_saved_query(
             pid,
-            "alice",
+            &who("alice"),
             false,
             &w("Team", "tag = smoke", true),
             &limits,
@@ -682,12 +698,24 @@ async fn saved_queries_visibility_sharing_cycles_and_limits() {
         .unwrap_err();
     assert!(matches!(e, TmError::Forbidden { .. }), "{e}");
     let team = store
-        .create_saved_query(pid, "alice", true, &w("Team", "tag = smoke", true), &limits)
+        .create_saved_query(
+            pid,
+            &who("alice"),
+            true,
+            &w("Team", "tag = smoke", true),
+            &limits,
+        )
         .await
         .unwrap();
     assert_eq!(team.position, 1);
     let e = store
-        .create_saved_query(pid, "alice", true, &w("Team", "tag = ui", false), &limits)
+        .create_saved_query(
+            pid,
+            &who("alice"),
+            true,
+            &w("Team", "tag = ui", false),
+            &limits,
+        )
         .await
         .unwrap_err();
     assert!(
@@ -701,7 +729,13 @@ async fn saved_queries_visibility_sharing_cycles_and_limits() {
         "{e}"
     );
     let e = store
-        .create_saved_query(pid, "alice", true, &w("Bad", "tag ~ a", false), &limits)
+        .create_saved_query(
+            pid,
+            &who("alice"),
+            true,
+            &w("Bad", "tag ~ a", false),
+            &limits,
+        )
         .await
         .unwrap_err();
     assert!(
@@ -720,7 +754,7 @@ async fn saved_queries_visibility_sharing_cycles_and_limits() {
     assert_eq!(
         names(
             store
-                .list_saved_queries(pid, QueryEntity::Cases, "bob")
+                .list_saved_queries(pid, QueryEntity::Cases, &who("bob"))
                 .await
                 .unwrap()
         ),
@@ -729,7 +763,7 @@ async fn saved_queries_visibility_sharing_cycles_and_limits() {
     assert_eq!(
         names(
             store
-                .list_saved_queries(pid, QueryEntity::Cases, "alice")
+                .list_saved_queries(pid, QueryEntity::Cases, &who("alice"))
                 .await
                 .unwrap()
         ),
@@ -740,7 +774,7 @@ async fn saved_queries_visibility_sharing_cycles_and_limits() {
             .update_saved_query(
                 pid,
                 mine.id,
-                "bob",
+                &who("bob"),
                 can_write,
                 &SavedQueryPatch::default(),
                 &limits,
@@ -749,7 +783,7 @@ async fn saved_queries_visibility_sharing_cycles_and_limits() {
             .unwrap_err();
         assert!(matches!(e, TmError::NotFound(_)), "{e}");
         let e = store
-            .delete_saved_query(pid, mine.id, "bob", can_write)
+            .delete_saved_query(pid, mine.id, &who("bob"), can_write)
             .await
             .unwrap_err();
         assert!(matches!(e, TmError::NotFound(_)), "{e}");
@@ -758,7 +792,7 @@ async fn saved_queries_visibility_sharing_cycles_and_limits() {
         .update_saved_query(
             pid,
             mine.id,
-            "alice",
+            &who("alice"),
             false,
             &SavedQueryPatch::default(),
             &limits,
@@ -780,17 +814,17 @@ async fn saved_queries_visibility_sharing_cycles_and_limits() {
         ..Default::default()
     };
     let e = store
-        .update_saved_query(pid, team.id, "bob", false, &patch, &limits)
+        .update_saved_query(pid, team.id, &who("bob"), false, &patch, &limits)
         .await
         .unwrap_err();
     assert!(matches!(e, TmError::Forbidden { .. }), "{e}");
     let e = store
-        .delete_saved_query(pid, team.id, "bob", false)
+        .delete_saved_query(pid, team.id, &who("bob"), false)
         .await
         .unwrap_err();
     assert!(matches!(e, TmError::Forbidden { .. }), "{e}");
     let (before, after) = store
-        .update_saved_query(pid, team.id, "bob", true, &patch, &limits)
+        .update_saved_query(pid, team.id, &who("bob"), true, &patch, &limits)
         .await
         .unwrap();
     assert_eq!(
@@ -802,7 +836,7 @@ async fn saved_queries_visibility_sharing_cycles_and_limits() {
         .update_saved_query(
             pid,
             team.id,
-            "bob",
+            &who("bob"),
             true,
             &SavedQueryPatch {
                 shared: Some(false),
@@ -825,7 +859,7 @@ async fn saved_queries_visibility_sharing_cycles_and_limits() {
     let a = store
         .create_saved_query(
             pid,
-            "carol",
+            &who("carol"),
             false,
             &w("A", "filter = Team and automated = true", false),
             &limits,
@@ -839,7 +873,7 @@ async fn saved_queries_visibility_sharing_cycles_and_limits() {
     let b = store
         .create_saved_query(
             pid,
-            "carol",
+            &who("carol"),
             false,
             &w("B", "filter = A or number = 5", false),
             &limits,
@@ -854,7 +888,7 @@ async fn saved_queries_visibility_sharing_cycles_and_limits() {
         .update_saved_query(
             pid,
             a.id,
-            "carol",
+            &who("carol"),
             false,
             &SavedQueryPatch {
                 query: Some("filter = B".into()),
@@ -886,7 +920,7 @@ async fn saved_queries_visibility_sharing_cycles_and_limits() {
     store
         .create_saved_query(
             pid,
-            "carol",
+            &who("carol"),
             false,
             &w("Wide", &format!("number in [{wide}]"), false),
             &TmLimits::default(),
@@ -915,7 +949,7 @@ async fn saved_queries_visibility_sharing_cycles_and_limits() {
     store
         .create_saved_query(
             pid,
-            "alice",
+            &who("alice"),
             false,
             &w("Third", "number = 1", false),
             &limits,
@@ -925,7 +959,7 @@ async fn saved_queries_visibility_sharing_cycles_and_limits() {
     let e = store
         .create_saved_query(
             pid,
-            "alice",
+            &who("alice"),
             false,
             &w("Fourth", "number = 1", false),
             &limits,
@@ -947,11 +981,11 @@ async fn saved_queries_visibility_sharing_cycles_and_limits() {
         ..Default::default()
     };
     store
-        .create_saved_query(pid, "dave", true, &w("S2", "number = 1", true), &one)
+        .create_saved_query(pid, &who("dave"), true, &w("S2", "number = 1", true), &one)
         .await
         .unwrap();
     let e = store
-        .create_saved_query(pid, "erin", true, &w("S3", "number = 1", true), &one)
+        .create_saved_query(pid, &who("erin"), true, &w("S3", "number = 1", true), &one)
         .await
         .unwrap_err();
     assert!(
@@ -968,12 +1002,12 @@ async fn saved_queries_visibility_sharing_cycles_and_limits() {
     // Another project's query is not found here.
     let other = project(&store, "sq2").await;
     let e = store
-        .delete_saved_query(other.id, team.id, "alice", true)
+        .delete_saved_query(other.id, team.id, &who("alice"), true)
         .await
         .unwrap_err();
     assert!(matches!(e, TmError::NotFound(_)), "{e}");
     store
-        .delete_saved_query(pid, team.id, "bob", true)
+        .delete_saved_query(pid, team.id, &who("bob"), true)
         .await
         .unwrap();
 }
@@ -1050,14 +1084,20 @@ async fn bulk_export_and_plans_by_query() {
             pid,
             &CaseFilter::default(),
             Some("automated = true"),
-            "alice",
+            &who("alice"),
             100,
         )
         .await
         .unwrap();
     assert_eq!(src.numbers, vec![2, 3]);
     let e = store
-        .export_source_query(pid, &CaseFilter::default(), Some("number > 0"), "alice", 2)
+        .export_source_query(
+            pid,
+            &CaseFilter::default(),
+            Some("number > 0"),
+            &who("alice"),
+            2,
+        )
         .await
         .unwrap_err();
     assert!(
@@ -1247,7 +1287,7 @@ async fn perf_list_and_validate_at_20k_cases() {
             assert!(!l.items.is_empty(), "{q}");
             let t = Instant::now();
             let v = store
-                .validate_query(pid, QueryEntity::Cases, q, "alice")
+                .validate_query(pid, QueryEntity::Cases, q, &who("alice"))
                 .await
                 .unwrap();
             val.push(t.elapsed());
@@ -1265,4 +1305,151 @@ async fn perf_list_and_validate_at_20k_cases() {
         ));
     }
     println!("{}", report.join("\n"));
+}
+
+/// Personal saved queries belong to the owner key, not the name (a token named like a user is
+/// not that user); a caller without an owner key sees shared ones only; exports leave archived
+/// cases out even when the query names `archived`.
+#[tokio::test]
+async fn saved_queries_follow_the_owner_key_and_exports_skip_the_trash() {
+    let Some((db, store)) = TestDb::migrated().await else {
+        return;
+    };
+    let s = seed(&store, &db.pool, "fk").await;
+    let pid = s.p.id;
+    let limits = TmLimits::default();
+    let user = who("alice");
+    let token = QueryCtx::caller("alice", "token:7f1d3c1e-0000-4000-8000-000000000001");
+    let w = SavedQueryWrite {
+        entity: QueryEntity::Cases,
+        name: "Mine".into(),
+        query: "number = 1".into(),
+        shared: None,
+        position: None,
+    };
+    let mine = store
+        .create_saved_query(pid, &user, false, &w, &limits)
+        .await
+        .unwrap();
+    assert!(mine.mine && mine.owner == "alice");
+
+    let l = store
+        .list_saved_queries(pid, QueryEntity::Cases, &token)
+        .await
+        .unwrap();
+    assert!(l.items.is_empty(), "{l:?}");
+    let patch = SavedQueryPatch {
+        query: Some("number = 2".into()),
+        ..Default::default()
+    };
+    assert!(matches!(
+        store
+            .update_saved_query(pid, mine.id, &token, true, &patch, &limits)
+            .await
+            .unwrap_err(),
+        TmError::NotFound(_)
+    ));
+    assert!(matches!(
+        store
+            .delete_saved_query(pid, mine.id, &token, true)
+            .await
+            .unwrap_err(),
+        TmError::NotFound(_)
+    ));
+    let list = |ctx: &QueryCtx, q: &str| CaseQuery {
+        query: Some(q.to_string()),
+        me: ctx.me.clone(),
+        owner: ctx.owner.clone(),
+        limit: 100,
+        ..Default::default()
+    };
+    query_error(
+        store
+            .list_cases(pid, &list(&token, "filter = Mine"))
+            .await
+            .unwrap_err(),
+    );
+    let v = store
+        .validate_query(pid, QueryEntity::Cases, "filter = Mine", &token)
+        .await
+        .unwrap();
+    assert!(!v.ok);
+    let nobody = QueryCtx::new("alice");
+    query_error(
+        store
+            .list_cases(pid, &list(&nobody, "filter = Mine"))
+            .await
+            .unwrap_err(),
+    );
+    assert!(matches!(
+        store
+            .create_saved_query(pid, &nobody, false, &w, &limits)
+            .await
+            .unwrap_err(),
+        TmError::Invalid { .. }
+    ));
+    let theirs = store
+        .create_saved_query(pid, &token, false, &w, &limits)
+        .await
+        .expect("the same name is free for another owner");
+    assert!(theirs.mine && theirs.owner == "alice");
+    let got = store
+        .list_cases(pid, &list(&user, "filter = Mine"))
+        .await
+        .unwrap();
+    assert_eq!(
+        got.items.iter().map(|c| c.number).collect::<Vec<_>>(),
+        vec![1]
+    );
+
+    let ctx = CaseCtx {
+        project_id: pid,
+        project_key: "fk",
+        by: "alice",
+        limits: &limits,
+        can_review: false,
+    };
+    let by_query = |q: &str, action: CaseBulkAction| CaseBulk {
+        numbers: None,
+        filter: None,
+        query: Some(q.into()),
+        action,
+        value: None,
+    };
+    assert!(matches!(
+        store
+            .bulk_cases(&ctx, &by_query("filter = Mine", CaseBulkAction::Archive))
+            .await
+            .unwrap_err(),
+        TmError::Invalid {
+            code: "invalid_query",
+            ..
+        }
+    ));
+    let r = store
+        .bulk_cases_as(
+            &ctx,
+            &user.owner,
+            &by_query("filter = Mine", CaseBulkAction::Archive),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r.updated, 1, "{r:?}");
+
+    let src = store
+        .export_source_query(
+            pid,
+            &CaseFilter::default(),
+            Some("archived = true"),
+            &user,
+            100,
+        )
+        .await
+        .unwrap();
+    assert!(src.numbers.is_empty(), "{:?}", src.numbers);
+    let src = store
+        .export_source_query(pid, &CaseFilter::default(), Some("number = 1"), &user, 100)
+        .await
+        .unwrap();
+    assert!(src.numbers.is_empty(), "{:?}", src.numbers);
 }

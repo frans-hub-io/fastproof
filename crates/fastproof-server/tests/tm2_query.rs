@@ -638,3 +638,223 @@ async fn export_job_with_a_query_waits_for_the_gate() {
         (StatusCode::BAD_REQUEST, Some("invalid_query"))
     );
 }
+
+/// Personal saved queries belong to the caller's owner key, not to its name: a new token that
+/// reuses the name of a revoked one (or a token named like a user) does not see, change or run
+/// them.
+#[tokio::test]
+async fn personal_saved_queries_follow_the_caller_not_the_name() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = Server::start_with(&db, &[("FASTPROOF_TM_GATE", "open")]).await;
+    seed(&s, "qo").await;
+    let base = "/api/v1/projects/qo/saved-queries";
+    let (st, first) = s
+        .post(
+            "/api/v1/tokens",
+            ADMIN_TOKEN,
+            json!({"name": "twin", "role": "viewer", "scopes": ["qo"], "expiresInDays": 1}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{first}");
+    let first_token = first["token"].as_str().unwrap().to_string();
+    let (st, mine) = s
+        .post(
+            base,
+            &first_token,
+            json!({"entity": "cases", "name": "Mine", "query": "tag = smoke"}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{mine}");
+    assert_eq!(mine["owner"].as_str(), Some("twin"));
+    let mine_id = mine["id"].as_str().unwrap().to_string();
+    let first_id = first["id"]
+        .as_str()
+        .or(first["item"]["id"].as_str())
+        .unwrap_or_else(|| panic!("token id in {first}"))
+        .to_string();
+    let (st, _) = call(
+        &s,
+        Method::DELETE,
+        &format!("/api/v1/tokens/{first_id}"),
+        Some(ADMIN_TOKEN),
+        None,
+    )
+    .await;
+    assert!(st.is_success(), "{st}");
+
+    let second = s.token("twin", "viewer", &["qo"]).await;
+    let (_, l) = s.get(&format!("{base}?entity=cases"), &second).await;
+    assert_eq!(l["items"], json!([]), "{l}");
+    for (m, body) in [
+        (Method::PATCH, Some(json!({"query": "status = draft"}))),
+        (Method::DELETE, None),
+    ] {
+        let (st, _) = call(&s, m, &format!("{base}/{mine_id}"), Some(&second), body).await;
+        assert_eq!(st, StatusCode::NOT_FOUND);
+    }
+    let (st, e) = s
+        .get(
+            &format!("/api/v1/projects/qo/cases?query={}", enc("filter = Mine")),
+            &second,
+        )
+        .await;
+    assert_eq!(
+        (st, e["code"].as_str()),
+        (StatusCode::BAD_REQUEST, Some("invalid_query"))
+    );
+    let (st, v) = s
+        .post(
+            "/api/v1/projects/qo/query/validate",
+            &second,
+            json!({"entity": "cases", "query": "filter = Mine"}),
+        )
+        .await;
+    assert_eq!((st, v["ok"].as_bool()), (StatusCode::OK, Some(false)));
+    let (st, own) = s
+        .post(
+            base,
+            &second,
+            json!({"entity": "cases", "name": "Mine", "query": "status = draft"}),
+        )
+        .await;
+    assert_eq!(
+        st,
+        StatusCode::CREATED,
+        "the same name is free for another caller: {own}"
+    );
+    let (st, l) = s
+        .get(
+            &format!("/api/v1/projects/qo/cases?query={}", enc("filter = Mine")),
+            &second,
+        )
+        .await;
+    assert_eq!((st, numbers(&l)), (StatusCode::OK, vec![3]));
+    let (st, l) = s
+        .get(
+            &format!(
+                "/api/v1/projects/qo/cases?query={}",
+                enc("createdBy = me()")
+            ),
+            &second,
+        )
+        .await;
+    assert_eq!(
+        (st, numbers(&l)),
+        (StatusCode::OK, vec![]),
+        "me() stays the name"
+    );
+    let rows: Vec<String> =
+        sqlx::query_scalar("select owner_key from saved_queries order by created_at")
+            .fetch_all(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(rows.len(), 2);
+    assert!(
+        rows.iter().all(|k| k.starts_with("token:")) && rows[0] != rows[1],
+        "{rows:?}"
+    );
+}
+
+/// A managed plan created from a query is a multiplying write like one created from a filter:
+/// it takes the per-caller write rate (and the heavy guard).
+#[tokio::test]
+async fn plan_by_query_takes_the_write_rate() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = Server::start_with(
+        &db,
+        &[
+            ("FASTPROOF_TM_GATE", "open"),
+            ("FASTPROOF_TM_MULTIPLYING_WRITES_PER_MINUTE", "1"),
+        ],
+    )
+    .await;
+    seed(&s, "qr").await;
+    let editor = s.token("qre", "editor", &["qr"]).await;
+    let (st, p) = s
+        .post(
+            "/api/v1/projects/qr/test-plans",
+            &editor,
+            json!({"kind": "managed", "name": "One", "query": "tag = smoke"}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{p}");
+    let (st, e) = s
+        .post(
+            "/api/v1/projects/qr/test-plans",
+            &editor,
+            json!({"kind": "managed", "name": "Two", "query": "tag = api"}),
+        )
+        .await;
+    assert_eq!(
+        (st, e["code"].as_str()),
+        (StatusCode::TOO_MANY_REQUESTS, Some("rate_limited")),
+        "{e}"
+    );
+}
+
+/// The case list with a query is a heavy read: a caller runs at most
+/// `FASTPROOF_HEAVY_QUERIES_PER_CALLER` of them at once.
+#[tokio::test]
+async fn case_list_with_a_query_takes_the_heavy_guard() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = Server::start_with(
+        &db,
+        &[
+            ("FASTPROOF_TM_GATE", "open"),
+            ("FASTPROOF_HEAVY_QUERIES_PER_CALLER", "1"),
+        ],
+    )
+    .await;
+    seed(&s, "qh").await;
+    let viewer = s.token("qhv", "viewer", &["qh"]).await;
+    let mut lock = db.pool.begin().await.unwrap();
+    sqlx::query("lock table cases in access exclusive mode")
+        .execute(&mut *lock)
+        .await
+        .unwrap();
+    let slow = {
+        let c = Server::client_only(&s.base);
+        let v = viewer.clone();
+        tokio::spawn(async move {
+            c.get(
+                &format!("/api/v1/projects/qh/cases?query={}", enc("status = active")),
+                &v,
+            )
+            .await
+        })
+    };
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let waiting: i64 = sqlx::query_scalar(
+            "select count(*) from pg_stat_activity where datname = current_database() \
+             and wait_event_type = 'Lock' and query ilike '%from cases%'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        if waiting > 0 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the first list never waited on the lock"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let (st, _) = s
+        .get(
+            &format!("/api/v1/projects/qh/cases?query={}", enc("status = draft")),
+            &viewer,
+        )
+        .await;
+    assert_eq!(st, StatusCode::TOO_MANY_REQUESTS);
+    lock.rollback().await.unwrap();
+    let (st, l) = slow.await.unwrap();
+    assert_eq!((st, numbers(&l)), (StatusCode::OK, vec![1, 2]));
+}

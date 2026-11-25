@@ -4,6 +4,7 @@
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
+use fastproof_store::tm::query::QueryCtx;
 use fastproof_store::tm::{
     QueryEntity, QuerySchema, QueryValidate, QueryValidation, SavedQuery, SavedQueryList,
     SavedQueryPatch, SavedQueryWrite,
@@ -42,6 +43,13 @@ fn entity_of(q: &EntityQuery) -> ApiResult<QueryEntity> {
         Some(e) => QueryEntity::parse(e)
             .ok_or_else(|| ApiError::bad_request("entity must be cases or requirements")),
     }
+}
+
+/// The caller of a query: the principal name for `me()` and the owner key of personal saved
+/// queries (`caller_key`: the managed token id, or the kind and name), so that a token named
+/// like a user never reaches that user's personal queries.
+pub fn caller(auth: &Auth) -> QueryCtx {
+    QueryCtx::caller(&auth.principal.name, &crate::limits::caller_key(auth))
 }
 
 fn can_write(s: &AppState, auth: &Auth, key: &str) -> bool {
@@ -85,7 +93,7 @@ pub async fn validate_query(
     let _permit = s.guards.heavy(&auth).await?;
     Ok(Json(
         s.store
-            .validate_query(p.id, body.entity, &body.query, &auth.principal.name)
+            .validate_query(p.id, body.entity, &body.query, &caller(&auth))
             .await
             .map_err(tm_error)?,
     ))
@@ -106,7 +114,7 @@ pub async fn list_saved_queries(
     let entity = entity_of(&q)?;
     Ok(Json(
         s.store
-            .list_saved_queries(p.id, entity, &auth.principal.name)
+            .list_saved_queries(p.id, entity, &caller(&auth))
             .await
             .map_err(tm_error)?,
     ))
@@ -144,7 +152,7 @@ pub async fn create_saved_query(
         .store
         .create_saved_query(
             p.id,
-            &auth.principal.name,
+            &caller(&auth),
             can_write(&s, &auth, &p.key),
             &body,
             &s.cfg.tm,
@@ -176,7 +184,7 @@ pub async fn update_saved_query(
         .update_saved_query(
             p.id,
             id,
-            &auth.principal.name,
+            &caller(&auth),
             can_write(&s, &auth, &p.key),
             &body,
             &s.cfg.tm,
@@ -202,7 +210,7 @@ pub async fn delete_saved_query(
     let p = s.project_for(&auth, &key, &s.perms.cases_read).await?;
     let q = s
         .store
-        .delete_saved_query(p.id, id, &auth.principal.name, can_write(&s, &auth, &p.key))
+        .delete_saved_query(p.id, id, &caller(&auth), can_write(&s, &auth, &p.key))
         .await
         .map_err(tm_error)?;
     s.audit(&auth, "savedQuery.delete", Some(&p.key), audit_detail(&q))

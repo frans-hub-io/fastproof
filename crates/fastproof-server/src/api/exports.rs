@@ -88,7 +88,7 @@ pub async fn export_cases(
             p.id,
             &q.filter,
             q.query.as_deref(),
-            &auth.principal.name,
+            &super::queries::caller(&auth),
             MAX_EXPORT_CASES,
         )
         .await
@@ -232,7 +232,7 @@ pub async fn create_case_export(
             p.id,
             &filter,
             query.as_deref(),
-            &auth.principal.name,
+            &super::queries::caller(&auth),
             MAX_EXPORT_CASES,
         )
         .await
@@ -244,6 +244,7 @@ pub async fn create_case_export(
     };
     let params = ExportParams {
         filter: filter.clone(),
+        query_owner: query.as_ref().map(|_| crate::limits::caller_key(&auth)),
         query: query.clone(),
         attachments: body.attachments,
         token_sha256: token_hash(&token),

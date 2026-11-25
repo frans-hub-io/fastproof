@@ -103,6 +103,9 @@ pub struct ExportParams {
     /// An FPQL query instead of the filter (written only through the gate).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub query: Option<String>,
+    /// With `query`: the creator's owner key of personal saved queries (`QueryCtx::owner`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query_owner: Option<String>,
     pub attachments: bool,
     /// sha256 (hex) of the one-time download token.
     pub token_sha256: String,

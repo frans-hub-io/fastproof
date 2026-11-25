@@ -137,18 +137,25 @@ impl Store {
         filter: &CaseFilter,
         max: usize,
     ) -> TmResult<ExportSource> {
-        self.export_source_query(project_id, filter, None, "", max)
-            .await
+        self.export_source_query(
+            project_id,
+            filter,
+            None,
+            &super::query::QueryCtx::default(),
+            max,
+        )
+        .await
     }
 
-    /// The cases of a filter or, when given, of an FPQL query (exclusive; `me` is the caller
-    /// for `me()`), not archived, as [`Self::export_source`].
+    /// The cases of a filter or, when given, of an FPQL query (exclusive; `who` is the caller
+    /// for `me()` and personal saved queries), not archived even when the query names
+    /// `archived`, as [`Self::export_source`].
     pub async fn export_source_query(
         &self,
         project_id: Uuid,
         filter: &CaseFilter,
         query: Option<&str>,
-        me: &str,
+        who: &super::query::QueryCtx,
         max: usize,
     ) -> TmResult<ExportSource> {
         let mut conn = self.pool.begin().await?;
@@ -163,7 +170,7 @@ impl Store {
                     project_id,
                     super::QueryEntity::Cases,
                     src,
-                    &super::query::QueryCtx::new(me),
+                    who,
                 )
                 .await?;
                 selection_numbers(

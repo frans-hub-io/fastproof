@@ -232,6 +232,11 @@ pub async fn list_cases(
     crate::tm_people::note(&s, &auth, &headers);
     let mut q = case_query(raw.as_deref())?;
     q.me = auth.principal.name.clone();
+    q.owner = crate::limits::caller_key(&auth);
+    let _permit = match q.query.as_deref().map(str::trim) {
+        Some(src) if !src.is_empty() => Some(s.guards.heavy(&auth).await?),
+        _ => None,
+    };
     Ok(Json(s.store.list_cases(p.id, &q).await.map_err(tm_error)?))
 }
 
@@ -550,7 +555,11 @@ pub async fn bulk_cases(
     let _permit = s.guards.heavy(&auth).await?;
     let r = s
         .store
-        .bulk_cases(&ctx(&s, &p, &auth), &body)
+        .bulk_cases_as(
+            &ctx(&s, &p, &auth),
+            &crate::limits::caller_key(&auth),
+            &body,
+        )
         .await
         .map_err(tm_error)?;
     s.audit(

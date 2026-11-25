@@ -171,12 +171,13 @@ curl -s -H "$auth" -H 'Content-Type: application/json' -X POST "$api/saved-queri
 
 | Rule | |
 |---|---|
-| Personal queries | anybody with `cases:read`; only their owner sees, changes or deletes them (others get 404) |
+| Personal queries | anybody with `cases:read`; only their owner sees, changes or deletes them (others get 404). The owner is the signed-in user or the API token itself, not its name: a token named like a user, or a new token with the name of a revoked one, has its own personal queries |
 | Shared queries | created, changed and deleted with `cases:write`; everybody who reads cases sees and uses them; only the owner shares or unshares |
 | Names | 1 to 200 bytes, unique per owner and entity (409 `saved_query_name_taken`) |
 | Limits | 100 per owner and entity, 200 shared per project and entity (`FASTPROOF_TM_MAX_SAVED_QUERIES` sets the first; the second is twice it) |
 
-A saved query is checked when it is saved, like a query that runs. The audit log records `savedQuery.create`,
+A saved query is checked when it is saved, like a query that runs. A test plan's query is run by whoever syncs
+the plan, so `filter = "Name"` in it finds shared queries only. The audit log records `savedQuery.create`,
 `savedQuery.update` and `savedQuery.delete`; the text of personal queries is left out.
 
 ## Limits
@@ -191,7 +192,8 @@ A saved query is checked when it is saved, like a query that runs. The audit log
 | Running time | every statement that runs a query stops after 5 s: 400 `invalid_query` "the query ran longer than 5s" |
 | Count of `validate` | 10 000 |
 
-Bulk actions, exports and validation also wait for a slot of the per-caller limit of heavy queries. Requirement
+The case list with a query, bulk actions, exports, plans created from a query and validation also wait for a slot
+of the per-caller limit of heavy queries. Requirement
 queries (`entity=requirements`) arrive with [requirements](requirements.md); until then they answer 400.
 
 ## Differences from AQL

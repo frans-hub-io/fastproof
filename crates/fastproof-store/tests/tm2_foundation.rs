@@ -285,7 +285,7 @@ async fn upgrade_from_0820_keeps_data_and_old_queries() {
 
     let mut applied = fastproof_store::migrate(&db.pool).await.unwrap();
     applied.sort();
-    assert_eq!(applied, (900..=911).collect::<Vec<i64>>());
+    assert_eq!(applied, (900..=912).collect::<Vec<i64>>());
     fastproof_store::check_schema(&db.pool).await.unwrap();
     let invalid: Vec<String> = sqlx::query_scalar(
         "select conname::text from pg_constraint where conname in \

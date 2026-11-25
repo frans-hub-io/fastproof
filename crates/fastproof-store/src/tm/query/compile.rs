@@ -307,12 +307,12 @@ impl<'a> Resolver<'a> {
         };
         let row: Option<(Uuid, String)> = sqlx::query_as(
             "select id, query from saved_queries where project_id = $1 and entity = 'cases' \
-             and name = $2 and (owner = $3 or shared) \
-             order by (owner = $3) desc, position, created_at limit 1",
+             and name = $2 and ((owner_key = $3 and $3 <> '') or shared) \
+             order by (owner_key = $3) desc, position, created_at limit 1",
         )
         .bind(self.project_id)
         .bind(no_nul(&name))
-        .bind(no_nul(&self.ctx.me))
+        .bind(no_nul(&self.ctx.owner))
         .fetch_optional(&mut *conn)
         .await?;
         let Some((id, text)) = row else {

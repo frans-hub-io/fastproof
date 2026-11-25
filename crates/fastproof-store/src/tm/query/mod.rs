@@ -43,16 +43,26 @@ pub const STATEMENT_TIMEOUT: &str = "5s";
 /// Who runs a query.
 #[derive(Clone, Debug, Default)]
 pub struct QueryCtx {
-    /// The caller's principal name (`me()` and personal saved queries).
+    /// The caller's principal name (`me()`, compared with `createdBy`/`updatedBy`).
     pub me: String,
+    /// The caller's owner key of personal saved queries (`user:<name>`, `token:<id>`, ...;
+    /// never just a name, which a token may share with a user). Empty: shared ones only.
+    pub owner: String,
     /// The saved query being written, so a query naming itself is a cycle.
     pub saving: Option<Uuid>,
 }
 
 impl QueryCtx {
+    /// A caller without personal saved queries (`filter = "Name"` finds shared ones only).
     pub fn new(me: &str) -> Self {
+        Self::caller(me, "")
+    }
+
+    /// A caller with their principal name and the owner key of their saved queries.
+    pub fn caller(me: &str, owner: &str) -> Self {
         Self {
             me: me.to_string(),
+            owner: owner.to_string(),
             saving: None,
         }
     }
@@ -348,7 +358,7 @@ impl Store {
         project_id: Uuid,
         entity: QueryEntity,
         src: &str,
-        me: &str,
+        ctx: &QueryCtx,
     ) -> TmResult<QueryValidation> {
         if !attrs::available(entity) {
             return Err(not_available(entity));
@@ -365,7 +375,7 @@ impl Store {
         let normalized = q.normalized();
         let mut tx = self.pool.begin().await?;
         set_timeout(&mut tx).await?;
-        match compile::resolve(&mut tx, project_id, &mut q, &QueryCtx::new(me)).await {
+        match compile::resolve(&mut tx, project_id, &mut q, ctx).await {
             Ok(()) => {}
             Err(TmError::Invalid {
                 code: "invalid_query",

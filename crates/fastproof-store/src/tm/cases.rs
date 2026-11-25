@@ -1241,8 +1241,11 @@ pub struct CaseQuery {
     pub limit: i64,
     /// An FPQL query, ANDed with the filter (`archived` applies unless the query names it).
     pub query: Option<String>,
-    /// The caller's principal name (`me()`, personal saved queries).
+    /// The caller's principal name (`me()`).
     pub me: String,
+    /// The caller's owner key of personal saved queries (`QueryCtx::owner`; empty: shared
+    /// saved queries only).
+    pub owner: String,
 }
 
 /// Checks the sizes of a filter.
@@ -1496,8 +1499,9 @@ pub async fn filter_numbers(
 }
 
 /// Numbers of the cases a checked filter or a resolved query selects, by number, at most
-/// `max + 1`. `archived` restricts unless the query names `archived`. A query runs under the
-/// statement timeout of FPQL (the caller is in a transaction).
+/// `max + 1`, restricted by `archived` (a caller that lets a query's own `archived` decide
+/// passes `None`). A query runs under the statement timeout of FPQL (the caller is in a
+/// transaction).
 pub async fn selection_numbers(
     conn: &mut PgConnection,
     project_id: Uuid,
@@ -1508,10 +1512,6 @@ pub async fn selection_numbers(
     let mut qb: QueryBuilder<Postgres> =
         QueryBuilder::new("select c.number from cases c where c.project_id = ");
     qb.push_bind(project_id);
-    let archived = match sel {
-        CaseSelection::Query(q) if q.mentions("archived") => None,
-        _ => archived,
-    };
     match archived {
         Some(true) => {
             qb.push(" and c.archived_at is not null");
@@ -1910,7 +1910,7 @@ impl Store {
         let fpql = match src {
             Some(src) => {
                 super::query::set_timeout(&mut conn).await?;
-                let ctx = super::query::QueryCtx::new(&q.me);
+                let ctx = super::query::QueryCtx::caller(&q.me, &q.owner);
                 Some(
                     super::query::prepare(&mut conn, project_id, QueryEntity::Cases, src, &ctx)
                         .await?,
@@ -2088,7 +2088,19 @@ impl Store {
     /// `maxBulk`). Each changed case gets one version (`source = bulk`, archive and restore
     /// change no content and only bump the revision); cases left alone are listed with a
     /// code (`not_found`, `unchanged`, `field_from_code`, `invalid_case`, `archived`).
+    /// A `query` sees shared saved queries only; see [`Self::bulk_cases_as`].
     pub async fn bulk_cases(&self, ctx: &CaseCtx<'_>, b: &CaseBulk) -> TmResult<CaseBulkResult> {
+        self.bulk_cases_as(ctx, "", b).await
+    }
+
+    /// [`Self::bulk_cases`] for a caller whose personal saved queries (`owner`, the owner key
+    /// of `QueryCtx::owner`) a `query` may name.
+    pub async fn bulk_cases_as(
+        &self,
+        ctx: &CaseCtx<'_>,
+        owner: &str,
+        b: &CaseBulk,
+    ) -> TmResult<CaseBulkResult> {
         let l = ctx.limits;
         let ctx_project = ctx.project_id;
         let op = bulk_op(b, l)?;
@@ -2098,14 +2110,15 @@ impl Store {
                 if src.trim().is_empty() {
                     return Err(TmError::bad_request("query must not be empty"));
                 }
+                super::query::set_timeout(&mut tx).await?;
+                let ctx = super::query::QueryCtx::caller(ctx.by, owner);
+                let q = super::query::prepare(&mut tx, ctx_project, QueryEntity::Cases, src, &ctx)
+                    .await?;
                 let archived = match op {
+                    _ if q.mentions("archived") => None,
                     BulkOp::Restore => Some(true),
                     _ => Some(false),
                 };
-                super::query::set_timeout(&mut tx).await?;
-                let ctx = super::query::QueryCtx::new(ctx.by);
-                let q = super::query::prepare(&mut tx, ctx_project, QueryEntity::Cases, src, &ctx)
-                    .await?;
                 let n = selection_numbers(
                     &mut tx,
                     ctx_project,

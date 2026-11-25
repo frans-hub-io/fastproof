@@ -835,7 +835,10 @@ async fn export(s: &AppState, job: &ClaimedJob, owner: &str) -> anyhow::Result<(
             job.project_id,
             &params.filter,
             params.query.as_deref(),
-            job.created_by.as_deref().unwrap_or_default(),
+            &fastproof_store::tm::query::QueryCtx::caller(
+                job.created_by.as_deref().unwrap_or_default(),
+                params.query_owner.as_deref().unwrap_or_default(),
+            ),
             MAX_EXPORT_CASES,
         )
         .await?;

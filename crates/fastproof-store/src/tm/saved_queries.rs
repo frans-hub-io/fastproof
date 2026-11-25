@@ -2,6 +2,10 @@
 //! owner (others get 404); a shared one to everybody who reads cases, and only callers who
 //! may write cases create, change or delete it. Each query is checked like a query that runs
 //! (names resolved, saved queries it names without cycles).
+//!
+//! Ownership is the caller's owner key (`QueryCtx::owner`: kind and name, or the managed token
+//! id), not the principal name: a token named like a user is not that user. `owner` keeps the
+//! name for display.
 
 use chrono::{DateTime, Utc};
 use sqlx::postgres::PgRow;
@@ -18,18 +22,19 @@ use crate::{Store, no_nul};
 /// Bytes of a saved query's name, at most.
 pub const MAX_SAVED_QUERY_NAME: usize = 200;
 
-const COLS: &str = "id, entity, name, query, owner, shared, position, created_at, updated_at";
+const COLS: &str =
+    "id, entity, name, query, owner, owner_key, shared, position, created_at, updated_at";
 
-fn row(r: &PgRow, me: &str) -> sqlx::Result<SavedQuery> {
+fn row(r: &PgRow, who: &QueryCtx) -> sqlx::Result<SavedQuery> {
     let entity: String = r.try_get("entity")?;
-    let owner: String = r.try_get("owner")?;
+    let owner_key: String = r.try_get("owner_key")?;
     Ok(SavedQuery {
         id: r.try_get("id")?,
         entity: QueryEntity::parse(&entity).unwrap_or(QueryEntity::Cases),
         name: r.try_get("name")?,
         query: r.try_get("query")?,
-        mine: owner == me,
-        owner,
+        mine: !who.owner.is_empty() && owner_key == who.owner,
+        owner: r.try_get("owner")?,
         shared: r.try_get("shared")?,
         position: r.try_get("position")?,
         created_at: r.try_get::<DateTime<Utc>, _>("created_at")?,
@@ -58,20 +63,31 @@ async fn visible(
     conn: &mut PgConnection,
     project_id: Uuid,
     id: Uuid,
-    me: &str,
+    who: &QueryCtx,
     lock: bool,
 ) -> TmResult<SavedQuery> {
     let r = sqlx::query(sqlx::AssertSqlSafe(format!(
-        "select {COLS} from saved_queries where project_id = $1 and id = $2 and (owner = $3 or shared){}",
+        "select {COLS} from saved_queries where project_id = $1 and id = $2 \
+         and ((owner_key = $3 and $3 <> '') or shared){}",
         if lock { " for update" } else { "" }
     )))
     .bind(project_id)
     .bind(id)
-    .bind(no_nul(me))
+    .bind(no_nul(&who.owner))
     .fetch_optional(&mut *conn)
     .await?
     .ok_or(TmError::NotFound("saved query"))?;
-    Ok(row(&r, me)?)
+    Ok(row(&r, who)?)
+}
+
+/// A caller that may own saved queries (an owner key and a name).
+fn owner_of(who: &QueryCtx) -> TmResult<&str> {
+    if who.owner.trim().is_empty() || who.me.trim().is_empty() {
+        return Err(TmError::bad_request(
+            "saved queries need a signed-in caller",
+        ));
+    }
+    Ok(&who.owner)
 }
 
 async fn check_query(
@@ -79,15 +95,15 @@ async fn check_query(
     project_id: Uuid,
     entity: QueryEntity,
     query: &str,
-    me: &str,
+    who: &QueryCtx,
     saving: Option<Uuid>,
 ) -> TmResult<()> {
     if query.trim().is_empty() {
         return Err(TmError::bad_request("query must not be empty"));
     }
     let ctx = QueryCtx {
-        me: me.to_string(),
         saving,
+        ..who.clone()
     };
     prepare(conn, project_id, entity, query, &ctx).await?;
     Ok(())
@@ -102,7 +118,7 @@ async fn check_counts(
     limits: &TmLimits,
 ) -> TmResult<()> {
     let (own, all_shared): (i64, i64) = sqlx::query_as(
-        "select count(*) filter (where owner = $3), count(*) filter (where shared) \
+        "select count(*) filter (where owner_key = $3), count(*) filter (where shared) \
          from saved_queries where project_id = $1 and entity = $2",
     )
     .bind(project_id)
@@ -131,21 +147,22 @@ impl Store {
         &self,
         project_id: Uuid,
         entity: QueryEntity,
-        me: &str,
+        who: &QueryCtx,
     ) -> TmResult<SavedQueryList> {
         let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
             "select {COLS} from saved_queries where project_id = $1 and entity = $2 \
-             and (owner = $3 or shared) order by shared, position, lower(name), id limit 1000"
+             and ((owner_key = $3 and $3 <> '') or shared) \
+             order by shared, position, lower(name), id limit 1000"
         )))
         .bind(project_id)
         .bind(entity.as_str())
-        .bind(no_nul(me))
+        .bind(no_nul(&who.owner))
         .fetch_all(&self.pool)
         .await?;
         Ok(SavedQueryList {
             items: rows
                 .iter()
-                .map(|r| row(r, me))
+                .map(|r| row(r, who))
                 .collect::<sqlx::Result<_>>()?,
         })
     }
@@ -154,11 +171,12 @@ impl Store {
     pub async fn create_saved_query(
         &self,
         project_id: Uuid,
-        me: &str,
+        who: &QueryCtx,
         can_write: bool,
         w: &SavedQueryWrite,
         limits: &TmLimits,
     ) -> TmResult<SavedQuery> {
+        let owner = owner_of(who)?;
         let shared = w.shared.unwrap_or(false);
         if shared && !can_write {
             return Err(forbidden("sharing a query needs cases:write"));
@@ -167,38 +185,39 @@ impl Store {
         let mut tx = self.pool.begin().await?;
         lock_project(&mut tx, project_id, "saved_queries").await?;
         super::query::set_timeout(&mut tx).await?;
-        check_query(&mut tx, project_id, w.entity, &w.query, me, None).await?;
+        check_query(&mut tx, project_id, w.entity, &w.query, who, None).await?;
         super::query::reset_timeout(&mut tx).await?;
-        check_counts(&mut tx, project_id, w.entity, me, shared, limits).await?;
+        check_counts(&mut tx, project_id, w.entity, owner, shared, limits).await?;
         let position = match w.position {
             Some(p) => p.clamp(0, 1_000_000),
             None => sqlx::query_scalar::<_, Option<i32>>(
-                "select max(position) + 1 from saved_queries where project_id = $1 and entity = $2 and owner = $3",
+                "select max(position) + 1 from saved_queries where project_id = $1 and entity = $2 and owner_key = $3",
             )
             .bind(project_id)
             .bind(w.entity.as_str())
-            .bind(no_nul(me))
+            .bind(no_nul(owner))
             .fetch_one(&mut *tx)
             .await?
             .unwrap_or(0)
             .min(1_000_000),
         };
         let r = sqlx::query(sqlx::AssertSqlSafe(format!(
-            "insert into saved_queries (id, project_id, entity, name, query, owner, shared, position) \
-             values ($1, $2, $3, $4, $5, $6, $7, $8) returning {COLS}"
+            "insert into saved_queries (id, project_id, entity, name, query, owner, owner_key, shared, position) \
+             values ($1, $2, $3, $4, $5, $6, $9, $7, $8) returning {COLS}"
         )))
         .bind(Uuid::now_v7())
         .bind(project_id)
         .bind(w.entity.as_str())
         .bind(no_nul(&name))
         .bind(no_nul(w.query.trim()))
-        .bind(no_nul(me))
+        .bind(no_nul(&who.me))
         .bind(shared)
         .bind(position)
+        .bind(no_nul(owner))
         .fetch_one(&mut *tx)
         .await
         .map_err(|e| name_taken(&e).unwrap_or_else(|| e.into()))?;
-        let q = row(&r, me)?;
+        let q = row(&r, who)?;
         tx.commit().await?;
         Ok(q)
     }
@@ -209,7 +228,7 @@ impl Store {
         &self,
         project_id: Uuid,
         id: Uuid,
-        me: &str,
+        who: &QueryCtx,
         can_write: bool,
         p: &SavedQueryPatch,
         limits: &TmLimits,
@@ -221,7 +240,7 @@ impl Store {
             .transpose()?;
         let mut tx = self.pool.begin().await?;
         lock_project(&mut tx, project_id, "saved_queries").await?;
-        let cur = visible(&mut tx, project_id, id, me, true).await?;
+        let cur = visible(&mut tx, project_id, id, who, true).await?;
         if cur.shared && !can_write {
             return Err(forbidden("changing a shared query needs cases:write"));
         }
@@ -252,7 +271,7 @@ impl Store {
         }
         if let Some(q) = &p.query {
             super::query::set_timeout(&mut tx).await?;
-            check_query(&mut tx, project_id, cur.entity, q, me, Some(id)).await?;
+            check_query(&mut tx, project_id, cur.entity, q, who, Some(id)).await?;
             super::query::reset_timeout(&mut tx).await?;
         }
         let r = sqlx::query(sqlx::AssertSqlSafe(format!(
@@ -269,7 +288,7 @@ impl Store {
         .fetch_one(&mut *tx)
         .await
         .map_err(|e| name_taken(&e).unwrap_or_else(|| e.into()))?;
-        let after = row(&r, me)?;
+        let after = row(&r, who)?;
         tx.commit().await?;
         Ok((cur, after))
     }
@@ -279,11 +298,11 @@ impl Store {
         &self,
         project_id: Uuid,
         id: Uuid,
-        me: &str,
+        who: &QueryCtx,
         can_write: bool,
     ) -> TmResult<SavedQuery> {
         let mut tx = self.pool.begin().await?;
-        let cur = visible(&mut tx, project_id, id, me, true).await?;
+        let cur = visible(&mut tx, project_id, id, who, true).await?;
         if cur.shared && !can_write {
             return Err(forbidden("deleting a shared query needs cases:write"));
         }

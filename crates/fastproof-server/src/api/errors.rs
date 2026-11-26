@@ -81,7 +81,7 @@ pub async fn list(
 
 /// The error with the compare link of its commits (from the project's `vcs` settings) and,
 /// with ClickHouse, its timeline from there.
-async fn full_detail(
+pub(crate) async fn full_detail(
     s: &AppState,
     p: &fastproof_store::Project,
     fingerprint: &str,

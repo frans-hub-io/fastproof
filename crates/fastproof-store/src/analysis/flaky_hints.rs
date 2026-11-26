@@ -576,6 +576,11 @@ impl Store {
                             r.burst = p.burst;
                             r.worker = p.worker.clone();
                             r.earlier = p.earlier.clone();
+                            for d in &p.dims {
+                                if !r.dims.iter().any(|(k, _)| *k == d.0) {
+                                    r.dims.push(d.clone());
+                                }
+                            }
                             if r.signals.is_empty() {
                                 r.signals = p.signals.clone();
                             }

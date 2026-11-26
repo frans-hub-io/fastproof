@@ -630,19 +630,14 @@ async fn the_role_analyses_finished_launches() {
     assert_eq!(st, StatusCode::OK);
     assert_eq!(a["state"], "done", "{a}");
     assert_eq!(a["steps"]["errors"]["status"], "done", "{a}");
-    for step in ["signals", "logRules"] {
+    for (step, reason) in [
+        ("signals", "no FastMock settings and no signals to resolve"),
+        ("logRules", "no log rules"),
+    ] {
         assert_eq!(a["steps"][step]["status"], "skipped", "{a}");
-        let reason = a["steps"][step]["detail"]["reason"]
-            .as_str()
-            .unwrap_or_default();
-        assert!(
-            reason == "not available"
-                || (step == "logRules" && reason == "no log rules")
-                || (step == "signals"
-                    && reason == "no FastMock settings and no signals to resolve"),
-            "{a}"
-        );
+        assert_eq!(a["steps"][step]["detail"]["reason"], reason, "{a}");
     }
+    assert!(!a.to_string().contains("not available"), "{a}");
     assert_eq!(a["steps"]["suggestions"]["status"], "done", "{a}");
     assert_eq!(a["steps"]["flakyHints"]["status"], "done", "{a}");
     assert_eq!(a["steps"]["flakyHints"]["detail"]["series"], 0, "{a}");

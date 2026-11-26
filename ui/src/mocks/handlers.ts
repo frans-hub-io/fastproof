@@ -43,7 +43,7 @@ import { analysisHandlers, resetAnalysis } from './analysis';
 import { resetSuggestions, suggestionsHandlers } from './suggestions';
 import { errorsHandlers } from './errors';
 import { gatesHistoryHandlers } from './gatesHistory';
-import { analyticsHandlers } from './analytics';
+import { analyticsHandlers, resetAnalytics } from './analytics';
 import { flakyHintsHandlers } from './flakyHints';
 import { signalsHandlers } from './signals';
 
@@ -90,6 +90,7 @@ export function resetMockState(): void {
   resetTrackers();
   resetAnalysis();
   resetSuggestions();
+  resetAnalytics();
 }
 
 function error(status: number, code: string, message: string, details?: unknown) {

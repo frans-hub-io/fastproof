@@ -350,3 +350,169 @@ async fn flaky_causes_over_http() {
     let (_, step) = run(&s, &state, "fl", vec![res("z", "basket", "failed", "ci-3")]).await;
     assert_eq!(step["status"], "skipped", "{step}");
 }
+
+fn ch_vars(db_name: &str) -> Option<Vec<(String, String)>> {
+    let url = std::env::var("FASTPROOF_TEST_CLICKHOUSE_URL").ok()?;
+    let mut v = vec![
+        ("FASTPROOF_SINKS".to_string(), "clickhouse".to_string()),
+        ("FASTPROOF_CLICKHOUSE_URL".into(), url),
+        ("FASTPROOF_CLICKHOUSE_DATABASE".into(), db_name.into()),
+        ("FASTPROOF_SINK_FLUSH_INTERVAL_MS".into(), "200".into()),
+    ];
+    for (k, t) in [
+        (
+            "FASTPROOF_TEST_CLICKHOUSE_USER",
+            "FASTPROOF_CLICKHOUSE_USER",
+        ),
+        (
+            "FASTPROOF_TEST_CLICKHOUSE_PASSWORD_FILE",
+            "FASTPROOF_CLICKHOUSE_PASSWORD_FILE",
+        ),
+    ] {
+        if let Ok(x) = std::env::var(k) {
+            v.push((t.into(), x));
+        }
+    }
+    Some(v)
+}
+
+/// The daily job on the ClickHouse window (`clickhouse::series_history`): runs still in
+/// PostgreSQL get their host and their pushed signals merged in, so the environment and the
+/// infrastructure causes are found as on PostgreSQL. Skipped without
+/// `FASTPROOF_TEST_CLICKHOUSE_URL`.
+#[tokio::test]
+async fn flaky_causes_on_the_clickhouse_window() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let ch_db = format!("fptest_fl_{:08x}", rand::random::<u32>());
+    let Some(vars) = ch_vars(&ch_db) else {
+        eprintln!("FASTPROOF_TEST_CLICKHOUSE_URL is not set: skipped");
+        return;
+    };
+    let mut extra: Vec<(&str, &str)> = vars.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    extra.extend([
+        ("FASTPROOF_ANALYSIS", "on"),
+        ("FASTPROOF_ANALYSIS_WORKERS", "0"),
+        ("FASTPROOF_ANALYSIS_SETTLE_SECONDS", "0"),
+    ]);
+    let s = Server::start_cfg(&db, &extra, paused(ROLE_JOBS)).await;
+    let state = s.running.as_ref().unwrap().state.clone();
+    assert!(state.clickhouse.is_some());
+    s.project("fl").await;
+    let viewer = s.token("v", "viewer", &["fl"]).await;
+
+    let mut failing = Vec::new();
+    for i in 0..15 {
+        let host = ["ci-1", "ci-2", "ci-3"][i % 3];
+        let status = if host == "ci-3" && i != 5 {
+            "failed"
+        } else {
+            "passed"
+        };
+        let (l, step) = run(
+            &s,
+            &state,
+            "fl",
+            vec![
+                res(&format!("a{i}"), "basket", status, host),
+                res(&format!("b{i}"), "steady", "passed", host),
+            ],
+        )
+        .await;
+        assert_eq!(step["status"], "done", "{step}");
+        if status == "failed" {
+            failing.push((l, format!("a{i}")));
+        }
+    }
+    let at = chrono::Utc::now().to_rfc3339();
+    let items: Vec<Value> = failing[..2]
+        .iter()
+        .map(|(l, id)| {
+            json!({"launchId": l, "resultClientId": id, "source": "grid", "kind": "node_lost", "at": at})
+        })
+        .collect();
+    let (st, b) = s
+        .post(
+            "/api/v1/projects/fl/signals",
+            ADMIN_TOKEN,
+            json!({"items": items}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{b}");
+    assert_eq!(b["matched"], 2, "{b}");
+
+    let ch = state.clickhouse.as_ref().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let n: i64 = ch
+            .exec(
+                &format!("SELECT count() FROM {ch_db}.results FINAL WHERE project = 'fl'"),
+                &[],
+                None,
+            )
+            .await
+            .map(|t| t.trim().parse().unwrap_or(-1))
+            .unwrap_or(-1);
+        if n == 30 {
+            break;
+        }
+        assert!(Instant::now() < deadline, "results in ClickHouse: {n}");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+
+    sqlx::query("delete from flaky_hints")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    fastproof_server::analysis::flaky_hints::daily(&state)
+        .await
+        .unwrap();
+    let (_, list) = s.get("/api/v1/projects/fl/flaky", &viewer).await;
+    let series = list["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["name"] == "basket")
+        .unwrap_or_else(|| panic!("{list}"))["seriesId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (st, h) = s
+        .get(
+            &format!("/api/v1/projects/fl/flaky/{series}/hints"),
+            &viewer,
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{h}");
+    assert_eq!(h["backend"], "clickhouse", "{h}");
+    assert_eq!(
+        (&h["windowRuns"], &h["failures"]),
+        (&json!(15), &json!(4)),
+        "{h}"
+    );
+    let hint = |kind: &str| {
+        h["hints"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|x| x["kind"] == kind)
+            .cloned()
+            .unwrap_or_else(|| panic!("no {kind} hint: {h}"))
+    };
+    let env = hint("environment");
+    assert_eq!(
+        (&env["evidence"]["dimension"], &env["evidence"]["value"]),
+        (&json!("host"), &json!("ci-3")),
+        "{h}"
+    );
+    assert_eq!(
+        hint("infra")["evidence"]["signals"]["grid:node_lost"],
+        2,
+        "{h}"
+    );
+    assert_eq!(h["infraShare"].as_f64(), Some(0.5), "{h}");
+    ch.exec(&format!("DROP DATABASE {ch_db}"), &[], None)
+        .await
+        .unwrap();
+}

@@ -1273,6 +1273,20 @@ pub struct RunItemExecution {
     /// Who started the next execution, and when.
     pub rerun_by: String,
     pub rerun_at: DateTime<Utc>,
+    /// Iterations of a parameterized item in that execution: the first ones by position, as far
+    /// as the page's byte budget goes (see `iterationCount`), with their step results.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub iterations: Vec<RunIteration>,
+    /// Every iteration of that execution (`0` for a plain item).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub iteration_count: i32,
+    /// The parameter columns, in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parameter_columns: Vec<String>,
+}
+
+fn is_zero(n: &i32) -> bool {
+    *n == 0
 }
 
 /// An issue linked to a run item.
@@ -1288,6 +1302,10 @@ pub struct RunDefectIssue {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RunDefect {
+    /// For a parameterized item: the iteration (row id) the defect belongs to. Without it the
+    /// defect goes to every failed or blocked iteration of the item.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub row_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub defect_type_id: Option<Uuid>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2355,7 +2373,14 @@ pub struct RunIteration {
     pub executed_by: Option<String>,
     pub started_at: Option<DateTime<Utc>>,
     pub finished_at: Option<DateTime<Utc>>,
+    /// The defect set on the iteration's projected result (`null` without one).
+    #[serde(default)]
+    pub defect: Option<serde_json::Value>,
     pub step_results: Vec<RunStepResult>,
+    /// `true` when `stepResults` is left empty to keep the response small: read them with
+    /// `GET /run-items/{itemId}/iterations/{rowId}`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub step_results_omitted: bool,
 }
 
 /// Body of `PATCH /run-items/{itemId}/iterations/{rowId}`.

@@ -746,6 +746,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{key}/cases/{n}/parameters/generate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Generates parameter rows from values per parameter; nothing is saved. `all` gives every combination, `pairwise` a deterministic set of rows that covers every pair of values of two parameters. At most `maxParameterColumns` parameters and 500 values in all; more rows than `maxParameterRows`: 409 `limit_reached`. Rows get new ids and are enabled; put them into `body.parameters.rows` of the case to keep them. */
+        post: operations["generate_case_parameters"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{key}/cases/{n}/requirements": {
         parameters: {
             query?: never;
@@ -1710,7 +1727,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** @description Report of the manual run: case, version, status, steps, executor, times and defects, as CSV (cells that could start a formula are prefixed with `'`) or JSON. */
+        /** @description Report of the manual run: case, version, status, steps, executor, times and defects, as CSV (cells that could start a formula are prefixed with `'`) or JSON. A parameterized case has an `iterations` list in JSON (values, status, defect and recorded step results per iteration, texts with the values put in) and, in CSV, a row per iteration after its item with the values in the last column `iteration`. */
         get: operations["manual_report"];
         put?: never;
         post?: never;
@@ -2443,7 +2460,7 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
-        /** @description Changes the status, comment or assignee of a run item (needs `If-Match`). A final status (`passed`, `failed`, `blocked`, `skipped`) is projected into the launch results (`blocked` as `broken`); back to `untested` or `in_progress` removes the projected attempt. `untestedStepsTo: skipped` marks the untested steps skipped. */
+        /** @description Changes the status, comment or assignee of a run item (needs `If-Match`). A final status (`passed`, `failed`, `blocked`, `skipped`) is projected into the launch results (`blocked` as `broken`); back to `untested` or `in_progress` removes the projected attempt. `untestedStepsTo: skipped` marks the untested steps skipped. On a parameterized item (`iterationCount` > 0) a status or `untestedStepsTo` needs `allIterations: true` and applies to every iteration (409 `parameterized_item` otherwise); the item takes the derived status. */
         patch: operations["patch_run_item"];
         trace?: never;
     };
@@ -2473,7 +2490,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description Triages the projected result of a run item (the same triage as `/triage`, `source: user`) and keeps the defect on the item. Holders of `results:triage` may set it on any item; holders of `runs:execute` only on items they executed (the executor of the current execution; the assignee does not count). Otherwise 403 with `details {required: "results:triage", scope}`. */
+        /** @description Triages the projected result of a run item (the same triage as `/triage`, `source: user`) and keeps the defect on the item. Holders of `results:triage` may set it on any item; holders of `runs:execute` only on items they executed (the executor of the current execution; the assignee does not count). Otherwise 403 with `details {required: "results:triage", scope}`. A parameterized item has a result per iteration: with `rowId` the defect goes to that iteration's result, without it to every failed or blocked iteration (at most 1000), and the item keeps the defect of its first iteration that has one. 409 `run_item_not_final` while the iteration, or no iteration, has a final status to put it on. */
         post: operations["run_item_defect"];
         delete?: never;
         options?: never;
@@ -2491,6 +2508,41 @@ export interface paths {
         /** @description Earlier executions of a run item (kept on rerun), newest first, with their step results. */
         get: operations["list_run_item_executions"];
         put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/run-items/{itemId}/iterations/{rowId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description One iteration of a parameterized run item with all its step results. `GET /run-items/{itemId}` leaves the step results of later iterations out once a size budget is spent (`stepResultsOmitted`); this reads them one iteration at a time. `executionNo` reads an earlier execution. */
+        get: operations["get_run_iteration"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** @description Changes the status or comment of one iteration of a parameterized run item (needs the item's `If-Match`). A final status is projected into the launch results as its own result, on the series of the case with the row's values as parameters (`blocked` as `broken`); back to `untested` or `in_progress` removes the projected attempt. `untestedStepsTo: skipped` marks the iteration's untested steps skipped. The item takes the status derived from its iterations: `failed` if any, else `blocked`, else `in_progress` while some are open, `untested` or `skipped` when all are, otherwise `passed`. */
+        patch: operations["patch_run_iteration"];
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/run-items/{itemId}/iterations/{rowId}/steps/{path}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** @description Writes the result of one step of an iteration of a parameterized run item (`rowId` = the parameter row, `path` = `1`, `1.2`, `1.2.3` over the executed version). As for an item step: no `If-Match`, the last writer wins, absent `actual`, `comment` and `attachmentIds` keep their values, and an untested iteration becomes `in_progress`. The item takes the status derived from its iterations and a new revision. `suggestedStatus` is the iteration status the step results suggest. */
+        put: operations["put_iteration_step"];
         post?: never;
         delete?: never;
         options?: never;
@@ -6198,11 +6250,39 @@ export interface components {
             executionNo: number;
             /** Format: date-time */
             finishedAt?: string | null;
+            /**
+             * @description The iterations of a parameterized case (its `steps` stay empty: steps are recorded per
+             *     iteration).
+             */
+            iterations?: components["schemas"]["ManualReportIteration"][];
             name: string;
+            /** @description The parameter columns of a parameterized case, in order. */
+            parameterColumns?: string[];
             /** Format: date-time */
             startedAt?: string | null;
             status: components["schemas"]["RunStatus"];
             steps: components["schemas"]["ManualReportStep"][];
+        };
+        /** @description One iteration of a parameterized item in the manual report. */
+        ManualReportIteration: {
+            comment: string;
+            defect?: unknown;
+            executedBy?: string | null;
+            /** Format: date-time */
+            finishedAt?: string | null;
+            /** Format: int32 */
+            position: number;
+            rowId: string;
+            /** Format: date-time */
+            startedAt?: string | null;
+            status: components["schemas"]["RunStatus"];
+            /** @description The recorded step results of the iteration, with the values put into the step texts. */
+            steps: components["schemas"]["ManualReportStep"][];
+            /** @description `true` when `steps` was left out because the item's report reached its size limit. */
+            stepsOmitted?: boolean;
+            values: {
+                [key: string]: string;
+            };
         };
         /** @description One step of the manual report. */
         ManualReportStep: {
@@ -6755,6 +6835,18 @@ export interface components {
                 executionNo: number;
                 /** Format: date-time */
                 finishedAt?: string | null;
+                /**
+                 * Format: int32
+                 * @description Every iteration of that execution (`0` for a plain item).
+                 */
+                iterationCount?: number;
+                /**
+                 * @description Iterations of a parameterized item in that execution: the first ones by position, as far
+                 *     as the page's byte budget goes (see `iterationCount`), with their step results.
+                 */
+                iterations?: components["schemas"]["RunIteration"][];
+                /** @description The parameter columns, in order. */
+                parameterColumns?: string[];
                 /** Format: date-time */
                 rerunAt: string;
                 /** @description Who started the next execution, and when. */
@@ -6867,10 +6959,15 @@ export interface components {
          */
         Parameter: {
             excluded?: boolean;
-            mode?: components["schemas"]["ParameterMode"];
+            mode?: components["schemas"]["ParameterDisplayMode"];
             name: string;
             value?: string | null;
         };
+        /**
+         * @description How a parameter value may be shown.
+         * @enum {string}
+         */
+        ParameterDisplayMode: "default" | "masked" | "hidden";
         /** @description Body of `POST /cases/{n}/parameters/generate`. */
         ParameterGenerate: {
             mode: components["schemas"]["ParameterMode"];
@@ -6886,10 +6983,10 @@ export interface components {
             };
         };
         /**
-         * @description How a parameter value may be shown.
+         * @description How parameter rows are generated.
          * @enum {string}
          */
-        ParameterMode: "default" | "masked" | "hidden";
+        ParameterMode: "all" | "pairwise";
         /** @description A row of parameter values (`id` `r_<ulid>`). */
         ParameterRow: {
             enabled: boolean;
@@ -8108,6 +8205,11 @@ export interface components {
             /** Format: uuid */
             defectTypeId?: string | null;
             issue?: components["schemas"]["RunDefectIssue"] | null;
+            /**
+             * @description For a parameterized item: the iteration (row id) the defect belongs to. Without it the
+             *     defect goes to every failed or blocked iteration of the item.
+             */
+            rowId?: string | null;
         };
         /** @description An issue linked to a run item. */
         RunDefectIssue: {
@@ -8152,6 +8254,18 @@ export interface components {
             executionNo: number;
             /** Format: date-time */
             finishedAt?: string | null;
+            /**
+             * Format: int32
+             * @description Every iteration of that execution (`0` for a plain item).
+             */
+            iterationCount?: number;
+            /**
+             * @description Iterations of a parameterized item in that execution: the first ones by position, as far
+             *     as the page's byte budget goes (see `iterationCount`), with their step results.
+             */
+            iterations?: components["schemas"]["RunIteration"][];
+            /** @description The parameter columns, in order. */
+            parameterColumns?: string[];
             /** Format: date-time */
             rerunAt: string;
             /** @description Who started the next execution, and when. */
@@ -8229,6 +8343,8 @@ export interface components {
         /** @description An iteration of a parameterized run item. */
         RunIteration: {
             comment: string;
+            /** @description The defect set on the iteration's projected result (`null` without one). */
+            defect?: unknown;
             executedBy?: string | null;
             /** Format: date-time */
             finishedAt?: string | null;
@@ -8241,6 +8357,11 @@ export interface components {
             startedAt?: string | null;
             status: components["schemas"]["RunStatus"];
             stepResults: components["schemas"]["RunStepResult"][];
+            /**
+             * @description `true` when `stepResults` is left empty to keep the response small: read them with
+             *     `GET /run-items/{itemId}/iterations/{rowId}`.
+             */
+            stepResultsOmitted?: boolean;
             values: {
                 [key: string]: string;
             };
@@ -12697,6 +12818,74 @@ export interface operations {
                 };
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    generate_case_parameters: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                /** @description case number */
+                n: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ParameterGenerate"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ParameterRows"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `limit_reached` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -19818,11 +20007,198 @@ export interface operations {
             };
         };
     };
+    get_run_iteration: {
+        parameters: {
+            query?: {
+                /** @description An earlier execution of the item (default: the current one). */
+                executionNo?: number;
+            };
+            header?: never;
+            path: {
+                key: string;
+                itemId: string;
+                rowId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunIteration"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    patch_run_iteration: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description ETag of the item */
+                "If-Match": string;
+            };
+            path: {
+                key: string;
+                itemId: string;
+                rowId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunIterationPatch"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunItem"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `manual_run_closed` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    put_iteration_step: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                itemId: string;
+                rowId: string;
+                path: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunStepWrite"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunIterationStepAck"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `manual_run_closed`, `limit_reached` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     run_item_new_issue_url: {
         parameters: {
             query?: {
                 /** @description `jira`, `gitlab` or `github` (default: the first configured issue tracker). */
                 tracker?: string;
+                /**
+                 * @description For a parameterized item: the iteration (row id) the issue is about. Without it the
+                 *     text lists the failed and blocked iterations.
+                 */
+                rowId?: string;
             };
             header?: never;
             path: {
@@ -19963,7 +20339,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
-            /** @description `manual_run_closed` */
+            /** @description `manual_run_closed`; `limit_reached` when the copied iterations of a parameterized item would take the launch past `maxRunIterations` */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -20039,7 +20415,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
-            /** @description `manual_run_closed`, `limit_reached` */
+            /** @description `manual_run_closed`, `limit_reached`, `parameterized_item` */
             409: {
                 headers: {
                     [name: string]: unknown;

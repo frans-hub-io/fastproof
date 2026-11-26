@@ -152,7 +152,7 @@ pub fn type_project_settings(doc: &mut utoipa::openapi::OpenApi) {
         tm::SavedQueryPatch, tm::SavedQueryList, tm::PlanCiEnvironment, tm::PlanCi, tm::PlanDispatchStatus,
         tm::PlanDispatch, tm::PlanDispatchList, tm::PlanCheck, tm::RerunVariable, tm::ParameterMode, tm::ParameterRow,
         tm::ParameterGenerator, tm::CaseParameters, tm::ParameterGenerate, tm::ParameterRows, tm::RunIteration,
-        tm::RunIterationPatch, tm::RunIterationStepAck, tm::RequirementStatus, tm::RequirementOrigin,
+        tm::RunIterationPatch, tm::runs::ManualReportIteration, tm::RunIterationStepAck, tm::RequirementStatus, tm::RequirementOrigin,
         tm::RequirementLinkOrigin, tm::RequirementLinkStatus, tm::CoverageStatus, tm::CoverageScopeKind,
         tm::CoverageExportFormat, tm::RequirementPathEntry, tm::RequirementTracker, tm::Requirement,
         tm::RequirementSummary, tm::RequirementList, tm::RequirementWrite, tm::RequirementPatch,

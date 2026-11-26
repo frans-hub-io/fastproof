@@ -18,7 +18,7 @@
 //! rule rows. Ingest locks the launch row first and never touches manual rows, and
 //! `recount_muted` locks results before launches, so neither waits in a cycle with them.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
 use fastproof_model::{
@@ -397,14 +397,115 @@ struct ItemRow {
     number: i64,
     folder_path: Vec<String>,
     shared_pins: Option<super::expand::SharedPins>,
+    iterations: i32,
 }
 
+/// One projected unit: a plain run item, or one iteration of a parameterized item.
+struct Unit<'a> {
+    item: &'a ItemRow,
+    /// The iteration's row id and values (`None`: a plain item).
+    row: Option<(String, BTreeMap<String, String>)>,
+    series_id: Uuid,
+    status: RunStatus,
+    executed_by: Option<String>,
+    comment: String,
+    started_at: Option<DateTime<Utc>>,
+    finished_at: Option<DateTime<Utc>>,
+}
+
+impl Unit<'_> {
+    fn key(&self) -> String {
+        match &self.row {
+            Some((r, _)) => super::iterations::client_key(self.item.id, self.item.execution_no, r),
+            None => client_key(self.item.id, self.item.execution_no),
+        }
+    }
+
+    fn step_key(&self) -> UnitKey {
+        (self.item.id, self.row.as_ref().map(|r| r.0.clone()))
+    }
+}
+
+/// Bytes the parameter values may add to the steps of one projected iteration, at most.
+const SUBSTITUTION_BUDGET: usize = 1024 * 1024;
+
+/// Iterations projected by one statement round, at most. Each holds the built steps of one
+/// execution (up to the executed snapshot plus [`SUBSTITUTION_BUDGET`]) until the insert, so
+/// a launch with `maxRunIterations` iterations is projected in bounded rounds.
+pub const ITERATION_CHUNK: usize = 64;
+
 /// Projects run items of one launch (the caller holds the item rows) and returns what the
-/// launch row needs; the caller passes it to [`apply_launch_changes`].
+/// launch row needs; the caller passes it to [`apply_launch_changes`]. A parameterized item
+/// is projected through its iterations (of the current execution), never itself, in rounds
+/// of at most [`ITERATION_CHUNK`] iterations.
 pub async fn project_run_items(
     conn: &mut PgConnection,
     launch: &LaunchRef,
     item_ids: &[Uuid],
+) -> anyhow::Result<Projected> {
+    if item_ids.is_empty() {
+        return Ok(Projected::default());
+    }
+    let rows: Vec<(Uuid, String)> = sqlx::query_as(
+        "select it.run_item_id, it.row_id from run_iterations it \
+         join run_items ri on ri.id = it.run_item_id and ri.execution_no = it.execution_no \
+         where ri.launch_id = $1 and ri.id = any($2) and ri.iterations > 0 \
+         order by it.run_item_id, it.position, it.row_id",
+    )
+    .bind(launch.id)
+    .bind(item_ids)
+    .fetch_all(&mut *conn)
+    .await?;
+    if rows.len() <= ITERATION_CHUNK {
+        return project(conn, launch, item_ids, None).await;
+    }
+    let parameterized: HashSet<Uuid> = rows.iter().map(|r| r.0).collect();
+    let plain: Vec<Uuid> = item_ids
+        .iter()
+        .filter(|i| !parameterized.contains(i))
+        .copied()
+        .collect();
+    let mut out = project(conn, launch, &plain, None).await?;
+    for chunk in rows.chunks(ITERATION_CHUNK) {
+        out.merge(project_iterations(conn, launch, chunk).await?);
+    }
+    Ok(out)
+}
+
+/// Projects some iterations `(item, row id)` of one launch (the caller holds the item rows).
+pub async fn project_iterations(
+    conn: &mut PgConnection,
+    launch: &LaunchRef,
+    rows: &[(Uuid, String)],
+) -> anyhow::Result<Projected> {
+    let mut items: Vec<Uuid> = rows.iter().map(|r| r.0).collect();
+    items.sort();
+    items.dedup();
+    project(conn, launch, &items, Some(rows)).await
+}
+
+type IterationRow = (
+    Uuid,
+    String,
+    serde_json::Value,
+    Uuid,
+    String,
+    String,
+    Option<String>,
+    Option<DateTime<Utc>>,
+    Option<DateTime<Utc>>,
+);
+
+/// An item, or one iteration of it (`Some(row id)`).
+type UnitKey = (Uuid, Option<String>);
+
+type IterationStepRow = (Uuid, String, String, String, String, String, Vec<Uuid>);
+
+async fn project(
+    conn: &mut PgConnection,
+    launch: &LaunchRef,
+    item_ids: &[Uuid],
+    only: Option<&[(Uuid, String)]>,
 ) -> anyhow::Result<Projected> {
     let mut out = Projected::default();
     if item_ids.is_empty() {
@@ -414,7 +515,7 @@ pub async fn project_run_items(
     let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
         "select ri.id, ri.case_id, ri.case_version, ri.series_id, s.test_case_id, ri.status, ri.execution_no, \
            ri.executed_by, ri.comment, ri.started_at, ri.finished_at, ri.defect, c.number, ri.shared_pins, \
-           {FOLDER_PATH_SQL} as folder_path \
+           ri.iterations, {FOLDER_PATH_SQL} as folder_path \
          from run_items ri join cases c on c.id = ri.case_id join series s on s.id = ri.series_id \
          where ri.launch_id = $1 and ri.id = any($2) order by ri.id"
     )))
@@ -441,12 +542,77 @@ pub async fn project_run_items(
             number: r.try_get("number")?,
             folder_path: r.try_get("folder_path")?,
             shared_pins: super::runs::pins_of(r.try_get("shared_pins")?),
+            iterations: r.try_get("iterations")?,
         });
     }
-    let (finals, opens): (Vec<&ItemRow>, Vec<&ItemRow>) =
-        items.iter().partition(|i| i.status.is_final());
+    let by_id: HashMap<Uuid, &ItemRow> = items.iter().map(|i| (i.id, i)).collect();
+    let (only_items, only_rows): (Option<Vec<Uuid>>, Option<Vec<String>>) = match only {
+        Some(o) => {
+            let (a, b) = o.iter().cloned().unzip();
+            (Some(a), Some(b))
+        }
+        None => (None, None),
+    };
+    let mut units: Vec<Unit> = Vec::new();
+    for i in items.iter().filter(|i| i.iterations == 0 && only.is_none()) {
+        units.push(Unit {
+            item: i,
+            row: None,
+            series_id: i.series_id,
+            status: i.status,
+            executed_by: i.executed_by.clone(),
+            comment: i.comment.clone(),
+            started_at: i.started_at,
+            finished_at: i.finished_at,
+        });
+    }
+    let parameterized: Vec<Uuid> = items
+        .iter()
+        .filter(|i| i.iterations > 0)
+        .map(|i| i.id)
+        .collect();
+    if !parameterized.is_empty() {
+        let wanted: Option<HashSet<(Uuid, &str)>> =
+            only.map(|o| o.iter().map(|(i, r)| (*i, r.as_str())).collect());
+        let its: Vec<IterationRow> = sqlx::query_as(
+            "select it.run_item_id, it.row_id, it.param_values, it.series_id, it.status, it.comment, \
+               it.executed_by, it.started_at, it.finished_at \
+             from run_iterations it join run_items ri on ri.id = it.run_item_id and ri.execution_no = it.execution_no \
+             where it.run_item_id = any($1) \
+               and ($2::uuid[] is null or (it.run_item_id, it.row_id) in \
+                 (select * from unnest($2::uuid[], $3::text[]))) \
+             order by it.run_item_id, it.position, it.row_id",
+        )
+        .bind(&parameterized)
+        .bind(only_items.as_deref())
+        .bind(only_rows.as_deref())
+        .fetch_all(&mut *conn)
+        .await?;
+        for (item, row_id, values, series_id, status, comment, by, started_at, finished_at) in its {
+            if wanted
+                .as_ref()
+                .is_some_and(|w| !w.contains(&(item, row_id.as_str())))
+            {
+                continue;
+            }
+            let Some(i) = by_id.get(&item) else {
+                continue;
+            };
+            units.push(Unit {
+                item: i,
+                row: Some((row_id, serde_json::from_value(values).unwrap_or_default())),
+                series_id,
+                status: RunStatus::parse(&status).unwrap_or(RunStatus::Untested),
+                executed_by: by,
+                comment,
+                started_at,
+                finished_at,
+            });
+        }
+    }
+    let (finals, opens): (Vec<&Unit>, Vec<&Unit>) = units.iter().partition(|u| u.status.is_final());
 
-    let mut series_all: Vec<Uuid> = items.iter().map(|i| i.series_id).collect();
+    let mut series_all: Vec<Uuid> = units.iter().map(|u| u.series_id).collect();
     series_all.sort();
     series_all.dedup();
     // Locked, so the counted columns read here are what this transaction changes them from
@@ -479,37 +645,86 @@ pub async fn project_run_items(
     let mut stored_events = Vec::new();
     let mut removed_events = Vec::new();
     let mut analyzed: Vec<Uuid> = Vec::new();
-    let mut result_of: Vec<(Uuid, Option<Uuid>)> = Vec::new();
+    let mut result_of: Vec<(UnitKey, Option<Uuid>)> = Vec::new();
 
     if !finals.is_empty() {
-        let ids: Vec<Uuid> = finals.iter().map(|i| i.id).collect();
-        let step_rows: Vec<(Uuid, String, String, String, String, Vec<Uuid>)> = sqlx::query_as(
-            "select s.run_item_id, s.step_path, s.status, s.actual, s.comment, s.attachment_ids \
-             from run_step_results s join run_items ri on ri.id = s.run_item_id and ri.execution_no = s.execution_no \
-             where s.run_item_id = any($1)",
-        )
-        .bind(&ids)
-        .fetch_all(&mut *conn)
-        .await?;
-        let mut steps: HashMap<Uuid, HashMap<String, StepRes>> = HashMap::new();
+        let mut steps: HashMap<UnitKey, HashMap<String, StepRes>> = HashMap::new();
         let mut att_ids: Vec<Uuid> = Vec::new();
-        for (item, path, status, actual, comment, atts) in step_rows {
-            att_ids.extend(atts.iter().copied());
-            steps.entry(item).or_default().insert(
-                path,
-                StepRes {
-                    status: StepStatus::parse(&status),
-                    actual,
-                    comment,
-                    attachments: atts,
-                },
-            );
+        let plain: Vec<Uuid> = finals
+            .iter()
+            .filter(|u| u.row.is_none())
+            .map(|u| u.item.id)
+            .collect();
+        if !plain.is_empty() {
+            let step_rows: Vec<(Uuid, String, String, String, String, Vec<Uuid>)> = sqlx::query_as(
+                "select s.run_item_id, s.step_path, s.status, s.actual, s.comment, s.attachment_ids \
+                 from run_step_results s join run_items ri on ri.id = s.run_item_id and ri.execution_no = s.execution_no \
+                 where s.run_item_id = any($1)",
+            )
+            .bind(&plain)
+            .fetch_all(&mut *conn)
+            .await?;
+            for (item, path, status, actual, comment, atts) in step_rows {
+                att_ids.extend(atts.iter().copied());
+                steps.entry((item, None)).or_default().insert(
+                    path,
+                    StepRes {
+                        status: StepStatus::parse(&status),
+                        actual,
+                        comment,
+                        attachments: atts,
+                    },
+                );
+            }
+        }
+        let mut iter_items: Vec<Uuid> = finals
+            .iter()
+            .filter(|u| u.row.is_some())
+            .map(|u| u.item.id)
+            .collect();
+        iter_items.sort();
+        iter_items.dedup();
+        if !iter_items.is_empty() {
+            let (f_items, f_rows): (Vec<Uuid>, Vec<String>) = finals
+                .iter()
+                .filter_map(|u| u.row.as_ref().map(|r| (u.item.id, r.0.clone())))
+                .unzip();
+            let step_rows: Vec<IterationStepRow> = sqlx::query_as(
+                    "select s.run_item_id, s.row_id, s.step_path, s.status, s.actual, s.comment, s.attachment_ids \
+                     from run_iteration_step_results s \
+                     join run_items ri on ri.id = s.run_item_id and ri.execution_no = s.execution_no \
+                     where s.run_item_id = any($1) \
+                       and (s.run_item_id, s.row_id) in (select * from unnest($2::uuid[], $3::text[]))",
+                )
+                .bind(&iter_items)
+                .bind(&f_items)
+                .bind(&f_rows)
+                .fetch_all(&mut *conn)
+                .await?;
+            let wanted: HashSet<UnitKey> = finals.iter().map(|u| u.step_key()).collect();
+            for (item, row, path, status, actual, comment, atts) in step_rows {
+                let key = (item, Some(row));
+                if !wanted.contains(&key) {
+                    continue;
+                }
+                att_ids.extend(atts.iter().copied());
+                steps.entry(key).or_default().insert(
+                    path,
+                    StepRes {
+                        status: StepStatus::parse(&status),
+                        actual,
+                        comment,
+                        attachments: atts,
+                    },
+                );
+            }
         }
         att_ids.sort();
         att_ids.dedup();
         let atts = attachment_refs(conn, launch.project_id, &att_ids).await?;
         let mut snapshots: HashMap<SnapshotKey, CaseSnapshot> = HashMap::new();
-        for i in &finals {
+        for u in &finals {
+            let i = u.item;
             if let std::collections::hash_map::Entry::Vacant(e) = snapshots.entry(snapshot_key(
                 i.case_id,
                 i.case_version,
@@ -556,13 +771,14 @@ pub async fn project_run_items(
             Vec::<Option<serde_json::Value>>::new(),
         );
         let mut suite_tree: (Vec<serde_json::Value>, Vec<bool>) = (Vec::new(), Vec::new());
-        for i in &finals {
+        let empty = HashMap::new();
+        for u in &finals {
+            let i = u.item;
             let snap = &snapshots[&snapshot_key(i.case_id, i.case_version, i.shared_pins.as_ref())];
-            let empty = HashMap::new();
-            let st = steps.get(&i.id).unwrap_or(&empty);
-            let status = result_status(i.status).unwrap_or(Status::Unknown);
+            let st = steps.get(&u.step_key()).unwrap_or(&empty);
+            let status = result_status(u.status).unwrap_or(Status::Unknown);
             let result_id = existing
-                .get(&i.series_id)
+                .get(&u.series_id)
                 .copied()
                 .unwrap_or_else(Uuid::now_v7);
             let recorded: HashMap<String, StepStatus> = st
@@ -570,12 +786,22 @@ pub async fn project_run_items(
                 .filter_map(|(p, r)| r.status.map(|s| (p.clone(), s)))
                 .collect();
             let effective = super::runs::effective_statuses(&snap.body.steps, &recorded);
-            let built = build_steps(&snap.body.steps, "", st, &effective, &atts);
-            let duration = match (i.started_at, i.finished_at) {
+            let substituted;
+            let case_steps = match &u.row {
+                Some((_, values)) => {
+                    let mut budget = SUBSTITUTION_BUDGET;
+                    substituted =
+                        super::parameters::substitute_steps(&snap.body.steps, values, &mut budget);
+                    &substituted
+                }
+                None => &snap.body.steps,
+            };
+            let built = build_steps(case_steps, "", st, &effective, &atts);
+            let duration = match (u.started_at, u.finished_at) {
                 (Some(a), Some(b)) if b >= a => Some((b - a).num_milliseconds()),
                 _ => None,
             };
-            let message = message_of(&i.comment, st);
+            let message = message_of(&u.comment, st);
             let links: Vec<serde_json::Value> = snap
                 .body
                 .links
@@ -584,18 +810,26 @@ pub async fn project_run_items(
                 .collect();
             let mut detail = serde_json::json!({"stage": "finished", "interrupted": false,
                 "format": "fastproof-json", "attempt": i.execution_no, "links": links,
-                "caseVersion": i.case_version, "executedBy": i.executed_by});
+                "caseVersion": i.case_version, "executedBy": u.executed_by});
             if let Some(d) = non_empty(&snap.body.description) {
                 detail["description"] = serde_json::json!({"text": d});
             }
+            if let Some((row_id, values)) = &u.row {
+                let columns: Vec<String> = match snap.body.parameters.as_ref() {
+                    Some(p) if !p.columns.is_empty() => p.columns.clone(),
+                    _ => values.keys().cloned().collect(),
+                };
+                detail["parameters"] = super::parameters::display_parameters(&columns, values);
+                detail["iteration"] = serde_json::json!(row_id);
+            }
             a.0.push(Uuid::now_v7());
             a.1.push(result_id);
-            a.2.push(i.series_id);
-            a.3.push(client_key(i.id, i.execution_no));
+            a.2.push(u.series_id);
+            a.3.push(u.key());
             a.4.push(status.as_str().to_string());
-            a.5.push(i.status.as_str().to_string());
-            t.0.push(i.started_at);
-            t.1.push(i.finished_at);
+            a.5.push(u.status.as_str().to_string());
+            t.0.push(u.started_at);
+            t.1.push(u.finished_at);
             t.2.push(duration);
             t.3.push(message.as_deref().map(no_nul));
             t.4.push(json_no_nul(detail));
@@ -606,12 +840,12 @@ pub async fn project_run_items(
             });
             r.0.push(result_id);
             r.1.push(i.test_case_id);
-            r.2.push(i.series_id);
+            r.2.push(u.series_id);
             r.3.push(no_nul(&snap.name));
             r.4.push(format!("TC-{}", i.number));
             r.5.push(json_no_nul(serde_json::to_value(&i.folder_path)?));
             r.6.push(status.as_str().to_string());
-            let labels = manual_labels(i.number, i.executed_by.as_deref(), i.status.as_str());
+            let labels = manual_labels(i.number, u.executed_by.as_deref(), u.status.as_str());
             let folder: Vec<String> = i.folder_path.iter().map(|x| no_nul(x)).collect();
             let (tree, titled) =
                 crate::results::suite_place_json(&folder, &labels, &format!("TC-{}", i.number));
@@ -619,12 +853,20 @@ pub async fn project_run_items(
             suite_tree.1.push(titled);
             r.7.push(labels);
             r.8.push(i.id);
-            r.9.push(i.defect.clone().map(json_no_nul));
-            result_of.push((i.id, Some(result_id)));
-            analyzed.push(i.series_id);
-            updated_events.push(serde_json::json!({"id": result_id, "launchId": launch.id,
-                "seriesId": i.series_id, "testCaseId": i.test_case_id, "status": status.as_str(),
-                "source": "manual", "runItemId": i.id}));
+            r.9.push(if u.row.is_none() {
+                i.defect.clone().map(json_no_nul)
+            } else {
+                None
+            });
+            result_of.push((u.step_key(), Some(result_id)));
+            analyzed.push(u.series_id);
+            let mut ev = serde_json::json!({"id": result_id, "launchId": launch.id,
+                "seriesId": u.series_id, "testCaseId": i.test_case_id, "status": status.as_str(),
+                "source": "manual", "runItemId": i.id});
+            if let Some((row_id, _)) = &u.row {
+                ev["rowId"] = serde_json::json!(row_id);
+            }
+            updated_events.push(ev);
         }
         // A new attempt gets `seq` 0 here and its real one from `apply_launch_changes`; an
         // attempt stored again keeps its `seq`.
@@ -729,10 +971,7 @@ pub async fn project_run_items(
     }
 
     if !opens.is_empty() {
-        let keys: Vec<String> = opens
-            .iter()
-            .map(|i| client_key(i.id, i.execution_no))
-            .collect();
+        let keys: Vec<String> = opens.iter().map(|u| u.key()).collect();
         sqlx::query(
             "delete from attempts where launch_id = $1 and launch_created_at = $2 and client_key = any($3)",
         )
@@ -741,9 +980,10 @@ pub async fn project_run_items(
         .bind(&keys)
         .execute(&mut *conn)
         .await?;
-        for i in &opens {
-            let Some(result_id) = existing.get(&i.series_id).copied() else {
-                result_of.push((i.id, None));
+        for u in &opens {
+            let i = u.item;
+            let Some(result_id) = existing.get(&u.series_id).copied() else {
+                result_of.push((u.step_key(), None));
                 continue;
             };
             let latest = sqlx::query(
@@ -764,8 +1004,8 @@ pub async fn project_run_items(
                         .execute(&mut *conn)
                         .await?;
                     removed_events.push(serde_json::json!({"id": result_id, "launchId": launch.id,
-                        "seriesId": i.series_id, "removed": true}));
-                    result_of.push((i.id, None));
+                        "seriesId": u.series_id, "removed": true}));
+                    result_of.push((u.step_key(), None));
                 }
                 Some(row) => {
                     let status: String = row.try_get("status")?;
@@ -793,25 +1033,64 @@ pub async fn project_run_items(
                     ))
                     .execute(&mut *conn)
                     .await?;
-                    analyzed.push(i.series_id);
-                    updated_events.push(serde_json::json!({"id": result_id, "launchId": launch.id,
-                        "seriesId": i.series_id, "testCaseId": i.test_case_id, "status": status,
-                        "source": "manual", "runItemId": i.id}));
-                    result_of.push((i.id, Some(result_id)));
+                    analyzed.push(u.series_id);
+                    let mut ev = serde_json::json!({"id": result_id, "launchId": launch.id,
+                        "seriesId": u.series_id, "testCaseId": i.test_case_id, "status": status,
+                        "source": "manual", "runItemId": i.id});
+                    if let Some((row_id, _)) = &u.row {
+                        ev["rowId"] = serde_json::json!(row_id);
+                    }
+                    updated_events.push(ev);
+                    result_of.push((u.step_key(), Some(result_id)));
                 }
             }
         }
     }
 
-    let (ri, rr): (Vec<Uuid>, Vec<Option<Uuid>>) = result_of.into_iter().unzip();
-    sqlx::query(
-        "update run_items ri set result_id = t.r from unnest($1::uuid[], $2::uuid[]) as t(i, r) \
-         where ri.id = t.i and ri.result_id is distinct from t.r",
-    )
-    .bind(&ri)
-    .bind(&rr)
-    .execute(&mut *conn)
-    .await?;
+    let mut ri = Vec::new();
+    let mut rr = Vec::new();
+    let mut ii = Vec::new();
+    let mut irow = Vec::new();
+    let mut ir = Vec::new();
+    let mut execs = Vec::new();
+    for ((item, row), res) in result_of {
+        match row {
+            None => {
+                ri.push(item);
+                rr.push(res);
+            }
+            Some(row) => {
+                execs.push(by_id.get(&item).map(|i| i.execution_no).unwrap_or(1));
+                ii.push(item);
+                irow.push(row);
+                ir.push(res);
+            }
+        }
+    }
+    if !ri.is_empty() {
+        sqlx::query(
+            "update run_items ri set result_id = t.r from unnest($1::uuid[], $2::uuid[]) as t(i, r) \
+             where ri.id = t.i and ri.result_id is distinct from t.r",
+        )
+        .bind(&ri)
+        .bind(&rr)
+        .execute(&mut *conn)
+        .await?;
+    }
+    if !ii.is_empty() {
+        sqlx::query(
+            "update run_iterations it set result_id = t.r \
+             from unnest($1::uuid[], $2::int[], $3::text[], $4::uuid[]) as t(i, e, w, r) \
+             where it.run_item_id = t.i and it.execution_no = t.e and it.row_id = t.w \
+               and it.result_id is distinct from t.r",
+        )
+        .bind(&ii)
+        .bind(&execs)
+        .bind(&irow)
+        .bind(&ir)
+        .execute(&mut *conn)
+        .await?;
+    }
     let mut case_ids: Vec<Uuid> = items.iter().map(|i| i.case_id).collect();
     case_ids.sort();
     case_ids.dedup();

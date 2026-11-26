@@ -1191,8 +1191,10 @@ impl Store {
                 },
             )
             .collect();
-        let n = super::runs::insert_run_items(&mut tx, project.id, launch_id, created_at, &rows)
-            .await?;
+        let n = super::runs::insert_run_items(
+            &mut tx, project.id, launch_id, created_at, &rows, limits,
+        )
+        .await?;
         Store::recount_launch(&mut tx, launch_id).await?;
         super::runs::manual_changed(&mut tx, &project.key, launch_id).await?;
         tx.commit().await?;

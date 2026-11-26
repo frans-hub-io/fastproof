@@ -573,6 +573,9 @@ impl Store {
                  and not exists (select 1 from run_step_results s where s.attachment_ids @> array[a.id]) \
                  and not exists (select 1 from attachment_refs r join run_step_results s \
                    on s.attachment_ids @> array[r.id] where r.attachment_id = a.id) \
+                 and not exists (select 1 from run_iteration_step_results s where s.attachment_ids @> array[a.id]) \
+                 and not exists (select 1 from attachment_refs r join run_iteration_step_results s \
+                   on s.attachment_ids @> array[r.id] where r.attachment_id = a.id) \
                order by a.last_seen_at limit $3 for update skip locked) returning id, blob_key), \
              derived as (insert into blob_deletions (prefix, project_id) select m.blob_key, null \
                from attachment_media m join gone g on g.id = m.attachment_id where m.blob_key is not null) \

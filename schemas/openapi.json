@@ -4587,6 +4587,102 @@
         }
       }
     },
+    "/api/v1/projects/{key}/cases/{n}/parameters/generate": {
+      "post": {
+        "tags": [
+          "cases"
+        ],
+        "description": "Generates parameter rows from values per parameter; nothing is saved. `all` gives every combination, `pairwise` a deterministic set of rows that covers every pair of values of two parameters. At most `maxParameterColumns` parameters and 500 values in all; more rows than `maxParameterRows`: 409 `limit_reached`. Rows get new ids and are enabled; put them into `body.parameters.rows` of the case to keep them.",
+        "operationId": "generate_case_parameters",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "n",
+            "in": "path",
+            "description": "case number",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ParameterGenerate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ParameterRows"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`limit_reached`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{key}/cases/{n}/requirements": {
       "get": {
         "tags": [
@@ -10404,7 +10500,7 @@
         "tags": [
           "runs"
         ],
-        "description": "Report of the manual run: case, version, status, steps, executor, times and defects, as CSV (cells that could start a formula are prefixed with `'`) or JSON.",
+        "description": "Report of the manual run: case, version, status, steps, executor, times and defects, as CSV (cells that could start a formula are prefixed with `'`) or JSON. A parameterized case has an `iterations` list in JSON (values, status, defect and recorded step results per iteration, texts with the values put in) and, in CSV, a row per iteration after its item with the values in the last column `iteration`.",
         "operationId": "manual_report",
         "parameters": [
           {
@@ -15179,7 +15275,7 @@
         "tags": [
           "runs"
         ],
-        "description": "Changes the status, comment or assignee of a run item (needs `If-Match`). A final status (`passed`, `failed`, `blocked`, `skipped`) is projected into the launch results (`blocked` as `broken`); back to `untested` or `in_progress` removes the projected attempt. `untestedStepsTo: skipped` marks the untested steps skipped.",
+        "description": "Changes the status, comment or assignee of a run item (needs `If-Match`). A final status (`passed`, `failed`, `blocked`, `skipped`) is projected into the launch results (`blocked` as `broken`); back to `untested` or `in_progress` removes the projected attempt. `untestedStepsTo: skipped` marks the untested steps skipped. On a parameterized item (`iterationCount` > 0) a status or `untestedStepsTo` needs `allIterations: true` and applies to every iteration (409 `parameterized_item` otherwise); the item takes the derived status.",
         "operationId": "patch_run_item",
         "parameters": [
           {
@@ -15395,7 +15491,7 @@
         "tags": [
           "runs"
         ],
-        "description": "Triages the projected result of a run item (the same triage as `/triage`, `source: user`) and keeps the defect on the item. Holders of `results:triage` may set it on any item; holders of `runs:execute` only on items they executed (the executor of the current execution; the assignee does not count). Otherwise 403 with `details {required: \"results:triage\", scope}`.",
+        "description": "Triages the projected result of a run item (the same triage as `/triage`, `source: user`) and keeps the defect on the item. Holders of `results:triage` may set it on any item; holders of `runs:execute` only on items they executed (the executor of the current execution; the assignee does not count). Otherwise 403 with `details {required: \"results:triage\", scope}`. A parameterized item has a result per iteration: with `rowId` the defect goes to that iteration's result, without it to every failed or blocked iteration (at most 1000), and the item keeps the defect of its first iteration that has one. 409 `run_item_not_final` while the iteration, or no iteration, has a final status to put it on.",
         "operationId": "run_item_defect",
         "parameters": [
           {
@@ -15560,6 +15656,302 @@
         }
       }
     },
+    "/api/v1/projects/{key}/run-items/{itemId}/iterations/{rowId}": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "description": "One iteration of a parameterized run item with all its step results. `GET /run-items/{itemId}` leaves the step results of later iterations out once a size budget is spent (`stepResultsOmitted`); this reads them one iteration at a time. `executionNo` reads an earlier execution.",
+        "operationId": "get_run_iteration",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "itemId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "rowId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "executionNo",
+            "in": "query",
+            "description": "An earlier execution of the item (default: the current one).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunIteration"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "runs"
+        ],
+        "description": "Changes the status or comment of one iteration of a parameterized run item (needs the item's `If-Match`). A final status is projected into the launch results as its own result, on the series of the case with the row's values as parameters (`blocked` as `broken`); back to `untested` or `in_progress` removes the projected attempt. `untestedStepsTo: skipped` marks the iteration's untested steps skipped. The item takes the status derived from its iterations: `failed` if any, else `blocked`, else `in_progress` while some are open, `untested` or `skipped` when all are, otherwise `passed`.",
+        "operationId": "patch_run_iteration",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "itemId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "rowId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "description": "ETag of the item",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunIterationPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunItem"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`manual_run_closed`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "428": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/run-items/{itemId}/iterations/{rowId}/steps/{path}": {
+      "put": {
+        "tags": [
+          "runs"
+        ],
+        "description": "Writes the result of one step of an iteration of a parameterized run item (`rowId` = the parameter row, `path` = `1`, `1.2`, `1.2.3` over the executed version). As for an item step: no `If-Match`, the last writer wins, absent `actual`, `comment` and `attachmentIds` keep their values, and an untested iteration becomes `in_progress`. The item takes the status derived from its iterations and a new revision. `suggestedStatus` is the iteration status the step results suggest.",
+        "operationId": "put_iteration_step",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "itemId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "rowId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunStepWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunIterationStepAck"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`manual_run_closed`, `limit_reached`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{key}/run-items/{itemId}/new-issue-url": {
       "get": {
         "tags": [
@@ -15589,6 +15981,15 @@
             "name": "tracker",
             "in": "query",
             "description": "`jira`, `gitlab` or `github` (default: the first configured issue tracker).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rowId",
+            "in": "query",
+            "description": "For a parameterized item: the iteration (row id) the issue is about. Without it the\ntext lists the failed and blocked iterations.",
             "required": false,
             "schema": {
               "type": "string"
@@ -15783,7 +16184,7 @@
             }
           },
           "409": {
-            "description": "`manual_run_closed`",
+            "description": "`manual_run_closed`; `limit_reached` when the copied iterations of a parameterized item would take the launch past `maxRunIterations`",
             "content": {
               "application/json": {
                 "schema": {
@@ -15895,7 +16296,7 @@
             }
           },
           "409": {
-            "description": "`manual_run_closed`, `limit_reached`",
+            "description": "`manual_run_closed`, `limit_reached`, `parameterized_item`",
             "content": {
               "application/json": {
                 "schema": {
@@ -29144,7 +29545,75 @@
             ],
             "format": "date-time"
           },
+          "iterations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ManualReportIteration"
+            },
+            "description": "The iterations of a parameterized case (its `steps` stay empty: steps are recorded per\niteration)."
+          },
           "name": {
+            "type": "string"
+          },
+          "parameterColumns": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The parameter columns of a parameterized case, in order."
+          },
+          "startedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RunStatus"
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ManualReportStep"
+            }
+          }
+        }
+      },
+      "ManualReportIteration": {
+        "type": "object",
+        "description": "One iteration of a parameterized item in the manual report.",
+        "required": [
+          "rowId",
+          "position",
+          "values",
+          "status",
+          "comment",
+          "steps"
+        ],
+        "properties": {
+          "comment": {
+            "type": "string"
+          },
+          "defect": {},
+          "executedBy": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "finishedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "position": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "rowId": {
             "type": "string"
           },
           "startedAt": {
@@ -29161,6 +29630,20 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/ManualReportStep"
+            },
+            "description": "The recorded step results of the iteration, with the values put into the step texts."
+          },
+          "stepsOmitted": {
+            "type": "boolean",
+            "description": "`true` when `steps` was left out because the item's report reached its size limit."
+          },
+          "values": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
             }
           }
         }
@@ -30769,6 +31252,25 @@
                   ],
                   "format": "date-time"
                 },
+                "iterationCount": {
+                  "type": "integer",
+                  "format": "int32",
+                  "description": "Every iteration of that execution (`0` for a plain item)."
+                },
+                "iterations": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/RunIteration"
+                  },
+                  "description": "Iterations of a parameterized item in that execution: the first ones by position, as far\nas the page's byte budget goes (see `iterationCount`), with their step results."
+                },
+                "parameterColumns": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "The parameter columns, in order."
+                },
                 "rerunAt": {
                   "type": "string",
                   "format": "date-time"
@@ -31125,7 +31627,7 @@
             "type": "boolean"
           },
           "mode": {
-            "$ref": "#/components/schemas/ParameterMode"
+            "$ref": "#/components/schemas/ParameterDisplayMode"
           },
           "name": {
             "type": "string"
@@ -31137,6 +31639,15 @@
             ]
           }
         }
+      },
+      "ParameterDisplayMode": {
+        "type": "string",
+        "description": "How a parameter value may be shown.",
+        "enum": [
+          "default",
+          "masked",
+          "hidden"
+        ]
       },
       "ParameterGenerate": {
         "type": "object",
@@ -31192,11 +31703,10 @@
       },
       "ParameterMode": {
         "type": "string",
-        "description": "How a parameter value may be shown.",
+        "description": "How parameter rows are generated.",
         "enum": [
-          "default",
-          "masked",
-          "hidden"
+          "all",
+          "pairwise"
         ]
       },
       "ParameterRow": {
@@ -34765,6 +35275,13 @@
                 "type": "null"
               }
             ]
+          },
+          "rowId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For a parameterized item: the iteration (row id) the defect belongs to. Without it the\ndefect goes to every failed or blocked iteration of the item."
           }
         },
         "additionalProperties": false
@@ -34938,6 +35455,25 @@
               "null"
             ],
             "format": "date-time"
+          },
+          "iterationCount": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Every iteration of that execution (`0` for a plain item)."
+          },
+          "iterations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RunIteration"
+            },
+            "description": "Iterations of a parameterized item in that execution: the first ones by position, as far\nas the page's byte budget goes (see `iterationCount`), with their step results."
+          },
+          "parameterColumns": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The parameter columns, in order."
           },
           "rerunAt": {
             "type": "string",
@@ -35168,6 +35704,9 @@
           "comment": {
             "type": "string"
           },
+          "defect": {
+            "description": "The defect set on the iteration's projected result (`null` without one)."
+          },
           "executedBy": {
             "type": [
               "string",
@@ -35210,6 +35749,10 @@
             "items": {
               "$ref": "#/components/schemas/RunStepResult"
             }
+          },
+          "stepResultsOmitted": {
+            "type": "boolean",
+            "description": "`true` when `stepResults` is left empty to keep the response small: read them with\n`GET /run-items/{itemId}/iterations/{rowId}`."
           },
           "values": {
             "type": "object",

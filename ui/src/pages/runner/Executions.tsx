@@ -1,10 +1,68 @@
 import { Card, Group, Stack, Text } from '@mantine/core';
-import { useRunItemExecutions } from '../../api/tm';
+import { useRunItemExecutions, type RunItemExecution } from '../../api/tm';
 import { formatDateTime } from '../../lib/format';
+import { valuesLabel } from '../../lib/tm/parameters';
 import { defectInfo } from '../../lib/tm/ui';
 import { RunStatusBadge } from '../cases/common';
 
-/** Earlier executions of a run item (kept on rerun): status, executor, times, comment and the steps that did not pass. */
+/** The iterations of an earlier execution of a parameterized item: values, status and step results of each. */
+export function ExecutionIterations({ x }: { x: RunItemExecution }) {
+  const list = x.iterations ?? [];
+  const count = x.iterationCount ?? 0;
+  if (count === 0) return null;
+  return (
+    <Stack gap={2} ml="sm" miw={0} data-testid="execution-iterations" aria-label={`Iterations of run ${String(x.executionNo)}`}>
+      {list.map((it) => {
+        const defect = defectInfo(it.defect);
+        const open = it.status === 'failed' || it.status === 'blocked';
+        return (
+          <details key={it.rowId} style={{ minWidth: 0 }} open={open} data-testid="execution-iteration" data-status={it.status} data-row={it.rowId}>
+            <summary style={{ cursor: 'pointer', overflowWrap: 'anywhere' }}>
+              <Text span size="xs" className="fp-mono">
+                #{it.position}
+              </Text>{' '}
+              <Text span size="xs">
+                {valuesLabel(x.parameterColumns ?? [], it.values)}
+              </Text>{' '}
+              <RunStatusBadge status={it.status} size="xs" />
+            </summary>
+            <Stack gap={2} ml="md" mt={2}>
+              {it.comment && (
+                <Text size="xs" style={{ whiteSpace: 'pre-wrap' }}>
+                  {it.comment}
+                </Text>
+              )}
+              {it.stepResults.map((r) => (
+                <Text key={r.path} size="xs" style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }} data-testid="execution-iteration-step" data-status={r.status}>
+                  Step {r.path} {r.status}
+                  {r.actual ? `: ${r.actual}` : ''}
+                </Text>
+              ))}
+              {it.stepResults.length === 0 && it.stepResultsOmitted && (
+                <Text size="xs" c="dimmed">
+                  Step results are not listed here.
+                </Text>
+              )}
+              {defect && (
+                <Text size="xs">
+                  Defect: {defect.label}
+                  {defect.issue ? ` · ${defect.issue}` : ''}
+                </Text>
+              )}
+            </Stack>
+          </details>
+        );
+      })}
+      {list.length < count && (
+        <Text size="xs" c="dimmed" data-testid="execution-iterations-more">
+          Showing {list.length} of {count} iterations.
+        </Text>
+      )}
+    </Stack>
+  );
+}
+
+/** Earlier executions of a run item (kept on rerun): status, executor, times, comment, the steps that did not pass and the iterations. */
 export function Executions({ project, itemId, executionNo }: { project: string; itemId: string; executionNo: number }) {
   const q = useRunItemExecutions(project, itemId, executionNo > 1);
   const list = q.data ?? [];
@@ -47,6 +105,7 @@ export function Executions({ project, itemId, executionNo }: { project: string; 
                   {defect.issue ? ` · ${defect.issue}` : ''}
                 </Text>
               )}
+              <ExecutionIterations x={x} />
             </Stack>
           );
         })}

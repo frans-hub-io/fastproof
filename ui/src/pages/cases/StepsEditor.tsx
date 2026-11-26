@@ -11,6 +11,7 @@ import { flattenSteps, indentStep, insertAfter, MAX_STEP_DEPTH, moveStep, newSte
 import { editorAction } from '../runner/keymap';
 import { SharedPicker } from '../shared/SharedPicker';
 import { MarkdownField } from './MarkdownField';
+import { PlaceholderHints } from './ParametersEditor';
 
 export const MAX_STEPS = 500;
 
@@ -41,7 +42,9 @@ export function StepsEditor({ project, caseNumber, steps, onChange, onAnnounce, 
   const [open, setOpen] = useState<ReadonlySet<string>>(new Set());
   const lastPath = useRef<string | null>(null);
   const qc = useQueryClient();
-  const saved = caseNumber === null ? undefined : qc.getQueryData<Versioned<Case>>(tmk.case(project, caseNumber))?.value.sharedSteps;
+  const savedCase = caseNumber === null ? undefined : qc.getQueryData<Versioned<Case>>(tmk.case(project, caseNumber))?.value;
+  const saved = savedCase?.sharedSteps;
+  const columns = savedCase?.body.parameters?.columns;
   const briefOf = (id: string): SharedStepBrief | undefined => picked[id] ?? briefs.find((b) => b.id === id) ?? saved?.find((b) => b.id === id);
   const [focusPath, setFocusPath] = useState<string | null>(null);
   const released = useRef(false);
@@ -272,6 +275,7 @@ export function StepsEditor({ project, caseNumber, steps, onChange, onAnnounce, 
             <MarkdownField project={project} caseNumber={caseNumber} label="Expected result" value={f.step.expected} onChange={(v) => onChange(updateStep(steps, f.path, { expected: v }))} compact onKeyDown={keyDown(f.path)} testId="step-expected" inputId={`step-${f.step.id}-expected`} minRows={1} />
             <MarkdownField project={project} caseNumber={caseNumber} label="Test data" value={f.step.data} onChange={(v) => onChange(updateStep(steps, f.path, { data: v }))} compact onKeyDown={keyDown(f.path)} testId="step-data" inputId={`step-${f.step.id}-data`} minRows={1} />
           </div>
+          <PlaceholderHints texts={[f.step.action, f.step.expected, f.step.data]} columns={columns} />
           {f.step.attachments.length > 0 && (
             <Group gap={4} mt={4} wrap="wrap">
               {f.step.attachments.map((id) => (

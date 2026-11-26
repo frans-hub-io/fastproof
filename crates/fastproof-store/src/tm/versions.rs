@@ -240,6 +240,8 @@ impl Store {
             super::cases::keep_code_owned(&cur, &mut snap, &owned);
         }
         super::shared_steps::validate_refs(&mut tx, ctx, &snap.body, Some(&cur)).await?;
+        super::parameters::validate_parameters(&snap.body, ctx.limits)?;
+        super::parameters::require_gate(&mut tx, ctx.limits, &snap.body, Some(&cur)).await?;
         let state =
             super::cases::state_for_write(&mut tx, ctx, &cur, &snap, VersionSource::Restore)
                 .await?;

@@ -323,7 +323,8 @@ a run.
 JSON report and independent of the status filter on the screen. For every item it shows the case, the
 executed version and its name, the status, assignee, executor, start and finish times, the item comment and
 the defect or issue, and every step with its status, actual result and comment. Print it from the browser or
-save it as PDF.
+save it as PDF. A parameterized case lists its iterations with their values, status, defect and recorded steps
+(see [Parameters](parameters.md#reports-and-earlier-runs)).
 
 ## Manual results in history and gates
 

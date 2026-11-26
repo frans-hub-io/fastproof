@@ -11785,6 +11785,63 @@
         }
       }
     },
+    "/api/v1/projects/{key}/results/{id}/signals": {
+      "get": {
+        "tags": [
+          "signals"
+        ],
+        "description": "The signals of a result's attempts by attempt and time (at most 500): pushed grid, CI and Kubernetes signals and the FastMock signals the analysis wrote (`unmatched`, `stub_error`, `slow`, `unexpected_calls`). `confidence` is `exact` when the signal names the attempt (trace id or client id) and `window` when only the attempt's time window matched. `detail` is data from the sender, shown as text. Needs `launches:read`.",
+        "operationId": "signals_of_result",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AttemptSignals"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{key}/results/{id}/similar": {
       "get": {
         "tags": [
@@ -15218,6 +15275,100 @@
             }
           },
           "428": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/signals": {
+      "post": {
+        "tags": [
+          "signals"
+        ],
+        "description": "Pushes signals about test attempts from a browser grid (`source: grid`: `session_crashed`, `browser_oom`, `startup_timeout`, `node_lost`, `evicted`), a CI system (`ci`: `runner_oom`, `pod_evicted`, `job_cancelled`) or Kubernetes (`k8s`: `pod_evicted`, `oom_killed`, `node_not_ready`). Each item names its attempt by `traceId` (32 hex characters, the trace id of the attempt's `traceparent`; optionally with `launchId`) or by `launchId` + `resultClientId` (the client id the reporter gave the attempt). A signal is matched to its attempt at once when the attempt exists, otherwise later (it waits at most two days). 1 to 1000 items, body at most 1 MiB, `at` within the last 7 days, `detail` a flat object of strings, numbers and booleans of at most 4 KiB, shown as text; at most 50 signals per attempt; duplicates (same source, kind, `at` and addressing) are refused per item. Refused items are listed with their index and code (`unknown_kind`, `bad_address`, `too_old`, `detail_too_large`, `attempt_full`, `duplicate`). Signals never change a defect. 409 `analysis_disabled` while Analysis is off; 429 `rate_limited` beyond `FASTPROOF_ANALYSIS_SIGNALS_PER_MINUTE` signals a minute per project. Needs `launches:write`.",
+        "operationId": "signals_push",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SignalPush"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignalsAccepted"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
             "content": {
               "application/json": {
                 "schema": {

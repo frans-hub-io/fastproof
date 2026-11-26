@@ -1904,6 +1904,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{key}/results/{id}/signals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description The signals of a result's attempts by attempt and time (at most 500): pushed grid, CI and Kubernetes signals and the FastMock signals the analysis wrote (`unmatched`, `stub_error`, `slow`, `unexpected_calls`). `confidence` is `exact` when the signal names the attempt (trace id or client id) and `window` when only the attempt's time window matched. `detail` is data from the sender, shown as text. Needs `launches:read`. */
+        get: operations["signals_of_result"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{key}/results/{id}/similar": {
         parameters: {
             query?: never;
@@ -2440,6 +2457,23 @@ export interface paths {
         put?: never;
         /** @description Makes the content of version `v` current as a new version (needs `If-Match`). */
         post: operations["restore_shared_step_version"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/signals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Pushes signals about test attempts from a browser grid (`source: grid`: `session_crashed`, `browser_oom`, `startup_timeout`, `node_lost`, `evicted`), a CI system (`ci`: `runner_oom`, `pod_evicted`, `job_cancelled`) or Kubernetes (`k8s`: `pod_evicted`, `oom_killed`, `node_not_ready`). Each item names its attempt by `traceId` (32 hex characters, the trace id of the attempt's `traceparent`; optionally with `launchId`) or by `launchId` + `resultClientId` (the client id the reporter gave the attempt). A signal is matched to its attempt at once when the attempt exists, otherwise later (it waits at most two days). 1 to 1000 items, body at most 1 MiB, `at` within the last 7 days, `detail` a flat object of strings, numbers and booleans of at most 4 KiB, shown as text; at most 50 signals per attempt; duplicates (same source, kind, `at` and addressing) are refused per item. Refused items are listed with their index and code (`unknown_kind`, `bad_address`, `too_old`, `detail_too_large`, `attempt_full`, `duplicate`). Signals never change a defect. 409 `analysis_disabled` while Analysis is off; 429 `rate_limited` beyond `FASTPROOF_ANALYSIS_SIGNALS_PER_MINUTE` signals a minute per project. Needs `launches:write`. */
+        post: operations["signals_push"];
         delete?: never;
         options?: never;
         head?: never;
@@ -16996,6 +17030,44 @@ export interface operations {
             };
         };
     };
+    signals_of_result: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AttemptSignals"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     results_similar: {
         parameters: {
             query?: {
@@ -19309,6 +19381,79 @@ export interface operations {
                 };
             };
             428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    signals_push: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SignalPush"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SignalsAccepted"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -21,6 +21,10 @@ use crate::state::AppState;
 pub const PAGE: usize = 500;
 pub const MAX_PAGES: usize = 4;
 pub const MAX_ITEMS: usize = 500;
+/// Bytes of an entry's path and query kept, at most (a journal can hold any request line).
+pub const MAX_URL_BYTES: usize = 4096;
+/// Bytes of an entry's method, stub id, trace id or space kept, at most.
+const MAX_FIELD_BYTES: usize = 256;
 
 /// One request FastMock answered.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ToSchema)]
@@ -109,23 +113,40 @@ fn label(v: &serde_json::Value, key_field: &str, name: &str, value_field: &str) 
         .map(str::to_string)
 }
 
+/// `s` cut to at most `max` bytes on a character boundary.
+fn cut(mut s: String, max: usize) -> String {
+    if s.len() > max {
+        let mut i = max;
+        while !s.is_char_boundary(i) {
+            i -= 1;
+        }
+        s.truncate(i);
+    }
+    s
+}
+
+/// One journal entry as kept in memory: every text field is bounded, so a page of a few huge
+/// entries cannot make a correlation (or the analysis reading many attempts) hold megabytes each.
 fn item(e: Entry) -> MockInteraction {
-    let url = if e.query.is_empty() {
-        e.path
-    } else {
-        format!("{}?{}", e.path, e.query.trim_start_matches('?'))
-    };
+    let whole_path = e.path.len() <= MAX_URL_BYTES;
+    let mut url = cut(e.path, MAX_URL_BYTES);
+    if whole_path && !e.query.is_empty() {
+        url.push('?');
+        url.push_str(e.query.trim_start_matches('?'));
+        url = cut(url, MAX_URL_BYTES);
+    }
+    let field = |v: Option<String>| v.map(|v| cut(v, MAX_FIELD_BYTES));
     MockInteraction {
         at: e.at,
-        method: e.method,
+        method: cut(e.method, MAX_FIELD_BYTES),
         url,
         status: e.status,
-        matched_stub: e.stub_id,
+        matched_stub: field(e.stub_id),
         near_miss: (!e.matched).then_some(true),
         fault: None,
         duration_ms: e.duration_ms,
-        trace_id: e.trace_id,
-        space: e.space,
+        trace_id: field(e.trace_id),
+        space: field(e.space),
     }
 }
 
@@ -272,5 +293,29 @@ mod tests {
         );
         assert!(trace_id_of("00-00000000000000000000000000000000-b7ad6b7169203331-01").is_none());
         assert!(trace_id_of("nope").is_none());
+    }
+
+    #[test]
+    fn journal_entries_are_bounded() {
+        let e: Entry = serde_json::from_value(serde_json::json!({
+            "at": "2026-11-25T10:00:00Z", "method": "G".repeat(10_000),
+            "path": format!("/{}", "é".repeat(100_000)), "query": "q=1", "status": 200,
+            "stubId": "s".repeat(10_000), "matched": true, "durationMs": 3,
+            "traceId": "t".repeat(10_000), "space": "x".repeat(10_000)
+        }))
+        .unwrap();
+        let i = item(e);
+        assert!(i.url.len() <= MAX_URL_BYTES && i.url.starts_with("/é"));
+        assert!(!i.url.contains('?'), "the query never follows a cut path");
+        assert!(i.method.len() <= MAX_FIELD_BYTES);
+        assert!(i.matched_stub.unwrap().len() <= MAX_FIELD_BYTES);
+        assert!(i.trace_id.unwrap().len() <= MAX_FIELD_BYTES);
+        assert!(i.space.unwrap().len() <= MAX_FIELD_BYTES);
+        let short: Entry = serde_json::from_value(serde_json::json!({
+            "at": "2026-11-25T10:00:00Z", "method": "GET", "path": "/users/1", "query": "?a=b",
+            "status": 404
+        }))
+        .unwrap();
+        assert_eq!(item(short).url, "/users/1?a=b");
     }
 }

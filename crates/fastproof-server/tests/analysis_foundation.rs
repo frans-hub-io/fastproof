@@ -636,7 +636,10 @@ async fn the_role_analyses_finished_launches() {
             .as_str()
             .unwrap_or_default();
         assert!(
-            reason == "not available" || (step == "logRules" && reason == "no log rules"),
+            reason == "not available"
+                || (step == "logRules" && reason == "no log rules")
+                || (step == "signals"
+                    && reason == "no FastMock settings and no signals to resolve"),
             "{a}"
         );
     }

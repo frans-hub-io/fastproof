@@ -4,8 +4,10 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use fastproof_tm_import::{
-    Format, ImportError, ImportedCase, ImportedValue, ParseLimits, ParseOptions, RowError,
-    StepsLayout, detect, parse_all, preview,
+    Format, ImportError, ImportedCase, ImportedKey, ImportedParameterRow, ImportedParameters,
+    ImportedRequirement, ImportedRequirementRef, ImportedSharedStep, ImportedStep, ImportedValue,
+    ParseLimits, ParseOptions, RowError, StepsLayout, detect, export, parse_all, parse_full,
+    preview,
 };
 
 fn fixture(name: &str) -> Vec<u8> {
@@ -639,4 +641,420 @@ fn qase_csv_suite_cycle_is_bounded() {
     let f = &cases[0].folder;
     assert_eq!(f.len(), 2, "{f:?}");
     assert_eq!(f[1].len(), ParseLimits::default().max_name_bytes + 1);
+}
+
+fn key(kind: &str, value: &str) -> ImportedKey {
+    ImportedKey {
+        kind: kind.into(),
+        value: value.into(),
+    }
+}
+
+#[test]
+fn ndjson_v2_records_come_with_their_types() {
+    let p = parse_full(
+        Format::FastproofNdjson,
+        &fixture("fastproof-v2.ndjson")[..],
+        &ParseOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(p.shared_steps.len(), 1);
+    let ss = &p.shared_steps[0];
+    assert_eq!((ss.number, ss.row), (Some(3), 2));
+    assert_eq!(ss.keys, vec![key("qase", "abc")]);
+    assert_eq!(ss.steps[1].steps[0].id, "s_l3");
+    assert_eq!(p.requirements.len(), 2);
+    assert_eq!(p.requirements[0].req_type, "epic");
+    assert_eq!(p.requirements[1].parent, Some(1));
+    assert_eq!(p.requirements[1].issue_key.as_deref(), Some("SHOP-9"));
+    assert_eq!(p.cases.len(), 1);
+    let c = &p.cases[0];
+    assert_eq!(c.steps[0].shared, Some(key("number", "3")));
+    assert!(c.steps[0].action.is_empty());
+    let pr = c.parameters.as_ref().unwrap();
+    assert_eq!(pr.rows.len(), 2);
+    assert!(!pr.rows[1].enabled);
+    assert_eq!(c.requirements[0].key, "REQ-2");
+    assert_eq!(c.requirements[0].origin.as_deref(), Some("ui"));
+    assert_eq!(
+        p.errors.iter().map(|e| e.row).collect::<Vec<_>>(),
+        vec![6, 7],
+        "an unknown or missing type is a row error: {:?}",
+        p.errors
+    );
+}
+
+#[test]
+fn ndjson_v2_new_records_have_their_own_limits() {
+    let few = |f: fn(&mut ParseLimits)| {
+        let mut l = ParseLimits::default();
+        f(&mut l);
+        ParseOptions {
+            limits: l,
+            ..Default::default()
+        }
+    };
+    let file = fixture("fastproof-v2.ndjson");
+    let e = parse_full(
+        Format::FastproofNdjson,
+        &file[..],
+        &few(|l| l.max_shared_steps = 0),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(
+            e,
+            ImportError::Limit {
+                limit: "maxSharedSteps",
+                ..
+            }
+        ),
+        "{e:?}"
+    );
+    let e = parse_full(
+        Format::FastproofNdjson,
+        &file[..],
+        &few(|l| l.max_requirements = 1),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(
+            e,
+            ImportError::Limit {
+                limit: "maxRequirements",
+                ..
+            }
+        ),
+        "{e:?}"
+    );
+    let p = parse_full(
+        Format::FastproofNdjson,
+        &file[..],
+        &few(|l| l.max_parameter_rows = 1),
+    )
+    .unwrap();
+    assert!(p.cases.is_empty());
+    assert!(
+        p.errors
+            .iter()
+            .any(|e| e.row == 5 && e.code == "limit_reached"),
+        "{:?}",
+        p.errors
+    );
+    let p = parse_full(
+        Format::FastproofNdjson,
+        &file[..],
+        &few(|l| l.max_shared_step_steps = 2),
+    )
+    .unwrap();
+    assert!(
+        p.shared_steps.is_empty(),
+        "3 steps in a shared step of at most 2"
+    );
+    assert!(p.errors.iter().any(|e| e.row == 2), "{:?}", p.errors);
+    let p = parse_full(
+        Format::FastproofNdjson,
+        &file[..],
+        &few(|l| l.max_parameter_value_bytes = 4),
+    )
+    .unwrap();
+    assert!(p.cases.is_empty() && p.errors.iter().any(|e| e.row == 5));
+}
+
+#[test]
+fn what_an_export_writes_an_import_reads() {
+    let shared = ImportedSharedStep {
+        number: Some(2),
+        keys: vec![key("testrail", "9")],
+        name: "Log in".into(),
+        description: "d".into(),
+        steps: vec![ImportedStep {
+            id: "s_a".into(),
+            action: "Open".into(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let req = ImportedRequirement {
+        number: Some(4),
+        title: "Pay".into(),
+        req_type: "story".into(),
+        status: Some("done".into()),
+        parent: Some(1),
+        issue_key: Some("SHOP-1".into()),
+        ..Default::default()
+    };
+    let case = ImportedCase {
+        number: Some(1),
+        name: "Buy".into(),
+        steps: vec![ImportedStep {
+            id: "s_r".into(),
+            shared: Some(key("number", "2")),
+            ..Default::default()
+        }],
+        parameters: Some(ImportedParameters {
+            columns: vec!["a".into()],
+            rows: vec![ImportedParameterRow {
+                id: "r_1".into(),
+                values: BTreeMap::from([("a".to_string(), "1".to_string())]),
+                enabled: false,
+            }],
+            generator: None,
+        }),
+        requirements: vec![ImportedRequirementRef {
+            key: "REQ-4".into(),
+            origin: Some("code".into()),
+            status: Some("proposed".into()),
+        }],
+        ..Default::default()
+    };
+    let mut file = export::ndjson_header("DEMO", "2026-11-26T00:00:00Z", Vec::new());
+    file += &export::ndjson_shared_step(&shared);
+    file += &export::ndjson_requirement(&req);
+    file += &export::ndjson_case(&case);
+    assert!(!file.contains("\"row\""), "{file}");
+    let p = parse_full(
+        Format::FastproofNdjson,
+        file.as_bytes(),
+        &ParseOptions::default(),
+    )
+    .unwrap();
+    assert!(p.errors.is_empty(), "{:?}", p.errors);
+    assert_eq!(p.shared_steps[0].steps, shared.steps);
+    assert_eq!(p.shared_steps[0].keys, shared.keys);
+    assert_eq!(p.requirements[0].req_type, "story");
+    assert_eq!(p.requirements[0].status.as_deref(), Some("done"));
+    assert_eq!(p.requirements[0].parent, Some(1));
+    let c = &p.cases[0];
+    assert_eq!(c.steps, case.steps);
+    assert_eq!(c.parameters, case.parameters);
+    assert_eq!(c.requirements, case.requirements);
+}
+
+#[test]
+fn csv_export_expands_shared_steps_and_parameters() {
+    let shared = ImportedSharedStep {
+        number: Some(2),
+        name: "Log in".into(),
+        steps: vec![
+            ImportedStep {
+                action: "Open the login page".into(),
+                ..Default::default()
+            },
+            ImportedStep {
+                action: "Sign in".into(),
+                expected: "Dashboard".into(),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let case = ImportedCase {
+        number: Some(1),
+        name: "Buy".into(),
+        steps: vec![
+            ImportedStep {
+                shared: Some(key("number", "2")),
+                ..Default::default()
+            },
+            ImportedStep {
+                action: "Pay with ${card}".into(),
+                ..Default::default()
+            },
+        ],
+        parameters: Some(ImportedParameters {
+            columns: vec!["card".into(), "note".into()],
+            rows: vec![
+                ImportedParameterRow {
+                    id: "r_1".into(),
+                    values: BTreeMap::from([
+                        ("card".to_string(), "visa".to_string()),
+                        ("note".to_string(), "a\nb".to_string()),
+                    ]),
+                    enabled: true,
+                },
+                ImportedParameterRow {
+                    id: "r_2".into(),
+                    values: BTreeMap::from([("card".to_string(), "amex".to_string())]),
+                    enabled: false,
+                },
+            ],
+            generator: None,
+        }),
+        ..Default::default()
+    };
+    let mut lookup = export::shared_lookup(std::slice::from_ref(&shared));
+    let line = export::csv_case(&case, &[], &mut lookup);
+    assert!(
+        line.contains("1. Open the login page\n2. Sign in\n3. Pay with ${card}"),
+        "{line}"
+    );
+    assert!(line.contains("card=visa; note=a b"), "{line}");
+    assert!(!line.contains("amex"), "a disabled row is left out: {line}");
+    assert!(export::csv_header(&[]).contains("Parameters"));
+    let nd = export::ndjson_case(&case);
+    assert!(
+        nd.contains("\"shared\"") && nd.contains("amex"),
+        "NDJSON keeps both: {nd}"
+    );
+}
+
+#[test]
+fn testrail_shared_step_ids_group_rows_and_references_become_requirements() {
+    let p = parse_full(
+        Format::TestrailCsv,
+        &fixture("testrail-shared.csv")[..],
+        &ParseOptions::default(),
+    )
+    .unwrap();
+    assert!(p.errors.is_empty(), "{:?}", p.errors);
+    assert_eq!(p.shared_steps.len(), 1, "defined once, by the first case");
+    let ss = &p.shared_steps[0];
+    assert_eq!(ss.keys, vec![key("testrail", "5")]);
+    assert_eq!(ss.steps.len(), 2);
+    assert_eq!(ss.steps[0].action, "Log in as a user");
+    assert_eq!(
+        ss.steps[0].expected, "Logged in",
+        "the first case's content"
+    );
+    assert!(ss.steps.iter().all(|s| s.shared.is_none()));
+    assert_eq!(p.cases.len(), 2);
+    let buy = &p.cases[0];
+    assert_eq!(
+        buy.steps.len(),
+        4,
+        "the rows stay, so an unknown shared step falls back to text"
+    );
+    assert_eq!(buy.steps[0].shared, None);
+    assert_eq!(buy.steps[1].shared, Some(key("testrail", "5")));
+    assert_eq!(buy.steps[2].shared, Some(key("testrail", "5")));
+    assert_eq!(buy.steps[3].shared, None);
+    assert!(buy.tags.contains(&"imported-shared-step".to_string()));
+    assert_eq!(
+        buy.requirements
+            .iter()
+            .map(|r| r.key.as_str())
+            .collect::<Vec<_>>(),
+        vec!["SHOP-1", "SHOP-2"]
+    );
+    assert_eq!(p.cases[1].steps[0].shared, Some(key("testrail", "5")));
+    assert_eq!(p.cases[1].requirements.len(), 1);
+}
+
+#[test]
+fn qase_json_shared_steps_and_parameters() {
+    let doc = r#"{"code":"SHOP","suites":[{"id":1,"title":"Cart","cases":[
+      {"id":7,"title":"Pay","steps":[
+        {"action":"Open","expected_result":"ok"},
+        {"action":"Log in","shared_step_hash":"h1","shared_step_nested_steps":[{"action":"Type user"},{"action":"Type pass"}]},
+        {"action":"Pay as {{User role}}","expected_result":"Paid"}],
+       "params":{"single":{"User role":["admin","guest"]},"group":[{"browser":"chrome","os":"linux"},{"browser":"firefox","os":"mac"}]}},
+      {"id":8,"title":"Other","steps":[{"action":"Log in","shared_step_hash":"h1"}],"params":{"Mode":["a","b"]}},
+      {"id":9,"title":"Odd","params":{"single":"what"}}]}]}"#;
+    let p = parse_full(Format::QaseJson, doc.as_bytes(), &ParseOptions::default()).unwrap();
+    assert!(p.errors.is_empty(), "{:?}", p.errors);
+    assert_eq!(p.shared_steps.len(), 1);
+    assert_eq!(p.shared_steps[0].keys, vec![key("qase", "h1")]);
+    assert_eq!(p.shared_steps[0].steps.len(), 2);
+    assert_eq!(p.shared_steps[0].steps[1].action, "Type pass");
+    let pay = &p.cases[0];
+    assert_eq!(pay.steps[1].shared, Some(key("qase", "h1")));
+    assert_eq!(pay.steps[2].action, "Pay as ${User_role}");
+    let pr = pay.parameters.as_ref().unwrap();
+    assert_eq!(pr.columns, vec!["User_role", "browser", "os"]);
+    assert_eq!(pr.rows.len(), 4);
+    assert!(pr.rows.iter().all(|r| r.enabled && r.id.starts_with("r_")));
+    assert!(pr.rows.iter().any(|r| r.values["User_role"] == "guest"
+        && r.values["browser"] == "firefox"
+        && r.values["os"] == "mac"));
+    assert!(
+        !pay.description.contains("Parameters"),
+        "{}",
+        pay.description
+    );
+    let other = &p.cases[1];
+    assert_eq!(other.steps[0].shared, Some(key("qase", "h1")));
+    assert_eq!(other.parameters.as_ref().unwrap().rows.len(), 2);
+    let odd = &p.cases[2];
+    assert!(odd.parameters.is_none());
+    assert!(
+        odd.description.contains("what"),
+        "an unknown shape stays as text: {}",
+        odd.description
+    );
+}
+
+#[test]
+fn qase_parameters_obey_the_limits() {
+    let doc = r#"{"suites":[{"title":"s","cases":[{"id":1,"title":"Big","params":{"a":["1","2","3"],"b":["1","2","3"]}}]}]}"#;
+    let opts = ParseOptions {
+        limits: ParseLimits {
+            max_parameter_rows: 8,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let p = parse_full(Format::QaseJson, doc.as_bytes(), &opts).unwrap();
+    assert!(p.cases.is_empty());
+    assert_eq!(p.errors[0].code, "limit_reached", "{:?}", p.errors);
+    let opts = ParseOptions {
+        limits: ParseLimits {
+            max_parameter_columns: 1,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let p = parse_full(Format::QaseJson, doc.as_bytes(), &opts).unwrap();
+    assert!(p.cases.is_empty() && p.errors.len() == 1, "{:?}", p.errors);
+}
+
+/// Review M2: a CSV export expands each reference into the shared step's text. 50 references
+/// to a 64 KiB shared step made a 3 MiB line from a few bytes of a case, and 50 000 such
+/// cases a 160 GB file. Expansion is charged now, per case and per export: past the budget a
+/// reference is a note, so the result is never much larger than what was stored.
+#[test]
+fn csv_expansion_of_shared_steps_is_charged_to_a_budget() {
+    let big = ImportedSharedStep {
+        number: Some(7),
+        name: "Big".into(),
+        steps: vec![ImportedStep {
+            action: "a".repeat(60 * 1024),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let case = ImportedCase {
+        number: Some(1),
+        name: "Many references".into(),
+        steps: (0..50)
+            .map(|_| ImportedStep {
+                shared: Some(key("number", "7")),
+                ..Default::default()
+            })
+            .collect(),
+        ..Default::default()
+    };
+    let mut lookup = export::SharedLookup::new(vec![big.clone()]);
+    let line = export::csv_case(&case, &[], &mut lookup);
+    assert!(line.len() < 1100 * 1024, "{} bytes", line.len());
+    assert_eq!(
+        line.matches(&"a".repeat(60 * 1024)).count(),
+        17,
+        "1 MiB per case"
+    );
+    assert!(
+        line.contains("Shared step SS-7 (not expanded"),
+        "{}",
+        &line[..200]
+    );
+    let mut small = export::SharedLookup::with_budget(vec![big], 3 * 61 * 1024);
+    let first = export::csv_case(&case, &[], &mut small);
+    let second = export::csv_case(&case, &[], &mut small);
+    assert_eq!(first.matches(&"a".repeat(60 * 1024)).count(), 3);
+    assert_eq!(
+        second.matches(&"a".repeat(60 * 1024)).count(),
+        0,
+        "the export budget is spent"
+    );
+    assert!(second.contains("SS-7 (not expanded"));
 }

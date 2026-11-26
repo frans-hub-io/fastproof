@@ -4,6 +4,11 @@
 //! `POST /api/uaa/oauth/token` (`grant_type=apitoken`), then `testcase/__search` (pages),
 //! `testcase/{id}`, `…/step` (normalised scenario, or the older `…/scenario`), `…/cfv`,
 //! `…/link`, `…/issue`, `testcase/attachment?testCaseId` and `…/attachment/{id}/content`.
+//! Shared steps (`sharedstep/{id}`, `…/step` or `…/scenario`) are fetched once, when a scenario
+//! step names one (`sharedStepId`), and parameters come from `testcase/{id}/parameter`; both
+//! are unconfirmed shapes read leniently, and a case whose shared step cannot be read keeps
+//! the steps as they are. Issue links also become requirement references (the importer links
+//! them when a requirement with that key exists).
 //! Paths start with `/api/rs`; when the first search answers 404, `/api` is used instead
 //! (newer versions, not confirmed).
 //!
@@ -15,8 +20,9 @@
 use std::time::Duration;
 
 use fastproof_tm_import::{
-    ImportedAttachment, ImportedCase, ImportedKey, ImportedLink, ImportedStep, ImportedValue,
-    map_status, rich,
+    ImportedAttachment, ImportedCase, ImportedKey, ImportedLink, ImportedParameters,
+    ImportedRequirementRef, ImportedSharedStep, ImportedStep, ImportedValue, map_status, params,
+    rich,
 };
 use reqwest::Method;
 use serde_json::Value;
@@ -90,6 +96,8 @@ pub struct TestOps<'a> {
     prefix: &'static str,
     /// Bytes received so far (charged against the import budget by the caller).
     pub received: u64,
+    /// Parameter limits checked while rows are built.
+    pub params: params::Caps,
 }
 
 fn text(v: &Value, k: &str) -> String {
@@ -171,6 +179,7 @@ impl<'a> TestOps<'a> {
             jwt: String::new(),
             prefix: "/api/rs",
             received: 0,
+            params: params::Caps::default(),
         };
         let form = url::form_urlencoded::Serializer::new(String::new())
             .append_pair("grant_type", "apitoken")
@@ -322,6 +331,12 @@ impl<'a> TestOps<'a> {
                 }
             }
         }
+        if c.steps.iter().any(|s| s.shared.is_some()) {
+            c.tags.push("imported-shared-step".into());
+        }
+        if let Some(p) = self.get(&format!("/testcase/{id}/parameter")).await? {
+            c.parameters = parameters_of(&p, &self.params);
+        }
         if let Some(Value::Array(cfv)) = self.get(&format!("/testcase/{id}/cfv")).await? {
             for x in cfv.iter().take(1000) {
                 let field = x
@@ -351,6 +366,18 @@ impl<'a> TestOps<'a> {
             if let Some(Value::Array(links)) = self.get(&format!("/testcase/{id}/{path}")).await? {
                 for l in links.iter().take(100) {
                     let url = text(l, "url");
+                    if kind == "issue" {
+                        let key = text(l, "name");
+                        if !key.is_empty()
+                            && key.len() <= 200
+                            && !c.requirements.iter().any(|r| r.key == key)
+                        {
+                            c.requirements.push(ImportedRequirementRef {
+                                key,
+                                ..Default::default()
+                            });
+                        }
+                    }
                     if url.starts_with("https://") || url.starts_with("http://") {
                         c.links.push(ImportedLink {
                             name: text(l, "name"),
@@ -386,6 +413,44 @@ impl<'a> TestOps<'a> {
         Ok(Some(c))
     }
 
+    /// A shared step with its steps (no attachments, no nested shared steps); `None` when
+    /// TestOps does not have it or it has no steps.
+    pub async fn shared_step(
+        &mut self,
+        id: i64,
+    ) -> Result<Option<ImportedSharedStep>, TestOpsError> {
+        let Some(v) = self.get(&format!("/sharedstep/{id}")).await? else {
+            return Ok(None);
+        };
+        let scenario = match self.get(&format!("/sharedstep/{id}/step")).await? {
+            Some(s) => Some(s),
+            None => self.get(&format!("/sharedstep/{id}/scenario")).await?,
+        };
+        let mut attachments = Vec::new();
+        let mut steps = scenario
+            .map(|s| scenario_steps(&s, &mut attachments))
+            .unwrap_or_default();
+        plain(&mut steps);
+        if steps.is_empty() {
+            return Ok(None);
+        }
+        let name = text(&v, "name");
+        Ok(Some(ImportedSharedStep {
+            keys: vec![ImportedKey {
+                kind: "testops".into(),
+                value: id.to_string(),
+            }],
+            name: if name.trim().is_empty() {
+                format!("Shared step {id}")
+            } else {
+                name.chars().take(500).collect()
+            },
+            description: rich(&text(&v, "description")),
+            steps,
+            ..Default::default()
+        }))
+    }
+
     /// The content of an attachment, at most `max` bytes.
     pub async fn attachment(
         &mut self,
@@ -414,6 +479,70 @@ impl<'a> TestOps<'a> {
     }
 }
 
+fn plain(steps: &mut [ImportedStep]) {
+    for s in steps {
+        s.shared = None;
+        s.attachments.clear();
+        plain(&mut s.steps);
+    }
+}
+
+/// Parameters of a test case: a list (or a page with `content`) of `{name, values: [..]}`
+/// (a value is a text or an object with `name` or `value`) or `{name, value}`; the rows are
+/// every combination of the values. Past `caps` (columns, values per column, value bytes,
+/// rows) the parameters come back as [`params::over_limit`], so the case is refused without
+/// the rows being built.
+pub fn parameters_of(v: &Value, caps: &params::Caps) -> Option<ImportedParameters> {
+    let list = v
+        .as_array()
+        .or_else(|| v.get("content").and_then(Value::as_array))?;
+    let mut columns: Vec<(String, Vec<String>)> = Vec::new();
+    for item in list.iter().take(50) {
+        let name = [text(item, "name"), name_of(item, "parameter")]
+            .into_iter()
+            .find(|n| !n.trim().is_empty())?;
+        let one = |x: &Value| match x {
+            Value::String(s) => Some(s.clone()),
+            Value::Number(n) => Some(n.to_string()),
+            Value::Bool(b) => Some(b.to_string()),
+            o @ Value::Object(_) => [text(o, "name"), text(o, "value")]
+                .into_iter()
+                .find(|t| !t.is_empty()),
+            _ => None,
+        };
+        let values: Vec<String> = match item.get("values").and_then(Value::as_array) {
+            Some(a) => a.iter().take(caps.rows + 1).filter_map(one).collect(),
+            None => item.get("value").and_then(one).into_iter().collect(),
+        };
+        if values.is_empty() {
+            continue;
+        }
+        if values.iter().any(|x| x.len() > caps.value_bytes) {
+            return Some(params::over_limit(params::Over::Value, caps));
+        }
+        match columns.iter_mut().find(|(n, _)| *n == name) {
+            Some((_, v)) => v.extend(values),
+            None => {
+                if columns.len() >= caps.columns {
+                    return Some(params::over_limit(params::Over::Columns, caps));
+                }
+                columns.push((name, values))
+            }
+        }
+        if columns.iter().any(|(_, v)| v.len() > caps.rows) {
+            return Some(params::over_limit(params::Over::Rows, caps));
+        }
+    }
+    let names: Vec<String> = columns.iter().map(|(n, _)| n.clone()).collect();
+    let clean = params::unique_names(&names);
+    let columns: Vec<(String, Vec<String>)> = clean
+        .into_iter()
+        .zip(columns)
+        .map(|(n, (_, v))| (n, v))
+        .collect();
+    params::cartesian(&columns, caps)
+}
+
 /// Steps of a scenario: the normalised form `{root: {children}, scenarioSteps: {id: {body,
 /// children, expectedResult?, expectedResultId?, attachmentId?}}, attachments: {id: {name}}}`
 /// or the older tree `{steps: [{name, steps, expectedResult, attachments}]}`.
@@ -431,6 +560,19 @@ pub fn scenario_steps(s: &Value, attachments: &mut Vec<ImportedAttachment>) -> V
         return normalised(root, all, names, 1, &mut budget, attachments, &mut loose);
     }
     tree(s.get("steps").unwrap_or(&Value::Null), 1, attachments)
+}
+
+/// The id of the shared step a scenario node stands for.
+fn shared_id(v: &Value) -> Option<String> {
+    match v.get("sharedStepId")? {
+        Value::Number(n) => Some(n.to_string()).filter(|s| s != "0"),
+        Value::String(s)
+            if s.bytes().all(|b| b.is_ascii_digit()) && !s.is_empty() && s.len() < 19 =>
+        {
+            Some(s.clone())
+        }
+        _ => None,
+    }
 }
 
 fn child_ids(v: &Value) -> Vec<String> {
@@ -554,6 +696,13 @@ fn normalised(
         let mut step = ImportedStep {
             action: rich(&text(v, "body")),
             expected: rich(&expected),
+            shared: (depth == 1)
+                .then(|| shared_id(v))
+                .flatten()
+                .map(|value| ImportedKey {
+                    kind: "testops".into(),
+                    value,
+                }),
             ..Default::default()
         };
         let mut own = Vec::new();
@@ -645,6 +794,78 @@ mod tests {
         let old: Value = serde_json::json!({"steps": [{"name": "A", "steps": [{"name": "B", "expectedResult": "ok"}]}]});
         let s = scenario_steps(&old, &mut a);
         assert_eq!(s[0].steps[0].expected, "ok");
+    }
+
+    #[test]
+    fn shared_steps_parameters_and_issue_keys() {
+        let n: Value = serde_json::json!({"root": {"children": [1, 2]}, "scenarioSteps": {
+            "1": {"body": "Log in", "sharedStepId": 31, "children": [3]},
+            "2": {"body": "Pay", "sharedStepId": 0},
+            "3": {"body": "Nested", "sharedStepId": 32}}});
+        let mut a = Vec::new();
+        let s = scenario_steps(&n, &mut a);
+        assert_eq!(
+            s[0].shared,
+            Some(ImportedKey {
+                kind: "testops".into(),
+                value: "31".into()
+            })
+        );
+        assert!(s[1].shared.is_none(), "id 0 is no shared step");
+        assert!(
+            s[0].steps[0].shared.is_none(),
+            "only the top level references"
+        );
+        let caps = params::Caps::default();
+        let p = parameters_of(
+            &serde_json::json!([
+                {"name": "Browser", "values": ["chrome", {"name": "firefox"}]},
+                {"parameter": {"name": "User role"}, "value": "admin"},
+                {"name": "Empty", "values": []}
+            ]),
+            &caps,
+        )
+        .unwrap();
+        assert_eq!(p.columns, vec!["Browser", "User_role"]);
+        assert_eq!(p.rows.len(), 2);
+        assert!(parameters_of(&serde_json::json!({"content": []}), &caps).is_none());
+        assert!(parameters_of(&serde_json::json!("nope"), &caps).is_none());
+    }
+
+    /// Review M1: a column of 10 000 values next to one long value made 10 001 rows that
+    /// each held the long value (gigabytes from one 16 MiB answer). The limits are checked
+    /// before rows are built, and the result is small parameters the case check refuses.
+    #[test]
+    fn testops_parameters_past_the_limits_are_not_built() {
+        let caps = params::Caps::default();
+        let l = fastproof_tm_import::ParseLimits::default();
+        let many: Vec<String> = (0..10_000).map(|i| i.to_string()).collect();
+        let cases = [
+            serde_json::json!([{"name": "a", "values": many}, {"name": "b", "value": "x".repeat(2000)}]),
+            serde_json::json!([{"name": "a", "values": many}, {"name": "b", "value": "y"}]),
+            serde_json::json!(
+                (0..30)
+                    .map(|i| serde_json::json!({"name": format!("c{i}"), "value": "v"}))
+                    .collect::<Vec<_>>()
+            ),
+            serde_json::json!(
+                (0..12)
+                    .map(|i| serde_json::json!({"name": format!("c{i}"), "values": ["1", "2"]}))
+                    .collect::<Vec<_>>()
+            ),
+        ];
+        for (i, v) in cases.iter().enumerate() {
+            let p = parameters_of(v, &caps).unwrap();
+            assert!(
+                p.rows.len() <= caps.rows + 1,
+                "case {i}: {} rows",
+                p.rows.len()
+            );
+            assert!(
+                fastproof_tm_import::check_parameters(&p, &l).is_err(),
+                "case {i} is refused"
+            );
+        }
     }
 
     /// M3: an expected result whose node lists itself many times expands once per node, within

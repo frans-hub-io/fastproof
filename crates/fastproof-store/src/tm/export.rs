@@ -6,17 +6,26 @@
 use std::collections::HashMap;
 
 use fastproof_tm_import::{
-    ImportedAttachment, ImportedCase, ImportedFieldDef, ImportedKey, ImportedLink, ImportedStep,
-    ImportedValue,
+    ImportedAttachment, ImportedCase, ImportedFieldDef, ImportedGenerator, ImportedKey,
+    ImportedLink, ImportedParameterRow, ImportedParameters, ImportedRequirement,
+    ImportedRequirementRef, ImportedSharedStep, ImportedStep, ImportedValue,
 };
+use futures::TryStreamExt;
 use sqlx::Row;
 use uuid::Uuid;
 
 use super::cases::{CaseSelection, filter_numbers, selection_numbers};
 use super::fields::field_defs;
 use super::lookup::{CASE_COLS, case_row};
-use super::{CaseFieldDef, CaseFilter, CaseRow, CaseStep, FieldValue, TmError, TmResult};
+use super::{
+    CaseFieldDef, CaseFilter, CaseParameters, CaseRow, CaseStep, FieldValue, TmError, TmResult,
+};
 use crate::Store;
+
+/// Bytes of shared step content one export holds (it keeps them for the CSV expansion).
+pub const MAX_EXPORT_SHARED_BYTES: usize = 64 * 1024 * 1024;
+/// Requirements read per page of an export.
+pub const REQUIREMENT_PAGE: i64 = 1000;
 
 /// An attachment of an exported case.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -32,6 +41,12 @@ pub struct ExportAttachment {
 pub struct ExportSource {
     pub numbers: Vec<i64>,
     pub defs: Vec<CaseFieldDef>,
+    /// The export covers every case of the project: all shared steps and requirements go with
+    /// it. Otherwise only the shared steps the cases reference and the requirements they
+    /// cover (with their ancestors).
+    pub all: bool,
+    /// The requirements of a partial export (`None`: all).
+    pub requirement_ids: Option<Vec<Uuid>>,
     folders: HashMap<Uuid, (Option<Uuid>, String)>,
 }
 
@@ -101,11 +116,35 @@ pub fn attachment_entry(id: Uuid, name: &str) -> String {
     )
 }
 
+/// Parameters of a case body in the shape of the NDJSON records.
+pub fn imported_parameters(p: &CaseParameters) -> ImportedParameters {
+    ImportedParameters {
+        columns: p.columns.clone(),
+        rows: p
+            .rows
+            .iter()
+            .map(|r| ImportedParameterRow {
+                id: r.id.clone(),
+                values: r.values.clone(),
+                enabled: r.enabled,
+            })
+            .collect(),
+        generator: p.generator.as_ref().map(|g| ImportedGenerator {
+            mode: g.mode.as_str().to_string(),
+            values: g.values.clone(),
+        }),
+    }
+}
+
 fn steps_of(steps: &[CaseStep], names: &HashMap<Uuid, String>) -> Vec<ImportedStep> {
     steps
         .iter()
         .map(|s| ImportedStep {
             id: s.id.clone(),
+            shared: s.shared.as_ref().map(|r| ImportedKey {
+                kind: "number".into(),
+                value: r.number.to_string(),
+            }),
             action: s.action.clone(),
             expected: s.expected.clone(),
             data: s.data.clone(),
@@ -193,10 +232,30 @@ impl Store {
                 .fetch_all(&mut *conn)
                 .await?;
         let defs = field_defs(&mut conn, project_id, false).await?;
+        let all = query.is_none_or(|q| q.trim().is_empty()) && *filter == CaseFilter::default();
+        let requirement_ids = if all {
+            None
+        } else {
+            Some(
+                sqlx::query_scalar(
+                    "select distinct a from requirement_links l \
+                     join requirements r on r.id = l.requirement_id \
+                     join cases c on c.id = l.case_id \
+                     cross join lateral unnest(r.path_ids) as a \
+                     where c.project_id = $1 and c.number = any($2) and r.archived_at is null",
+                )
+                .bind(project_id)
+                .bind(&numbers)
+                .fetch_all(&mut *conn)
+                .await?,
+            )
+        };
         conn.commit().await?;
         Ok(ExportSource {
             numbers,
             defs,
+            all,
+            requirement_ids,
             folders: rows.into_iter().map(|(id, p, n)| (id, (p, n))).collect(),
         })
     }
@@ -248,6 +307,22 @@ impl Store {
         .bind(&ids)
         .fetch_all(&mut *conn)
         .await?;
+        let reqs: Vec<(Uuid, i64, String, String)> = sqlx::query_as(
+            "select l.case_id, r.number, l.origin, l.status from requirement_links l \
+             join requirements r on r.id = l.requirement_id \
+             where l.case_id = any($1) and r.archived_at is null order by r.number",
+        )
+        .bind(&ids)
+        .fetch_all(&mut *conn)
+        .await?;
+        let mut reqs_of: HashMap<Uuid, Vec<ImportedRequirementRef>> = HashMap::new();
+        for (c, n, origin, status) in reqs {
+            reqs_of.entry(c).or_default().push(ImportedRequirementRef {
+                key: format!("REQ-{n}"),
+                origin: Some(origin),
+                status: Some(status),
+            });
+        }
         let mut att_of: HashMap<Uuid, Vec<ExportAttachment>> = HashMap::new();
         for r in att {
             let blob: Option<String> = r.try_get("blob_key")?;
@@ -305,9 +380,137 @@ impl Store {
                         old_id: Some(a.id.to_string()),
                     })
                     .collect(),
+                parameters: c.body.parameters.as_ref().map(imported_parameters),
+                requirements: reqs_of.remove(&c.id).unwrap_or_default(),
             };
             out.push((ic, atts));
         }
         Ok(out)
+    }
+
+    /// The shared steps of an export: those the cases of `numbers` reference at their head
+    /// version and, when the export covers every case, all that are not archived. Ordered by
+    /// number; at most `max_bytes` of steps JSON in all (409 `limit_reached`), read row by row
+    /// so that no more than that is held.
+    pub async fn export_shared_steps(
+        &self,
+        project_id: Uuid,
+        src: &ExportSource,
+        max_bytes: usize,
+    ) -> TmResult<Vec<ImportedSharedStep>> {
+        let mut conn = self.pool.acquire().await?;
+        let any: bool =
+            sqlx::query_scalar("select exists (select 1 from shared_steps where project_id = $1)")
+                .bind(project_id)
+                .fetch_one(&mut *conn)
+                .await?;
+        if !any {
+            return Ok(Vec::new());
+        }
+        let mut out: Vec<(Uuid, ImportedSharedStep)> = Vec::new();
+        let mut bytes = 0usize;
+        {
+            let mut rows = sqlx::query(
+                "with refs as (select distinct (jsonb_path_query(c.body, '$.steps[*].shared.id') #>> '{}')::uuid as id \
+                   from cases c where c.project_id = $1 and c.number = any($2)) \
+                 select s.id, s.number, s.name, s.description, s.steps from shared_steps s \
+                 where s.project_id = $1 and (s.id in (select id from refs) or ($3 and s.archived_at is null)) \
+                 order by s.number",
+            )
+            .bind(project_id)
+            .bind(&src.numbers)
+            .bind(src.all)
+            .fetch(&mut *conn);
+            while let Some(r) = rows.try_next().await? {
+                let steps: sqlx::types::Json<Vec<CaseStep>> = r.try_get("steps")?;
+                let steps = steps_of(&steps.0, &HashMap::new());
+                bytes += serde_json::to_vec(&steps)?.len();
+                if bytes > max_bytes {
+                    return Err(TmError::limit("maxExportSharedStepBytes", max_bytes as u64));
+                }
+                out.push((
+                    r.try_get("id")?,
+                    ImportedSharedStep {
+                        row: 0,
+                        number: Some(r.try_get("number")?),
+                        keys: Vec::new(),
+                        name: r.try_get("name")?,
+                        description: r.try_get("description")?,
+                        steps,
+                    },
+                ));
+            }
+        }
+        let ids: Vec<Uuid> = out.iter().map(|(id, _)| *id).collect();
+        let keys: Vec<(Uuid, String, String)> = sqlx::query_as(
+            "select shared_step_id, kind, value from shared_step_keys where shared_step_id = any($1) order by kind, value",
+        )
+        .bind(&ids)
+        .fetch_all(&mut *conn)
+        .await?;
+        let mut keys_of: HashMap<Uuid, Vec<ImportedKey>> = HashMap::new();
+        for (id, kind, value) in keys {
+            keys_of
+                .entry(id)
+                .or_default()
+                .push(ImportedKey { kind, value });
+        }
+        Ok(out
+            .into_iter()
+            .map(|(id, mut x)| {
+                x.keys = keys_of.remove(&id).unwrap_or_default();
+                x
+            })
+            .collect())
+    }
+
+    /// One page of the requirements of an export, parents before children (ordered by depth,
+    /// then number); `after` is the position of the last one of the previous page.
+    pub async fn export_requirements(
+        &self,
+        project_id: Uuid,
+        src: &ExportSource,
+        after: Option<(i16, i64)>,
+        limit: i64,
+    ) -> TmResult<Vec<((i16, i64), ImportedRequirement)>> {
+        let (d, n) = after.unwrap_or((0, 0));
+        let rows = sqlx::query(
+            "select r.number, r.depth, r.title, r.description, r.type, r.status, p.number as parent, \
+               r.tracker_id, r.issue_key, r.url, r.external_state \
+             from requirements r left join requirements p on p.id = r.parent_id and p.archived_at is null \
+             where r.project_id = $1 and r.archived_at is null \
+               and ($2::uuid[] is null or r.id = any($2)) and (r.depth, r.number) > ($3, $4) \
+             order by r.depth, r.number limit $5",
+        )
+        .bind(project_id)
+        .bind(src.requirement_ids.as_deref())
+        .bind(d)
+        .bind(n)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter()
+            .map(|r| {
+                let number: i64 = r.try_get("number")?;
+                let depth: i16 = r.try_get("depth")?;
+                Ok((
+                    (depth, number),
+                    ImportedRequirement {
+                        row: 0,
+                        number: Some(number),
+                        title: r.try_get("title")?,
+                        description: r.try_get("description")?,
+                        req_type: r.try_get("type")?,
+                        status: Some(r.try_get("status")?),
+                        parent: r.try_get("parent")?,
+                        tracker_id: r.try_get("tracker_id")?,
+                        issue_key: r.try_get("issue_key")?,
+                        url: r.try_get("url")?,
+                        external_state: r.try_get("external_state")?,
+                    },
+                ))
+            })
+            .collect::<sqlx::Result<_>>()
+            .map_err(Into::into)
     }
 }

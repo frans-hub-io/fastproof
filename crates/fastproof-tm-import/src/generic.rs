@@ -114,7 +114,7 @@ pub fn suggest(header: &str) -> Target {
         "fullname" => Target::FullName,
         "automated" => Target::Automated,
         "attachments" | "files" => Target::Attachments,
-        "" => Target::Ignore,
+        "" | "parameters" => Target::Ignore,
         _ => Target::Field(header.trim().to_string()),
     }
 }

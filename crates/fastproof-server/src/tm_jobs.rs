@@ -33,6 +33,9 @@ use crate::testops::{TestOps, check_base_url};
 
 /// Cases applied per transaction.
 pub const BATCH: usize = 500;
+/// How often a running import extends its lease and saves the maps of the shared steps and
+/// requirements it created, also between batches of cases.
+const RECORDS_SAVE_EVERY: Duration = Duration::from_secs(3);
 /// Import workers per replica.
 const IMPORT_WORKERS: usize = 2;
 /// Export workers per replica (a separate pool: exports never hold imports back).
@@ -256,6 +259,12 @@ fn parse_options(s: &AppState, p: &ImportParams) -> ParseOptions {
             max_tags: l.max_tags,
             max_name_bytes: l.max_name_bytes,
             max_folder_depth: l.max_folder_depth,
+            max_shared_steps: l.max_shared_steps,
+            max_shared_step_steps: l.max_shared_step_steps,
+            max_requirements: l.max_requirements,
+            max_parameter_columns: l.max_parameter_columns,
+            max_parameter_rows: l.max_parameter_rows,
+            max_parameter_value_bytes: l.max_parameter_value_bytes,
         },
     }
 }
@@ -369,6 +378,16 @@ async fn dry_run(s: &AppState, job: &ClaimedJob, owner: &str) -> anyhow::Result<
                     .field_defs_from_source(&s.store, &ctx, &d, false)
                     .await?
             }
+            Item::SharedStep(x) => {
+                s.store
+                    .import_shared_step(&mut planner, &ctx, &x, false)
+                    .await?
+            }
+            Item::Requirement(x) => {
+                s.store
+                    .import_requirement(&mut planner, &ctx, &x, false)
+                    .await?
+            }
         }
         if last.elapsed() > Duration::from_secs(5) {
             last = Instant::now();
@@ -429,9 +448,15 @@ async fn testops_client<'a>(
         )
         .await
         .map_err(|e| ImportError::invalid(e.to_string()))?;
-    Ok(TestOps::connect(&s.egress, base, token.expose())
+    let mut c = TestOps::connect(&s.egress, base, token.expose())
         .await
-        .map_err(|e| ImportError::invalid(e.0))?)
+        .map_err(|e| ImportError::invalid(e.0))?;
+    c.params = fastproof_tm_import::params::Caps {
+        columns: s.cfg.tm.max_parameter_columns,
+        rows: s.cfg.tm.max_parameter_rows,
+        value_bytes: s.cfg.tm.max_parameter_value_bytes,
+    };
+    Ok(c)
 }
 
 /// Fetches the cases of a TestOps project into an NDJSON blob; `None` when cancelled.
@@ -460,6 +485,7 @@ async fn fetch_testops(
     let mut page = 0usize;
     let mut count = 0usize;
     let mut seen = HashSet::new();
+    let mut shared_seen: HashSet<i64> = HashSet::new();
     let mut last = Instant::now();
     loop {
         let (ids, more) = c
@@ -475,6 +501,26 @@ async fn fetch_testops(
                 return Err(ImportError::limit("maxImportRows", limits.max_import_rows).into());
             }
             if let Some(case) = c.case(id).await.map_err(|e| ImportError::invalid(e.0))? {
+                for st in &case.steps {
+                    let Some(k) = st.shared.as_ref().filter(|k| k.kind == "testops") else {
+                        continue;
+                    };
+                    let Ok(sid) = k.value.parse::<i64>() else {
+                        continue;
+                    };
+                    if shared_seen.len() >= limits.max_shared_steps || !shared_seen.insert(sid) {
+                        continue;
+                    }
+                    if let Some(x) = c
+                        .shared_step(sid)
+                        .await
+                        .map_err(|e| ImportError::invalid(e.0))?
+                    {
+                        out.write_all(
+                            fastproof_tm_import::export::ndjson_shared_step(&x).as_bytes(),
+                        )?;
+                    }
+                }
                 out.write_all(fastproof_tm_import::export::ndjson_case(&case).as_bytes())?;
             }
             if c.received > limits.max_import_bytes {
@@ -707,6 +753,7 @@ async fn apply(s: &AppState, job: &ClaimedJob, owner: &str) -> anyhow::Result<()
         .await?;
     planner.keep_numbers = params.keep_numbers;
     planner.max_number = params.max_number;
+    planner.rec.load(job.params.get("importMaps"));
     let resume = job.progress.done.max(0) as usize;
     if resume > 0 {
         if let Some(r) = &job.report {
@@ -757,6 +804,7 @@ async fn apply(s: &AppState, job: &ClaimedJob, owner: &str) -> anyhow::Result<()
     );
     let mut seen = 0usize;
     let mut batch: Vec<ImportedCase> = Vec::with_capacity(BATCH);
+    let mut saved = Instant::now();
     while let Some(item) = rx.recv().await {
         match item {
             Item::Case(c) => {
@@ -775,6 +823,34 @@ async fn apply(s: &AppState, job: &ClaimedJob, owner: &str) -> anyhow::Result<()
                 planner
                     .field_defs_from_source(&s.store, &ctx, &d, true)
                     .await?
+            }
+            Item::SharedStep(x) => {
+                let before = planner.report_marks();
+                s.store
+                    .import_shared_step(&mut planner, &ctx, &x, true)
+                    .await?;
+                if resume > 0 {
+                    planner.restore_marks(before);
+                }
+            }
+            Item::Requirement(x) => {
+                let before = planner.report_marks();
+                s.store
+                    .import_requirement(&mut planner, &ctx, &x, true)
+                    .await?;
+                if resume > 0 {
+                    planner.restore_marks(before);
+                }
+            }
+        }
+        if saved.elapsed() >= RECORDS_SAVE_EVERY {
+            saved = Instant::now();
+            if !s
+                .store
+                .save_import_records(&mut planner, job.id, owner)
+                .await?
+            {
+                return Ok(());
             }
         }
         if batch.len() >= BATCH {
@@ -865,6 +941,35 @@ async fn export(s: &AppState, job: &ClaimedJob, owner: &str) -> anyhow::Result<(
         .as_bytes(),
     )?;
     csv.write_all(fastproof_tm_import::export::csv_header(&keys).as_bytes())?;
+    let shared = s
+        .store
+        .export_shared_steps(
+            job.project_id,
+            &src,
+            fastproof_store::tm::export::MAX_EXPORT_SHARED_BYTES,
+        )
+        .await?;
+    for x in &shared {
+        nd.write_all(fastproof_tm_import::export::ndjson_shared_step(x).as_bytes())?;
+    }
+    let mut lookup = fastproof_tm_import::export::SharedLookup::new(shared);
+    let mut after = None;
+    loop {
+        let page = s
+            .store
+            .export_requirements(
+                job.project_id,
+                &src,
+                after,
+                fastproof_store::tm::export::REQUIREMENT_PAGE,
+            )
+            .await?;
+        let Some((last, _)) = page.last() else { break };
+        after = Some(*last);
+        for (_, r) in &page {
+            nd.write_all(fastproof_tm_import::export::ndjson_requirement(r).as_bytes())?;
+        }
+    }
     let mut files: Vec<(String, PathBuf)> = Vec::new();
     let mut budget: u64 = 0;
     let mut done = 0i64;
@@ -872,7 +977,9 @@ async fn export(s: &AppState, job: &ClaimedJob, owner: &str) -> anyhow::Result<(
     for chunk in src.numbers.chunks(500) {
         for (c, atts) in s.store.export_page(job.project_id, &src, chunk).await? {
             nd.write_all(fastproof_tm_import::export::ndjson_case(&c).as_bytes())?;
-            csv.write_all(fastproof_tm_import::export::csv_case(&c, &keys).as_bytes())?;
+            csv.write_all(
+                fastproof_tm_import::export::csv_case(&c, &keys, &mut lookup).as_bytes(),
+            )?;
             if params.attachments {
                 for a in atts {
                     budget += a.size.max(0) as u64;

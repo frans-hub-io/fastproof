@@ -153,6 +153,21 @@ over their size `400 invalid_markdown` with the field's `path`, and names `400`.
 | `FASTPROOF_TM_MAX_NAME_BYTES` | `500` | 4096 | Names of cases, folders, fields and plans |
 | `FASTPROOF_TM_MULTIPLYING_WRITES_PER_MINUTE` | `30` | 100 000 | Writes that multiply work, per caller and minute on one replica: starting a plan launch, adding run items, changing plan items, plan sync, creating a plan with a filter, bulk case changes, deleting a folder with a `mode`, and every MCP write tool. Over it they answer `429 rate_limited` with `Retry-After` |
 | `FASTPROOF_TM_MAX_OPEN_PLAN_LAUNCHES` | `20` | 100 000 | Launches with an open manual run that one caller started from plans, per project; one more, or reopening a closed one, answers `409 limit_reached` (`maxOpenPlanLaunches`) until one is closed |
+| `FASTPROOF_TM_MAX_SHARED_STEPS` | `5000` | 1 000 000 | [Shared steps](../guide/shared-steps.md) per project, archived ones included (`maxSharedSteps`) |
+| `FASTPROOF_TM_MAX_SHARED_REFS` | `50` | 1000 | `shared` steps in one case (`maxSharedRefs`) |
+| `FASTPROOF_TM_MAX_SHARED_STEP_STEPS` | `100` | 10 000 | Steps of one shared step, all levels (depth at most 2) |
+| `FASTPROOF_TM_MAX_SHARED_STEP_BYTES` | `65536` (64 KiB) | 16 MiB | The steps of one shared step as JSON |
+| `FASTPROOF_TM_MAX_PARAMETER_COLUMNS` | `20` | 1000 | Columns of the [parameters](../guide/parameters.md) of a case (`maxParameterColumns`) |
+| `FASTPROOF_TM_MAX_PARAMETER_ROWS` | `1000` | 100 000 | Rows of the parameters of a case, and rows a generator may produce (`maxParameterRows`) |
+| `FASTPROOF_TM_MAX_PARAMETER_VALUE_BYTES` | `1024` (1 KiB) | 1 MiB | One parameter value |
+| `FASTPROOF_TM_MAX_RUN_ITERATIONS` | `50000` | 10 000 000 | Iterations of one launch, all parameterized run items together (`maxRunIterations`); a launch, run items or a rerun that would pass it answers `409 limit_reached` before anything is written |
+| `FASTPROOF_TM_MAX_REQUIREMENTS` | `50000` | 10 000 000 | [Requirements](../guide/requirements.md) per project, archived ones included (`maxRequirements`) |
+| `FASTPROOF_TM_MAX_REQUIREMENT_DEPTH` | `6` | 100 | Levels of the requirement tree (the top level is 1) |
+| `FASTPROOF_TM_MAX_REQUIREMENT_CASES` | `500` | 1 000 000 | Links of one requirement to cases, proposed ones included (`maxRequirementCases`) |
+| `FASTPROOF_TM_MAX_SAVED_QUERIES` | `100` | 100 000 | [Saved queries](../guide/query-language.md#saved-queries) per owner and entity; shared ones are limited to twice this per project |
+| `FASTPROOF_TM_MAX_BULK_REVIEW` | `500` | 100 000 | Versions in one bulk review (`POST .../reviews/bulk`) |
+| `FASTPROOF_TM_GATE` | `auto` | | `auto`, `open` or `closed`: when new data formats may be written while replicas of an older version run (see [Upgrading](upgrading.md#next-release-test-management-gate-and-review)) |
+| `FASTPROOF_TM_GATE_SETTLE_SECONDS` | `600` | 2 592 000 | How long after the upgrade migration the `auto` gate waits for replicas that wrote no level |
 
 Fixed caps that are not settings:
 
@@ -165,8 +180,23 @@ Fixed caps that are not settings:
 | Zip export jobs queued or running | 2 per caller and project, 4 per project | `409 export_busy` (`details.limit`: `exportsPerCaller` or `exportsPerProject`) |
 | Pending AI suggestions per case | 20 | `409 limit_reached` (`maxPendingSuggestions`) |
 | Unreviewed AI draft cases per principal and project | 200 | `409 limit_reached` (`maxUnreviewedAiDrafts`) |
+| Unreviewed AI draft shared steps per principal and project | 200 | `409 limit_reached` (`maxUnreviewedAiDrafts`) |
+| Draft requirements made by one AI principal per project (`origin ai`, `draft`, not archived) | 200 | `409 limit_reached` (`maxAiDraftRequirements`) |
+| Open link proposals (`status proposed`) of one requirement | 50, and they count toward `FASTPROOF_TM_MAX_REQUIREMENT_CASES` | `409 limit_reached` (`maxProposedLinks`) |
+| Open link proposals of one AI principal per project, over all requirements | 1000 | `409 limit_reached` (`maxAiProposedLinks`) |
+| Cases per `propose_requirement_links` call, requirements per `draft_requirements_from_text` call | 20 each | tool error |
+| Requirements a case lists, requirement keys one result names | 1000, 50 | the rest is left out |
+| Coverage `launchIds`, window days | 50, 365 | `400` |
+| Coverage exports queued or running | 2 per caller, 4 per project | `409 export_busy` |
+| Tracker import of requirements: issues, query, text, dry runs kept waiting | 1000, 1000 bytes, 8 MiB, 3 per project | the job fails or the oldest dry run is cancelled |
 | Disabled rules per principal and project before `create_rule_draft` refuses | 20 | tool error `limit_reached` (`maxRuleDrafts`) |
 | One line of a Playwright trace read by `trace_actions` | 1 MiB | longer lines are skipped |
+
+FPQL has fixed limits of its own (query 4096 bytes, 64 conditions, 8 levels, 1000 values in a list, 5 s per
+statement; see [Query language](../guide/query-language.md#limits)). A coverage page with a scope, a requirement search,
+`validate_query`, a case list with a query, a bulk review and an inline of a shared step take the per-caller
+heavy slots (`FASTPROOF_HEAVY_QUERIES_PER_CALLER`). Votes, transitions, bulk reviews, dispatches, inlines, parameter
+generation, requirement links and the MCP writes take the per-caller write rate.
 
 Zip exports run in worker slots of their own, so a queue of exports never delays imports. Zip export
 creation, `trace_actions`, starting a plan launch, adding run items, changing plan items, plan sync, creating

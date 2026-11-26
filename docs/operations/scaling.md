@@ -370,9 +370,12 @@ backend that answered; the exit code does not depend on the targets.
 token as `fastproof bench` (an admin token: it creates and deletes projects). It creates a project with a
 random key (or `--project`), then:
 
-1. 30 custom fields of mixed types and a folder tree of 300 folders up to 5 levels deep;
+1. 30 custom fields of mixed types and a folder tree of 300 folders up to 5 levels deep, then 500
+   [shared steps](../guide/shared-steps.md);
 2. 20,000 cases with 12 steps on average (some nested), random fields and tags, 4 more versions of 2,000 of
-   them (`PUT` with `If-Match`) and 200 saves of a case with 100 steps;
+   them (`PUT` with `If-Match`) and 200 saves of a case with 100 steps. The plain cases reference the shared
+   steps, two per case on average, and 5,000 of them the same one (the hot step); 2,000 cases are
+   [parameterized](../guide/parameters.md) with 8 rows each;
 3. an allure-results upload of 5,000 tests on `main`, 2,000 of them with `ALLURE_ID` labels naming existing
    cases, and waits until code sync has linked them;
 4. 200 samples each of a list page (50) with two filters, a tree level with counts and a case;
@@ -382,12 +385,36 @@ random key (or `--project`), then:
    written separately, then a final status;
 7. the automated part uploaded into the plan launch, and the manual run closed;
 8. an NDJSON export of all cases, and a dry run plus apply of a generated 20,000-case TestRail CSV into a
-   second project (`<key>-imp`).
+   second project (`<key>-imp`);
+9. the night-2 phase: 3,000 [requirements](../guide/requirements.md) (60 epics, 300 features, the rest stories)
+   with 25,000 links to cases; coverage pages of 50 requirements in the default scope; 20 FPQL queries of 4 to
+   6 conditions, each listed (page of 50) and validated with its count; ten saves of the hot shared step; a
+   second managed plan of 5,000 cases (the 2,000 parameterized ones by a tag filter, the rest by number) and a
+   launch from it (16,000 iterations, shared steps pinned), the probe case with 5 shared steps and 20
+   iterations opened and its iteration steps written, and the coverage page of the plan scope; then review is
+   switched on, 500 cases are edited (each becomes pending), the review queue is read and the 500 versions
+   are approved in one bulk request (review is switched off again).
 
 It prints p50, p95 and maximum latency per operation next to the targets, phase durations and the first
 errors; the exit code is 1 only when requests failed, not when a target is missed. Both projects are deleted
 at the end unless `--keep` is given. Every count has an option (`fastproof bench tm --help`); the data is
 generated from `--seed` while it is sent, so the client stays small (about 30 MiB).
+
+Requirements are linked with thousands of calls that take the per-caller write rate, so run the server under
+test with `FASTPROOF_TM_MULTIPLYING_WRITES_PER_MINUTE=100000`, and with `FASTPROOF_TM_GATE=open` on an
+installation of one replica (parameters and shared steps are gated formats, see
+[Upgrading](upgrading.md#next-release-test-management-gate-and-review)).
+
+!!! warning "Only on a server of its own"
+    Run `bench tm` against a server and database set up for the bench, never against an installation people
+    or CI use: it writes tens of thousands of cases, links and results, and the settings above switch off
+    protections for every caller of that server. The write rate is what stops a runaway script or a
+    prompt-injected agent; keep `FASTPROOF_TM_MULTIPLYING_WRITES_PER_MINUTE` at its default (or near it) on
+    production, and never set `FASTPROOF_TM_GATE=open` on an installation with more than one replica. The night-2 counts have options
+(`--shared-steps`, `--shared-hot-cases`, `--parameterized`, `--parameter-rows`, `--requirements`,
+`--requirement-links`, `--fpql-queries`, `--n2-plan-cases`, `--review-votes`); `--shared-steps 0` leaves the
+night-2 data out. The report also prints the load average (`/proc/loadavg`) of the machine the bench ran on
+before and after the run, which says how far to trust the numbers when the server shares the machine.
 
 ```bash
 FASTPROOF_URL=https://fastproof.example.com FASTPROOF_TOKEN_FILE=admin-token fastproof bench tm
@@ -407,6 +434,47 @@ writes per second, still far busier than 50 people.
 | Launch from a plan of 5,000 cases | < 3 s | 81 to 87 ms | (same phase) |
 | Export 23,000 cases as NDJSON | < 20 s | 1.8 to 2.5 s | |
 | Import 20,000 TestRail CSV cases (dry run + apply) | < 60 s | 13 to 14 s | |
+
+Night-2 operations in the same run (20,000 cases, 500 shared steps, 2,000 parameterized cases of 8 rows, 3,000
+requirements with 25,000 links; testers flat out):
+
+| Operation | Target p95 | Measured p95 |
+|---|---|---|
+| List page (50) with an FPQL query of 4 to 6 conditions (20 queries) | < 150 ms (< 500 ms at 200,000 cases) | 11 ms |
+| `validate_query` with the count (20 queries) | < 200 ms | 28 ms |
+| Save the shared step used by 5,000 cases | < 100 ms | 6 ms |
+| Launch from a plan of 5,000 cases with shared steps and 16,020 iterations | < 3 s | 1.4 s |
+| Open a run item with 5 shared steps and 20 iterations | < 80 ms | 6 ms |
+| Write an iteration step | < 50 ms | 3 ms |
+| Coverage page of 50 requirements, default scope | < 300 ms | 145 ms |
+| Coverage page of 50 requirements, plan scope | < 1 s | 176 ms |
+| Review queue page of 50 | < 150 ms | 4 ms |
+| Bulk approval of 500 versions | < 2 s | 412 ms |
+
+These are the first measurements of these operations (release build, development VM of 10 CPUs: the server
+pinned to 4 of them, the bench to four others, PostgreSQL 18 on the same VM; load average 1.3 before the run
+and 5.6 after it, the bench's own load included). The run took 134 s and made 90,274 requests without an
+error. Everything is far inside its target, so read the numbers as a baseline to compare later releases
+with, not as a limit. Saving a shared step does not rewrite the cases that use it, so that save does not grow
+with the number of users. Dispatching a plan to CI is not in the bench: its time is mostly the provider's, and
+the bench has no CI to call.
+
+The 200,000-case stress for a bench stand (the default server limit of 200,000 cases per project is raised,
+and the rate limit for writes that multiply work is lifted for the run):
+
+```bash
+FASTPROOF_TM_MAX_CASES=400000 FASTPROOF_TM_MULTIPLYING_WRITES_PER_MINUTE=100000 FASTPROOF_TM_GATE=open \
+  fastproof serve
+
+FASTPROOF_URL=https://bench.example.com FASTPROOF_TOKEN_FILE=admin-token \
+  fastproof bench tm --cases 200000 --folders 3000 --version-sample 20000 --save-sample 2000 \
+  --samples 500 --parallel 32 --read-parallel 8 --no-export --wait-timeout 7200
+```
+
+`--no-export` skips the NDJSON export, which stops at 50,000 cases (`maxExportCases`). With 200,000 cases the
+report holds the FPQL list to < 500 ms. Cases are created at about 500 a second, so plan for an hour or
+less. The other counts stay at the 20,000-case scenario, since the targets for plans, runs, iterations and
+requirements are defined at that size.
 
 Measured with the release build on one development VM, the server limited to 4 CPUs and sharing the machine
 with PostgreSQL 18 and the bench; the server's peak memory was about 180 MiB. A step write locks only its run

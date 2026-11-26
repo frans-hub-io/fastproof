@@ -43,6 +43,18 @@ function linksText(links: readonly CaseLink[]): string {
   return links.map((l) => `${l.type}: ${l.name} <${l.url}>`).join('\n');
 }
 
+/**
+ * The parameters of a body as text, one line per row, so a change of columns, values, row order or `enabled` (an AI
+ * suggestion of parameters among them) shows in every diff. JSON keeps values with `,` or `=` unambiguous.
+ */
+export function parametersText(p: CaseSnapshot['body']['parameters']): string {
+  if (!p) return '';
+  const lines = [`columns: ${JSON.stringify(p.columns)}`];
+  for (const r of p.rows) lines.push(`${r.enabled ? 'row' : 'row (disabled)'} ${r.id}: ${JSON.stringify(p.columns.map((c) => r.values[c] ?? ''))}`);
+  if (p.generator) lines.push(`generator: ${p.generator.mode} ${JSON.stringify(p.generator.values)}`);
+  return lines.join('\n');
+}
+
 const PARTS: StepPartChange['part'][] = ['action', 'expected', 'data', 'attachments'];
 
 function partText(s: CaseStep, part: StepPartChange['part']): string {
@@ -65,6 +77,7 @@ export function diffSnapshots(a: CaseSnapshot, b: CaseSnapshot, fieldLabels: Rec
   push('preconditions', 'Preconditions', a.body.preconditions, b.body.preconditions);
   push('tags', 'Tags', [...a.tags].sort().join(', '), [...b.tags].sort().join(', '));
   push('links', 'Links', linksText(a.body.links), linksText(b.body.links));
+  push('parameters', 'Parameters', parametersText(a.body.parameters), parametersText(b.body.parameters));
   const keys = [...new Set([...Object.keys(a.fields), ...Object.keys(b.fields)])].sort();
   for (const k of keys) push(`fields.${k}`, fieldLabels[k] ?? k, fieldText(a.fields[k]), fieldText(b.fields[k]));
 

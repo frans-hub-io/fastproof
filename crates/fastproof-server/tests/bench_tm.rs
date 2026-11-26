@@ -12,7 +12,14 @@ async fn bench_tm_runs_every_phase() {
     let Some(db) = TestDb::new().await else {
         return;
     };
-    let s = Server::start(&db).await;
+    let s = Server::start_with(
+        &db,
+        &[
+            ("FASTPROOF_TM_GATE", "open"),
+            ("FASTPROOF_TM_MULTIPLYING_WRITES_PER_MINUTE", "100000"),
+        ],
+    )
+    .await;
     let tok = s.dir.path().join("token");
     std::fs::write(&tok, ADMIN_TOKEN).unwrap();
     let a = TmBenchArgs {
@@ -42,6 +49,16 @@ async fn bench_tm_runs_every_phase() {
         parallel: 4,
         read_parallel: 2,
         wait_timeout: 120,
+        shared_steps: 12,
+        shared_hot_cases: 8,
+        parameterized: 6,
+        parameter_rows: 4,
+        requirements: 30,
+        requirement_links: 60,
+        fpql_queries: 8,
+        n2_plan_cases: 20,
+        review_votes: 10,
+        no_export: false,
     };
     let r = run(a).await.unwrap();
     eprintln!("{}", r.render());
@@ -80,7 +97,26 @@ async fn bench_tm_runs_every_phase() {
         "manual and automated results in the plan launch: {}",
         r.launch_results
     );
-    assert_eq!(r.exported_cases, 70);
+    assert_eq!(
+        r.exported_cases,
+        70 + 12,
+        "cases and the 12 shared step records of the v2 export"
+    );
+    assert_eq!(r.shared_steps, 12);
+    assert_eq!(r.parameterized_cases, 6);
+    assert_eq!((r.requirements_created, r.requirement_links_made), (30, 60));
+    assert_eq!(count("shared.create"), 12);
+    assert_eq!(count("requirement.create"), 30);
+    assert_eq!(count("cases.list.fpql"), 8);
+    assert_eq!(count("query.validate"), 8);
+    assert_eq!(count("shared.save.hot"), 10);
+    assert_eq!(count("plan.launch.n2"), 1);
+    assert!(r.n2_run_items >= 7, "{}", r.n2_run_items);
+    assert_eq!(r.n2_iterations, 6 * 4 + 20);
+    assert_eq!(count("run.item.get.n2"), 5);
+    assert_eq!(count("iteration.step"), 20 * 3);
+    assert_eq!(count("review.bulk"), 1);
+    assert_eq!(r.review_applied, 10);
     assert_eq!(r.imported_cases, 25);
     for key in ["tmb", "tmb-imp"] {
         let (st, _) = s.get(&format!("/api/v1/projects/{key}"), ADMIN_TOKEN).await;

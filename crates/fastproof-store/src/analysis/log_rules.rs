@@ -209,7 +209,7 @@ pub fn excerpt(line: &str, at: Option<usize>) -> String {
 /// Characters that change how text around them is shown without showing themselves: the
 /// bidirectional embeddings, overrides and isolates and the zero-width characters. An excerpt
 /// drops them so a log line cannot reorder or hide what a reader sees.
-fn invisible(c: char) -> bool {
+pub(crate) fn invisible(c: char) -> bool {
     matches!(
         c,
         '\u{061c}'

@@ -1,4 +1,4 @@
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { projectPath, request } from './client';
 import type { components } from './schema.gen';
 import { tmk, writeVersioned, type RunItem, type Versioned } from './tm';
@@ -56,5 +56,21 @@ export function usePatchRunIteration(key: string, itemId: string) {
       void qc.invalidateQueries({ queryKey: tmk.runItems(key, v.value.launchId) });
       void qc.invalidateQueries({ queryKey: tmk.launch(key, v.value.launchId) });
     },
+  });
+}
+
+/** One iteration with all its step results (`GET /run-items/{id}` leaves them out of later iterations of a big item). */
+export function getRunIteration(key: string, itemId: string, rowId: string, executionNo?: number): Promise<RunIteration> {
+  const q = executionNo === undefined ? '' : `?executionNo=${String(executionNo)}`;
+  return request<RunIteration>(`${projectPath(key)}/run-items/${enc(itemId)}/iterations/${enc(rowId)}${q}`);
+}
+
+/** The full iteration, read again when the item's revision changes; `enabled` only while the item's copy omits its steps. */
+export function useRunIteration(key: string, itemId: string, rowId: string, executionNo: number, revision: number, enabled: boolean) {
+  return useQuery({
+    queryKey: ['tm', 'run-iteration', key, itemId, rowId, executionNo, revision],
+    queryFn: () => getRunIteration(key, itemId, rowId, executionNo),
+    enabled,
+    placeholderData: (prev, prevQuery) => (prevQuery?.queryKey[4] === rowId ? prev : undefined),
   });
 }

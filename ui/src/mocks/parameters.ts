@@ -1,7 +1,7 @@
 import { http, HttpResponse, type HttpHandler } from 'msw';
 import type { CaseParameters, ParameterGenerate, RunIteration, RunIterationPatch, RunStepWrite } from '../api/parameters';
 import type { CaseStep, CaseWrite, RunStatus } from '../api/tm';
-import { COLUMN_RE, newRowId, placeholders } from '../lib/tm/parameters';
+import { COLUMN_RE, newRowId, placeholders, substitute, valuesLabel } from '../lib/tm/parameters';
 import { mockRunItemView, paramHooks, tmState } from './tm';
 import { ME, TM_PROJECT, type MockRunItem } from './tmFixtures';
 
@@ -15,7 +15,11 @@ interface MockIterations {
   executionNo: number;
   columns: string[];
   iterations: RunIteration[];
+  history: Map<number, RunIteration[]>;
 }
+
+/** Like the server's size budget on `GET /run-items/{id}`: step results of later iterations are left out. */
+const OMIT_AFTER = 25;
 
 const mem = new Map<string, MockIterations>();
 
@@ -67,6 +71,7 @@ function enabledIterations(p: CaseParameters): RunIteration[] {
       executedBy: null,
       startedAt: null,
       finishedAt: null,
+      defect: null,
       stepResults: [],
     }));
 }
@@ -76,7 +81,7 @@ function stateOf(r: MockRunItem): MockIterations | undefined {
   const m = mem.get(r.id);
   if (m && m.executionNo !== r.executionNo) {
     m.executionNo = r.executionNo;
-    m.iterations = m.iterations.map((it) => ({ ...it, status: 'untested', comment: '', resultId: null, executedBy: null, startedAt: null, finishedAt: null, stepResults: [] }));
+    m.iterations = m.iterations.map((it) => ({ ...it, status: 'untested', comment: '', resultId: null, executedBy: null, startedAt: null, finishedAt: null, defect: null, stepResults: [] }));
   }
   return m;
 }
@@ -141,12 +146,14 @@ function derive(r: MockRunItem, m: MockIterations, bump = true): void {
 paramHooks.added = (r, c) => {
   const p = c.body.parameters;
   if (!p || !p.columns.length || !p.rows.some((x) => x.enabled)) return;
-  mem.set(r.id, { executionNo: r.executionNo, columns: [...p.columns], iterations: enabledIterations(p) });
+  mem.set(r.id, { executionNo: r.executionNo, columns: [...p.columns], iterations: enabledIterations(p), history: new Map() });
 };
 
 paramHooks.view = (r, v) => {
   const m = stateOf(r);
-  return m ? { ...v, iterationCount: m.iterations.length, iterations: structuredClone(m.iterations), parameterColumns: [...m.columns] } : v;
+  if (!m) return v;
+  const iterations = structuredClone(m.iterations).map((it) => (it.position > OMIT_AFTER && it.stepResults.length ? { ...it, stepResults: [], stepResultsOmitted: true } : it));
+  return { ...v, iterationCount: m.iterations.length, iterations, parameterColumns: [...m.columns] };
 };
 
 paramHooks.summary = (r, s) => {
@@ -167,6 +174,104 @@ paramHooks.patch = (r, b) => {
   }
   derive(r, m, false);
   return 'handled';
+};
+
+function stepAt(steps: readonly CaseStep[], path: string): CaseStep | undefined {
+  let list = steps;
+  let found: CaseStep | undefined;
+  for (const part of path.split('.')) {
+    found = list[Number(part) - 1];
+    if (!found) return undefined;
+    list = found.steps;
+  }
+  return found;
+}
+
+function label(m: MockIterations, it: RunIteration): string {
+  return valuesLabel(m.columns, it.values);
+}
+
+function failingStep(r: MockRunItem, it: RunIteration): string {
+  const f = it.stepResults.find((s) => s.status === 'failed' || s.status === 'blocked');
+  if (!f) return '';
+  const step = stepAt(r.steps, f.path);
+  return `\nStep ${f.path}: ${substitute(step?.action ?? '', it.values)}\nExpected: ${substitute(step?.expected ?? '', it.values)}\nActual: ${f.actual}`;
+}
+
+paramHooks.defect = (r, b) => {
+  const m = stateOf(r);
+  if (!m) return b.rowId === undefined ? null : err(400, 'bad_request', 'rowId: the run item has no iterations');
+  const rowId = typeof b.rowId === 'string' ? b.rowId : null;
+  const targets = rowId ? m.iterations.filter((x) => x.rowId === rowId) : m.iterations.filter((x) => x.status === 'failed' || x.status === 'blocked');
+  if (rowId && !targets.length) return err(404, 'not_found', 'iteration not found');
+  const final = targets.filter((x) => x.resultId);
+  if (!final.length) return err(409, 'run_item_not_final', rowId ? 'the iteration has no final status yet' : 'no iteration of the run item is failed or blocked yet');
+  const body = Object.fromEntries(Object.entries(b).filter(([k]) => k !== 'rowId'));
+  for (const it of final) it.defect = { ...body, at: now(), by: ME };
+  r.defect = m.iterations.find((x) => x.defect)?.defect ?? null;
+  r.revision++;
+  r.updatedAt = now();
+  return HttpResponse.json(mockRunItemView(r, TM_PROJECT), { headers: { ETag: `"r${String(r.revision)}"` } });
+};
+
+paramHooks.issue = (r, rowId) => {
+  const m = stateOf(r);
+  const head = `TC-${String(r.caseNumber)} ${r.name}`;
+  if (!m) return rowId ? err(400, 'bad_request', 'rowId: the run item has no iterations') : null;
+  if (rowId) {
+    const it = m.iterations.find((x) => x.rowId === rowId);
+    if (!it) return err(404, 'not_found', 'iteration not found');
+    const f = it.stepResults.find((s) => s.status === 'failed' || s.status === 'blocked');
+    return { title: `${head}: iteration #${String(it.position)} (${label(m, it)})${f ? ` step ${f.path} ${f.status}` : ` ${it.status}`}`, description: `Iteration #${String(it.position)}: ${label(m, it)} (${it.status})${failingStep(r, it)}` };
+  }
+  const bad = m.iterations.filter((x) => x.status === 'failed' || x.status === 'blocked');
+  return { title: `${head}: ${String(bad.length)} of ${String(m.iterations.length)} iterations not passed`, description: bad.slice(0, 20).map((it) => `Iteration #${String(it.position)}: ${label(m, it)} (${it.status})${failingStep(r, it)}`).join('\n\n') };
+};
+
+paramHooks.report = (r) => {
+  const m = stateOf(r);
+  if (!m) return null;
+  return {
+    parameterColumns: [...m.columns],
+    iterations: m.iterations.map((it) => ({
+      rowId: it.rowId,
+      position: it.position,
+      values: it.values,
+      status: it.status,
+      comment: it.comment,
+      executedBy: it.executedBy,
+      startedAt: it.startedAt,
+      finishedAt: it.finishedAt,
+      defect: it.defect ?? null,
+      steps: it.stepResults.map((s) => {
+        const step = stepAt(r.steps, s.path);
+        return { path: s.path, action: substitute(step?.action ?? '', it.values), expected: substitute(step?.expected ?? '', it.values), status: s.status, actual: s.actual, comment: s.comment };
+      }),
+    })),
+  };
+};
+
+paramHooks.closeSkip = (r) => {
+  const m = stateOf(r);
+  if (!m) return;
+  let changed = false;
+  for (const it of m.iterations) {
+    if (it.status !== 'untested' && it.status !== 'in_progress') continue;
+    setStatus(it, 'skipped');
+    changed = true;
+  }
+  if (changed) derive(r, m);
+};
+
+paramHooks.rerun = (r) => {
+  const m = stateOf(r);
+  if (m) m.history.set(r.executionNo, structuredClone(m.iterations));
+};
+
+paramHooks.execution = (itemId, executionNo) => {
+  const m = mem.get(itemId);
+  const its = m?.history.get(executionNo);
+  return m && its ? { iterations: its.slice(0, 100), iterationCount: its.length, parameterColumns: [...m.columns] } : null;
 };
 
 paramHooks.validate = (b: CaseWrite) => {
@@ -254,6 +359,15 @@ export const parametersHandlers: HttpHandler[] = [
       });
     } else rows = pairwise(names, lists);
     return HttpResponse.json({ rows: rows.map((values) => ({ id: newRowId(), values, enabled: true })) });
+  }),
+
+  http.get(`${P}/run-items/:id/iterations/:row`, ({ params, request }) => {
+    const f = find(String(params.key), String(params.id));
+    if (!f) return err(404, 'not_found', 'run item not found');
+    const no = Number(new URL(request.url).searchParams.get('executionNo') ?? f.r.executionNo);
+    const list = no === f.r.executionNo ? f.m.iterations : f.m.history.get(no);
+    const it = list?.find((x) => x.rowId === params.row);
+    return it ? HttpResponse.json(structuredClone(it)) : err(404, 'not_found', 'iteration not found');
   }),
 
   http.put(`${P}/run-items/:id/iterations/:row/steps/:path`, async ({ params, request }) => {

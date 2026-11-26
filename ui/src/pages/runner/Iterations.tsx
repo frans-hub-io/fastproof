@@ -1,17 +1,19 @@
 import { Button, Card, Group, Menu, Modal, SimpleGrid, Stack, Table, Text, Textarea, Tooltip, UnstyledButton } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
-import { IconChevronLeft, IconChevronRight, IconListCheck } from '@tabler/icons-react';
+import { IconBug, IconChevronLeft, IconChevronRight, IconListCheck } from '@tabler/icons-react';
 import { useMediaQuery } from '@mantine/hooks';
 import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import { errorMessage, projectPath } from '../../api/client';
-import { patchRunIteration, putIterationStep, type RunIteration } from '../../api/parameters';
+import { patchRunIteration, putIterationStep, useRunIteration, type RunIteration } from '../../api/parameters';
 import { etagOf, getVersioned, isConflict, patchRunItem, tmk, type RunItem, type RunStatus, type StepStatus, type Versioned } from '../../api/tm';
 import { isTypingTarget } from '../../lib/keys';
-import { substituteHtml, valuesLabel } from '../../lib/tm/parameters';
+import { newBudget, substituteHtml, valuesLabel } from '../../lib/tm/parameters';
+import { defectInfo } from '../../lib/tm/ui';
 import { effectiveStatuses, flattenSteps, RUN_STATUS_LABEL, suggestedStatus, untestedLeaves } from '../../lib/tm/steps';
 import { CaseHtml } from '../cases/CaseHtml';
 import { RunStatusBadge } from '../cases/common';
+import { DefectDrawer } from './DefectDrawer';
 import { SharedHead, StatusButtons } from './RunSteps';
 import { htmlFor } from './types';
 
@@ -104,9 +106,14 @@ export function Iterations({ projectKey, launchId, item, readOnly = false, onAnn
   const [comment, setComment] = useState<{ row: string; text: string } | null>(null);
   const [applyAll, setApplyAll] = useState<RunStatus | null>(null);
   const [busy, setBusy] = useState(false);
+  const [defect, setDefect] = useState<null | 'row' | 'item'>(null);
   const mobile = useMediaQuery('(max-width: 48em)');
   const idx = item && pos?.item === item.id ? Math.min(pos.idx, Math.max(0, its.length - 1)) : firstOpen(its);
-  const it = its[idx];
+  const row = its[idx];
+  const omitted = !!row?.stepResultsOmitted;
+  const whole = useRunIteration(projectKey, item?.id ?? '', row?.rowId ?? '', item?.executionNo ?? 0, item?.revision ?? 0, !!item && omitted);
+  const it = row && omitted && whole.data ? { ...row, stepResults: whole.data.stepResults, stepResultsOmitted: false } : row;
+  const loadingSteps = omitted && !whole.data;
   const say = (m: string) => onAnnounce?.(m);
 
   useEffect(() => {
@@ -118,6 +125,11 @@ export function Iterations({ projectKey, launchId, item, readOnly = false, onAnn
     const onKey = (e: KeyboardEvent) => {
       if (e.defaultPrevented || isTypingTarget(e.target) || e.ctrlKey || e.metaKey || e.altKey) return;
       if (document.querySelector('[role="dialog"]')) return;
+      if (e.key === 'd' && !readOnly && row && FINAL.includes(row.status)) {
+        e.preventDefault();
+        setDefect('row');
+        return;
+      }
       if (e.key !== '[' && e.key !== ']') return;
       e.preventDefault();
       const next = Math.max(0, Math.min(its.length - 1, idx + (e.key === ']' ? 1 : -1)));
@@ -141,7 +153,11 @@ export function Iterations({ projectKey, launchId, item, readOnly = false, onAnn
   const untested = untestedLeaves(item.steps, statusMap);
   const flat = flattenSteps(item.steps);
   const values = it.values;
-  const html = (s: string | undefined) => substituteHtml(s ?? '', values);
+  const budget = newBudget();
+  const html = (s: string | undefined) => substituteHtml(s ?? '', values, budget);
+  const itemDefect = defectInfo(item.defect);
+  const rowDefect = defectInfo(it.defect);
+  const notPassed = its.filter((x) => x.status === 'failed' || x.status === 'blocked').length;
   const refresh = () => void qc.invalidateQueries({ queryKey: tmk.runItem(projectKey, item.id) });
   const afterItem = (v: Versioned<RunItem>) => {
     qc.setQueryData(tmk.runItem(projectKey, item.id), v);
@@ -247,6 +263,11 @@ export function Iterations({ projectKey, launchId, item, readOnly = false, onAnn
                   ]
                 </Button>
               </Tooltip>
+              <Tooltip position="bottom" multiline w={220} label="A defect on every failed or blocked iteration">
+                <Button size="compact-xs" variant="subtle" leftSection={<IconBug size={12} />} disabled={readOnly || notPassed === 0} onClick={() => setDefect('item')} data-testid="item-defect">
+                  Defect…
+                </Button>
+              </Tooltip>
               <Menu withinPortal position="bottom-end">
                 <Menu.Target>
                   <Button size="compact-xs" variant="subtle" leftSection={<IconListCheck size={12} />} disabled={readOnly || busy} data-testid="iterations-apply-all">
@@ -264,6 +285,12 @@ export function Iterations({ projectKey, launchId, item, readOnly = false, onAnn
               </Menu>
             </Group>
           </Group>
+          {itemDefect && (
+            <Text size="xs" data-testid="item-defect-info">
+              Defect: {itemDefect.label}
+              {itemDefect.issue ? ` · ${itemDefect.issue}` : ''}
+            </Text>
+          )}
           <Strip its={its} current={idx} columns={item.parameterColumns} onPick={(i) => setPos({ item: item.id, idx: i })} />
         </Stack>
       </Card>
@@ -274,12 +301,26 @@ export function Iterations({ projectKey, launchId, item, readOnly = false, onAnn
               <Text fw={600}>Iteration {it.position}</Text>
               <RunStatusBadge status={it.status} />
             </Group>
-            {it.executedBy && (
-              <Text size="xs" c="dimmed">
-                by {it.executedBy}
-              </Text>
-            )}
+            <Group gap="xs">
+              {it.executedBy && (
+                <Text size="xs" c="dimmed">
+                  by {it.executedBy}
+                </Text>
+              )}
+              <Tooltip position="bottom-end" multiline w={220} label={FINAL.includes(it.status) ? 'Defect for this iteration (d)' : 'Finish the iteration first: a defect belongs to its result'}>
+                <Button size="compact-xs" variant="default" leftSection={<IconBug size={12} />} disabled={readOnly || !FINAL.includes(it.status)} onClick={() => setDefect('row')} data-testid="iteration-defect">
+                  Defect
+                </Button>
+              </Tooltip>
+            </Group>
           </Group>
+          {rowDefect && (
+            <Text size="xs" data-testid="iteration-defect-info">
+              Defect: {rowDefect.label}
+              {rowDefect.issue ? ` · ${rowDefect.issue}` : ''}
+              {rowDefect.comment ? ` · ${rowDefect.comment}` : ''}
+            </Text>
+          )}
           <Table.ScrollContainer minWidth={240}>
             <Table withTableBorder verticalSpacing={2} data-testid="iteration-values">
               <Table.Tbody>
@@ -306,7 +347,12 @@ export function Iterations({ projectKey, launchId, item, readOnly = false, onAnn
               <CaseHtml html={html(item.preconditionsHtml)} project={projectKey} />
             </Stack>
           )}
-          <Stack gap={6}>
+          {loadingSteps && (
+            <Text size="sm" c="dimmed" role="status" data-testid="iteration-loading">
+              Loading the step results of this iteration…
+            </Text>
+          )}
+          <Stack gap={6} hidden={loadingSteps}>
             {flat.map((f) => {
               const h = htmlFor(item, f.path);
               const own = steps.get(f.path);
@@ -392,7 +438,7 @@ export function Iterations({ projectKey, launchId, item, readOnly = false, onAnn
                 variant={s === suggested ? 'filled' : 'light'}
                 color={s === 'passed' ? 'green' : s === 'failed' ? 'red' : s === 'blocked' ? 'orange' : 'gray'}
                 onClick={() => void finish(s)}
-                disabled={readOnly || busy}
+                disabled={readOnly || busy || loadingSteps}
                 data-testid={`iteration-finish-${s}`}
               >
                 {RUN_STATUS_LABEL[s]}
@@ -401,6 +447,17 @@ export function Iterations({ projectKey, launchId, item, readOnly = false, onAnn
           </Group>
         </Stack>
       </Card>
+      {defect && (
+        <DefectDrawer
+          key={defect === 'row' ? it.rowId : 'item'}
+          project={projectKey}
+          item={item}
+          local={new Map()}
+          iteration={defect === 'row' ? it : undefined}
+          opened
+          onClose={() => setDefect(null)}
+        />
+      )}
       <Modal opened={!!applyAll} onClose={() => setApplyAll(null)} title="Apply to every iteration" attributes={{ content: { 'data-testid': 'apply-all-confirm' } }}>
         {applyAll && (
           <Stack gap="sm">

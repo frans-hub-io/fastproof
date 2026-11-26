@@ -1659,7 +1659,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** @description Report of the manual run: case, version, status, steps, executor, times and defects, as CSV (cells that could start a formula are prefixed with `'`) or JSON. */
+        /** @description Report of the manual run: case, version, status, steps, executor, times and defects, as CSV (cells that could start a formula are prefixed with `'`) or JSON. A parameterized case has an `iterations` list in JSON (values, status, defect and recorded step results per iteration, texts with the values put in) and, in CSV, a row per iteration after its item with the values in the last column `iteration`. */
         get: operations["manual_report"];
         put?: never;
         post?: never;
@@ -2283,7 +2283,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description Triages the projected result of a run item (the same triage as `/triage`, `source: user`) and keeps the defect on the item. Holders of `results:triage` may set it on any item; holders of `runs:execute` only on items they executed (the executor of the current execution; the assignee does not count). Otherwise 403 with `details {required: "results:triage", scope}`. */
+        /** @description Triages the projected result of a run item (the same triage as `/triage`, `source: user`) and keeps the defect on the item. Holders of `results:triage` may set it on any item; holders of `runs:execute` only on items they executed (the executor of the current execution; the assignee does not count). Otherwise 403 with `details {required: "results:triage", scope}`. A parameterized item has a result per iteration: with `rowId` the defect goes to that iteration's result, without it to every failed or blocked iteration (at most 1000), and the item keeps the defect of its first iteration that has one. 409 `run_item_not_final` while the iteration, or no iteration, has a final status to put it on. */
         post: operations["run_item_defect"];
         delete?: never;
         options?: never;
@@ -2315,7 +2315,8 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /** @description One iteration of a parameterized run item with all its step results. `GET /run-items/{itemId}` leaves the step results of later iterations out once a size budget is spent (`stepResultsOmitted`); this reads them one iteration at a time. `executionNo` reads an earlier execution. */
+        get: operations["get_run_iteration"];
         put?: never;
         post?: never;
         delete?: never;
@@ -6029,11 +6030,39 @@ export interface components {
             executionNo: number;
             /** Format: date-time */
             finishedAt?: string | null;
+            /**
+             * @description The iterations of a parameterized case (its `steps` stay empty: steps are recorded per
+             *     iteration).
+             */
+            iterations?: components["schemas"]["ManualReportIteration"][];
             name: string;
+            /** @description The parameter columns of a parameterized case, in order. */
+            parameterColumns?: string[];
             /** Format: date-time */
             startedAt?: string | null;
             status: components["schemas"]["RunStatus"];
             steps: components["schemas"]["ManualReportStep"][];
+        };
+        /** @description One iteration of a parameterized item in the manual report. */
+        ManualReportIteration: {
+            comment: string;
+            defect?: unknown;
+            executedBy?: string | null;
+            /** Format: date-time */
+            finishedAt?: string | null;
+            /** Format: int32 */
+            position: number;
+            rowId: string;
+            /** Format: date-time */
+            startedAt?: string | null;
+            status: components["schemas"]["RunStatus"];
+            /** @description The recorded step results of the iteration, with the values put into the step texts. */
+            steps: components["schemas"]["ManualReportStep"][];
+            /** @description `true` when `steps` was left out because the item's report reached its size limit. */
+            stepsOmitted?: boolean;
+            values: {
+                [key: string]: string;
+            };
         };
         /** @description One step of the manual report. */
         ManualReportStep: {
@@ -6586,6 +6615,18 @@ export interface components {
                 executionNo: number;
                 /** Format: date-time */
                 finishedAt?: string | null;
+                /**
+                 * Format: int32
+                 * @description Every iteration of that execution (`0` for a plain item).
+                 */
+                iterationCount?: number;
+                /**
+                 * @description Iterations of a parameterized item in that execution: the first ones by position, as far
+                 *     as the page's byte budget goes (see `iterationCount`), with their step results.
+                 */
+                iterations?: components["schemas"]["RunIteration"][];
+                /** @description The parameter columns, in order. */
+                parameterColumns?: string[];
                 /** Format: date-time */
                 rerunAt: string;
                 /** @description Who started the next execution, and when. */
@@ -7944,6 +7985,11 @@ export interface components {
             /** Format: uuid */
             defectTypeId?: string | null;
             issue?: components["schemas"]["RunDefectIssue"] | null;
+            /**
+             * @description For a parameterized item: the iteration (row id) the defect belongs to. Without it the
+             *     defect goes to every failed or blocked iteration of the item.
+             */
+            rowId?: string | null;
         };
         /** @description An issue linked to a run item. */
         RunDefectIssue: {
@@ -7988,6 +8034,18 @@ export interface components {
             executionNo: number;
             /** Format: date-time */
             finishedAt?: string | null;
+            /**
+             * Format: int32
+             * @description Every iteration of that execution (`0` for a plain item).
+             */
+            iterationCount?: number;
+            /**
+             * @description Iterations of a parameterized item in that execution: the first ones by position, as far
+             *     as the page's byte budget goes (see `iterationCount`), with their step results.
+             */
+            iterations?: components["schemas"]["RunIteration"][];
+            /** @description The parameter columns, in order. */
+            parameterColumns?: string[];
             /** Format: date-time */
             rerunAt: string;
             /** @description Who started the next execution, and when. */
@@ -8065,6 +8123,8 @@ export interface components {
         /** @description An iteration of a parameterized run item. */
         RunIteration: {
             comment: string;
+            /** @description The defect set on the iteration's projected result (`null` without one). */
+            defect?: unknown;
             executedBy?: string | null;
             /** Format: date-time */
             finishedAt?: string | null;
@@ -8077,6 +8137,11 @@ export interface components {
             startedAt?: string | null;
             status: components["schemas"]["RunStatus"];
             stepResults: components["schemas"]["RunStepResult"][];
+            /**
+             * @description `true` when `stepResults` is left empty to keep the response small: read them with
+             *     `GET /run-items/{itemId}/iterations/{rowId}`.
+             */
+            stepResultsOmitted?: boolean;
             values: {
                 [key: string]: string;
             };
@@ -18803,6 +18868,48 @@ export interface operations {
             };
         };
     };
+    get_run_iteration: {
+        parameters: {
+            query?: {
+                /** @description An earlier execution of the item (default: the current one). */
+                executionNo?: number;
+            };
+            header?: never;
+            path: {
+                key: string;
+                itemId: string;
+                rowId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunIteration"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     patch_run_iteration: {
         parameters: {
             query?: never;
@@ -18948,6 +19055,11 @@ export interface operations {
             query?: {
                 /** @description `jira`, `gitlab` or `github` (default: the first configured issue tracker). */
                 tracker?: string;
+                /**
+                 * @description For a parameterized item: the iteration (row id) the issue is about. Without it the
+                 *     text lists the failed and blocked iterations.
+                 */
+                rowId?: string;
             };
             header?: never;
             path: {

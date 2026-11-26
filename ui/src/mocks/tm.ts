@@ -82,6 +82,18 @@ export const paramHooks: {
   stepGuard?: (r: MockRunItem) => Response | null;
   patch?: (r: MockRunItem, b: RunItemPatch) => Response | 'handled' | null;
   validate?: (b: CaseWrite) => { path: string; message: string }[];
+  /** Close with `skipped`: skips the open iterations of an item (also of one already failed) and derives its status. */
+  closeSkip?: (r: MockRunItem) => void;
+  /** A defect on an iteration (`rowId`) or on the failed iterations of a parameterized item; `null` for a plain item. */
+  defect?: (r: MockRunItem, b: Record<string, unknown>) => Response | null;
+  /** The title and text of a new-issue link of a parameterized item; `null` for a plain item. */
+  issue?: (r: MockRunItem, rowId: string | null) => { title: string; description: string } | Response | null;
+  /** The iterations part of a manual report item; `null` for a plain item. */
+  report?: (r: MockRunItem) => { parameterColumns: string[]; iterations: unknown[] } | null;
+  /** Keeps the iterations of an execution that is about to be replaced by a rerun. */
+  rerun?: (r: MockRunItem) => void;
+  /** The iterations of an earlier execution, for the executions list; `null` for a plain item. */
+  execution?: (itemId: string, executionNo: number) => { iterations: unknown[]; iterationCount: number; parameterColumns: string[] } | null;
 } = { reset: [] };
 
 export function resetTm(): void {
@@ -1793,7 +1805,10 @@ export function tmHandlers({ role, error, audit }: Helpers) {
           launchId: id,
           launchNumber: launch?.number ?? 0,
           launchName: launch?.name ?? '',
-          items: items.map((r) => ({ caseNumber: r.caseNumber, name: r.name, caseVersion: r.caseVersion, status: r.status, assignee: r.assignee, executedBy: r.executedBy, executionNo: r.executionNo, startedAt: r.startedAt, finishedAt: r.finishedAt, comment: r.comment, defect: r.defect, steps: steps(r) })),
+          items: items.map((r) => {
+            const its = paramHooks.report?.(r);
+            return { caseNumber: r.caseNumber, name: r.name, caseVersion: r.caseVersion, status: r.status, assignee: r.assignee, executedBy: r.executedBy, executionNo: r.executionNo, startedAt: r.startedAt, finishedAt: r.finishedAt, comment: r.comment, defect: r.defect, steps: its ? [] : steps(r), ...(its ?? {}) };
+          }),
         });
       }
       const lines = ['Case,Name,Version,Status,Assignee,Executed by,Finished,Failed steps', ...items.map((r) => [`TC-${String(r.caseNumber)}`, r.name, String(r.caseVersion), r.status, r.assignee ?? '', r.executedBy ?? '', r.finishedAt ?? '', r.stepResults.filter((s) => s.status === 'failed').map((s) => s.path).join(' ')].map(csvCell).join(','))];
@@ -1809,6 +1824,7 @@ export function tmHandlers({ role, error, audit }: Helpers) {
       if (params.action === 'close') {
         const b = (await request.json().catch(() => ({}))) as { untestedTo?: string };
         if (b.untestedTo === 'skipped') {
+          for (const r of st.runItems) if (r.launchId === id) paramHooks.closeSkip?.(r);
           for (const r of st.runItems) {
             if (r.launchId !== id || FINAL.includes(r.status)) continue;
             r.status = 'skipped';
@@ -1942,8 +1958,10 @@ export function tmHandlers({ role, error, audit }: Helpers) {
       const r = st.runItems.find((x) => x.id === params.id);
       if (!r) return notFound('run item');
       if (!writer()) return forbid('runs:execute');
-      if (!r.resultId) return error(409, 'run_item_not_final', 'finish the case first: a defect is set on its result');
       const b = (await request.json()) as Record<string, unknown>;
+      const mine = paramHooks.defect?.(r, b);
+      if (mine) return mine;
+      if (!r.resultId) return error(409, 'run_item_not_final', 'finish the case first: a defect is set on its result');
       r.defect = { ...b, at: now(), by: ME };
       r.revision++;
       audit('runItem.update', String(params.key), { id: r.id, defect: true });
@@ -1953,11 +1971,14 @@ export function tmHandlers({ role, error, audit }: Helpers) {
     http.get(`${P}/run-items/:id/new-issue-url`, ({ params, request }) => {
       const r = st.runItems.find((x) => x.id === params.id);
       if (!r) return notFound('run item');
-      const tracker = new URL(request.url).searchParams.get('tracker');
+      const query = new URL(request.url).searchParams;
+      const tracker = query.get('tracker');
       const failed = r.stepResults.find((s) => s.status === 'failed' || s.status === 'blocked');
       const step = failed ? stepExists(r.steps, failed.path) : null;
-      const title = `TC-${String(r.caseNumber)} ${r.name}: ${failed ? `step ${failed.path} ${failed.status}` : 'failed'}`;
-      const description = [`Step: ${step?.action ?? '-'}`, `Expected: ${step?.expected ?? '-'}`, `Actual: ${failed?.actual ?? '-'}`, `Run item: ${location.origin}/p/${String(params.key)}/launches/${r.launchId}/run/${r.id}`].join('\n\n');
+      const text = paramHooks.issue?.(r, query.get('rowId'));
+      if (text instanceof Response) return text;
+      const title = text ? text.title : `TC-${String(r.caseNumber)} ${r.name}: ${failed ? `step ${failed.path} ${failed.status}` : 'failed'}`;
+      const description = [text ? text.description : `Step: ${step?.action ?? '-'}\n\nExpected: ${step?.expected ?? '-'}\n\nActual: ${failed?.actual ?? '-'}`, `Run item: ${location.origin}/p/${String(params.key)}/launches/${r.launchId}/run/${r.id}`].join('\n\n');
       if (tracker === 'jira') {
         const jira = settingsOf(String(params.key)).issueTrackers.find((t) => t.type === 'jira') as { urlTemplate: string; projectId?: string | null; issueTypeId?: string | null } | undefined;
         const base = new URL(jira?.urlTemplate ?? 'https://jira.example.com/browse/{key}').origin;
@@ -1975,6 +1996,7 @@ export function tmHandlers({ role, error, audit }: Helpers) {
       if (!writer()) return forbid('runs:execute');
       const pre = precondition(request, r.revision, r.executedBy, 'ui');
       if (pre) return pre;
+      paramHooks.rerun?.(r);
       st.executions.push({ itemId: r.id, executionNo: r.executionNo, status: r.status, caseVersion: r.caseVersion, comment: r.comment, executedBy: r.executedBy, startedAt: r.startedAt, finishedAt: r.finishedAt, defect: r.defect, stepResults: structuredClone(r.stepResults), rerunBy: ME, rerunAt: now() });
       r.executionNo++;
       r.status = 'untested';
@@ -1990,7 +2012,7 @@ export function tmHandlers({ role, error, audit }: Helpers) {
     http.get(`${P}/run-items/:id/executions`, ({ params }) => {
       const r = st.runItems.find((x) => x.id === params.id);
       if (!r || !tmProject(String(params.key))) return notFound('run item');
-      const items = st.executions.filter((x) => x.itemId === r.id).sort((a, b) => b.executionNo - a.executionNo).map((x) => ({ executionNo: x.executionNo, status: x.status, caseVersion: x.caseVersion, comment: x.comment, executedBy: x.executedBy, startedAt: x.startedAt, finishedAt: x.finishedAt, defect: x.defect, stepResults: x.stepResults, rerunBy: x.rerunBy, rerunAt: x.rerunAt }));
+      const items = st.executions.filter((x) => x.itemId === r.id).sort((a, b) => b.executionNo - a.executionNo).map((x) => ({ executionNo: x.executionNo, status: x.status, caseVersion: x.caseVersion, comment: x.comment, executedBy: x.executedBy, startedAt: x.startedAt, finishedAt: x.finishedAt, defect: x.defect, stepResults: x.stepResults, rerunBy: x.rerunBy, rerunAt: x.rerunAt, ...(paramHooks.execution?.(r.id, x.executionNo) ?? {}) }));
       return HttpResponse.json({ items, next: null });
     }),
 

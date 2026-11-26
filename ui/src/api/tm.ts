@@ -797,8 +797,9 @@ export function useRunItemDefect(key: string, itemId: string) {
   });
 }
 
-export function fetchNewIssue(key: string, itemId: string, tracker?: string): Promise<NewIssue> {
-  return request<NewIssue>(withQuery(`${projectPath(key)}/run-items/${enc(itemId)}/new-issue-url`, { tracker }));
+/** The new-issue link of a run item; `rowId` makes it about one iteration of a parameterized item. */
+export function fetchNewIssue(key: string, itemId: string, tracker?: string, rowId?: string): Promise<NewIssue> {
+  return request<NewIssue>(withQuery(`${projectPath(key)}/run-items/${enc(itemId)}/new-issue-url`, { tracker, rowId }));
 }
 
 /** Starts a new execution; needs the item's `ETag` (the earlier execution is kept, see `useRunItemExecutions`). */

@@ -111,7 +111,42 @@ The status of the item follows its iterations:
 | some open and some started or finished | in progress |
 | otherwise (all finished, passed or skipped) | passed |
 
-Closing the manual run with "untested to skipped" also skips the open iterations.
+Closing the manual run with "untested to skipped" skips every open iteration, also those of an item that is
+already failed or blocked through another iteration. The item keeps its derived status.
+
+A long item stays quick to open: `GET /run-items/{itemId}` carries the step results of the first iterations up
+to a size budget (256 KiB of step texts). Later iterations have `stepResultsOmitted: true` and an empty
+`stepResults`; the runner reads the step results of the iteration you open on its own
+(`GET /run-items/{itemId}/iterations/{rowId}`).
+
+## Defects
+
+A defect belongs to a result, and each iteration has its own. In the runner:
+
+- **Defect** on an iteration (key **d**, once the iteration is finished) opens the defect drawer for that
+  iteration. The comment starts with the row, its values and the first failed or blocked step with the values put
+  in. The defect and the new-issue link are for that iteration only.
+- **Defect…** above the strip is for the item as a whole. It puts the defect on every failed or blocked
+  iteration (at most 1000), and the comment lists them (the first 10, then a count). The item shows the defect of
+  its first iteration that has one.
+
+Both need a finished iteration to put the defect on, as for a plain case; otherwise the answer is 409
+`run_item_not_final`. A holder of `runs:execute` can set it on iterations they executed.
+
+## Reports and earlier runs
+
+The manual run report lists the iterations of a parameterized case, in the printable page and in the export:
+
+- the printable page (`/launches/{id}/manual/print`) shows, per iteration, its values, status, comment, defect
+  and the recorded steps with the values put in;
+- the JSON report has `parameterColumns` and `iterations` per item (`steps` stays empty: steps belong to the
+  iterations). The step results of one item are cut at 8 MiB, then `stepsOmitted` is set on the rest;
+- the CSV report has a last column `iteration` (`#2 browser=chromium · currency=EUR`) and one row per iteration
+  after its item, with that iteration's status, executor, times, comment, defect and steps.
+
+When a case is run again, the iterations of the earlier run stay: the **Earlier runs** card of the case lists them
+with values, status and step results (the failed ones open). A page of earlier runs carries at most 100 iterations
+per run, within 1 MiB; `iterationCount` says how many there were.
 
 ## Results per data set
 
@@ -132,9 +167,14 @@ The run item itself has no result of its own.
 |---|---|---|
 | `POST /cases/{n}/parameters/generate` | `cases:write` | rows from a generator input, nothing saved |
 | `GET /run-items/{itemId}` | `launches:read` | `iterations` (row id, position, values, status, comment, result, step results) and `parameterColumns`; `iterationCount` in lists |
+| `GET /run-items/{itemId}/iterations/{rowId}` | `launches:read` | one iteration with all its step results; `?executionNo=` for an earlier run |
 | `PUT /run-items/{itemId}/iterations/{rowId}/steps/{path}` | `runs:execute` | one step result of an iteration; no `If-Match` (the last writer wins) |
 | `PATCH /run-items/{itemId}/iterations/{rowId}` | `runs:execute` | `status`, `comment`, `untestedStepsTo`; needs the item's `If-Match` |
 | `PATCH /run-items/{itemId}` with `allIterations: true` | `runs:execute` | one status for every iteration |
+
+`POST /run-items/{itemId}/defect` takes `rowId` for one iteration (without it, every failed or blocked iteration),
+and `GET /run-items/{itemId}/new-issue-url` takes `rowId` too: the title and text name the iteration, its values
+and its failing step.
 
 On a parameterized item, `PUT /run-items/{itemId}/steps/{path}` and a `PATCH /run-items/{itemId}` with a status
 but without `allIterations` answer 409 `parameterized_item`: the steps and status belong to the iterations. The

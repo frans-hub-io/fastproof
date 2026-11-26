@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { generatorValues, newRowId, parseTsv, placeholders, pruneValues, substitute, substituteHtml, tableProblems, unknownPlaceholders, valuesLabel } from './parameters';
+import { generatorValues, newBudget, newRowId, SUBSTITUTION_BUDGET, parseTsv, placeholders, pruneValues, substitute, substituteHtml, tableProblems, unknownPlaceholders, valuesLabel } from './parameters';
 import { deriveStatus } from '../../mocks/parameters';
 
 describe('placeholders', () => {
@@ -28,6 +28,37 @@ describe('placeholders', () => {
       { path: 'body.steps[0].data', name: 'card' },
       { path: 'body.steps[0].steps[0].action', name: 'user' },
     ]);
+  });
+});
+
+describe('the substitution budget (as on the server: 1 MiB of replacements per view)', () => {
+  it('counts UTF-8 bytes and leaves the placeholders that no longer fit', () => {
+    const b = newBudget(5);
+    expect(substitute('${a}-${a}-${a}', { a: 'xx' }, b)).toBe('xx-xx-${a}');
+    expect(b.left).toBe(1);
+    const wide = newBudget(5);
+    expect(substitute('${a}', { a: 'ééé' }, wide)).toBe('${a}');
+    expect(wide.left).toBe(5);
+    expect(substitute('${a}${a}', { a: 'é' }, wide)).toBe('éé');
+    expect(wide.left).toBe(1);
+  });
+
+  it('stops a shared step text full of placeholders from growing without a limit', () => {
+    const text = '${a}'.repeat(4096);
+    const value = 'v'.repeat(1024);
+    const unbounded = substitute(text, { a: value });
+    expect(unbounded.length).toBe(4 * 1024 * 1024);
+    const budget = newBudget();
+    const bounded = substitute(text, { a: value }, budget);
+    expect(bounded.length).toBeLessThanOrEqual(SUBSTITUTION_BUDGET + text.length);
+    expect(budget.left).toBeLessThan(1024);
+    expect(bounded.endsWith('${a}')).toBe(true);
+  });
+
+  it('shares the budget between the texts of an HTML view, text nodes only', () => {
+    const budget = newBudget(6);
+    const out = [substituteHtml('<p>${v}</p>', { v: 'abcd' }, budget), substituteHtml('<p>${v}</p>', { v: 'abcd' }, budget)];
+    expect(out).toEqual(['<p>abcd</p>', '<p>${v}</p>']);
   });
 });
 

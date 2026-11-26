@@ -585,3 +585,374 @@ async fn run_iterations_project_on_the_allure_parameter_series() {
     .unwrap();
     assert_ne!(other, manual);
 }
+
+async fn iteration_status(
+    s: &Server,
+    b: &str,
+    token: &str,
+    item: &str,
+    row: &str,
+    patch: Value,
+) -> Reply {
+    let got = send(
+        s,
+        Method::GET,
+        &format!("{b}/run-items/{item}"),
+        Some(token),
+        None,
+        None,
+    )
+    .await;
+    let etag = got.etag.unwrap();
+    send(
+        s,
+        Method::PATCH,
+        &format!("{b}/run-items/{item}/iterations/{row}"),
+        Some(token),
+        Some(&etag),
+        Some(patch),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn defects_issue_text_report_and_lazy_iterations() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = Server::start(&db).await;
+    s.project("pd").await;
+    s.project("pe").await;
+    let b = base("pd");
+    let pid: uuid::Uuid = sqlx::query_scalar("select id from projects where key = 'pd'")
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    fastproof_store::Store::new(db.pool.clone())
+        .merge_project_settings(
+            pid,
+            json!({"issueTrackers": [
+                {"type": "jira", "urlTemplate": "https://jira.example.com/browse/{key}", "keyRegex": "[A-Z]+-[0-9]+"}]}),
+        )
+        .await
+        .unwrap();
+    let tester = s.token("tess", "tester", &["pd"]).await;
+    let other = s.token("olga", "tester", &["pd"]).await;
+    let viewer = s.token("vic", "viewer", &["pd"]).await;
+    let outsider = s.token("otto", "tester", &["pe"]).await;
+    let c = create_case(&s, "pd", checkout(two_rows())).await;
+    let n = c.body["number"].as_i64().unwrap();
+    let (lid, item) = start(&s, "pd", n).await;
+
+    let defect = format!("{b}/run-items/{item}/defect");
+    let (st, d) = s
+        .post(
+            &defect,
+            ADMIN_TOKEN,
+            json!({"rowId": "r_cr", "comment": "c"}),
+        )
+        .await;
+    assert_eq!(
+        (st, d["code"].as_str()),
+        (StatusCode::CONFLICT, Some("run_item_not_final")),
+        "an untested iteration has no result: {d}"
+    );
+    let (st, d) = s.post(&defect, ADMIN_TOKEN, json!({"comment": "c"})).await;
+    assert_eq!(
+        (st, d["code"].as_str()),
+        (StatusCode::CONFLICT, Some("run_item_not_final")),
+        "no iteration failed yet: {d}"
+    );
+
+    let r = send(
+        &s,
+        Method::PUT,
+        &format!("{b}/run-items/{item}/iterations/r_cr/steps/2"),
+        Some(&tester),
+        None,
+        Some(json!({"status": "failed", "actual": "card declined"})),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let r = iteration_status(
+        &s,
+        &b,
+        &tester,
+        &item,
+        "r_cr",
+        json!({"status": "failed", "comment": "EUR only"}),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let r = iteration_status(&s, &b, &tester, &item, "r_ff", json!({"status": "passed"})).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+
+    let (st, d) = s
+        .post(&defect, &other, json!({"rowId": "r_cr", "comment": "c"}))
+        .await;
+    assert_eq!(st, StatusCode::FORBIDDEN, "not the executor: {d}");
+    let (st, d) = s
+        .post(&defect, &outsider, json!({"rowId": "r_cr", "comment": "c"}))
+        .await;
+    assert_eq!(st, StatusCode::FORBIDDEN, "{d}");
+    let (st, d) = s
+        .post(&defect, &viewer, json!({"rowId": "r_cr", "comment": "c"}))
+        .await;
+    assert_eq!(st, StatusCode::FORBIDDEN, "{d}");
+    let (st, d) = s
+        .post(&defect, &tester, json!({"rowId": "r_nope", "comment": "c"}))
+        .await;
+    assert_eq!(st, StatusCode::NOT_FOUND, "{d}");
+    let (st, d) = s
+        .post(
+            &format!("{}/run-items/{item}/defect", base("pe")),
+            ADMIN_TOKEN,
+            json!({"rowId": "r_cr", "comment": "c"}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::NOT_FOUND, "an item of another project: {d}");
+
+    let (st, d) = s
+        .post(
+            &defect,
+            &tester,
+            json!({"rowId": "r_cr", "comment": "chromium fails", "issue": {"url": "https://jira.example.com/browse/PAY-7", "key": "PAY-7"}}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{d}");
+    assert_eq!(d["iterations"][1]["defect"]["comment"], "chromium fails");
+    assert_eq!(d["iterations"][1]["defect"]["issueKey"], "PAY-7");
+    assert!(d["iterations"][0]["defect"].is_null(), "{d}");
+    assert_eq!(d["defect"]["issueKey"], "PAY-7", "the item keeps it: {d}");
+
+    let (st, d) = s
+        .post(&defect, &tester, json!({"comment": "all of them"}))
+        .await;
+    assert_eq!(st, StatusCode::OK, "{d}");
+    assert_eq!(d["iterations"][1]["defect"]["comment"], "all of them");
+    assert!(
+        d["iterations"][0]["defect"].is_null(),
+        "a passed iteration gets none: {d}"
+    );
+    let audit = audit_has(&s, &["runItem.update"]).await;
+    assert!(
+        audit
+            .iter()
+            .any(|a| a["detail"]["rowId"] == "r_cr" && a["detail"]["defect"].is_object()),
+        "{audit:?}"
+    );
+
+    let issue = |q: &str| {
+        let url = format!("{b}/run-items/{item}/new-issue-url?tracker=jira{q}");
+        let s = &s;
+        let t = tester.clone();
+        async move { s.get(&url, &t).await }
+    };
+    let (st, u) = issue("&rowId=r_cr").await;
+    assert_eq!(st, StatusCode::OK, "{u}");
+    let title = u["prefill"]["title"].as_str().unwrap();
+    let text = u["prefill"]["description"].as_str().unwrap();
+    assert!(
+        title.contains("iteration #2 (browser=chromium · currency=EUR) step 2 failed"),
+        "{title}"
+    );
+    assert!(
+        text.contains("Iteration #2: browser=chromium · currency=EUR"),
+        "{text}"
+    );
+    assert!(
+        text.contains("Step 2: Pay in EUR"),
+        "values are put in: {text}"
+    );
+    assert!(text.contains("Expected: Paid in EUR"), "{text}");
+    assert!(text.contains("Actual: card declined"), "{text}");
+    let (st, u) = issue("").await;
+    assert_eq!(st, StatusCode::OK, "{u}");
+    assert!(
+        u["prefill"]["title"]
+            .as_str()
+            .unwrap()
+            .contains("1 of 2 iterations not passed"),
+        "{u}"
+    );
+    let text = u["prefill"]["description"].as_str().unwrap();
+    assert!(
+        text.contains("browser=chromium") && !text.contains("browser=firefox"),
+        "{text}"
+    );
+    let (st, u) = issue("&rowId=r_nope").await;
+    assert_eq!(st, StatusCode::NOT_FOUND, "{u}");
+
+    let (st, r) = s
+        .get(
+            &format!("{b}/launches/{lid}/manual-report?format=json"),
+            &viewer,
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{r}");
+    let it = &r["items"][0];
+    assert_eq!(it["parameterColumns"], json!(["browser", "currency"]));
+    assert_eq!(it["steps"].as_array().unwrap().len(), 0);
+    let its = it["iterations"].as_array().unwrap();
+    assert_eq!(its.len(), 2, "{it}");
+    assert_eq!(its[0]["status"], "passed");
+    assert_eq!(its[1]["status"], "failed");
+    assert_eq!(its[1]["values"]["browser"], "chromium");
+    assert_eq!(its[1]["comment"], "EUR only");
+    assert_eq!(its[1]["defect"]["issueKey"], "PAY-7");
+    assert_eq!(its[1]["steps"][0]["path"], "2");
+    assert_eq!(its[1]["steps"][0]["action"], "Pay in EUR");
+    assert_eq!(its[1]["steps"][0]["actual"], "card declined");
+    assert_eq!(its[1]["steps"][0]["status"], "failed");
+    let (st, csv) = s
+        .get(&format!("{b}/launches/{lid}/manual-report"), &viewer)
+        .await;
+    assert_eq!(st, StatusCode::OK);
+    let csv = csv.as_str().unwrap();
+    assert!(
+        csv.lines().next().unwrap().ends_with(",\"iteration\""),
+        "{csv}"
+    );
+    assert_eq!(csv.lines().count(), 4, "item and two iterations: {csv}");
+    assert!(csv.contains("#2 browser=chromium · currency=EUR"), "{csv}");
+
+    let got = s
+        .get(&format!("{b}/run-items/{item}/iterations/r_cr"), &viewer)
+        .await;
+    assert_eq!(got.0, StatusCode::OK, "{}", got.1);
+    assert_eq!(got.1["stepResults"][0]["actual"], "card declined");
+    assert!(got.1.get("stepResultsOmitted").is_none(), "{}", got.1);
+    let (st, _) = s
+        .get(&format!("{b}/run-items/{item}/iterations/r_nope"), &viewer)
+        .await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+    for token in [&outsider, ADMIN_TOKEN] {
+        let (st, _) = s
+            .get(
+                &format!("{}/run-items/{item}/iterations/r_cr", base("pe")),
+                token,
+            )
+            .await;
+        assert_eq!(st, StatusCode::NOT_FOUND, "an item of another project");
+    }
+    let (st, _) = s
+        .get(&format!("{b}/run-items/{item}/iterations/r_cr"), "bad")
+        .await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED);
+    let (st, e) = s
+        .get(
+            &format!("{b}/run-items/{item}/iterations/r_cr?executionNo=1"),
+            &viewer,
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{e}");
+    let (st, _) = s
+        .get(
+            &format!("{b}/run-items/{item}/iterations/r_cr?executionNo=9"),
+            &viewer,
+        )
+        .await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+
+    let got = send(
+        &s,
+        Method::GET,
+        &format!("{b}/run-items/{item}"),
+        Some(&tester),
+        None,
+        None,
+    )
+    .await;
+    let r = send(
+        &s,
+        Method::POST,
+        &format!("{b}/run-items/{item}/rerun"),
+        Some(&tester),
+        got.etag.as_deref(),
+        None,
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert_eq!(r.body["iterations"][1]["status"], "untested", "{}", r.body);
+    let (st, ex) = s
+        .get(&format!("{b}/run-items/{item}/executions"), &viewer)
+        .await;
+    assert_eq!(st, StatusCode::OK, "{ex}");
+    let first = &ex["items"][0];
+    assert_eq!(first["executionNo"], 1);
+    assert_eq!(first["iterationCount"], 2);
+    assert_eq!(first["parameterColumns"], json!(["browser", "currency"]));
+    assert_eq!(first["iterations"][0]["status"], "passed");
+    assert_eq!(first["iterations"][1]["status"], "failed");
+    assert_eq!(first["iterations"][1]["values"]["browser"], "chromium");
+    assert_eq!(
+        first["iterations"][1]["stepResults"][0]["actual"],
+        "card declined"
+    );
+    assert_eq!(first["iterations"][1]["defect"]["issueKey"], "PAY-7");
+}
+
+#[tokio::test]
+async fn item_view_bounds_step_results_and_reads_them_per_iteration() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = Server::start(&db).await;
+    s.project("pl").await;
+    let b = base("pl");
+    let rows: Vec<Value> = (0..30)
+        .map(|i| json!({"id": format!("r_{i}"), "values": {"browser": format!("b{i}"), "currency": "EUR"}, "enabled": true}))
+        .collect();
+    let c = create_case(&s, "pl", checkout(json!(rows))).await;
+    assert_eq!(c.status, StatusCode::CREATED, "{}", c.body);
+    let (_, item) = start(&s, "pl", c.body["number"].as_i64().unwrap()).await;
+    let big = "x".repeat(12 * 1024);
+    for i in 0..30 {
+        let r = send(
+            &s,
+            Method::PUT,
+            &format!("{b}/run-items/{item}/iterations/r_{i}/steps/1"),
+            Some(ADMIN_TOKEN),
+            None,
+            Some(json!({"status": "passed", "actual": big})),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    }
+    let got = send(
+        &s,
+        Method::GET,
+        &format!("{b}/run-items/{item}"),
+        Some(ADMIN_TOKEN),
+        None,
+        None,
+    )
+    .await;
+    let its = got.body["iterations"].as_array().unwrap();
+    assert_eq!(its.len(), 30, "every iteration stays in the item");
+    let full: Vec<bool> = its
+        .iter()
+        .map(|i| !i["stepResults"].as_array().unwrap().is_empty())
+        .collect();
+    let kept = full.iter().filter(|f| **f).count();
+    assert!((15..=25).contains(&kept), "{full:?}");
+    assert!(full[..kept].iter().all(|f| *f) && full[kept..].iter().all(|f| !*f));
+    assert_eq!(its[29]["stepResultsOmitted"], true);
+    assert!(its[0].get("stepResultsOmitted").is_none());
+    assert!(
+        serde_json::to_vec(&got.body).unwrap().len() < 340 * 1024,
+        "the response is bounded"
+    );
+    let one = send(
+        &s,
+        Method::GET,
+        &format!("{b}/run-items/{item}/iterations/r_29"),
+        Some(ADMIN_TOKEN),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(one.status, StatusCode::OK);
+    assert_eq!(one.body["stepResults"][0]["actual"], big);
+    assert!(one.body.get("stepResultsOmitted").is_none());
+}

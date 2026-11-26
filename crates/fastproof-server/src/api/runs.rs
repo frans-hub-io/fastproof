@@ -12,8 +12,8 @@ use fastproof_store::tm::runs::{
 };
 use fastproof_store::tm::{
     CaseBody, ManualClose, ManualState, RunDefect, RunItem, RunItemExecution, RunItemPatch,
-    RunItemSummary, RunItemsAdd, RunItemsAdded, RunIterationPatch, RunIterationStepAck, RunStatus,
-    RunStepAck, RunStepWrite, StepStatus,
+    RunItemSummary, RunItemsAdd, RunItemsAdded, RunIteration, RunIterationPatch,
+    RunIterationStepAck, RunStatus, RunStepAck, RunStepWrite, StepStatus,
 };
 use fastproof_store::{Launch, Page, Project};
 use franshub_auth::Auth;
@@ -51,7 +51,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(get_run_item, patch_run_item))
         .routes(routes!(put_run_step))
         .routes(routes!(put_iteration_step))
-        .routes(routes!(patch_run_iteration))
+        .routes(routes!(get_run_iteration, patch_run_iteration))
         .routes(routes!(run_item_defect))
         .routes(routes!(run_item_new_issue_url))
         .routes(routes!(rerun_run_item))
@@ -342,6 +342,37 @@ pub async fn put_iteration_step(
     ))
 }
 
+/// Query of `GET /run-items/{itemId}/iterations/{rowId}`.
+#[derive(Deserialize, IntoParams)]
+#[serde(rename_all = "camelCase")]
+#[into_params(parameter_in = Query)]
+pub struct IterationQuery {
+    /// An earlier execution of the item (default: the current one).
+    pub execution_no: Option<i32>,
+}
+
+#[utoipa::path(get, path = "/api/v1/projects/{key}/run-items/{itemId}/iterations/{rowId}", tag = "runs",
+    operation_id = "get_run_iteration",
+    description = "One iteration of a parameterized run item with all its step results. `GET /run-items/{itemId}` \
+        leaves the step results of later iterations out once a size budget is spent (`stepResultsOmitted`); this reads \
+        them one iteration at a time. `executionNo` reads an earlier execution.",
+    params(("key" = String, Path), ("itemId" = Uuid, Path), ("rowId" = String, Path), IterationQuery),
+    responses((status = 200, body = RunIteration), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
+pub async fn get_run_iteration(
+    State(s): State<AppState>,
+    auth: Auth,
+    P((key, id, row)): P<(String, Uuid, String)>,
+    Q(q): Q<IterationQuery>,
+) -> ApiResult<Json<RunIteration>> {
+    let p = s.project_for(&auth, &key, &s.perms.launches_read).await?;
+    Ok(Json(
+        s.store
+            .run_iteration(p.id, id, &row, q.execution_no)
+            .await
+            .map_err(tm_error)?,
+    ))
+}
+
 #[utoipa::path(patch, path = "/api/v1/projects/{key}/run-items/{itemId}/iterations/{rowId}", tag = "runs",
     operation_id = "patch_run_iteration",
     description = "Changes the status or comment of one iteration of a parameterized run item (needs the item's \
@@ -430,7 +461,10 @@ pub async fn upload_run_attachment(
     description = "Triages the projected result of a run item (the same triage as `/triage`, `source: user`) and keeps the \
         defect on the item. Holders of `results:triage` may set it on any item; holders of `runs:execute` only on items \
         they executed (the executor of the current execution; the assignee does not count). Otherwise 403 with \
-        `details {required: \"results:triage\", scope}`.",
+        `details {required: \"results:triage\", scope}`. A parameterized item has a result per iteration: with `rowId` the \
+        defect goes to that iteration's result, without it to every failed or blocked iteration (at most 1000), and the item \
+        keeps the defect of its first iteration that has one. 409 `run_item_not_final` while the iteration, or no iteration, \
+        has a final status to put it on.",
     request_body = RunDefect,
     params(("key" = String, Path), ("itemId" = Uuid, Path)),
     responses((status = 200, body = RunItem), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),
@@ -450,7 +484,22 @@ pub async fn run_item_defect(
     let p = s.project_for(&auth, &key, perm).await?;
     let item = item_of(&s, &p, id).await?;
     let me = auth.principal.name.as_str();
-    if !triager && item.executed_by.as_deref() != Some(me) {
+    let targets = s
+        .store
+        .defect_targets(
+            p.id,
+            id,
+            body.row_id.as_deref(),
+            fastproof_store::analysis::triage::MAX_TRIAGE_IDS as i64,
+        )
+        .await
+        .map_err(tm_error)?;
+    if !triager
+        && item.executed_by.as_deref() != Some(me)
+        && !targets.as_ref().is_some_and(|t| {
+            !t.is_empty() && t.iter().all(|x| x.executed_by.as_deref() == Some(me))
+        })
+    {
         return Err(ApiError::forbidden(
             "a defect can be set only on run items you executed (or with results:triage)",
         )
@@ -458,14 +507,35 @@ pub async fn run_item_defect(
             serde_json::json!({"required": s.perms.results_triage.as_str(), "scope": p.key}),
         ));
     }
-    let Some(result_id) = item.result_id else {
-        return Err(tm_error(fastproof_store::tm::TmError::conflict(
-            "run_item_not_final",
-            "the run item has no final status yet",
-        )));
+    let result_ids: Vec<Uuid> = match targets {
+        None => {
+            if body.row_id.is_some() {
+                return Err(ApiError::bad_request(
+                    "rowId: the run item has no iterations",
+                ));
+            }
+            let Some(result_id) = item.result_id else {
+                return Err(tm_error(fastproof_store::tm::TmError::conflict(
+                    "run_item_not_final",
+                    "the run item has no final status yet",
+                )));
+            };
+            vec![result_id]
+        }
+        Some(t) if t.is_empty() => {
+            return Err(tm_error(fastproof_store::tm::TmError::conflict(
+                "run_item_not_final",
+                if body.row_id.is_some() {
+                    "the iteration has no final status yet"
+                } else {
+                    "no iteration of the run item is failed or blocked yet"
+                },
+            )));
+        }
+        Some(t) => t.into_iter().map(|x| x.result_id).collect(),
     };
     let req = TriageRequest {
-        result_ids: Some(vec![result_id]),
+        result_ids: Some(result_ids),
         defect_type_id: body.defect_type_id,
         comment: body.comment.clone(),
         issue: body.issue.as_ref().map(|i| TriageIssue {
@@ -494,19 +564,169 @@ pub async fn run_item_defect(
         "runItem.update",
         Some(&p.key),
         serde_json::json!({"launchId": item.launch_id, "id": id, "case": format!("TC-{}", item.case_number),
-            "defect": {"defectTypeId": req.defect_type_id, "comment": req.comment.is_some(),
+            "rowId": body.row_id, "defect": {"defectTypeId": req.defect_type_id, "comment": req.comment.is_some(),
                 "issue": req.issue.as_ref().and_then(|i| i.url.clone())}}),
     )
     .await;
     Ok(item_response(rendered(&s, &p, id).await?))
 }
 
+/// Characters the values may add to the step texts of one issue.
+const ISSUE_SUBSTITUTION_BYTES: usize = 32 * 1024;
+/// Failed iterations an issue text lists.
+const ISSUE_ITERATIONS: usize = 20;
+
+/// The failing step of a step result: its text (with the iteration's values put in), expected and actual result.
+fn failing_step_text(
+    steps: &[fastproof_store::tm::CaseStep],
+    f: &fastproof_store::tm::RunStepResult,
+    values: Option<&std::collections::BTreeMap<String, String>>,
+) -> String {
+    let step = step_at(steps, &f.path);
+    let mut budget = ISSUE_SUBSTITUTION_BYTES;
+    let mut text = |t: Option<&str>| {
+        let t = t.unwrap_or_default();
+        match values {
+            Some(v) => fastproof_store::tm::parameters::substitute(t, v, &mut budget),
+            None => t.to_string(),
+        }
+    };
+    let mut d = format!(
+        "\nStep {}: {}\nExpected: {}\nActual: {}\n",
+        f.path,
+        text(step.map(|s| s.action.as_str())),
+        text(step.map(|s| s.expected.as_str())),
+        f.actual
+    );
+    if !f.comment.is_empty() {
+        d.push_str(&format!("Comment: {}\n", f.comment));
+    }
+    d
+}
+
+fn values_label(columns: &[String], values: &std::collections::BTreeMap<String, String>) -> String {
+    columns
+        .iter()
+        .map(|c| {
+            format!(
+                "{c}={}",
+                values.get(c).map(String::as_str).unwrap_or_default()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
+/// Title and text of an issue about a parameterized item: one iteration (`row_id`) with its
+/// values and failing step, or the failed and blocked iterations in turn.
+async fn iteration_issue(
+    s: &AppState,
+    p: &Project,
+    item: &RunItem,
+    case: &str,
+    row_id: Option<&str>,
+) -> ApiResult<(String, String)> {
+    let columns = &item.parameter_columns;
+    let one = |it: &RunIteration| {
+        let mut d = format!(
+            "\nIteration #{}: {} ({})\n",
+            it.position,
+            values_label(columns, &it.values),
+            it.status
+        );
+        let failed = it
+            .step_results
+            .iter()
+            .find(|r| matches!(r.status, StepStatus::Failed | StepStatus::Blocked));
+        if let Some(f) = failed {
+            d.push_str(&failing_step_text(&item.steps, f, Some(&it.values)));
+        }
+        if !it.comment.is_empty() {
+            d.push_str(&format!("Iteration comment: {}\n", it.comment));
+        }
+        d
+    };
+    let full = |it: &RunIteration| {
+        let s = s.clone();
+        let (pid, id, rid, no) = (
+            p.id,
+            item.summary.id,
+            it.row_id.clone(),
+            item.summary.execution_no,
+        );
+        let omitted = it.step_results_omitted;
+        let it = it.clone();
+        async move {
+            if !omitted {
+                return Ok(it);
+            }
+            s.store
+                .run_iteration(pid, id, &rid, Some(no))
+                .await
+                .map_err(tm_error)
+        }
+    };
+    if let Some(row) = row_id {
+        let it = s
+            .store
+            .run_iteration(p.id, item.summary.id, row, Some(item.summary.execution_no))
+            .await
+            .map_err(tm_error)?;
+        let failed = it
+            .step_results
+            .iter()
+            .find(|r| matches!(r.status, StepStatus::Failed | StepStatus::Blocked));
+        let title = match failed {
+            Some(f) => format!(
+                "{case}: iteration #{} ({}) step {} {}",
+                it.position,
+                values_label(columns, &it.values),
+                f.path,
+                f.status
+            ),
+            None => format!(
+                "{case}: iteration #{} ({}) {}",
+                it.position,
+                values_label(columns, &it.values),
+                it.status
+            ),
+        };
+        return Ok((title, one(&it)));
+    }
+    let bad: Vec<&RunIteration> = item
+        .iterations
+        .iter()
+        .filter(|i| matches!(i.status, RunStatus::Failed | RunStatus::Blocked))
+        .collect();
+    let title = format!(
+        "{case}: {} of {} iterations not passed",
+        bad.len(),
+        item.summary.iteration_count
+    );
+    let mut d = format!(
+        "Iterations not passed: {} of {}\n",
+        bad.len(),
+        item.summary.iteration_count
+    );
+    for it in bad.iter().take(ISSUE_ITERATIONS) {
+        d.push_str(&one(&full(it).await?));
+    }
+    if bad.len() > ISSUE_ITERATIONS {
+        d.push_str(&format!("\n… and {} more\n", bad.len() - ISSUE_ITERATIONS));
+    }
+    Ok((title, d))
+}
+
 /// Query of `GET /run-items/{itemId}/new-issue-url`.
 #[derive(Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
+#[serde(rename_all = "camelCase")]
 pub struct NewIssueQuery {
     /// `jira`, `gitlab` or `github` (default: the first configured issue tracker).
     pub tracker: Option<String>,
+    /// For a parameterized item: the iteration (row id) the issue is about. Without it the
+    /// text lists the failed and blocked iterations.
+    pub row_id: Option<String>,
 }
 
 /// A prefilled "new issue" link.
@@ -646,30 +866,32 @@ pub async fn run_item_new_issue_url(
         .find(|t| q.tracker.as_deref().is_none_or(|w| w == t.tracker))
         .ok_or_else(no_tracker)?;
     let launch = s.launch_of(&p, item.launch_id).await?;
-    let failed = item
-        .step_results
-        .iter()
-        .find(|r| matches!(r.status, StepStatus::Failed | StepStatus::Blocked));
     let case = format!("TC-{} {}", item.summary.case_number, item.summary.name);
-    let title = match failed {
-        Some(f) => format!("{case}: step {} {}", f.path, f.status),
-        None => format!("{case}: {}", item.summary.status),
-    };
     let mut d = format!(
         "Case: {case} (version {})\nLaunch: #{} {}\nStatus: {}\n",
         item.case_version, launch.number, launch.name, item.summary.status
     );
-    if let Some(f) = failed {
-        let step = step_at(&item.steps, &f.path);
-        d.push_str(&format!(
-            "\nStep {}: {}\nExpected: {}\nActual: {}\n",
-            f.path,
-            step.map(|s| s.action.as_str()).unwrap_or_default(),
-            step.map(|s| s.expected.as_str()).unwrap_or_default(),
-            f.actual
-        ));
-        if !f.comment.is_empty() {
-            d.push_str(&format!("Comment: {}\n", f.comment));
+    let title;
+    if item.summary.iteration_count > 0 {
+        let (t, text) = iteration_issue(&s, &p, &item, &case, q.row_id.as_deref()).await?;
+        title = t;
+        d.push_str(&text);
+    } else {
+        if q.row_id.is_some() {
+            return Err(ApiError::bad_request(
+                "rowId: the run item has no iterations",
+            ));
+        }
+        let failed = item
+            .step_results
+            .iter()
+            .find(|r| matches!(r.status, StepStatus::Failed | StepStatus::Blocked));
+        title = match failed {
+            Some(f) => format!("{case}: step {} {}", f.path, f.status),
+            None => format!("{case}: {}", item.summary.status),
+        };
+        if let Some(f) = failed {
+            d.push_str(&failing_step_text(&item.steps, f, None));
         }
     }
     if !item.comment.is_empty() {
@@ -993,10 +1215,8 @@ fn csv_row(cells: &[String]) -> String {
     s
 }
 
-fn report_csv_row(i: &ManualReportItem) -> String {
-    let defect = i.defect.as_ref();
-    let steps = i
-        .steps
+fn steps_cell(steps: &[fastproof_store::tm::runs::ManualReportStep]) -> String {
+    steps
         .iter()
         .filter(|s| s.status != StepStatus::Untested || !s.actual.is_empty())
         .map(|s| {
@@ -1007,17 +1227,23 @@ fn report_csv_row(i: &ManualReportItem) -> String {
             t
         })
         .collect::<Vec<_>>()
-        .join("\n");
+        .join("\n")
+}
+
+fn defect_cell(defect: Option<&serde_json::Value>, k: &str) -> String {
+    defect
+        .and_then(|d| d.get(k))
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// The CSV rows of an item: the item, and for a parameterized one a row per iteration with
+/// its values in the last column (`#<position> a=1 · b=2`).
+fn report_csv_row(i: &ManualReportItem) -> String {
     let ts =
         |t: Option<chrono::DateTime<chrono::Utc>>| t.map(|t| t.to_rfc3339()).unwrap_or_default();
-    let str_of = |k: &str| {
-        defect
-            .and_then(|d| d.get(k))
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string()
-    };
-    csv_row(&[
+    let mut out = csv_row(&[
         format!("TC-{}", i.case_number),
         i.name.clone(),
         i.case_version.to_string(),
@@ -1028,15 +1254,48 @@ fn report_csv_row(i: &ManualReportItem) -> String {
         ts(i.started_at),
         ts(i.finished_at),
         i.comment.clone(),
-        str_of("name"),
-        str_of("issueUrl"),
-        steps,
-    ])
+        defect_cell(i.defect.as_ref(), "name"),
+        defect_cell(i.defect.as_ref(), "issueUrl"),
+        steps_cell(&i.steps),
+        String::new(),
+    ]);
+    for it in &i.iterations {
+        let label = i
+            .parameter_columns
+            .iter()
+            .map(|c| {
+                format!(
+                    "{c}={}",
+                    it.values.get(c).map(String::as_str).unwrap_or_default()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" · ");
+        out.push_str(&csv_row(&[
+            format!("TC-{}", i.case_number),
+            i.name.clone(),
+            i.case_version.to_string(),
+            it.status.as_str().to_string(),
+            i.execution_no.to_string(),
+            i.assignee.clone().unwrap_or_default(),
+            it.executed_by.clone().unwrap_or_default(),
+            ts(it.started_at),
+            ts(it.finished_at),
+            it.comment.clone(),
+            defect_cell(it.defect.as_ref(), "name"),
+            defect_cell(it.defect.as_ref(), "issueUrl"),
+            steps_cell(&it.steps),
+            format!("#{} {label}", it.position),
+        ]));
+    }
+    out
 }
 
 #[utoipa::path(get, path = "/api/v1/projects/{key}/launches/{id}/manual-report", tag = "runs", operation_id = "manual_report",
     description = "Report of the manual run: case, version, status, steps, executor, times and defects, as CSV (cells that \
-        could start a formula are prefixed with `'`) or JSON.",
+        could start a formula are prefixed with `'`) or JSON. A parameterized case has an `iterations` list in JSON \
+        (values, status, defect and recorded step results per iteration, texts with the values put in) and, in CSV, a \
+        row per iteration after its item with the values in the last column `iteration`.",
     params(("key" = String, Path), ("id" = Uuid, Path), ReportQuery),
     responses((status = 200, body = ManualReport, description = "JSON, or text/csv"), (status = 400, body = ErrorBody),
         (status = 403, body = ErrorBody), (status = 404, body = ErrorBody), (status = 413, body = ErrorBody),
@@ -1074,6 +1333,7 @@ pub async fn manual_report(
                 "defect",
                 "issue",
                 "steps",
+                "iteration",
             ]
             .map(String::from),
         ));

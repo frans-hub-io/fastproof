@@ -129,6 +129,80 @@ test('a parameterized case: the parameters tab, the editor with the generator, a
   expect(v.body.status).toBe('failed');
 });
 
+async function failIteration(page: Page, item: string, row: string): Promise<void> {
+  const put = await api(page, 'PUT', `${P}/run-items/${item}/iterations/${row}/steps/2`, { status: 'failed', actual: 'The card was declined' });
+  expect(put.status).toBe(200);
+  const cur = await api(page, 'GET', `${P}/run-items/${item}`);
+  const done = await api(page, 'PATCH', `${P}/run-items/${item}/iterations/${row}`, { status: 'failed' }, { 'If-Match': cur.etag ?? '' });
+  expect(done.status).toBe(200);
+}
+
+test('closing the run with skipped skips the open iterations of a failed item too', async ({ page }) => {
+  test.setTimeout(120_000);
+  const { launch, item } = await parameterized(page);
+  await failIteration(page, item, 'r_ff');
+  const before = await api(page, 'GET', `${P}/run-items/${item}`);
+  expect(before.body.status).toBe('failed');
+  expect((before.body.iterations as { status: string }[]).map((i) => i.status)).toEqual(['failed', 'untested']);
+
+  const closed = await api(page, 'POST', `${P}/launches/${launch}/manual/close`, { untestedTo: 'skipped' });
+  expect(closed.status).toBe(200);
+  const after = await api(page, 'GET', `${P}/run-items/${item}`);
+  expect(after.body.status).toBe('failed');
+  expect((after.body.iterations as { status: string }[]).map((i) => i.status)).toEqual(['failed', 'skipped']);
+
+  await go(page, `/p/web-shop/launches/${launch}/manual/print`);
+  const its = page.getByTestId('print-iteration');
+  await expect(its).toHaveCount(2);
+  await expect(its.nth(0)).toHaveAttribute('data-status', 'failed');
+  await expect(its.nth(1)).toHaveAttribute('data-status', 'skipped');
+  await expect(its.nth(0)).toContainText('browser=firefox');
+  await expect(its.nth(0)).toContainText('The card was declined');
+  await noHorizontalScroll(page);
+  await expectNoAxeViolations(page, 'manual report with iterations');
+});
+
+test('a defect on one iteration and on the whole item, and the iterations of an earlier run', async ({ page }) => {
+  test.setTimeout(150_000);
+  const { launch, item } = await parameterized(page);
+  await go(page, `/p/web-shop/launches/${launch}/run/${item}`);
+  await expect(page.getByTestId('iteration-defect')).toBeDisabled();
+  const step2 = page.getByTestId('iteration').getByTestId('iteration-step').nth(1);
+  await step2.getByTestId('set-failed').click();
+  const actual = page.getByTestId('iteration-actual');
+  await actual.fill('The card was declined');
+  await actual.blur();
+  await page.getByTestId('iteration-finish-failed').click();
+  await expect(page.getByTestId('iteration-strip').getByTestId('iteration-chip').first()).toHaveAttribute('data-status', 'failed');
+  await page.getByTestId('iteration-strip').getByTestId('iteration-chip').first().click();
+  await expect(page.getByTestId('iteration')).toHaveAttribute('data-row', 'r_ff');
+  await page.getByTestId('iteration-defect').click();
+  const drawer = page.getByTestId('defect-drawer');
+  await expect(drawer.getByTestId('defect-scope')).toContainText('iteration #1');
+  await expect(drawer.getByTestId('defect-comment')).toHaveValue(/Iteration #1: browser=firefox · currency=EUR · card=4242 4242 4242 4242 \(failed\)/);
+  await expect(drawer.getByTestId('defect-comment')).toHaveValue(/Step 2 failed: Pay in EUR/);
+  await expectNoAxeViolations(page, 'iteration defect drawer');
+  await drawer.getByTestId('defect-issue').fill('PAY-9');
+  await drawer.getByTestId('defect-save').click();
+  await expect(page.getByTestId('iteration-defect-info')).toBeVisible();
+  await expect(page.getByTestId('item-defect-info')).toBeVisible();
+  await page.getByTestId('item-defect').click();
+  await expect(page.getByTestId('defect-drawer').getByTestId('defect-scope')).toContainText('every failed or blocked iteration');
+  await expect(page.getByTestId('defect-drawer').getByTestId('defect-comment')).toHaveValue(/1 of 2 iterations not passed/);
+  await page.keyboard.press('Escape');
+
+  const cur = await api(page, 'GET', `${P}/run-items/${item}`);
+  expect((await api(page, 'POST', `${P}/run-items/${item}/rerun`, undefined, { 'If-Match': cur.etag ?? '' })).status).toBe(200);
+  await go(page, `/p/web-shop/launches/${launch}/run/${item}`);
+  const earlier = page.getByTestId('execution-iterations');
+  await expect(earlier).toBeVisible();
+  await expect(earlier.getByTestId('execution-iteration')).toHaveCount(2);
+  await expect(earlier.getByTestId('execution-iteration').first()).toContainText('Step 2 failed: The card was declined');
+  await noHorizontalScroll(page);
+  await expect(page.locator('.mantine-Notification-root')).toHaveCount(0, { timeout: 20_000 });
+  await expectNoAxeViolations(page, 'earlier runs with iterations');
+});
+
 test.describe('parameters screenshots', () => {
   test.skip(!dir, 'set FASTPROOF_TM_SHOTS to a directory to take the parameters screenshots');
   for (const scheme of ['dark', 'light']) {
@@ -174,6 +248,25 @@ test.describe('parameters screenshots', () => {
         await expect(page.getByTestId('iteration')).toHaveAttribute('data-row', 'r_cr');
         await noHorizontalScroll(page);
         await shot('runner');
+        await go(page, '/p/web-shop');
+        await failIteration(page, item, 'r_cr');
+        await go(page, `/p/web-shop/launches/${launch}/run/${item}`);
+        await expect(page.getByTestId('iteration')).toBeVisible();
+        await page.getByTestId('iteration-defect').click();
+        await expect(page.getByTestId('defect-drawer')).toBeVisible();
+        await shot('defect', false);
+        await page.keyboard.press('Escape');
+        await go(page, `/p/web-shop/launches/${launch}/manual/print`);
+        await expect(page.getByTestId('print-iteration').first()).toBeVisible();
+        await noHorizontalScroll(page);
+        await page.getByTestId('print-item').filter({ hasText: 'Pay in every currency' }).screenshot({ path: path.join(dir ?? '.', `parameters-report-${String(width)}-${scheme}.png`) });
+        await go(page, `/p/web-shop/launches/${launch}/run/${item}`);
+        const cur = await api(page, 'GET', `${P}/run-items/${item}`);
+        await api(page, 'POST', `${P}/run-items/${item}/rerun`, undefined, { 'If-Match': cur.etag ?? '' });
+        await go(page, `/p/web-shop/launches/${launch}/run/${item}`);
+        await expect(page.getByTestId('execution-iterations')).toBeVisible();
+        await noHorizontalScroll(page);
+        await shot('earlier-runs', true);
       });
     }
   }

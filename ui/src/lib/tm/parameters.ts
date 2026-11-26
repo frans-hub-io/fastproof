@@ -27,16 +27,45 @@ export function placeholders(text: string): Placeholder[] {
   return out;
 }
 
-/** `text` with every placeholder of a known name replaced by its value; unknown names stay. */
-export function substitute(text: string, values: Readonly<Record<string, string>>): string {
-  return text.replace(PLACEHOLDER, (whole, name: string) => (Object.prototype.hasOwnProperty.call(values, name) ? (values[name] ?? '') : whole));
+/**
+ * Bytes the replacements of one iteration view may add, in all its texts. The server puts the same limit on the
+ * values it substitutes in a projected iteration (1 MiB per call chain); past it the remaining placeholders stay as
+ * they are, so a text full of `${a}` with a 1 KiB value cannot grow into megabytes in the browser.
+ */
+export const SUBSTITUTION_BUDGET = 1024 * 1024;
+
+/** The bytes of replacements still allowed, shared by the calls of one view. */
+export interface SubstitutionBudget {
+  left: number;
+}
+
+export function newBudget(left = SUBSTITUTION_BUDGET): SubstitutionBudget {
+  return { left };
+}
+
+const encoder = new TextEncoder();
+
+/**
+ * `text` with every placeholder of a known name replaced by its value; unknown names stay. With a `budget`, a value
+ * that does not fit in what is left (in UTF-8 bytes, as on the server) is not put in and its placeholder stays.
+ */
+export function substitute(text: string, values: Readonly<Record<string, string>>, budget?: SubstitutionBudget): string {
+  return text.replace(PLACEHOLDER, (whole, name: string) => {
+    if (!Object.prototype.hasOwnProperty.call(values, name)) return whole;
+    const v = values[name] ?? '';
+    if (!budget) return v;
+    const n = encoder.encode(v).length;
+    if (n > budget.left) return whole;
+    budget.left -= n;
+    return v;
+  });
 }
 
 /**
  * Sanitized HTML (from the server) with placeholders replaced in its text only: attributes and markup stay as they
- * are, so a value can never become a link target or markup. Values are inserted as text.
+ * are, so a value can never become a link target or markup. Values are inserted as text, under the same `budget`.
  */
-export function substituteHtml(html: string, values: Readonly<Record<string, string>>): string {
+export function substituteHtml(html: string, values: Readonly<Record<string, string>>, budget?: SubstitutionBudget): string {
   if (!html.includes('${') || typeof document === 'undefined') return html;
   const t = document.createElement('template');
   t.innerHTML = html;
@@ -45,7 +74,7 @@ export function substituteHtml(html: string, values: Readonly<Record<string, str
   for (let n = walker.nextNode(); n; n = walker.nextNode()) nodes.push(n as Text);
   for (const n of nodes) {
     const v = n.data;
-    if (v.includes('${')) n.data = substitute(v, values);
+    if (v.includes('${')) n.data = substitute(v, values, budget);
   }
   return t.innerHTML;
 }

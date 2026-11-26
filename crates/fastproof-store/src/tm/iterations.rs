@@ -446,12 +446,33 @@ pub async fn iteration_changed(
     .await
 }
 
-/// The iterations of an execution of an item with their step results.
+/// Bytes of step results one `GET /run-items/{id}` carries over all iterations. Iterations
+/// past it have `stepResultsOmitted`, and their step results are read one iteration at a time.
+pub const ITEM_VIEW_STEP_BYTES: usize = 256 * 1024;
+/// Bytes of iterations (values and step results) one page of executions carries.
+pub const EXECUTIONS_VIEW_BYTES: usize = 1024 * 1024;
+/// Iterations of one execution in a page of executions.
+pub const EXECUTION_VIEW_ITERATIONS: usize = 100;
+
+/// What [`views`] returns.
+pub enum ViewScope<'a> {
+    /// All iterations; the step results of the first ones until `budget` bytes are spent, the
+    /// rest with `stepResultsOmitted`.
+    Item { budget: &'a mut usize },
+    /// One iteration with all its step results.
+    Row(&'a str),
+    /// The first iterations (at most [`EXECUTION_VIEW_ITERATIONS`]) while `budget` bytes of
+    /// values and step results last.
+    Page { budget: &'a mut usize },
+}
+
+/// The iterations of an execution of an item with their step results, see [`ViewScope`].
 pub async fn views(
     conn: &mut PgConnection,
     project_id: Uuid,
     item_id: Uuid,
     execution_no: i32,
+    scope: ViewScope<'_>,
 ) -> anyhow::Result<Vec<RunIteration>> {
     type Row = (
         String,
@@ -463,15 +484,76 @@ pub async fn views(
         Option<String>,
         Option<DateTime<Utc>>,
         Option<DateTime<Utc>>,
+        Option<serde_json::Value>,
     );
+    let (only, limit) = match &scope {
+        ViewScope::Row(r) => (Some(*r), 1i64),
+        ViewScope::Page { .. } => (None, EXECUTION_VIEW_ITERATIONS as i64),
+        ViewScope::Item { .. } => (None, i64::MAX),
+    };
     let rows: Vec<Row> = sqlx::query_as(
-        "select row_id, position, param_values, status, comment, result_id, executed_by, started_at, finished_at \
-         from run_iterations where run_item_id = $1 and execution_no = $2 order by position, row_id",
+        "select it.row_id, it.position, it.param_values, it.status, it.comment, it.result_id, it.executed_by,            it.started_at, it.finished_at, r.defect \
+         from run_iterations it join run_items ri on ri.id = it.run_item_id \
+         left join results r on r.id = it.result_id and r.launch_created_at = ri.launch_created_at \
+         where it.run_item_id = $1 and it.execution_no = $2 and ($3::text is null or it.row_id = $3) \
+         order by it.position, it.row_id limit $4",
     )
     .bind(item_id)
     .bind(execution_no)
+    .bind(only)
+    .bind(limit)
     .fetch_all(&mut *conn)
     .await?;
+    let sizes: Vec<(String, i64)> = sqlx::query_as(
+        "select row_id, sum(length(step_path) + length(actual) + length(comment) + 96 \
+           + 48 * cardinality(attachment_ids))::bigint \
+         from run_iteration_step_results where run_item_id = $1 and execution_no = $2 \
+           and ($3::text is null or row_id = $3) group by row_id",
+    )
+    .bind(item_id)
+    .bind(execution_no)
+    .bind(only)
+    .fetch_all(&mut *conn)
+    .await?;
+    let sizes: HashMap<String, usize> = sizes
+        .into_iter()
+        .map(|(r, n)| (r, n.max(0) as usize))
+        .collect();
+    let mut rows = rows;
+    let mut omitted: HashSet<String> = HashSet::new();
+    let mut with_steps: Vec<String> = Vec::new();
+    match scope {
+        ViewScope::Row(_) => with_steps.extend(rows.iter().map(|r| r.0.clone())),
+        ViewScope::Item { budget } => {
+            for r in &rows {
+                let n = sizes.get(&r.0).copied().unwrap_or(0);
+                if n == 0 {
+                    continue;
+                }
+                if n <= *budget {
+                    *budget -= n;
+                    with_steps.push(r.0.clone());
+                } else {
+                    omitted.insert(r.0.clone());
+                }
+            }
+        }
+        ViewScope::Page { budget } => {
+            let mut keep = 0;
+            for r in &rows {
+                let n = sizes.get(&r.0).copied().unwrap_or(0) + r.2.to_string().len() + 256;
+                if n > *budget {
+                    break;
+                }
+                *budget -= n;
+                keep += 1;
+                if sizes.contains_key(&r.0) {
+                    with_steps.push(r.0.clone());
+                }
+            }
+            rows.truncate(keep);
+        }
+    }
     type StepRow = (
         String,
         String,
@@ -482,14 +564,20 @@ pub async fn views(
         String,
         DateTime<Utc>,
     );
-    let steps: Vec<StepRow> = sqlx::query_as(
-        "select row_id, step_path, status, actual, comment, attachment_ids, updated_by, updated_at \
-         from run_iteration_step_results where run_item_id = $1 and execution_no = $2",
-    )
-    .bind(item_id)
-    .bind(execution_no)
-    .fetch_all(&mut *conn)
-    .await?;
+    let steps: Vec<StepRow> = if with_steps.is_empty() {
+        Vec::new()
+    } else {
+        sqlx::query_as(
+            "select row_id, step_path, status, actual, comment, attachment_ids, updated_by, updated_at \
+             from run_iteration_step_results where run_item_id = $1 and execution_no = $2 \
+               and row_id = any($3)",
+        )
+        .bind(item_id)
+        .bind(execution_no)
+        .bind(&with_steps)
+        .fetch_all(&mut *conn)
+        .await?
+    };
     let att_ids: Vec<Uuid> = steps.iter().flat_map(|s| s.5.iter().copied()).collect();
     let atts = attachment_refs(conn, project_id, &att_ids).await?;
     let mut by_row: HashMap<String, Vec<RunStepResult>> = HashMap::new();
@@ -517,6 +605,7 @@ pub async fn views(
                 executed_by,
                 started_at,
                 finished_at,
+                defect,
             )| {
                 let mut step_results = by_row.remove(&row_id).unwrap_or_default();
                 step_results.sort_by_key(|s| path_key(&s.path));
@@ -529,6 +618,8 @@ pub async fn views(
                     executed_by,
                     started_at,
                     finished_at,
+                    defect,
+                    step_results_omitted: omitted.contains(&row_id),
                     step_results,
                     row_id,
                 }
@@ -645,6 +736,31 @@ pub struct IterationChange {
 }
 
 impl Store {
+    /// One iteration of an item with all its step results: of the current execution, or of
+    /// `execution_no`.
+    pub async fn run_iteration(
+        &self,
+        project_id: Uuid,
+        item_id: Uuid,
+        row_id: &str,
+        execution_no: Option<i32>,
+    ) -> TmResult<RunIteration> {
+        let mut conn = self.pool.acquire().await?;
+        item_brief(&mut conn, project_id, item_id)
+            .await?
+            .ok_or(TmError::NotFound("run item"))?;
+        let current: i32 = sqlx::query_scalar("select execution_no from run_items where id = $1")
+            .bind(item_id)
+            .fetch_one(&mut *conn)
+            .await?;
+        let no = execution_no.unwrap_or(current);
+        views(&mut conn, project_id, item_id, no, ViewScope::Row(row_id))
+            .await?
+            .into_iter()
+            .next()
+            .ok_or(TmError::NotFound("iteration"))
+    }
+
     /// Writes the result of one step of an iteration (last writer wins, as for an item step).
     /// An untested iteration becomes `in_progress`; a final one is projected again. The item
     /// takes its derived status and a new revision.

@@ -110,6 +110,14 @@ pub struct RunItemBrief {
     pub manual_state: Option<ManualState>,
 }
 
+/// An iteration's projected result, the target of a defect.
+#[derive(Clone, Debug)]
+pub struct DefectTarget {
+    pub row_id: String,
+    pub result_id: Uuid,
+    pub executed_by: Option<String>,
+}
+
 /// One step of the manual report.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -138,6 +146,33 @@ pub struct ManualReportItem {
     pub comment: String,
     pub defect: Option<serde_json::Value>,
     pub steps: Vec<ManualReportStep>,
+    /// The parameter columns of a parameterized case, in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parameter_columns: Vec<String>,
+    /// The iterations of a parameterized case (its `steps` stay empty: steps are recorded per
+    /// iteration).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub iterations: Vec<ManualReportIteration>,
+}
+
+/// One iteration of a parameterized item in the manual report.
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ManualReportIteration {
+    pub row_id: String,
+    pub position: i32,
+    pub values: std::collections::BTreeMap<String, String>,
+    pub status: RunStatus,
+    pub comment: String,
+    pub executed_by: Option<String>,
+    pub started_at: Option<DateTime<Utc>>,
+    pub finished_at: Option<DateTime<Utc>>,
+    pub defect: Option<serde_json::Value>,
+    /// The recorded step results of the iteration, with the values put into the step texts.
+    pub steps: Vec<ManualReportStep>,
+    /// `true` when `steps` was left out because the item's report reached its size limit.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub steps_omitted: bool,
 }
 
 /// A step of an executed snapshot with its path (`1`, `1.2`, `1.2.3`).
@@ -1400,9 +1435,18 @@ impl Store {
             None => Vec::new(),
         };
         let (iterations, parameter_columns) = if summary.iteration_count > 0 {
+            let mut budget = super::iterations::ITEM_VIEW_STEP_BYTES;
             (
-                super::iterations::views(&mut conn, project_id, item_id, summary.execution_no)
-                    .await?,
+                super::iterations::views(
+                    &mut conn,
+                    project_id,
+                    item_id,
+                    summary.execution_no,
+                    super::iterations::ViewScope::Item {
+                        budget: &mut budget,
+                    },
+                )
+                .await?,
                 snapshot
                     .body
                     .parameters
@@ -1856,8 +1900,57 @@ impl Store {
                 .or_default()
                 .push((p, st, a, c, ids, ub, ua));
         }
+        let counts: HashMap<i32, i64> = sqlx::query_as::<_, (i32, i64)>(
+            "select execution_no, count(*) from run_iterations where run_item_id = $1 \
+               and execution_no = any($2) group by execution_no",
+        )
+        .bind(item_id)
+        .bind(&nos)
+        .fetch_all(&mut *conn)
+        .await?
+        .into_iter()
+        .collect();
+        let mut case_id: Option<Uuid> = None;
+        let mut budget = super::iterations::EXECUTIONS_VIEW_BYTES;
         let mut items = Vec::with_capacity(execs.len());
         for (no, r) in execs {
+            let iteration_count = counts.get(&no).copied().unwrap_or(0) as i32;
+            let (iterations, parameter_columns) = if iteration_count > 0 {
+                let version: i32 = r.try_get("case_version")?;
+                let case_id = match case_id {
+                    Some(c) => c,
+                    None => {
+                        let c: Uuid =
+                            sqlx::query_scalar("select case_id from run_items where id = $1")
+                                .bind(item_id)
+                                .fetch_one(&mut *conn)
+                                .await?;
+                        *case_id.insert(c)
+                    }
+                };
+                let named = case_version_snapshot(&mut conn, case_id, version)
+                    .await?
+                    .and_then(|s| s.body.parameters)
+                    .map(|p| p.columns);
+                let its = super::iterations::views(
+                    &mut conn,
+                    project_id,
+                    item_id,
+                    no,
+                    super::iterations::ViewScope::Page {
+                        budget: &mut budget,
+                    },
+                )
+                .await?;
+                let cols = named.unwrap_or_else(|| {
+                    its.first()
+                        .map(|i| i.values.keys().cloned().collect())
+                        .unwrap_or_default()
+                });
+                (its, cols)
+            } else {
+                (Vec::new(), Vec::new())
+            };
             let mut steps = by_exec.remove(&no).unwrap_or_default();
             steps.sort_by_key(|s| path_key(&s.0));
             let status: String = r.try_get("status")?;
@@ -1876,6 +1969,9 @@ impl Store {
                     .collect(),
                 rerun_by: r.try_get("rerun_by")?,
                 rerun_at: r.try_get("rerun_at")?,
+                iterations,
+                iteration_count,
+                parameter_columns,
             });
         }
         Ok(Page { items, next })
@@ -1904,13 +2000,20 @@ impl Store {
         .await?)
     }
 
-    /// Copies the defect of an item's projected result (set by triage) onto the item.
+    /// Copies the defect of an item's projected result (set by triage) onto the item. A
+    /// parameterized item takes the defect of its first iteration (by position) that has one.
     pub async fn sync_run_item_defect(&self, project: &Project, item_id: Uuid) -> TmResult<i64> {
         let mut tx = self.pool.begin().await?;
         let row: Option<(Uuid, String, i64)> = sqlx::query_as(
-            "update run_items ri set defect = r.defect, revision = ri.revision + 1, updated_at = now() \
-             from results r where ri.project_id = $1 and ri.id = $2 and r.id = ri.result_id \
-               and r.launch_created_at = ri.launch_created_at \
+            "update run_items ri set defect = case when ri.iterations > 0 then \
+               (select r.defect from run_iterations it \
+                  join results r on r.id = it.result_id and r.launch_created_at = ri.launch_created_at \
+                where it.run_item_id = ri.id and it.execution_no = ri.execution_no and r.defect is not null \
+                order by it.position limit 1) \
+               else (select r.defect from results r where r.id = ri.result_id \
+                  and r.launch_created_at = ri.launch_created_at) end, \
+               revision = ri.revision + 1, updated_at = now() \
+             where ri.project_id = $1 and ri.id = $2 \
              returning ri.launch_id, ri.status, ri.revision",
         )
         .bind(project.id)
@@ -1929,6 +2032,57 @@ impl Store {
         .await?;
         tx.commit().await?;
         Ok(revision)
+    }
+
+    /// The projected results a defect of a parameterized item goes to: the iteration `row_id`
+    /// (empty while it has no final status), or without it the failed and blocked iterations
+    /// of the current execution (at most `max`). `None` for a plain item.
+    pub async fn defect_targets(
+        &self,
+        project_id: Uuid,
+        item_id: Uuid,
+        row_id: Option<&str>,
+        max: i64,
+    ) -> TmResult<Option<Vec<DefectTarget>>> {
+        let mut conn = self.pool.acquire().await?;
+        item_brief(&mut conn, project_id, item_id)
+            .await?
+            .ok_or(TmError::NotFound("run item"))?;
+        let (count, exec): (i32, i32) =
+            sqlx::query_as("select iterations, execution_no from run_items where id = $1")
+                .bind(item_id)
+                .fetch_one(&mut *conn)
+                .await?;
+        if count == 0 {
+            return Ok(None);
+        }
+        let rows: Vec<(String, Option<Uuid>, Option<String>)> = sqlx::query_as(
+            "select row_id, result_id, executed_by from run_iterations \
+             where run_item_id = $1 and execution_no = $2 \
+               and (($3::text is not null and row_id = $3) \
+                 or ($3::text is null and status in ('failed', 'blocked'))) \
+             order by position, row_id limit $4",
+        )
+        .bind(item_id)
+        .bind(exec)
+        .bind(row_id)
+        .bind(max)
+        .fetch_all(&mut *conn)
+        .await?;
+        if row_id.is_some() && rows.is_empty() {
+            return Err(TmError::NotFound("iteration"));
+        }
+        Ok(Some(
+            rows.into_iter()
+                .filter_map(|(row_id, result_id, executed_by)| {
+                    result_id.map(|result_id| DefectTarget {
+                        row_id,
+                        result_id,
+                        executed_by,
+                    })
+                })
+                .collect(),
+        ))
     }
 
     /// Closes the manual run of a launch: untested items become `skipped` (and are projected)
@@ -2192,7 +2346,7 @@ impl Store {
         let rows = sqlx::query(
             "select ri.id, ri.case_id, c.number, coalesce(ri.case_name, c.name) as name, ri.case_version, ri.status, \
                ri.execution_no, ri.assignee, ri.executed_by, ri.started_at, ri.finished_at, ri.comment, ri.defect, \
-               ri.shared_pins \
+               ri.shared_pins, ri.iterations, ri.execution_no as cur_exec \
              from run_items ri join cases c on c.id = ri.case_id \
              where ri.project_id = $1 and ri.launch_id = $2 and c.number > $3 order by c.number limit $4",
         )
@@ -2260,6 +2414,39 @@ impl Store {
                 })
                 .collect();
             let status: String = r.try_get("status")?;
+            let iteration_count: i32 = r.try_get("iterations")?;
+            let (report_steps, iterations, parameter_columns) = if iteration_count > 0 {
+                let mut budget = REPORT_ITERATION_BYTES;
+                let its = super::iterations::views(
+                    &mut conn,
+                    project_id,
+                    id,
+                    r.try_get("cur_exec")?,
+                    super::iterations::ViewScope::Item {
+                        budget: &mut budget,
+                    },
+                )
+                .await?;
+                let list: Vec<ManualReportIteration> = its
+                    .into_iter()
+                    .map(|it| report_iteration(&snap.body.steps, it))
+                    .collect();
+                bytes += list
+                    .iter()
+                    .flat_map(|i| i.steps.iter())
+                    .map(|s| s.action.len() + s.expected.len() + s.actual.len() + s.comment.len())
+                    .sum::<usize>()
+                    + list.len() * 128;
+                let cols = snap
+                    .body
+                    .parameters
+                    .as_ref()
+                    .map(|p| p.columns.clone())
+                    .unwrap_or_default();
+                (Vec::new(), list, cols)
+            } else {
+                (report_steps, Vec::new(), Vec::new())
+            };
             bytes += report_steps
                 .iter()
                 .map(|s| {
@@ -2283,9 +2470,51 @@ impl Store {
                 comment: r.try_get("comment")?,
                 defect: r.try_get("defect")?,
                 steps: report_steps,
+                parameter_columns,
+                iterations,
             });
         }
         Ok((out, false))
+    }
+}
+
+/// Bytes of step results one parameterized item carries in the manual report.
+const REPORT_ITERATION_BYTES: usize = 8 * 1024 * 1024;
+/// Bytes the values may add to the step texts of one iteration in the report.
+const REPORT_SUBSTITUTION_BYTES: usize = 64 * 1024;
+
+fn report_iteration(steps: &[CaseStep], it: super::RunIteration) -> ManualReportIteration {
+    let mut budget = REPORT_SUBSTITUTION_BYTES;
+    let report_steps = it
+        .step_results
+        .iter()
+        .map(|r| {
+            let step = step_at(steps, &r.path);
+            let text = |t: Option<&str>, budget: &mut usize| {
+                super::parameters::substitute(t.unwrap_or_default(), &it.values, budget)
+            };
+            ManualReportStep {
+                action: text(step.map(|s| s.action.as_str()), &mut budget),
+                expected: text(step.map(|s| s.expected.as_str()), &mut budget),
+                path: r.path.clone(),
+                status: r.status,
+                actual: r.actual.clone(),
+                comment: r.comment.clone(),
+            }
+        })
+        .collect();
+    ManualReportIteration {
+        row_id: it.row_id,
+        position: it.position,
+        values: it.values,
+        status: it.status,
+        comment: it.comment,
+        executed_by: it.executed_by,
+        started_at: it.started_at,
+        finished_at: it.finished_at,
+        defect: it.defect,
+        steps: report_steps,
+        steps_omitted: it.step_results_omitted,
     }
 }
 

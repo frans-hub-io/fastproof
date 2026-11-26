@@ -431,14 +431,11 @@ async fn cli_exports_html_xlsx_and_prints_pdf_with_a_browser() {
     std::fs::write(
         &fake,
         format!(
-            "#!/bin/sh\nfor a in \"$@\"; do case \"$a\" in --print-to-pdf=*) f=\"${{a#--print-to-pdf=}}\";; file://*) h=\"${{a#file://}}\";; esac; done\n{{ echo \"$@\"; head -c 220 \"$h\"; echo; stat -c %a \"$(dirname \"$h\")\"; }} > {}\nprintf '%%PDF-1.4 fake' > \"$f\"\n",
+            "#!/bin/sh\nfor a in \"$@\"; do case \"$a\" in --print-to-pdf=*) f=\"${{a#--print-to-pdf=}}\";; file://*) h=\"${{a#file://}}\";; esac; done\n{{ echo \"$@\"; head -c 220 \"$h\"; echo; echo \"wd=$(dirname \"$h\")\"; stat -c %a \"$(dirname \"$h\")\"; }} > {}\nprintf '%%PDF-1.4 fake' > \"$f\"\n",
             log.display()
         ),
     )
     .unwrap();
-    let tmp_root = tempfile::tempdir().unwrap();
-    let old_tmp = std::env::var_os("TMPDIR");
-    unsafe { std::env::set_var("TMPDIR", tmp_root.path()) };
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -462,15 +459,14 @@ async fn cli_exports_html_xlsx_and_prints_pdf_with_a_browser() {
         seen.trim_end().ends_with("700"),
         "the working directory is private: {seen}"
     );
-    assert_eq!(
-        std::fs::read_dir(tmp_root.path()).unwrap().count(),
-        0,
-        "temp dir cleaned"
+    let wd = seen
+        .lines()
+        .find_map(|l| l.strip_prefix("wd="))
+        .expect("the browser saw its working directory");
+    assert!(
+        !std::path::Path::new(wd).exists(),
+        "the private working directory {wd} is removed after printing"
     );
-    match old_tmp {
-        Some(t) => unsafe { std::env::set_var("TMPDIR", t) },
-        None => unsafe { std::env::remove_var("TMPDIR") },
-    }
 
     let mut a = args("pdf", &pdf);
     a.chromium = None;

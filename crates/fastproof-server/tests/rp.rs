@@ -1377,6 +1377,8 @@ async fn failed_results_wait_for_their_late_error_text() {
     finish(&s, "ci", &suite, &token, json!({"launchUuid": lu})).await;
     let finished_items = std::time::Instant::now();
 
+    // `running` results are queued and written in the background, so the passed result can
+    // settle before the last of them lands: wait until all four exist.
     let deadline = std::time::Instant::now() + Duration::from_secs(4);
     loop {
         let r = s.results("ci", &fp, "").await;
@@ -1386,15 +1388,16 @@ async fn failed_results_wait_for_their_late_error_text() {
                 .map(|x| x["status"].clone())
                 .unwrap_or(Value::Null)
         };
-        if status("passes") == "passed" {
-            for n in ["fails", "by_step", "silent"] {
+        let waiting = ["fails", "by_step", "silent"];
+        if status("passes") == "passed" && waiting.iter().all(|n| !status(n).is_null()) {
+            for n in waiting {
                 assert_eq!(status(n), "running", "{n} waits for its error text");
             }
             break;
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "a passed test does not wait: {r:?}"
+            "a passed test does not wait, the others show running: {r:?}"
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }

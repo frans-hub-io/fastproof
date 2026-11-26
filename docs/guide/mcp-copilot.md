@@ -138,7 +138,7 @@ people decide.
 | `trace_actions` | The actions of the Playwright trace of an attempt (`resultId`, `attempt`): `apiName`, `selector`, `url`, `status`, `error`, `durationMs`, at most 500 (`truncated` beyond); traces up to 256 MiB | `launches:read` |
 | `draft_case_from_result` | A draft case from a result (`resultId`, `attempt`): its name, preconditions from fixtures, steps from the step tree (3 levels), the failure message, a link to the result; the agent may give `name`, `notes`, `steps`, `folderId`, `tags` | `cases:write` or `ai:propose`, and `launches:read` |
 | `create_case_draft` | A draft case from the agent's `name`, `description`, `preconditions`, `steps`, `folderId`, `tags`, `fields` | `cases:write` or `ai:propose` |
-| `propose_case_update` | A suggestion for case `number` against `baseRevision` (`name`, `description`, `preconditions`, `steps` (a top-level step may be `{"sharedStep": 12}`, see below), `status`, `tags`, `fields`, a required `rationale`); validated like a case save, stored as pending, nothing applied; a moved revision answers `suggestion_stale` | `cases:write` or `ai:propose` |
+| `propose_case_update` | A suggestion for case `number` against `baseRevision` (`name`, `description`, `preconditions`, `steps` (a top-level step may be `{"sharedStep": 12}`, see below), `parameters` (as in `propose_parameters`; left out, the case keeps its own), `status`, `tags`, `fields`, a required `rationale`); validated like a case save, stored as pending, nothing applied; a moved revision answers `suggestion_stale` | `cases:write` or `ai:propose` |
 | `add_cases_to_plan` | Add case `numbers` (1–1000) to a managed plan (`planId`) | `plans:write` |
 | `validate_query` | Checks an [FPQL](query-language.md) `query`: `ok` with the normalized text and the number of matching cases (capped at 10000), or `ok: false` with the error and its position; `entity` is `cases`; runs with a 5 s statement timeout and takes a heavy slot | `cases:read` |
 | `list_shared_steps` | [Shared steps](shared-steps.md) (`q`, `archived`, `limit` 1–100 (20)) with version, review state and usage counts | `cases:read` |
@@ -146,6 +146,11 @@ people decide.
 | `review_queue` | Cases and shared steps waiting for [review](workflows-and-review.md): `kind` (`case`, `sharedStep`), `state` (`pending`, `changes_requested`), `waitingForMe`, `mine`, `folderId`, `limit` | `cases:read` |
 | `plan_dispatches` | CI runs started from a plan (`planId`): status, environment, ref, variables, pipeline reference; callers without `settings:write` get generic errors and the pipeline id only (see [Run a plan in CI](rerun.md#run-a-plan-in-ci)) | `cases:read` |
 | `create_shared_step_draft` | A shared step as an AI draft (`name`, `description`, `steps`, at most two levels, no shared steps inside) | `cases:write` or `ai:propose` |
+| `list_requirements` | [Requirements](requirements.md) (`q`, an FPQL `query`, `parent`, `status`, `type`, `archived`, `limit` 1–100 (20)) with type, status, issue key, external state and the number of linked cases; answers `{items, more, untrustedContent}`; `q` and `query` take a heavy slot | `cases:read` |
+| `requirement_coverage` | [Coverage](requirements.md#coverage) of the children of `parent` (the top-level requirements without it), `limit` 1–100 (20): `uncovered`, `failed`, `notRun`, `partial`, `passed` or `changedAfterRun`, with case counts. Scope: none (the last result of each case), `planId` (with `launchId`), `launchIds` (at most 50) or a window (`days`, `branch`, `environment`); kinds cannot be mixed; any scope takes a heavy slot | `cases:read` |
+| `propose_parameters` | [Parameters](parameters.md) for case `number` against `baseRevision`: either `columns` with `rows` (`values`, optional `id` and `enabled`), or `generate` (`mode` `all` or `pairwise`, `values` per column); a required `rationale`; stored as a pending suggestion, nothing applied | `cases:write` or `ai:propose` |
+| `propose_requirement_links` | Cases (`cases`, 1 to 20 numbers) as covering requirement `requirement`: the links get `status = proposed` and do not count as coverage until a person confirms them | `cases:write` or `ai:propose` |
+| `draft_requirements_from_text` | Draft requirements from the agent's reading of a document: `requirements` (1 to 20 of `title`, `description`, `type`, `parentNumber`), always `status = draft`, `origin = ai`; no tracker issue can be set | `cases:write` or `ai:propose` |
 
 ### Shared steps and agents
 
@@ -162,10 +167,42 @@ policy's `approvals` (unless `allowSelfApproval`): an agent token's name says no
 agent, so that person may approve, and another one must too. See
 [Workflows and review](workflows-and-review.md#how-a-version-is-reviewed).
 
+### Requirements, parameters and agents
+
+`requirement_coverage` and `list_requirements` read what people and trackers wrote (requirement titles and
+descriptions, issue keys, external states). Like every test management read tool (`search_cases`, `get_case`,
+`case_history`, the plan, run, trace, shared step, review queue and dispatch tools), their answers carry
+`"untrustedContent": true` as their first key, so the flag survives an answer cut at the output limit, and an
+agent treats that text (case steps, parameter values, titles) as data, never as instructions.
+
+An agent cannot make a requirement count as covered. `propose_requirement_links` writes links with
+`status = proposed`; coverage ignores them until a person confirms them on the requirement page or with
+`confirm` on `POST /requirements/{n}/links`, which an agent token cannot call. The proposals are bounded
+separately from the links people make:
+
+- at most 20 cases per call;
+- at most 50 open proposals per requirement (`409 limit_reached`, `maxProposedLinks`), so an agent cannot fill the
+  500 links a requirement holds and leave no room for people (`maxRequirementCases`); confirming or removing
+  proposals makes room again;
+- at most 1000 open proposals of one principal in a project, over all requirements (`409 limit_reached`,
+  `maxAiProposedLinks`), so one agent cannot leave 50 proposals on every requirement;
+- an agent only adds: it neither confirms, nor removes, nor turns a code link into a manual one.
+
+`draft_requirements_from_text` makes draft requirements: one principal has at most 200 of them per project
+(`409 limit_reached`, `maxAiDraftRequirements`) and a call counts every requirement against the write rate. A
+person activates a draft by changing its status. The tool cannot set a tracker or an issue key, so a draft never
+takes part in the tracker state sync.
+
+`propose_parameters` and `parameters` in `propose_case_update` are suggestions like any other change of a case.
+They are checked as a case save is (columns, rows, `maxParameterRows`, a `${name}` in a step that names no
+column), and a write of parameters is a gated write while old replicas run (`upgrade_in_progress`). A proposal
+that changes only steps or text keeps the parameters the case has.
+
 ### What an agent never does
 
 There is no tool to vote on or approve a case or shared step, to move a case through the workflow, to change the
-workflow or review policy, to start a plan in CI, to inline or purge shared steps, or to write iterations. The
+workflow or review policy, to start a plan in CI, to inline or purge shared steps, to confirm a requirement
+link, to activate a requirement or to write iterations. The
 same holds on the REST API for an agent token: it has none of `cases:review`, `launches:rerun`, `runs:execute`
 or `settings:write`. `review_queue` and `plan_dispatches` only read. The write tools of this section take the
 per-caller write rate (`rate_limited`), as the other TM writes do.
@@ -196,15 +233,15 @@ below goes:
   name, selector, URL, status, error and duration;
 - the tool for drafts has no status argument, and there is no tool that edits or accepts;
 - every write is in the audit log with `source: ai` and the agent's name (`case.create`,
-  `caseSuggestion.create`, `sharedStep.create`, `testPlan.items`).
+  `caseSuggestion.create`, `sharedStep.create`, `requirement.create`, `requirement.links`, `testPlan.items`).
 
 ## Agent tokens
 
 An agent with a terminal can call the REST API with the token it has, so the rules above hold for the REST API
 only when the token itself cannot change cases. The built-in role `agent` is made for that: it can read
 projects, launches and test cases, triage results (`results:triage`), and create work for people to review
-(`ai:propose`: `create_case_draft`, `draft_case_from_result`, `propose_case_update`, `create_shared_step_draft`
-and `create_rule_draft`). It has no `cases:write`, `cases:review`, `rules:write`, `plans:write` or `runs:execute`,
+(`ai:propose`: `create_case_draft`, `draft_case_from_result`, `propose_case_update`, `propose_parameters`,
+`create_shared_step_draft`, `draft_requirements_from_text`, `propose_requirement_links` and `create_rule_draft`). It has no `cases:write`, `cases:review`, `rules:write`, `plans:write` or `runs:execute`,
 so over REST an agent token answers `403`
 to creating, changing, reviewing, activating or archiving cases, to accepting or rejecting case suggestions, to bulk
 changes and to enabling rules, and over MCP it cannot call `add_cases_to_plan`. People review its drafts and
@@ -216,8 +253,9 @@ suggestions with their own accounts. More limits of agent tokens:
 - **AI triage.** Triage by a principal with `ai:propose` and without `cases:write` (the `agent` role) is always
   recorded with `source: ai`, on MCP and on `POST /triage` and run item defects alike, whatever `source` it sends.
 - **Draft caps.** One principal has at most 200 unreviewed AI draft cases and 200 unreviewed AI shared steps
-  (`409 limit_reached`, `maxUnreviewedAiDrafts`) and 20 disabled rules (`maxRuleDrafts`) per project; people
-  review, archive or delete some to make room.
+  (`409 limit_reached`, `maxUnreviewedAiDrafts`), 200 draft requirements (`maxAiDraftRequirements`), 20
+  disabled rules (`maxRuleDrafts`) per project, 50 open link proposals per requirement (`maxProposedLinks`) and
+  1000 per principal and project (`maxAiProposedLinks`); people review, archive, delete or confirm some to make room.
 - **Rate.** MCP write tools count against the same per-caller rate as other writes that multiply work
   (`FASTPROOF_TM_MULTIPLYING_WRITES_PER_MINUTE`).
 

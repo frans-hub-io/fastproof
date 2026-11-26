@@ -60,6 +60,16 @@ pub const IMPORT_READY_DAYS: i64 = 7;
 /// Dry runs of tracker imports a project keeps waiting for their apply; a new one cancels the
 /// oldest beyond this (each holds up to [`MAX_IMPORT_TEXT_BYTES`] of issues).
 pub const MAX_READY_IMPORTS: i64 = 3;
+/// Links an AI agent may have proposed on one requirement at once (`status = proposed`); they
+/// count toward `max_requirement_cases` too, so an agent cannot fill the requirement.
+pub const MAX_PROPOSED_LINKS: i64 = 50;
+/// Open link proposals (`status = proposed`) one AI principal may have in a project, over all
+/// its requirements, at most: [`MAX_PROPOSED_LINKS`] alone would let one agent leave 50
+/// proposals on every requirement of the project.
+pub const MAX_AI_PROPOSED_LINKS: i64 = 1000;
+/// Draft requirements of one AI creator per project (`origin = ai`, `status = draft`, not
+/// archived), at most.
+pub const MAX_AI_DRAFT_REQUIREMENTS: i64 = 200;
 /// The default type of a requirement.
 pub const DEFAULT_TYPE: &str = "requirement";
 
@@ -1264,6 +1274,22 @@ impl Store {
         let parent = w.parent_number.flatten();
         let mut tx = self.pool.begin().await?;
         lock_project(&mut tx, ctx.project_id, "requirements").await?;
+        if origin == RequirementOrigin::Ai {
+            let drafts: i64 = sqlx::query_scalar(
+                "select count(*) from requirements where project_id = $1 and origin = 'ai' \
+                 and status = 'draft' and archived_at is null and created_by = $2",
+            )
+            .bind(ctx.project_id)
+            .bind(no_nul(ctx.by))
+            .fetch_one(&mut *tx)
+            .await?;
+            if drafts >= MAX_AI_DRAFT_REQUIREMENTS {
+                return Err(TmError::limit(
+                    "maxAiDraftRequirements",
+                    MAX_AI_DRAFT_REQUIREMENTS as u64,
+                ));
+            }
+        }
         let row = create_in(&mut tx, ctx, c, parent, None, origin).await?;
         tx.commit().await?;
         Ok(row)
@@ -1441,6 +1467,17 @@ impl Store {
                 format!("REQ-{} is archived; restore it first", cur.number),
             ));
         }
+        if origin == RequirementLinkOrigin::Ai {
+            // Serializes the proposals of one principal across requirements, so the count below
+            // cannot be passed by parallel calls on different requirements. Only this path
+            // takes the lock, always after the requirement row, so no cycle can form.
+            lock_project(
+                &mut tx,
+                ctx.project_id,
+                &format!("ai-links:{}", no_nul(ctx.by)),
+            )
+            .await?;
+        }
         let all: Vec<i64> = add
             .iter()
             .chain(&remove)
@@ -1509,6 +1546,7 @@ impl Store {
             .bind(&targets)
             .fetch_all(&mut *tx)
             .await?;
+            let proposed_new = origin == RequirementLinkOrigin::Ai && !touched.is_empty();
             for c in touched {
                 if let Some(n) = by_id.get(&c) {
                     match before.get(&c).map(String::as_str) {
@@ -1525,6 +1563,34 @@ impl Store {
             .await?;
             if total as usize > max {
                 return Err(TmError::limit("maxRequirementCases", max as u64));
+            }
+            if proposed_new {
+                let proposed: i64 = sqlx::query_scalar(
+                    "select count(*) from requirement_links where requirement_id = $1 and status = 'proposed'",
+                )
+                .bind(cur.id)
+                .fetch_one(&mut *tx)
+                .await?;
+                if proposed > MAX_PROPOSED_LINKS {
+                    return Err(TmError::limit(
+                        "maxProposedLinks",
+                        MAX_PROPOSED_LINKS as u64,
+                    ));
+                }
+                let mine: i64 = sqlx::query_scalar(
+                    "select count(*) from requirement_links where project_id = $1 and status = 'proposed' \
+                     and created_by = $2",
+                )
+                .bind(ctx.project_id)
+                .bind(no_nul(ctx.by))
+                .fetch_one(&mut *tx)
+                .await?;
+                if mine > MAX_AI_PROPOSED_LINKS {
+                    return Err(TmError::limit(
+                        "maxAiProposedLinks",
+                        MAX_AI_PROPOSED_LINKS as u64,
+                    ));
+                }
             }
         }
         out.added.sort();

@@ -4,7 +4,12 @@
 //! versions, links automated tests by `ALLURE_ID` through an allure-results upload, reads the
 //! list and the tree, starts a launch from a managed plan, runs it with concurrent virtual
 //! testers, adds the automated part, exports the cases and imports a TestRail CSV into a
-//! second project; then prints p50/p95/max per operation against the lab targets.
+//! second project; then the night-2 data (shared steps used by the cases, parameterized cases,
+//! requirements with links, FPQL queries, a launch with iterations, review) and its
+//! measurements; then prints p50/p95/max per operation against the lab targets. Linking
+//! requirements makes thousands of calls that take the per-caller write rate, so the server under
+//! test runs with `FASTPROOF_TM_MULTIPLYING_WRITES_PER_MINUTE=100000` (and
+//! `FASTPROOF_TM_GATE=open` on a fresh single-replica install).
 //!
 //! Data is generated from `--seed` case by case while it is sent, so memory stays small
 //! whatever the counts.
@@ -110,6 +115,40 @@ pub struct TmBenchArgs {
     /// Seconds to wait for uploads, code sync and imports.
     #[arg(long, default_value_t = 900)]
     pub wait_timeout: u64,
+    /// Shared steps (SS-n) the plain cases reference, two per case on average (0: none and no
+    /// night-2 data at all).
+    #[arg(long, default_value_t = 500)]
+    pub shared_steps: usize,
+    /// Plain cases that reference the hot shared step (the "save a shared step used by 5000
+    /// cases" target).
+    #[arg(long, default_value_t = 5_000)]
+    pub shared_hot_cases: usize,
+    /// Parameterized cases (tag `bench-param`).
+    #[arg(long, default_value_t = 2_000)]
+    pub parameterized: usize,
+    /// Rows of the parameters of each parameterized case.
+    #[arg(long, default_value_t = 8)]
+    pub parameter_rows: usize,
+    /// Requirements (a tree: epics, features, stories).
+    #[arg(long, default_value_t = 3_000)]
+    pub requirements: usize,
+    /// Links from requirements to cases, spread over the stories.
+    #[arg(long, default_value_t = 25_000)]
+    pub requirement_links: usize,
+    /// FPQL queries of 4 to 6 conditions, each listed and validated once.
+    #[arg(long, default_value_t = 20)]
+    pub fpql_queries: usize,
+    /// Cases of the night-2 plan (the parameterized cases by a tag filter plus plain cases by
+    /// number, and the probe case).
+    #[arg(long, default_value_t = 5_000)]
+    pub n2_plan_cases: usize,
+    /// Skip the NDJSON export (it stops at 50 000 cases, so a larger scenario cannot run it).
+    #[arg(long)]
+    pub no_export: bool,
+    /// Cases edited under review and approved in one bulk request (the "bulk of 500 votes"
+    /// target); 0 skips the review measurements.
+    #[arg(long, default_value_t = 500)]
+    pub review_votes: usize,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -156,6 +195,8 @@ const STREAM_RESULT: u64 = 4 << 56;
 const STREAM_IMPORT: u64 = 5 << 56;
 const STREAM_RUN: u64 = 6 << 56;
 const STREAM_READ: u64 = 7 << 56;
+const STREAM_SHARED: u64 = 8 << 56;
+const STREAM_N2: u64 = 9 << 56;
 
 const WORDS: [&str; 48] = [
     "checkout",
@@ -407,11 +448,15 @@ pub enum Role {
     Automated,
     /// A manual case of the plan, executed by the testers (tag `bench-run`).
     Run,
+    /// A parameterized manual case (tag `bench-param`) of the night-2 plan.
+    Param,
     Plain,
 }
 
 /// Tag of the cases the plan's filter selects.
 pub const RUN_TAG: &str = "bench-run";
+/// Tag of the parameterized cases the night-2 plan's filter selects.
+pub const PARAM_TAG: &str = "bench-param";
 
 /// The case population of a scenario.
 #[derive(Clone, Debug)]
@@ -425,6 +470,11 @@ pub struct Gen {
     pub version_sample: usize,
     pub save_sample: usize,
     pub fields: Vec<FieldSpec>,
+    pub parameterized: usize,
+    pub parameter_rows: usize,
+    pub hot_cases: usize,
+    /// Shared steps `(id, number)` the plain cases reference; the first is the hot one.
+    pub shared: Vec<(Uuid, i64)>,
 }
 
 impl Gen {
@@ -439,6 +489,14 @@ impl Gen {
             version_sample: a.version_sample,
             save_sample: a.save_sample,
             fields: field_specs(a.seed, a.fields),
+            parameterized: if a.shared_steps == 0 {
+                0
+            } else {
+                a.parameterized
+            },
+            parameter_rows: a.parameter_rows,
+            hot_cases: a.shared_hot_cases,
+            shared: Vec::new(),
         }
     }
 
@@ -447,21 +505,78 @@ impl Gen {
             Role::Automated
         } else if i < self.automated + self.run_cases {
             Role::Run
+        } else if i < self.automated + self.run_cases + self.parameterized {
+            Role::Param
         } else {
             Role::Plain
         }
     }
 
-    /// Indices of the cases that get version edits (after the run cases).
+    /// Index of the first plain case.
+    pub fn plain_from(&self) -> usize {
+        (self.automated + self.run_cases + self.parameterized).min(self.cases)
+    }
+
+    /// Indices of the cases that get version edits (after the parameterized cases).
     pub fn version_range(&self) -> std::ops::Range<usize> {
-        let from = (self.automated + self.run_cases).min(self.cases);
+        let from = self.plain_from();
         from..(from + self.version_sample).min(self.cases)
     }
 
     /// Indices of the cases saved with `save_steps` steps (the last ones, never run cases).
     pub fn save_range(&self) -> std::ops::Range<usize> {
-        let first = (self.automated + self.run_cases).min(self.cases);
+        let first = self.plain_from();
         self.cases.saturating_sub(self.save_sample).max(first)..self.cases
+    }
+
+    /// Indices of the plain cases that reference the hot shared step.
+    pub fn hot_range(&self) -> std::ops::Range<usize> {
+        let from = self.plain_from();
+        from..(from + self.hot_cases).min(self.cases)
+    }
+
+    /// The `shared` steps of plain case `i`: the hot one for the hot range, then one to three
+    /// others, two on average.
+    fn shared_steps_of(&self, i: usize) -> Vec<Value> {
+        if self.shared.is_empty() || self.role(i) != Role::Plain {
+            return Vec::new();
+        }
+        let mut rng = Rng::new(self.seed, STREAM_SHARED | (i as u64) << 8);
+        let mut picked: Vec<usize> = Vec::new();
+        let hot = self.hot_range().contains(&i);
+        if hot {
+            picked.push(0);
+        }
+        let others = self.shared.len() - 1;
+        let want = if hot { rng.below(3) } else { 1 + rng.below(3) };
+        for _ in 0..want {
+            if others == 0 {
+                break;
+            }
+            let k = 1 + rng.below(others);
+            if !picked.contains(&k) {
+                picked.push(k);
+            }
+        }
+        picked
+            .into_iter()
+            .map(|k| {
+                let (id, number) = self.shared[k];
+                json!({"action": "", "expected": "", "data": "", "steps": [],
+                    "shared": {"id": id, "number": number}})
+            })
+            .collect()
+    }
+
+    /// Parameters of parameterized case `i`: `rows` rows of two columns, no two alike.
+    fn parameters_of(&self, i: usize, rows: usize) -> Value {
+        let rows: Vec<Value> = (0..rows)
+            .map(|k| {
+                json!({"id": format!("r_{i}x{k}"), "enabled": true,
+                    "values": {"browser": format!("b{}", k % 4), "locale": format!("l{}", k / 4)}})
+            })
+            .collect();
+        json!({"columns": ["browser", "locale"], "rows": rows})
     }
 
     /// Steps of the other cases so the average over all cases is `steps`.
@@ -494,7 +609,7 @@ impl Gen {
         let n = steps_n.unwrap_or_else(|| self.step_count(i));
         let folder = folders.get(rng.below(folders.len())).copied();
         let status = match (role, rng.below(10)) {
-            (Role::Run, _) => "active",
+            (Role::Run | Role::Param, _) => "active",
             (_, 0) => "draft",
             (_, 1) => "outdated",
             _ => "active",
@@ -504,6 +619,9 @@ impl Gen {
             .collect();
         if role == Role::Run {
             tags.push(RUN_TAG.into());
+        }
+        if role == Role::Param {
+            tags.push(PARAM_TAG.into());
         }
         tags.sort();
         tags.dedup();
@@ -539,11 +657,22 @@ impl Gen {
                 fields.insert(f.key.clone(), f.value(&mut erng));
             }
         }
+        st.extend(self.shared_steps_of(i));
+        let mut body = json!({"description": description, "preconditions": preconditions, "steps": st, "links": []});
+        if role == Role::Param {
+            if let Some(f) = body["steps"].get_mut(0) {
+                f["action"] = json!(format!(
+                    "{} in ${{browser}} with the ${{locale}} locale",
+                    f["action"].as_str().unwrap_or_default()
+                ));
+            }
+            body["parameters"] = self.parameters_of(i, self.parameter_rows);
+        }
         json!({
             "name": name,
             "folderId": folder,
             "status": status,
-            "body": {"description": description, "preconditions": preconditions, "steps": st, "links": []},
+            "body": body,
             "fields": fields,
             "tags": tags,
         })
@@ -751,6 +880,51 @@ const OPS: &[(&str, &str, Option<f64>)] = &[
         "TestRail CSV import: dry run + apply",
         Some(60_000.0),
     ),
+    ("shared.create", "create a shared step", None),
+    (
+        "shared.save.hot",
+        "save the shared step used by the hot cases",
+        Some(100.0),
+    ),
+    ("requirement.create", "create a requirement", None),
+    ("requirement.links", "link cases to a requirement", None),
+    (
+        "coverage.default",
+        "coverage page of 50 requirements, default scope",
+        Some(300.0),
+    ),
+    (
+        "coverage.plan",
+        "coverage page of 50 requirements, plan scope",
+        Some(1000.0),
+    ),
+    (
+        "cases.list.fpql",
+        "list of 50 with FPQL of 4 to 6 conditions",
+        Some(150.0),
+    ),
+    (
+        "query.validate",
+        "validate an FPQL query with the count",
+        Some(200.0),
+    ),
+    (
+        "plan.launch.n2",
+        "launch from the night-2 plan (shared steps, iterations)",
+        Some(3000.0),
+    ),
+    (
+        "run.item.get.n2",
+        "open a run item with 5 shared steps and 20 iterations",
+        Some(80.0),
+    ),
+    ("iteration.step", "write an iteration step", Some(50.0)),
+    ("review.queue", "review queue page of 50", Some(150.0)),
+    (
+        "review.bulk",
+        "bulk approval of review-votes versions",
+        Some(2000.0),
+    ),
 ];
 
 #[derive(Default)]
@@ -833,6 +1007,25 @@ pub struct TmBenchReport {
     pub exported_bytes: u64,
     pub imported_cases: i64,
     pub total_seconds: f64,
+    pub shared_steps: usize,
+    pub parameterized_cases: usize,
+    pub requirements_created: usize,
+    pub requirement_links_made: usize,
+    /// Run items and iterations of the night-2 launch.
+    pub n2_run_items: usize,
+    pub n2_iterations: usize,
+    pub fpql_queries: usize,
+    /// Versions the bulk review approved.
+    pub review_applied: i64,
+    /// `/proc/loadavg` (1, 5, 15 minutes) before and after the run, where it exists.
+    pub load_start: Option<String>,
+    pub load_end: Option<String>,
+}
+
+fn loadavg() -> Option<String> {
+    std::fs::read_to_string("/proc/loadavg")
+        .ok()
+        .map(|s| s.split_whitespace().take(3).collect::<Vec<_>>().join(" "))
 }
 
 impl TmBenchReport {
@@ -890,6 +1083,25 @@ impl TmBenchReport {
                 String::new()
             }
         ));
+        s.push_str(&format!(
+            "night 2: {} shared steps, {} parameterized cases, {} requirements with {} links, {} FPQL queries, \
+             launch of {} items with {} iterations, {} versions approved in bulk\n",
+            self.shared_steps,
+            self.parameterized_cases,
+            self.requirements_created,
+            self.requirement_links_made,
+            self.fpql_queries,
+            self.n2_run_items,
+            self.n2_iterations,
+            self.review_applied
+        ));
+        if self.load_start.is_some() || self.load_end.is_some() {
+            s.push_str(&format!(
+                "load average (1, 5, 15 min): start {}, end {}\n",
+                self.load_start.as_deref().unwrap_or("-"),
+                self.load_end.as_deref().unwrap_or("-")
+            ));
+        }
         for e in &self.first_errors {
             s.push_str(&format!("  error: {e}\n"));
         }
@@ -897,7 +1109,7 @@ impl TmBenchReport {
     }
 }
 
-fn rows(rec: &Recorder) -> Vec<OpRow> {
+fn rows(rec: &Recorder, stress: bool) -> Vec<OpRow> {
     let g = rec.0.lock().unwrap_or_else(|e| e.into_inner());
     let mut out = Vec::new();
     for (op, desc, target) in OPS {
@@ -905,6 +1117,10 @@ fn rows(rec: &Recorder) -> Vec<OpRow> {
         let mut v = v.clone();
         v.sort_by(f64::total_cmp);
         let p95 = percentile(&v, 95.0);
+        let target = match (*op, stress) {
+            ("cases.list.fpql", true) => &Some(500.0),
+            _ => target,
+        };
         out.push(OpRow {
             op: op.to_string(),
             description: desc.to_string(),
@@ -1020,6 +1236,23 @@ pub fn validate(a: &TmBenchArgs) -> anyhow::Result<()> {
     if a.run_cases > a.plan_cases {
         bail!("--run-cases must not exceed --plan-cases");
     }
+    if a.shared_steps > 0 {
+        if a.automated + a.run_cases + a.parameterized > a.cases {
+            bail!("--automated plus --run-cases plus --parameterized must not exceed --cases");
+        }
+        if a.parameter_rows == 0 || a.parameter_rows > 1000 {
+            bail!("--parameter-rows 1..=1000");
+        }
+        if a.shared_steps > 5000 || a.shared_hot_cases > a.cases {
+            bail!("--shared-steps at most 5000; --shared-hot-cases at most --cases");
+        }
+        if a.requirements > 50_000 || a.review_votes > 500 {
+            bail!("--requirements at most 50000; --review-votes at most 500");
+        }
+        if a.n2_plan_cases < a.parameterized + 2 {
+            bail!("--n2-plan-cases must exceed --parameterized by at least 2");
+        }
+    }
     if a.versions == 0 {
         bail!("--versions is at least 1");
     }
@@ -1061,6 +1294,7 @@ pub async fn run(a: TmBenchArgs) -> anyhow::Result<TmBenchReport> {
     let mut report = TmBenchReport {
         project: key.clone(),
         kept: a.keep,
+        load_start: loadavg(),
         ..Default::default()
     };
     let rb = api
@@ -1089,7 +1323,8 @@ pub async fn run(a: TmBenchArgs) -> anyhow::Result<TmBenchReport> {
         }
     }
     res?;
-    report.ops = rows(&api.rec);
+    report.ops = rows(&api.rec, a.cases >= 100_000);
+    report.load_end = loadavg();
     let g = api.rec.0.lock().unwrap_or_else(|e| e.into_inner());
     report.requests = g.requests;
     report.errors = g.errors;
@@ -1107,7 +1342,7 @@ async fn phases(
     report: &mut TmBenchReport,
 ) -> anyhow::Result<()> {
     let base = format!("api/v1/projects/{}", enc(key));
-    let model = Gen::of(a);
+    let mut model = Gen::of(a);
 
     // 1. Setup: fields and folders.
     let t = Instant::now();
@@ -1159,6 +1394,19 @@ async fn phases(
         folders.len(),
         t.elapsed().as_secs_f64()
     );
+    if a.shared_steps > 0 {
+        let t = Instant::now();
+        model.shared = create_shared(api, &base, a).await;
+        report.shared_steps = model.shared.len();
+        report
+            .phases
+            .push(("shared steps".into(), t.elapsed().as_secs_f64()));
+        eprintln!(
+            "shared steps: {} created in {:.1} s",
+            model.shared.len(),
+            t.elapsed().as_secs_f64()
+        );
+    }
     let ctx = Arc::new(Ctx {
         api: api.clone(),
         a: a.clone(),
@@ -1195,6 +1443,9 @@ async fn phases(
     }
     drop(made);
     report.cases_created = numbers.iter().filter(|n| **n > 0).count();
+    report.parameterized_cases = (0..a.cases)
+        .filter(|i| ctx.model.role(*i) == Role::Param && numbers[*i] > 0)
+        .count();
     let created_s = t.elapsed().as_secs_f64();
     eprintln!(
         "cases: {} created in {created_s:.1} s",
@@ -1443,13 +1694,15 @@ async fn phases(
         .push(("combined".into(), t.elapsed().as_secs_f64()));
 
     // 8. Export and import.
-    let t = Instant::now();
-    let (lines, bytes) = export(&ctx).await;
-    report.exported_cases = lines;
-    report.exported_bytes = bytes;
-    report
-        .phases
-        .push(("export".into(), t.elapsed().as_secs_f64()));
+    if !a.no_export {
+        let t = Instant::now();
+        let (lines, bytes) = export(&ctx).await;
+        report.exported_cases = lines;
+        report.exported_bytes = bytes;
+        report
+            .phases
+            .push(("export".into(), t.elapsed().as_secs_f64()));
+    }
     if a.import_cases > 0 {
         let t = Instant::now();
         let imp = format!("{key}-imp");
@@ -1463,6 +1716,466 @@ async fn phases(
         report
             .phases
             .push(("import".into(), t.elapsed().as_secs_f64()));
+    }
+
+    // 9. Night 2.
+    if a.shared_steps > 0 {
+        let t = Instant::now();
+        night2(&ctx, &numbers, &revisions, run, report).await?;
+        report
+            .phases
+            .push(("night 2".into(), t.elapsed().as_secs_f64()));
+    }
+    Ok(())
+}
+
+/// Creates the shared steps; `(id, number)` in creation order (the first is the hot one).
+async fn create_shared(api: &Api, base: &str, a: &TmBenchArgs) -> Vec<(Uuid, i64)> {
+    let mut made: Vec<(usize, Uuid, i64)> = stream::iter(0..a.shared_steps)
+        .map(|k| async move {
+            let mut rng = Rng::new(a.seed, STREAM_N2 | k as u64);
+            let n = 2 + rng.below(4);
+            let body = json!({"name": format!("Shared bench {k}: {}", words(&mut rng, 2)),
+                "description": format!("Steps of the {} flow", words(&mut rng, 1)),
+                "steps": steps(&mut rng, n)});
+            let rb = api.rb(Method::POST, &format!("{base}/shared-steps")).ok()?;
+            let r = api.timed("shared.create", rb.json(&body)).await?;
+            Some((
+                k,
+                r.body["id"].as_str().and_then(|s| s.parse().ok())?,
+                r.body["number"].as_i64()?,
+            ))
+        })
+        .buffer_unordered(a.parallel)
+        .filter_map(|x| async move { x })
+        .collect()
+        .await;
+    made.sort_unstable_by_key(|m| m.0);
+    made.into_iter().map(|(_, id, n)| (id, n)).collect()
+}
+
+/// FPQL queries of 4 to 6 conditions over what the bench created.
+pub fn fpql_queries(g: &Gen, n: usize) -> Vec<String> {
+    let select = g.fields.first();
+    (0..n)
+        .map(|k| {
+            let mut rng = Rng::new(g.seed, STREAM_N2 | 1 << 40 | k as u64);
+            let (a, b) = (rng.below(20), rng.below(20));
+            let shared = g.shared.get(rng.below(g.shared.len().max(1))).map_or(1, |s| s.1);
+            match k % 7 {
+                0 => format!(
+                    "status = active and automated = false and tag = tag-{a} and not tag = tag-{b}"
+                ),
+                1 => format!(
+                    "status in [active, draft] and tag ~ tag-{a} and automated = false and lastStatus is empty"
+                ),
+                2 => format!(
+                    "automated = false and createdAt >= 2020-01-01 and updatedAt > now() - 30d \
+                     and status = active and tag != tag-{a}"
+                ),
+                3 => match select {
+                    Some(f) if !f.options.is_empty() => format!(
+                        "status = active and field[{}] = \"{}\" and tag = tag-{a} and hasParameters = false",
+                        f.key,
+                        f.options[rng.below(f.options.len())]
+                    ),
+                    _ => format!("status = active and tag = tag-{a} and hasParameters = false and automated = false"),
+                },
+                4 => format!(
+                    "(status = active or status = draft) and not tag = tag-{a} and lastStatus is empty \
+                     and number > 100 and automated = false"
+                ),
+                5 => format!(
+                    "sharedStep = SS-{shared} and status = active and automated = false and tag != tag-{a}"
+                ),
+                _ => format!(
+                    "requirement is not empty and status = active and automated = false and tag != tag-{a}"
+                ),
+            }
+        })
+        .collect()
+}
+
+/// The night-2 phase: requirements with links, coverage, FPQL, saving the hot shared step, a
+/// launch with iterations, then review.
+async fn night2(
+    c: &Arc<Ctx>,
+    numbers: &[i64],
+    revisions: &[i64],
+    run: &str,
+    report: &mut TmBenchReport,
+) -> anyhow::Result<()> {
+    let a = &c.a;
+    let api = &c.api;
+    let base = &c.base;
+
+    // Requirements: epics, features, stories; the links go to the stories.
+    let t = Instant::now();
+    let epics = (a.requirements / 50).max(1).min(a.requirements);
+    let features = (a.requirements / 10).max(epics).min(a.requirements - epics);
+    let stories = a.requirements - epics - features;
+    let create = |title: String, kind: &'static str, parent: Option<i64>| {
+        let c = c.clone();
+        async move {
+            let body = json!({"title": title, "type": kind, "parentNumber": parent,
+                "description": format!("Requirement of the bench, a {kind}.")});
+            let rb = c
+                .api
+                .rb(Method::POST, &format!("{}/requirements", c.base))
+                .ok()?;
+            let r = c.api.timed("requirement.create", rb.json(&body)).await?;
+            r.body["number"].as_i64()
+        }
+    };
+    let top: Vec<i64> = stream::iter(0..epics)
+        .map(|k| create(format!("Epic {k}"), "epic", None))
+        .buffer_unordered(a.parallel)
+        .filter_map(|x| async move { x })
+        .collect()
+        .await;
+    let mid: Vec<i64> = if top.is_empty() {
+        Vec::new()
+    } else {
+        stream::iter(0..features)
+            .map(|k| create(format!("Feature {k}"), "feature", Some(top[k % top.len()])))
+            .buffer_unordered(a.parallel)
+            .filter_map(|x| async move { x })
+            .collect()
+            .await
+    };
+    let leaves: Vec<i64> = if mid.is_empty() {
+        Vec::new()
+    } else {
+        stream::iter(0..stories)
+            .map(|k| create(format!("Story {k}"), "story", Some(mid[k % mid.len()])))
+            .buffer_unordered(a.parallel)
+            .filter_map(|x| async move { x })
+            .collect()
+            .await
+    };
+    report.requirements_created = top.len() + mid.len() + leaves.len();
+    let valid: Vec<i64> = numbers.iter().copied().filter(|n| *n > 0).collect();
+    let links_total = a.requirement_links;
+    let linked: Vec<usize> = if leaves.is_empty() || valid.is_empty() {
+        Vec::new()
+    } else {
+        let per = links_total / leaves.len();
+        let extra = links_total % leaves.len();
+        let leaves = Arc::new(leaves);
+        stream::iter(0..leaves.len())
+            .map(|k| {
+                let c = c.clone();
+                let leaves = leaves.clone();
+                let valid = &valid;
+                async move {
+                    let want = per + usize::from(k < extra);
+                    let mut rng = Rng::new(c.a.seed, STREAM_N2 | 2 << 40 | k as u64);
+                    let mut add = std::collections::BTreeSet::new();
+                    while add.len() < want.min(valid.len()) {
+                        add.insert(valid[rng.below(valid.len())]);
+                    }
+                    if add.is_empty() {
+                        return 0;
+                    }
+                    let rb = c
+                        .api
+                        .rb(
+                            Method::POST,
+                            &format!("{}/requirements/{}/links", c.base, leaves[k]),
+                        )
+                        .ok();
+                    let Some(rb) = rb else { return 0 };
+                    match c
+                        .api
+                        .timed("requirement.links", rb.json(&json!({"add": add})))
+                        .await
+                    {
+                        Some(_) => add.len(),
+                        None => 0,
+                    }
+                }
+            })
+            .buffer_unordered(a.parallel)
+            .collect()
+            .await
+    };
+    report.requirement_links_made = linked.iter().sum();
+    eprintln!(
+        "requirements: {} with {} links in {:.1} s",
+        report.requirements_created,
+        report.requirement_links_made,
+        t.elapsed().as_secs_f64()
+    );
+
+    // Coverage in the default scope.
+    let samples = a.samples.min(100);
+    stream::iter(0..samples)
+        .map(|_| async {
+            if let Ok(rb) = api.rb(Method::GET, &format!("{base}/coverage?limit=50")) {
+                api.timed("coverage.default", rb).await;
+            }
+        })
+        .buffer_unordered(a.read_parallel)
+        .collect::<Vec<()>>()
+        .await;
+
+    // FPQL: each query listed and validated.
+    let queries = fpql_queries(&c.model, a.fpql_queries);
+    report.fpql_queries = queries.len();
+    for q in &queries {
+        if let Ok(rb) = api.rb(
+            Method::GET,
+            &format!("{base}/cases?query={}&limit=50", enc(q)),
+        ) {
+            api.timed("cases.list.fpql", rb).await;
+        }
+        if let Ok(rb) = api.rb(Method::POST, &format!("{base}/query/validate")) {
+            let rb = rb.json(&json!({"entity": "cases", "query": q}));
+            if let Some(r) = api.timed("query.validate", rb).await
+                && r.body["ok"] != true
+            {
+                api.rec
+                    .error(format!("query.validate: {q}: {}", r.body["error"]));
+            }
+        }
+    }
+
+    // Saving the hot shared step (used by the hot cases).
+    if let Some((_, number)) = c.model.shared.first() {
+        let mut rng = Rng::new(a.seed, STREAM_N2 | 3 << 40);
+        for k in 0..10 {
+            let path = format!("{base}/shared-steps/{number}");
+            let Some(cur) = api
+                .send(None, "shared step get", api.rb(Method::GET, &path)?)
+                .await
+            else {
+                break;
+            };
+            let rev = cur
+                .etag
+                .as_deref()
+                .and_then(|e| {
+                    e.trim_matches('"')
+                        .trim_start_matches('r')
+                        .parse::<i64>()
+                        .ok()
+                })
+                .or_else(|| cur.body["revision"].as_i64())
+                .unwrap_or(0);
+            let body = json!({"name": cur.body["name"], "description": cur.body["description"],
+                "steps": steps(&mut rng, 3 + k % 3)});
+            let rb = api
+                .rb(Method::PUT, &path)?
+                .header("if-match", format!("\"r{rev}\""))
+                .json(&body);
+            api.timed("shared.save.hot", rb).await;
+        }
+    }
+
+    // The night-2 plan: parameterized cases by tag, plain cases by number, the probe case.
+    let t = Instant::now();
+    let plain: Vec<i64> = (c.model.plain_from()..a.cases)
+        .filter(|i| numbers[*i] > 0)
+        .map(|i| numbers[i])
+        .take(a.n2_plan_cases.saturating_sub(c.model.parameterized + 1))
+        .collect();
+    let probe_steps: Vec<Value> = c
+        .model
+        .shared
+        .iter()
+        .skip(1)
+        .take(5)
+        .map(|(id, n)| {
+            json!({"action": "", "expected": "", "data": "", "steps": [],
+                "shared": {"id": id, "number": n}})
+        })
+        .chain((0..3).map(|k| {
+            json!({"action": format!("Open the page {k} in ${{browser}} with ${{locale}}"),
+                "expected": "The page opens", "data": "", "steps": []})
+        }))
+        .collect();
+    let rows: Vec<Value> = (0..20)
+        .map(|k| {
+            json!({"id": format!("r_probe{k}"), "enabled": true,
+                "values": {"browser": format!("b{}", k % 4), "locale": format!("l{}", k / 4)}})
+        })
+        .collect();
+    let probe_body = json!({"name": "TC bench probe", "folderId": c.folders.first(), "status": "active",
+        "body": {"description": "Five shared steps and twenty iterations.", "preconditions": "",
+            "steps": probe_steps, "links": [],
+            "parameters": {"columns": ["browser", "locale"], "rows": rows}},
+        "fields": {}, "tags": [PARAM_TAG]});
+    let probe = match api.rb(Method::POST, &format!("{base}/cases")) {
+        Ok(rb) => api.send(None, "probe case", rb.json(&probe_body)).await,
+        Err(_) => None,
+    }
+    .and_then(|r| r.body["number"].as_i64());
+    let first: Vec<i64> = plain.iter().copied().take(10_000).collect();
+    let rb = api.rb(Method::POST, &format!("{base}/test-plans"))?.json(
+        &json!({"kind": "managed", "name": format!("Bench plan n2 {run}"),
+            "caseNumbers": first, "filter": {"tags": [PARAM_TAG]}}),
+    );
+    let plan = api
+        .send(None, "plan n2 create", rb)
+        .await
+        .ok_or_else(|| anyhow!("could not create the night-2 plan"))?;
+    let plan_id = plan.body["id"].as_str().unwrap_or_default().to_string();
+    for chunk in plain[first.len()..].chunks(10_000) {
+        let rb = api
+            .rb(Method::POST, &format!("{base}/test-plans/{plan_id}/items"))?
+            .json(&json!({"add": chunk}));
+        api.send(None, "plan n2 items add", rb).await;
+    }
+    let rb = api
+        .rb(
+            Method::POST,
+            &format!("{base}/test-plans/{plan_id}/launches"),
+        )?
+        .json(&json!({"name": format!("bench tm {run} plan n2"),
+            "externalId": format!("bench-tm-{run}-plan-n2"), "assign": "none",
+            "includeAutomated": false}));
+    let launch = api
+        .timed("plan.launch.n2", rb)
+        .await
+        .ok_or_else(|| anyhow!("could not start a launch from the night-2 plan"))?;
+    let launch_id = launch.body["launch"]["id"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    eprintln!(
+        "night-2 plan launched in {:.1} s",
+        t.elapsed().as_secs_f64()
+    );
+
+    let mut probe_item: Option<String> = None;
+    let mut before: Option<String> = None;
+    loop {
+        let mut path = format!("{base}/launches/{launch_id}/run-items?limit=500");
+        if let Some(b) = &before {
+            path.push_str(&format!("&before={}", enc(b)));
+        }
+        let Some(page) = api.get("run items n2 list", &path).await else {
+            break;
+        };
+        for it in page["items"].as_array().into_iter().flatten() {
+            report.n2_run_items += 1;
+            report.n2_iterations += it["iterationCount"].as_u64().unwrap_or(0) as usize;
+            if it["caseNumber"].as_i64() == probe
+                && let Some(id) = it["id"].as_str()
+            {
+                probe_item = Some(id.to_string());
+            }
+        }
+        match page["next"].as_str() {
+            Some(n) => before = Some(n.to_string()),
+            None => break,
+        }
+    }
+    if let Some(item) = &probe_item {
+        let path = format!("{base}/run-items/{item}");
+        stream::iter(0..a.samples.min(100))
+            .map(|_| async {
+                if let Ok(rb) = api.rb(Method::GET, &path) {
+                    api.timed("run.item.get.n2", rb).await;
+                }
+            })
+            .buffer_unordered(a.read_parallel)
+            .collect::<Vec<()>>()
+            .await;
+        if let Some(it) = api.get("probe item", &path).await {
+            let paths = step_paths(it["steps"].as_array().map_or(&[][..], |v| v));
+            for row in it["iterations"].as_array().into_iter().flatten() {
+                let Some(row_id) = row["rowId"].as_str() else {
+                    continue;
+                };
+                for p in paths.iter().take(3) {
+                    let rb = api.rb(
+                        Method::PUT,
+                        &format!("{path}/iterations/{row_id}/steps/{p}"),
+                    )?;
+                    api.timed("iteration.step", rb.json(&json!({"status": "passed"})))
+                        .await;
+                }
+            }
+        }
+    } else {
+        api.rec
+            .error("the probe case has no run item in the night-2 launch".into());
+    }
+    stream::iter(0..a.samples.min(20))
+        .map(|_| async {
+            if let Ok(rb) = api.rb(
+                Method::GET,
+                &format!("{base}/coverage?planId={plan_id}&limit=50"),
+            ) {
+                api.timed("coverage.plan", rb).await;
+            }
+        })
+        .buffer_unordered(a.read_parallel)
+        .collect::<Vec<()>>()
+        .await;
+
+    // Review: switch it on, edit cases (each becomes pending), read the queue, approve in bulk.
+    if a.review_votes > 0 {
+        let rb = api.rb(Method::PUT, &format!("{base}/settings"))?.json(
+            &json!({"caseReview": {"mode": "manual", "approvals": 1, "resetOn": "content",
+                "allowSelfApproval": true, "imports": "review"}}),
+        );
+        api.send(None, "review on", rb).await;
+        let from = c.model.version_range().end;
+        let to = c.model.save_range().start.max(from);
+        let picks: Vec<usize> = (from..to)
+            .filter(|i| numbers[*i] > 0 && c.model.role(*i) == Role::Plain)
+            .take(a.review_votes)
+            .collect();
+        let edited: Vec<(i64, i64)> = stream::iter(picks)
+            .map(|i| {
+                let c = c.clone();
+                let (n, rev) = (numbers[i], revisions[i]);
+                async move {
+                    let body = c.model.case(i, 1, None, &c.folders);
+                    let rb = c
+                        .api
+                        .rb(Method::PUT, &format!("{}/cases/{n}", c.base))
+                        .ok()?
+                        .header("if-match", format!("\"r{rev}\""))
+                        .json(&body);
+                    let r = c.api.send(None, "review edit", rb).await?;
+                    Some((n, r.body["version"].as_i64()?))
+                }
+            })
+            .buffer_unordered(a.parallel)
+            .filter_map(|x| async move { x })
+            .collect()
+            .await;
+        stream::iter(0..a.samples.min(30))
+            .map(|_| async {
+                if let Ok(rb) = api.rb(
+                    Method::GET,
+                    &format!("{base}/reviews?kind=case&state=pending&limit=50"),
+                ) {
+                    api.timed("review.queue", rb).await;
+                }
+            })
+            .buffer_unordered(a.read_parallel)
+            .collect::<Vec<()>>()
+            .await;
+        if !edited.is_empty() {
+            let items: Vec<Value> = edited
+                .iter()
+                .map(|(n, v)| json!({"kind": "case", "number": n, "version": v}))
+                .collect();
+            let rb = api
+                .rb(Method::POST, &format!("{base}/reviews/bulk"))?
+                .json(&json!({"items": items, "decision": "approve"}));
+            if let Some(r) = api.timed("review.bulk", rb).await {
+                report.review_applied = r.body["applied"].as_i64().unwrap_or(0);
+            }
+        }
+        let rb = api
+            .rb(Method::PUT, &format!("{base}/settings"))?
+            .json(&json!({"caseReview": null}));
+        api.send(None, "review off", rb).await;
     }
     Ok(())
 }
@@ -1921,6 +2634,18 @@ mod tests {
             (2_000, 5_000, 2_000, 25, 50, 5_000)
         );
         assert_eq!((a.import_cases, a.parallel, a.samples), (20_000, 16, 200));
+        assert_eq!(
+            (
+                a.shared_steps,
+                a.shared_hot_cases,
+                a.parameterized,
+                a.parameter_rows,
+                a.requirements,
+                a.requirement_links,
+                a.fpql_queries
+            ),
+            (500, 5_000, 2_000, 8, 3_000, 25_000, 20)
+        );
         validate(&a).unwrap();
         let mut bad = a.clone();
         bad.run_cases = 19_000;
@@ -2014,6 +2739,83 @@ mod tests {
     }
 
     #[test]
+    fn night_two_data_is_deterministic_and_bounded() {
+        let a = args();
+        let mut g = Gen::of(&a);
+        g.shared = (0..a.shared_steps)
+            .map(|k| (Uuid::from_u64_pair(2, k as u64), k as i64 + 1))
+            .collect();
+        let folders: Vec<Uuid> = (0..10).map(|i| Uuid::from_u64_pair(1, i)).collect();
+        let first_param = a.automated + a.run_cases;
+        assert_eq!(g.role(first_param), Role::Param);
+        let p = g.case(first_param, 0, None, &folders);
+        let rows = p["body"]["parameters"]["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), a.parameter_rows);
+        let distinct: std::collections::BTreeSet<String> =
+            rows.iter().map(|r| r["values"].to_string()).collect();
+        assert_eq!(distinct.len(), rows.len());
+        assert!(
+            p["body"]["steps"][0]["action"]
+                .as_str()
+                .unwrap()
+                .contains("${browser}")
+        );
+        assert!(p["tags"].as_array().unwrap().contains(&json!(PARAM_TAG)));
+        assert!(
+            p["body"]["steps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|s| s["shared"].is_null())
+        );
+        let plain = g.plain_from();
+        assert_eq!(g.hot_range().start, plain);
+        let mut refs = 0;
+        let mut hot = 0;
+        let n = 2000;
+        for i in plain..plain + n {
+            let c = g.case(i, 0, None, &folders);
+            let shared: Vec<&Value> = c["body"]["steps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|s| !s["shared"].is_null())
+                .collect();
+            let nums: std::collections::BTreeSet<i64> = shared
+                .iter()
+                .map(|s| s["shared"]["number"].as_i64().unwrap())
+                .collect();
+            assert_eq!(nums.len(), shared.len(), "no shared step twice in a case");
+            refs += shared.len();
+            hot += usize::from(nums.contains(&1));
+        }
+        let mean = refs as f64 / n as f64;
+        assert!((mean - 2.0).abs() < 0.3, "shared steps per case {mean}");
+        assert_eq!(hot, n, "the first {n} plain cases are hot");
+        let run = g.case(a.automated, 0, None, &folders);
+        assert!(
+            run["body"]["steps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|s| s["shared"].is_null())
+        );
+        let q = fpql_queries(&g, 20);
+        assert_eq!(q.len(), 20);
+        assert_eq!(q, fpql_queries(&g, 20));
+        for s in &q {
+            let conditions = s.matches(" and ").count() + s.matches(" or ").count() + 1;
+            assert!((4..=6).contains(&conditions), "{conditions}: {s}");
+        }
+        let mut bad = a.clone();
+        bad.parameterized = 19_000;
+        assert!(validate(&bad).is_err());
+        bad = a.clone();
+        bad.review_votes = 501;
+        assert!(validate(&bad).is_err());
+    }
+
+    #[test]
     fn fields_mix_types() {
         let f = field_specs(3, 30);
         assert_eq!(f.len(), 30);
@@ -2096,7 +2898,7 @@ mod tests {
             rec.sample("run.step", f64::from(i) / 2.0);
         }
         rec.sample("plan.launch", 4000.0);
-        let r = rows(&rec);
+        let r = rows(&rec, false);
         assert_eq!(r.len(), 2);
         assert_eq!(r[0].op, "plan.launch");
         assert_eq!(r[0].pass, Some(false));

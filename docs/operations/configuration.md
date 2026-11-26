@@ -291,9 +291,13 @@ with `rp.environmentAttribute`. Metrics: `fastproof_rp_requests_total{endpoint,c
 
 ## Test management
 
-Limits of test cases, plans, manual runs and imports are set with `FASTPROOF_TM_<NAME>` variables, for example
-`FASTPROOF_TM_MAX_FOLDERS=50000`. Every variable, its default and its maximum are listed in
-[Limits](limits.md#test-management). Code sync and the backfill of cases run on the replicas with the
+Limits of test cases, plans, manual runs, imports, shared steps, parameters, requirements and review are set
+with `FASTPROOF_TM_<NAME>` variables, for example `FASTPROOF_TM_MAX_FOLDERS=50000`. Every variable, its default
+and its maximum are listed in [Limits](limits.md#test-management). Two more decide when new data formats may be
+written while replicas of an older version run: `FASTPROOF_TM_GATE` (`auto`, `open` or `closed`; `open` for an
+installation with one replica) and `FASTPROOF_TM_GATE_SETTLE_SECONDS` (default `600`); see
+[Upgrading](upgrading.md#next-release-test-management-gate-and-review). `GET /api/v1/admin/replicas` shows the
+levels of the running replicas and the state of the gate. Code sync and the backfill of cases run on the replicas with the
 `scheduler` role (jobs `cases.sync` and `cases.backfill`). Import and export jobs start on the replica that
 received the request and are picked up by the job `cases.jobs` (also on `scheduler` replicas) when that replica
 is busy or stopped; their files are kept in the blob store under `tm-jobs/` until the job is over (exports: 24
@@ -427,7 +431,7 @@ lists every option.
 | `testplan` | Print an Allure `testplan.json` of chosen tests, so Allure adapters and the FastProof reporters run only those: the failed ones of a launch (`--from-launch <id> --status failed,broken`), the automated cases of a [test plan](../guide/manual-runs.md) (`--plan <id>`) or of a launch started from one (`--launch <externalId>`) |
 | `cases export`, `cases import` | Export test cases as CSV or NDJSON (`--format`, `--out`); import a file, as a dry run unless `--apply` is given (see [Importing test cases](../guide/importing-test-cases.md)) |
 | `bench` | Generate launches, results and log lines against a server and measure throughput and end-to-end lag (see [Scaling](scaling.md)) |
-| `bench tm` | Load test management (cases, versions, code sync, reads, a plan launch run by virtual testers, export, a TestRail CSV import) in a new project and print p50/p95/max per operation against the lab targets; the project is deleted afterwards unless `--keep` (see [Scaling](scaling.md#test-management)) |
+| `bench tm` | Load test management (cases with shared steps and parameters, versions, code sync, reads, a plan launch run by virtual testers, export, a TestRail CSV import, requirements with links and coverage, FPQL, a launch with iterations, review) in a new project and print p50/p95/max per operation against the lab targets; the project is deleted afterwards unless `--keep` (see [Scaling](scaling.md#test-management)) |
 | `version` | Print the version |
 
 The CLI reads:

@@ -127,6 +127,24 @@ describe('version diff', () => {
     expect(diffSnapshots(base, structuredClone(base)).same).toBe(true);
   });
 
+  it('shows a change of parameters (an AI suggestion of parameters is not "no changes")', () => {
+    const row = { id: 'r_1', enabled: true, values: { browser: 'chrome' } };
+    const params = { columns: ['browser'], rows: [row] };
+    const withParams = { ...base, body: { ...base.body, parameters: params } };
+    const added = diffSnapshots(base, withParams);
+    expect(added.same).toBe(false);
+    expect(added.fields.map((f) => f.key)).toEqual(['parameters']);
+    expect(added.fields[0]).toMatchObject({ label: 'Parameters', before: '' });
+    expect(added.fields[0]?.after).toContain('"chrome"');
+    const disabled = { ...base, body: { ...base.body, parameters: { ...params, rows: [{ ...row, enabled: false }] } } };
+    expect(diffSnapshots(withParams, disabled).fields[0]?.after).toContain('row (disabled) r_1');
+    const swapped = { ...base, body: { ...base.body, parameters: { ...params, rows: [{ ...row, values: { browser: 'https://example.com' } }] } } };
+    const d = diffSnapshots(withParams, swapped);
+    expect(d.fields.map((f) => f.key)).toEqual(['parameters']);
+    expect(d.fields[0]?.after).toContain('https://example.com');
+    expect(diffSnapshots(withParams, structuredClone(withParams)).same).toBe(true);
+  });
+
   it('a renamed step with the same id is changed, not removed and added', () => {
     const next = { ...base, body: { ...base.body, steps: [s('x', 'open the shop'), s('y', 'pay'), s('z', 'check')] } };
     const d = diffSnapshots(base, next);

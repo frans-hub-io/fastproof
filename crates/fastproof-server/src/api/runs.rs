@@ -12,7 +12,8 @@ use fastproof_store::tm::runs::{
 };
 use fastproof_store::tm::{
     CaseBody, ManualClose, ManualState, RunDefect, RunItem, RunItemExecution, RunItemPatch,
-    RunItemSummary, RunItemsAdd, RunItemsAdded, RunStatus, RunStepAck, RunStepWrite, StepStatus,
+    RunItemSummary, RunItemsAdd, RunItemsAdded, RunIterationPatch, RunIterationStepAck, RunStatus,
+    RunStepAck, RunStepWrite, StepStatus,
 };
 use fastproof_store::{Launch, Page, Project};
 use franshub_auth::Auth;
@@ -49,6 +50,8 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(my_run_items))
         .routes(routes!(get_run_item, patch_run_item))
         .routes(routes!(put_run_step))
+        .routes(routes!(put_iteration_step))
+        .routes(routes!(patch_run_iteration))
         .routes(routes!(run_item_defect))
         .routes(routes!(run_item_new_issue_url))
         .routes(routes!(rerun_run_item))
@@ -256,7 +259,8 @@ pub async fn get_run_item(
     request_body = RunStepWrite,
     params(("key" = String, Path), ("itemId" = Uuid, Path), ("path" = String, Path)),
     responses((status = 200, body = RunStepAck), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),
-        (status = 404, body = ErrorBody), (status = 409, body = ErrorBody, description = "`manual_run_closed`, `limit_reached`")))]
+        (status = 404, body = ErrorBody),
+        (status = 409, body = ErrorBody, description = "`manual_run_closed`, `limit_reached`, `parameterized_item`")))]
 pub async fn put_run_step(
     State(s): State<AppState>,
     auth: Auth,
@@ -275,7 +279,9 @@ pub async fn put_run_step(
 #[utoipa::path(patch, path = "/api/v1/projects/{key}/run-items/{itemId}", tag = "runs", operation_id = "patch_run_item",
     description = "Changes the status, comment or assignee of a run item (needs `If-Match`). A final status (`passed`, \
         `failed`, `blocked`, `skipped`) is projected into the launch results (`blocked` as `broken`); back to `untested` \
-        or `in_progress` removes the projected attempt. `untestedStepsTo: skipped` marks the untested steps skipped.",
+        or `in_progress` removes the projected attempt. `untestedStepsTo: skipped` marks the untested steps skipped. \
+        On a parameterized item (`iterationCount` > 0) a status or `untestedStepsTo` needs `allIterations: true` and \
+        applies to every iteration (409 `parameterized_item` otherwise); the item takes the derived status.",
     request_body = RunItemPatch,
     params(("key" = String, Path), ("itemId" = Uuid, Path), ("If-Match" = String, Header, description = "ETag of the item")),
     responses((status = 200, body = RunItem), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),
@@ -302,7 +308,83 @@ pub async fn patch_run_item(
             Some(&p.key),
             serde_json::json!({"launchId": ch.launch_id, "id": id, "case": format!("TC-{}", ch.case_number),
                 "from": ch.old_status, "status": ch.new_status,
-                "assignee": body.assignee.as_ref().filter(|_| ch.assignee_changed)}),
+                "assignee": body.assignee.as_ref().filter(|_| ch.assignee_changed),
+                "allIterations": body.all_iterations == Some(true)}),
+        )
+        .await;
+    }
+    Ok(item_response(rendered(&s, &p, id).await?))
+}
+
+#[utoipa::path(put, path = "/api/v1/projects/{key}/run-items/{itemId}/iterations/{rowId}/steps/{path}", tag = "runs",
+    operation_id = "put_iteration_step",
+    description = "Writes the result of one step of an iteration of a parameterized run item (`rowId` = the parameter \
+        row, `path` = `1`, `1.2`, `1.2.3` over the executed version). As for an item step: no `If-Match`, the last writer \
+        wins, absent `actual`, `comment` and `attachmentIds` keep their values, and an untested iteration becomes \
+        `in_progress`. The item takes the status derived from its iterations and a new revision. `suggestedStatus` is \
+        the iteration status the step results suggest.",
+    request_body = RunStepWrite,
+    params(("key" = String, Path), ("itemId" = Uuid, Path), ("rowId" = String, Path), ("path" = String, Path)),
+    responses((status = 200, body = RunIterationStepAck), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),
+        (status = 404, body = ErrorBody), (status = 409, body = ErrorBody, description = "`manual_run_closed`, `limit_reached`")))]
+pub async fn put_iteration_step(
+    State(s): State<AppState>,
+    auth: Auth,
+    P((key, id, row, path)): P<(String, Uuid, String, String)>,
+    ApiJson(body): ApiJson<RunStepWrite>,
+) -> ApiResult<Json<RunIterationStepAck>> {
+    let p = s.project_for(&auth, &key, &s.perms.runs_execute).await?;
+    Ok(Json(
+        s.store
+            .put_iteration_step(&p, id, &row, &path, &body, &auth.principal.name, &s.cfg.tm)
+            .await
+            .map_err(tm_error)?,
+    ))
+}
+
+#[utoipa::path(patch, path = "/api/v1/projects/{key}/run-items/{itemId}/iterations/{rowId}", tag = "runs",
+    operation_id = "patch_run_iteration",
+    description = "Changes the status or comment of one iteration of a parameterized run item (needs the item's \
+        `If-Match`). A final status is projected into the launch results as its own result, on the series of the case \
+        with the row's values as parameters (`blocked` as `broken`); back to `untested` or `in_progress` removes the \
+        projected attempt. `untestedStepsTo: skipped` marks the iteration's untested steps skipped. The item takes the \
+        status derived from its iterations: `failed` if any, else `blocked`, else `in_progress` while some are open, \
+        `untested` or `skipped` when all are, otherwise `passed`.",
+    request_body = RunIterationPatch,
+    params(("key" = String, Path), ("itemId" = Uuid, Path), ("rowId" = String, Path),
+        ("If-Match" = String, Header, description = "ETag of the item")),
+    responses((status = 200, body = RunItem), (status = 400, body = ErrorBody), (status = 403, body = ErrorBody),
+        (status = 404, body = ErrorBody), (status = 409, body = ErrorBody, description = "`manual_run_closed`"),
+        (status = 412, body = ErrorBody), (status = 428, body = ErrorBody)))]
+pub async fn patch_run_iteration(
+    State(s): State<AppState>,
+    auth: Auth,
+    headers: HeaderMap,
+    P((key, id, row)): P<(String, Uuid, String)>,
+    ApiJson(body): ApiJson<RunIterationPatch>,
+) -> ApiResult<Response> {
+    let p = s.project_for(&auth, &key, &s.perms.runs_execute).await?;
+    let revision = if_match(&headers)?;
+    let ch = s
+        .store
+        .patch_run_iteration(
+            &p,
+            id,
+            &row,
+            revision,
+            &body,
+            &auth.principal.name,
+            &s.cfg.tm,
+        )
+        .await
+        .map_err(tm_error)?;
+    if ch.new_status != ch.old_status {
+        s.audit(
+            &auth,
+            "runIteration.update",
+            Some(&p.key),
+            serde_json::json!({"launchId": ch.launch_id, "id": id, "case": format!("TC-{}", ch.case_number),
+                "rowId": ch.row_id, "from": ch.old_status, "status": ch.new_status, "itemStatus": ch.item_status}),
         )
         .await;
     }

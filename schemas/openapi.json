@@ -4587,6 +4587,102 @@
         }
       }
     },
+    "/api/v1/projects/{key}/cases/{n}/parameters/generate": {
+      "post": {
+        "tags": [
+          "cases"
+        ],
+        "description": "Generates parameter rows from values per parameter; nothing is saved. `all` gives every combination, `pairwise` a deterministic set of rows that covers every pair of values of two parameters. At most `maxParameterColumns` parameters and 500 values in all; more rows than `maxParameterRows`: 409 `limit_reached`. Rows get new ids and are enabled; put them into `body.parameters.rows` of the case to keep them.",
+        "operationId": "generate_case_parameters",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "n",
+            "in": "path",
+            "description": "case number",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ParameterGenerate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ParameterRows"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`limit_reached`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{key}/cases/{n}/restore": {
       "post": {
         "tags": [
@@ -13747,7 +13843,7 @@
         "tags": [
           "runs"
         ],
-        "description": "Changes the status, comment or assignee of a run item (needs `If-Match`). A final status (`passed`, `failed`, `blocked`, `skipped`) is projected into the launch results (`blocked` as `broken`); back to `untested` or `in_progress` removes the projected attempt. `untestedStepsTo: skipped` marks the untested steps skipped.",
+        "description": "Changes the status, comment or assignee of a run item (needs `If-Match`). A final status (`passed`, `failed`, `blocked`, `skipped`) is projected into the launch results (`blocked` as `broken`); back to `untested` or `in_progress` removes the projected attempt. `untestedStepsTo: skipped` marks the untested steps skipped. On a parameterized item (`iterationCount` > 0) a status or `untestedStepsTo` needs `allIterations: true` and applies to every iteration (409 `parameterized_item` otherwise); the item takes the derived status.",
         "operationId": "patch_run_item",
         "parameters": [
           {
@@ -14128,6 +14224,229 @@
         }
       }
     },
+    "/api/v1/projects/{key}/run-items/{itemId}/iterations/{rowId}": {
+      "patch": {
+        "tags": [
+          "runs"
+        ],
+        "description": "Changes the status or comment of one iteration of a parameterized run item (needs the item's `If-Match`). A final status is projected into the launch results as its own result, on the series of the case with the row's values as parameters (`blocked` as `broken`); back to `untested` or `in_progress` removes the projected attempt. `untestedStepsTo: skipped` marks the iteration's untested steps skipped. The item takes the status derived from its iterations: `failed` if any, else `blocked`, else `in_progress` while some are open, `untested` or `skipped` when all are, otherwise `passed`.",
+        "operationId": "patch_run_iteration",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "itemId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "rowId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "description": "ETag of the item",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunIterationPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunItem"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`manual_run_closed`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "428": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{key}/run-items/{itemId}/iterations/{rowId}/steps/{path}": {
+      "put": {
+        "tags": [
+          "runs"
+        ],
+        "description": "Writes the result of one step of an iteration of a parameterized run item (`rowId` = the parameter row, `path` = `1`, `1.2`, `1.2.3` over the executed version). As for an item step: no `If-Match`, the last writer wins, absent `actual`, `comment` and `attachmentIds` keep their values, and an untested iteration becomes `in_progress`. The item takes the status derived from its iterations and a new revision. `suggestedStatus` is the iteration status the step results suggest.",
+        "operationId": "put_iteration_step",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "itemId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "rowId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunStepWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunIterationStepAck"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`manual_run_closed`, `limit_reached`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{key}/run-items/{itemId}/new-issue-url": {
       "get": {
         "tags": [
@@ -14463,7 +14782,7 @@
             }
           },
           "409": {
-            "description": "`manual_run_closed`, `limit_reached`",
+            "description": "`manual_run_closed`, `limit_reached`, `parameterized_item`",
             "content": {
               "application/json": {
                 "schema": {
@@ -29660,7 +29979,7 @@
             "type": "boolean"
           },
           "mode": {
-            "$ref": "#/components/schemas/ParameterMode"
+            "$ref": "#/components/schemas/ParameterDisplayMode"
           },
           "name": {
             "type": "string"
@@ -29672,6 +29991,15 @@
             ]
           }
         }
+      },
+      "ParameterDisplayMode": {
+        "type": "string",
+        "description": "How a parameter value may be shown.",
+        "enum": [
+          "default",
+          "masked",
+          "hidden"
+        ]
       },
       "ParameterGenerate": {
         "type": "object",
@@ -29727,11 +30055,10 @@
       },
       "ParameterMode": {
         "type": "string",
-        "description": "How a parameter value may be shown.",
+        "description": "How parameter rows are generated.",
         "enum": [
-          "default",
-          "masked",
-          "hidden"
+          "all",
+          "pairwise"
         ]
       },
       "ParameterRow": {

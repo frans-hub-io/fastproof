@@ -70,9 +70,24 @@ let failSteps = 0;
 /** Extension points of the review mock (`reviews.ts`): it resets with the TM state and adds its fields to a case. */
 export const reviewHooks: { reset: (() => void)[]; caseExtras?: (c: MockCase) => Pick<Case, 'state' | 'reviewState' | 'approvedVersion'>} = { reset: [] };
 
+/**
+ * Extension points of the parameters mock (`parameters.ts`): iterations of run items of parameterized cases, the
+ * derived item status and `allIterations`, and the placeholder check of case writes.
+ */
+export const paramHooks: {
+  reset: (() => void)[];
+  added?: (r: MockRunItem, c: MockCase) => void;
+  view?: (r: MockRunItem, v: RunItem) => RunItem;
+  summary?: (r: MockRunItem, s: RunItemSummary) => RunItemSummary;
+  stepGuard?: (r: MockRunItem) => Response | null;
+  patch?: (r: MockRunItem, b: RunItemPatch) => Response | 'handled' | null;
+  validate?: (b: CaseWrite) => { path: string; message: string }[];
+} = { reset: [] };
+
 export function resetTm(): void {
   st = buildTmState();
   for (const r of reviewHooks.reset) r();
+  for (const r of paramHooks.reset) r();
   resetPlanDispatches();
 }
 
@@ -237,6 +252,7 @@ function changedKeys(a: ReturnType<typeof snapshotOf>, b: ReturnType<typeof snap
   if (a.body.preconditions !== b.body.preconditions) out.push('body.preconditions');
   if (JSON.stringify(a.body.steps) !== JSON.stringify(b.body.steps)) out.push('body.steps');
   if (JSON.stringify(a.body.links) !== JSON.stringify(b.body.links)) out.push('body.links');
+  if (JSON.stringify(a.body.parameters ?? null) !== JSON.stringify(b.body.parameters ?? null)) out.push('body.parameters');
   if (JSON.stringify([...a.tags].sort()) !== JSON.stringify([...b.tags].sort())) out.push('tags');
   for (const k of new Set([...Object.keys(a.fields), ...Object.keys(b.fields)])) if (JSON.stringify(a.fields[k] ?? null) !== JSON.stringify(b.fields[k] ?? null)) out.push(`fields.${k}`);
   return out;
@@ -414,6 +430,7 @@ function validateWrite(b: CaseWrite, current: MockCase | null): { path: string; 
     if (!empty && def.type === 'multiselect' && Array.isArray(v) && v.some((x) => !def.options.some((o) => o.value === x))) errs.push({ path: `fields.${def.key}`, message: 'Unknown value' });
   }
   if ((b.tags ?? []).length > 50) errs.push({ path: 'tags', message: 'At most 50 tags' });
+  errs.push(...(paramHooks.validate?.(b) ?? []));
   return errs;
 }
 
@@ -433,7 +450,7 @@ function codeViolations(c: MockCase, next: ReturnType<typeof snapshotOf>): strin
 // Manual runs
 
 function runItemView(r: MockRunItem, key: string): RunItem {
-  return {
+  const v: RunItem = {
     id: r.id,
     caseNumber: r.caseNumber,
     name: r.name,
@@ -461,10 +478,17 @@ function runItemView(r: MockRunItem, key: string): RunItem {
     iterations: [],
     parameterColumns: [],
   };
+  return paramHooks.view ? paramHooks.view(r, v) : v;
+}
+
+/** The run item view of the mock (for the parameters mock). */
+export function mockRunItemView(r: MockRunItem, key: string): RunItem {
+  return runItemView(r, key);
 }
 
 function runSummary(r: MockRunItem): RunItemSummary {
-  return { id: r.id, caseNumber: r.caseNumber, name: r.name, folderPath: r.folderPath, status: r.status, assignee: r.assignee, executionNo: r.executionNo, updatedAt: r.updatedAt, iterationCount: 0 };
+  const s: RunItemSummary = { id: r.id, caseNumber: r.caseNumber, name: r.name, folderPath: r.folderPath, status: r.status, assignee: r.assignee, executionNo: r.executionNo, updatedAt: r.updatedAt, iterationCount: 0 };
+  return paramHooks.summary ? paramHooks.summary(r, s) : s;
 }
 
 const FINAL: RunStatus[] = ['passed', 'failed', 'blocked', 'skipped'];
@@ -1722,7 +1746,9 @@ export function tmHandlers({ role, error, audit }: Helpers) {
           skipped++;
           continue;
         }
-        st.runItems.push(runItemFor(st, id, c, b.assignee ?? null, added));
+        const item = runItemFor(st, id, c, b.assignee ?? null, added);
+        st.runItems.push(item);
+        paramHooks.added?.(item, c);
         added++;
       }
       return HttpResponse.json({ added, skipped });
@@ -1834,6 +1860,8 @@ export function tmHandlers({ role, error, audit }: Helpers) {
       if (!r || !tmProject(String(params.key))) return notFound('run item');
       if (!writer()) return forbid('runs:execute');
       if (st.manual.get(r.launchId)?.state === 'closed') return error(409, 'manual_run_closed', 'reopen the manual run first');
+      const guard = paramHooks.stepGuard?.(r);
+      if (guard) return guard;
       if (failSteps > 0) {
         failSteps--;
         return error(503, 'unavailable', 'the server is restarting');
@@ -1872,7 +1900,9 @@ export function tmHandlers({ role, error, audit }: Helpers) {
       const pre = precondition(request, r.revision, r.executedBy, 'ui');
       if (pre) return pre;
       const b = (await request.json()) as RunItemPatch;
-      if (b.untestedStepsTo === 'skipped') {
+      const handled = paramHooks.patch?.(r, b) ?? null;
+      if (handled instanceof Response) return handled;
+      if (!handled && b.untestedStepsTo === 'skipped') {
         const walk = (steps: CaseStep[], prefix: string) =>
           steps.forEach((s, i) => {
             const p = prefix ? `${prefix}.${String(i + 1)}` : String(i + 1);
@@ -1884,14 +1914,14 @@ export function tmHandlers({ role, error, audit }: Helpers) {
           });
         walk(r.steps, '');
       }
-      if (b.status) {
+      if (b.status && !handled) {
         r.status = b.status;
         r.executedBy = ME;
         r.startedAt ??= now();
       }
       if (b.comment !== undefined) r.comment = b.comment ?? '';
       if (b.assignee !== undefined) r.assignee = b.assignee;
-      project(r);
+      if (!handled) project(r);
       r.revision++;
       r.updatedAt = now();
       if (b.status) audit('runItem.update', key, { id: r.id, status: r.status });

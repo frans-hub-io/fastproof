@@ -464,6 +464,9 @@ impl Store {
                  or exists (select 1 from case_attachments c where c.attachment_id = a.id) \
                  or exists (select 1 from run_step_results s where s.attachment_ids @> array[a.id]) \
                  or exists (select 1 from attachment_refs r join run_step_results s \
+                   on s.attachment_ids @> array[r.id] where r.attachment_id = a.id) \
+                 or exists (select 1 from run_iteration_step_results s where s.attachment_ids @> array[a.id]) \
+                 or exists (select 1 from attachment_refs r join run_iteration_step_results s \
                    on s.attachment_ids @> array[r.id] where r.attachment_id = a.id))",
         )
         .bind(project_id)

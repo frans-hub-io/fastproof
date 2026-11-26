@@ -553,6 +553,7 @@ pub async fn prepare_write(
     walk.walk(&mut body.steps, "body.steps", 1, &mut p)?;
     super::shared_steps::validate_refs(conn, ctx, &body, current).await?;
     super::parameters::validate_parameters(&body, l)?;
+    super::parameters::require_gate(conn, l, &body, current).await?;
     check_links(&mut body.links, l, &mut p);
     if serde_json::to_vec(&body)?.len() > l.max_body_bytes {
         return Err(TmError::limit("maxBodyBytes", l.max_body_bytes as u64));

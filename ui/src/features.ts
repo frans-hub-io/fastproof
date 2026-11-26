@@ -3,4 +3,4 @@ export interface Features {
   parameters: boolean;
 }
 
-export const FEATURES: Features = { requirements: false, parameters: false };
+export const FEATURES: Features = { requirements: false, parameters: true };

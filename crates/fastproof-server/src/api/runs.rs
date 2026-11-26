@@ -928,8 +928,8 @@ pub async fn run_item_new_issue_url(
         attempt stays in the result's attempts. Audited as `runItem.rerun`.",
     params(("key" = String, Path), ("itemId" = Uuid, Path), ("If-Match" = String, Header, description = "ETag of the item")),
     responses((status = 200, body = RunItem), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody),
-        (status = 409, body = ErrorBody, description = "`manual_run_closed`"), (status = 412, body = ErrorBody),
-        (status = 428, body = ErrorBody)))]
+        (status = 409, body = ErrorBody, description = "`manual_run_closed`; `limit_reached` when the copied iterations of a parameterized item would take the launch past `maxRunIterations`"),
+        (status = 412, body = ErrorBody), (status = 428, body = ErrorBody)))]
 pub async fn rerun_run_item(
     State(s): State<AppState>,
     auth: Auth,
@@ -940,7 +940,7 @@ pub async fn rerun_run_item(
     let revision = if_match(&headers)?;
     let ch = s
         .store
-        .rerun_run_item(&p, id, revision, &auth.principal.name)
+        .rerun_run_item(&p, id, revision, &auth.principal.name, &s.cfg.tm)
         .await
         .map_err(tm_error)?;
     s.audit(

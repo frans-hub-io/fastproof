@@ -1756,13 +1756,16 @@ impl Store {
     /// no step results. The earlier execution (status, comment, executor, times, defect and its
     /// step results) is kept in `run_item_executions` and `run_step_results` outside the
     /// partitions, so it survives retention; its attempt stays in `attempts` (and its result
-    /// until the new execution gets a final status).
+    /// until the new execution gets a final status). A parameterized item copies its
+    /// iterations as untested; the launch's stored iterations stay within
+    /// `max_run_iterations` (409 `limit_reached`).
     pub async fn rerun_run_item(
         &self,
         project: &Project,
         item_id: Uuid,
         revision: i64,
         by: &str,
+        limits: &TmLimits,
     ) -> TmResult<RunItemChange> {
         let mut conn = self.pool.acquire().await?;
         let brief = item_brief(&mut conn, project.id, item_id)
@@ -1781,6 +1784,10 @@ impl Store {
                 changed_by: item.executed_by.clone(),
                 source: Some("ui".into()),
             });
+        }
+        if item.iterations > 0 {
+            super::iterations::check_rerun_room(&mut tx, launch.id, item.iterations, limits)
+                .await?;
         }
         sqlx::query(
             "insert into run_item_executions (run_item_id, execution_no, status, case_version, comment, executed_by, \

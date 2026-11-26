@@ -384,7 +384,13 @@ export default function RunnerPage() {
       localRef.current.set(item.id, new Map());
       publish();
       revRef.current.set(item.id, r.revision);
-      setOverrides((o) => new Map(o).set(item.id, r.status));
+      // A parameterized item's status is derived from its iterations, which update the cached item; an override would hide that.
+      setOverrides((o) => {
+        const n = new Map(o);
+        if (r.iterationCount > 0) n.delete(item.id);
+        else n.set(item.id, r.status);
+        return n;
+      });
       qc.setQueryData(tmk.runItem(key, item.id), v);
       void qc.invalidateQueries({ queryKey: [...tmk.runItem(key, item.id), 'executions'] });
       setStepIdx(0);
@@ -558,7 +564,27 @@ export default function RunnerPage() {
                       </Stack>
                     </Card>
                     {item.iterationCount > 0 ? (
-                      <Iterations projectKey={key} launchId={id} item={item} readOnly={readOnly} onAnnounce={setAnnounce} />
+                      <>
+                        <Iterations projectKey={key} launchId={id} item={item} readOnly={readOnly} onAnnounce={setAnnounce} />
+                        {FINAL.includes(itemStatus) && (
+                          <Card withBorder radius="lg" padding="sm" data-testid="iterations-finished">
+                            <Group justify="space-between" gap="xs" wrap="wrap">
+                              <Group gap={6}>
+                                <Text size="sm">All iterations finished:</Text>
+                                <RunStatusBadge status={itemStatus} />
+                              </Group>
+                              <Group gap="xs">
+                                <Button size="xs" h={mobile ? 44 : undefined} variant="default" leftSection={<IconRotateClockwise size={14} />} onClick={() => void rerun()} disabled={readOnly} data-testid="rerun">
+                                  Run again
+                                </Button>
+                                <Button size="xs" h={mobile ? 44 : undefined} variant="subtle" leftSection={<IconPlayerTrackNext size={14} />} onClick={() => goto(1)}>
+                                  Next case (n)
+                                </Button>
+                              </Group>
+                            </Group>
+                          </Card>
+                        )}
+                      </>
                     ) : mobile && cur ? (
                       <Card withBorder radius="lg" padding="md" data-testid="mobile-step" tabIndex={-1} data-path={cur.path} data-status={effective.get(cur.path) ?? 'untested'}>
                         <Stack gap="xs">

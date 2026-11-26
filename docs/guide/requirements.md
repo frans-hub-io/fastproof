@@ -116,7 +116,9 @@ count:
 | Window | `days` (1 to 365; 30 when only a branch or environment is given), `branch`, `environment` | its newest result in launches of that window (debug launches left out) |
 
 In the plan, launches and window scopes a parameterized case counts with the newest result **per parameter
-set**, and of several sets with the worst: one failing browser fails the case. Only one kind of scope may be
+set**, and of several sets with the worst: one failing browser fails the case. A set whose iteration is still
+open in a manual run of the scope and that has no result there counts as not run, so a case that passed in one
+browser and is not finished in the other is not `passed` yet. Only one kind of scope may be
 given at a time (400 otherwise); a plan or launch of another project is 404.
 
 The status of a requirement follows from its cases:

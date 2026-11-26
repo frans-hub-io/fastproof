@@ -78,8 +78,11 @@ One project runs one import at a time (`409 import_busy` otherwise), and an inst
   `imported-shared-step`) with references, once a shared step with that key exists; the tag goes away when
   every such step became a reference.
 - Parameter names from Qase and TestOps are made safe for `${name}` placeholders: letters, digits and `_`, at
-  most 64 bytes, `_` in place of anything else. A case whose parameters exceed the limits (columns, rows, value
-  size, also counting every combination before the rows are made) is a row error `limit_reached`.
+  most 64 bytes, `_` in place of anything else (always a valid [column name](parameters.md)). A case whose
+  parameters exceed the limits (columns, rows, value size, also counting every combination before the rows are
+  made) is a row error `limit_reached`. Parameters are checked as in the editor: a `${name}` in a step that names
+  no column makes the case a row error `invalid_case`. Of two enabled rows with the same values (a value listed
+  twice in the source), the later one is imported switched off. Row ids that are missing or invalid get new ones.
 - Requirement keys follow the rules of the requirements API: `trackerId` 1 to 32 letters, digits, `_` or `-`
   (and only with an `issueKey`), `issueKey` 1 to 64 bytes without spaces. Other records are row errors.
 - Issue keys that match no requirement are ignored: an issue link is not a requirement unless one with that
@@ -427,7 +430,13 @@ its own; a requirement link names `REQ-<number in the file>`. A file written by 
   imported into the project it came from without doubling its shared steps and requirements. Cases are
   matched by their keys as before.
 - A requirement whose parent is not in the file becomes a root and is reported as a warning
-  (`parent_not_found`); a requirement over the depth or count limit is a row error.
+  (`parent_not_found`); a requirement over the depth or count limit is a row error. A record whose `trackerId`
+  and `issueKey` match an archived requirement is left out with a warning (`requirement_archived`): restore the
+  requirement first.
+- `REQ-<n>` in a case names the requirement with number `n` **in the file**, whatever number it gets in the
+  project; it never names an existing requirement of the project by its number (a file from another project
+  would mean something else by it). To link to requirements that are already in the project, use their issue
+  keys.
 - With `unknownFieldValues: create`, field definitions of the header that the project lacks are created; the
   report lists them as created.
 - Step ids and parameter row ids are kept. Attachments come from a zip given with the import (the

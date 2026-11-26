@@ -203,6 +203,40 @@ test('a defect on one iteration and on the whole item, and the iterations of an 
   await expectNoAxeViolations(page, 'earlier runs with iterations');
 });
 
+test('run again restarts a parameterized item once every iteration is finished', async ({ page }) => {
+  test.setTimeout(120_000);
+  const { launch, item } = await parameterized(page);
+  await go(page, `/p/web-shop/launches/${launch}/run/${item}`);
+  const strip = page.getByTestId('iteration-strip');
+  await expect(strip.getByTestId('iteration-chip')).toHaveCount(2);
+  await expect(page.getByTestId('iterations-finished')).toHaveCount(0);
+  await page.getByTestId('iteration-finish-passed').click();
+  await expect(strip.getByTestId('iteration-chip').first()).toHaveAttribute('data-status', 'passed');
+  await expect(page.getByTestId('iterations-finished')).toHaveCount(0);
+  await page.getByTestId('iteration-finish-failed').click();
+  await expect(strip.getByTestId('iteration-chip').nth(1)).toHaveAttribute('data-status', 'failed');
+  const done = page.getByTestId('iterations-finished');
+  await expect(done).toBeVisible();
+  await expect(done).toContainText('Failed');
+  await expectNoAxeViolations(page, 'finished parameterized item');
+  await done.getByTestId('rerun').click();
+  await expect(page.getByTestId('iterations-finished')).toHaveCount(0);
+  await expect(strip.getByTestId('iteration-chip').first()).toHaveAttribute('data-status', 'untested');
+  await expect(strip.getByTestId('iteration-chip').nth(1)).toHaveAttribute('data-status', 'untested');
+  await expect(page.getByTestId('run-case-title')).toBeVisible();
+  const after = await api(page, 'GET', `${P}/run-items/${item}`);
+  expect(after.body.executionNo).toBe(2);
+  expect(after.body.status).toBe('untested');
+  await expect(page.getByTestId('execution-iterations')).toBeVisible();
+  await expect(page.getByTestId('iteration')).toHaveAttribute('data-row', 'r_ff', { timeout: 10_000 });
+  await page.getByTestId('iteration-finish-passed').click();
+  await expect(strip.getByTestId('iteration-chip').first()).toHaveAttribute('data-status', 'passed');
+  await expect(page.getByTestId('iteration')).toHaveAttribute('data-row', 'r_cr');
+  await page.getByTestId('iteration-finish-passed').click();
+  await expect(page.getByTestId('iterations-finished')).toContainText('Passed');
+  await noHorizontalScroll(page);
+});
+
 test.describe('parameters screenshots', () => {
   test.skip(!dir, 'set FASTPROOF_TM_SHOTS to a directory to take the parameters screenshots');
   for (const scheme of ['dark', 'light']) {

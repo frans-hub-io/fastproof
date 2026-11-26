@@ -6,14 +6,17 @@
 //! - default: its last result (`cases.last_*`, the newest result over all its identities);
 //! - plan (its newest launch, or the launch given), launches (at most
 //!   [`MAX_COVERAGE_LAUNCHES`]) or a window (`days`, `branch`, `environment`): the newest
-//!   result per parameter set in those launches, and of several parameter sets the worst.
+//!   result per parameter set in those launches, and of several parameter sets the worst. A
+//!   parameter set of a parameterized run item in those launches whose iteration is still
+//!   open (untested or in progress) and that has no result in the scope counts as not run,
+//!   so a half-run parameterized case is not `passed`.
 //!
 //! The requirement is `uncovered` without cases, `failed` when a case failed (failed, broken,
 //! or blocked, which is stored as broken), `passed` when every case passed, `notRun` when none
 //! passed (skipped and unknown count as not run), else `partial`. `changedAfterRun`: its
 //! content changed after the newest result of its cases.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -338,10 +341,10 @@ async fn case_outcomes(
     if cases.is_empty() {
         return Ok(out);
     }
-    let rows: Vec<(Uuid, String, DateTime<Utc>)> = match scope {
+    let rows: Vec<(Uuid, String, DateTime<Utc>, String)> = match scope {
         Resolved::Default => {
             sqlx::query_as(
-                "select id, last_status, last_status_at from cases \
+                "select id, last_status, last_status_at, '' from cases \
                  where project_id = $1 and id = any($2) and last_status is not null and last_status_at is not null",
             )
             .bind(project_id)
@@ -357,7 +360,7 @@ async fn case_outcomes(
             let created: Vec<DateTime<Utc>> = ls.iter().map(|l| l.1).collect();
             sqlx::query_as(
                 "select distinct on (t.case_id, s.parameters_hash) t.case_id, r.status, \
-                   coalesce(r.stopped_at, r.updated_at) as at \
+                   coalesce(r.stopped_at, r.updated_at) as at, s.parameters_hash \
                  from results r join test_cases t on t.id = r.test_case_id join series s on s.id = r.series_id \
                  where r.project_id = $1 and r.launch_id = any($2) and r.launch_created_at = any($3) \
                    and t.case_id = any($4) \
@@ -377,7 +380,7 @@ async fn case_outcomes(
         } => {
             sqlx::query_as(
                 "select distinct on (t.case_id, s.parameters_hash) t.case_id, r.status, \
-                   coalesce(r.stopped_at, r.updated_at) as at \
+                   coalesce(r.stopped_at, r.updated_at) as at, s.parameters_hash \
                  from launches l join results r on r.launch_id = l.id and r.launch_created_at = l.created_at \
                    join test_cases t on t.id = r.test_case_id join series s on s.id = r.series_id \
                  where l.project_id = $1 and not l.debug and l.created_at >= $2 \
@@ -394,14 +397,66 @@ async fn case_outcomes(
             .await?
         }
     };
-    for (case_id, status, at) in rows {
+    let mut seen: HashSet<(Uuid, String)> = HashSet::new();
+    for (case_id, status, at, hash) in rows {
         let o = outcome(&status);
+        seen.insert((case_id, hash));
         out.entry(case_id)
             .and_modify(|(w, t)| {
                 *w = (*w).max(o);
                 *t = (*t).max(at);
             })
             .or_insert((o, at));
+    }
+    // Open iterations of the current executions: a parameter set without a result is not
+    // run. A case with no result at all stays out of `out` (not run) either way.
+    let open: Vec<(Uuid, String)> = match scope {
+        Resolved::Default => Vec::new(),
+        Resolved::Launches(ls) => {
+            let ids: Vec<Uuid> = ls.iter().map(|l| l.0).collect();
+            sqlx::query_as(
+                "select distinct ri.case_id, s.parameters_hash from run_items ri \
+                 join run_iterations it on it.run_item_id = ri.id and it.execution_no = ri.execution_no \
+                 join series s on s.id = it.series_id \
+                 where ri.project_id = $1 and ri.launch_id = any($2) and ri.case_id = any($3) \
+                   and ri.iterations > 0 and it.status in ('untested', 'in_progress')",
+            )
+            .bind(project_id)
+            .bind(&ids)
+            .bind(cases)
+            .fetch_all(&mut *conn)
+            .await?
+        }
+        Resolved::Window {
+            since,
+            branch,
+            environment,
+        } => {
+            sqlx::query_as(
+                "select distinct ri.case_id, s.parameters_hash from launches l \
+                 join run_items ri on ri.launch_id = l.id \
+                 join run_iterations it on it.run_item_id = ri.id and it.execution_no = ri.execution_no \
+                 join series s on s.id = it.series_id \
+                 where l.project_id = $1 and not l.debug and l.created_at >= $2 \
+                   and ($3::text is null or l.branch = $3) and ($4::text is null or l.env_key = $4) \
+                   and ri.case_id = any($5) and ri.iterations > 0 \
+                   and it.status in ('untested', 'in_progress')",
+            )
+            .bind(project_id)
+            .bind(since)
+            .bind(branch)
+            .bind(environment)
+            .bind(cases)
+            .fetch_all(&mut *conn)
+            .await?
+        }
+    };
+    for (case_id, hash) in open {
+        if !seen.contains(&(case_id, hash))
+            && let Some((w, _)) = out.get_mut(&case_id)
+        {
+            *w = (*w).max(Outcome::Skipped);
+        }
     }
     Ok(out)
 }

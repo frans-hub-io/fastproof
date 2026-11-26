@@ -10,22 +10,24 @@ use fastproof_tm_import::{
     RowError,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use sqlx::PgConnection;
 use uuid::Uuid;
 
 use super::super::cases::{CaseCtx, valid_step_id};
+use super::super::parameters::{allure_parameters, new_row_id, row_values, valid_row_id};
+use super::super::requirements::{
+    self, Change, Checked, MAX_STATE_BYTES, check_write, valid_issue_key,
+};
 use super::super::shared_steps;
 use super::super::{
     CaseParameters, CaseStep, ImportMode, ParameterGenerator, ParameterMode, ParameterRow,
-    RequirementStatus, SharedStepOrigin, SharedStepWrite, TmError, TmLimits, TmResult,
+    RequirementOrigin, RequirementStatus, RequirementWrite, SharedStepOrigin, SharedStepWrite,
+    TmError, TmLimits, TmResult, lock_project,
 };
 use super::plan::{Planner, err_of};
 use crate::Store;
+use fastproof_model::identity::parameters_hash;
 
-/// Bytes of a requirement key a case names (`REQ-<n>` or an issue key, which the requirements
-/// API bounds at 64); longer ones name no requirement.
-const MAX_REQUIREMENT_KEY_BYTES: usize = 64;
 /// `kind` of the keys of shared steps the importer stores.
 const SHARED_KINDS: &[&str] = &["testops", "qase", "testrail", "external"];
 /// The shared step key of a foreign id that was never numbered by FastProof.
@@ -53,7 +55,8 @@ pub struct Records {
     pub virtual_keys: HashSet<(String, String)>,
     /// The maps changed since the job's parameters last held them.
     pub dirty: bool,
-    req_by_number: HashMap<i64, Uuid>,
+    /// Requirements by their number in the file: id and number in the project.
+    req_by_number: HashMap<i64, (Uuid, i64)>,
     req_by_key: HashMap<String, Uuid>,
     unknown_keys: HashSet<String>,
     /// Shared step keys that named no usable shared step of the project (asked once).
@@ -139,36 +142,44 @@ fn write_of(x: &ImportedSharedStep) -> SharedStepWrite {
     }
 }
 
-/// Converts imported parameters to the case's: row ids are assigned when missing, an unknown
-/// generator mode drops the generator.
+/// Converts imported parameters to the case's: row ids that are missing, invalid or repeated
+/// get new ones ([`new_row_id`]), an enabled row with the same values (as Allure parameters,
+/// one series) as an earlier enabled row is switched off (a foreign tool may list a value
+/// twice), and an unknown generator mode drops the generator. The case write then checks them
+/// as any other (`validate_parameters`).
 pub fn case_parameters(p: &ImportedParameters) -> CaseParameters {
     let mut seen = HashSet::new();
+    let mut sets = HashSet::new();
     CaseParameters {
         columns: p.columns.clone(),
         rows: p
             .rows
             .iter()
             .map(|r| {
-                let valid = r.id.len() > 2
-                    && r.id.len() <= 64
-                    && r.id.starts_with("r_")
-                    && r.id
-                        .bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-                    && seen.insert(r.id.clone());
+                let valid = valid_row_id(&r.id) && seen.insert(r.id.clone());
                 ParameterRow {
                     id: if valid {
                         r.id.clone()
                     } else {
                         loop {
-                            let id = format!("r_{}", Uuid::now_v7().simple());
+                            let id = new_row_id();
                             if seen.insert(id.clone()) {
                                 break id;
                             }
                         }
                     },
                     values: r.values.clone(),
-                    enabled: r.enabled,
+                    enabled: r.enabled && {
+                        let row = ParameterRow {
+                            id: String::new(),
+                            values: r.values.clone(),
+                            enabled: true,
+                        };
+                        sets.insert(parameters_hash(&allure_parameters(
+                            &p.columns,
+                            &row_values(&p.columns, &row),
+                        )))
+                    },
                 }
             })
             .collect(),
@@ -181,50 +192,20 @@ pub fn case_parameters(p: &ImportedParameters) -> CaseParameters {
     }
 }
 
-/// Fields of a requirement record that passed the checks.
+/// Fields of a requirement record that passed the checks: the API's ([`check_write`]) and
+/// the external state.
 struct ReqFields {
-    title: String,
-    description: String,
-    req_type: String,
-    status: RequirementStatus,
-    tracker_id: Option<String>,
-    issue_key: Option<String>,
-    url: Option<String>,
+    checked: Checked,
     external_state: Option<String>,
 }
 
-fn clean(v: &Option<String>, max: usize) -> Result<Option<String>, &'static str> {
-    match v.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        None => Ok(None),
-        Some(s) if s.len() > max || s.chars().any(char::is_control) => {
-            Err("an identifier or url is too long or has control characters")
-        }
-        Some(s) => Ok(Some(s.to_string())),
-    }
+fn opt(v: &Option<String>) -> Option<Option<String>> {
+    Some(v.clone())
 }
 
-/// A tracker id as the requirements API accepts it: 1 to 32 letters, digits, `_` or `-`.
-fn valid_tracker_id(s: &str) -> bool {
-    !s.is_empty()
-        && s.len() <= 32
-        && s.bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-}
-
-/// An issue key as the requirements API accepts it: 1 to 64 bytes without spaces or control
-/// characters.
-fn valid_issue_key(s: &str) -> bool {
-    !s.is_empty() && s.len() <= 64 && !s.chars().any(|c| c.is_whitespace() || c.is_control())
-}
-
-fn check_requirement(l: &TmLimits, x: &ImportedRequirement) -> Result<ReqFields, RowError> {
-    let bad = |m: &str| RowError::new(x.row, "invalid_case", m.to_string());
-    let title = x.title.trim();
-    if title.is_empty() || title.len() > l.max_name_bytes || title.chars().any(char::is_control) {
-        return Err(bad(
-            "a requirement title is empty, too long or has control characters",
-        ));
-    }
+fn check_requirement(ctx: &CaseCtx<'_>, x: &ImportedRequirement) -> Result<ReqFields, RowError> {
+    let bad = |m: String| RowError::new(x.row, "invalid_case", m);
+    let l: &TmLimits = ctx.limits;
     if x.description.len() > l.max_markdown_bytes {
         return Err(RowError::new(
             x.row,
@@ -232,55 +213,40 @@ fn check_requirement(l: &TmLimits, x: &ImportedRequirement) -> Result<ReqFields,
             format!("maxMarkdownBytes ({}) exceeded", l.max_markdown_bytes),
         ));
     }
-    let req_type = match x.req_type.trim() {
-        "" => "requirement".to_string(),
-        t if t.len() <= 32
-            && t.starts_with(|c: char| c.is_ascii_lowercase())
-            && t.bytes().all(|b| {
-                b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-'
-            }) =>
-        {
-            t.to_string()
-        }
-        _ => return Err(bad("the requirement type is not a lowercase word")),
-    };
     let status = match x.status.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        None => RequirementStatus::Active,
-        Some(s) => RequirementStatus::parse(s).ok_or_else(|| bad("unknown requirement status"))?,
+        None => None,
+        Some(s) => Some(
+            RequirementStatus::parse(s).ok_or_else(|| bad("unknown requirement status".into()))?,
+        ),
     };
-    let url = clean(&x.url, 2048).map_err(bad)?;
-    if url.as_deref().is_some_and(|u| {
-        let lower = u.to_ascii_lowercase();
-        !(lower.starts_with("https://") || lower.starts_with("http://"))
-            || u.len() <= 8
-            || u.chars().any(char::is_whitespace)
-    }) {
-        return Err(bad("the requirement url must be http or https"));
-    }
-    let tracker_id = clean(&x.tracker_id, 32).map_err(bad)?;
-    if tracker_id.as_deref().is_some_and(|t| !valid_tracker_id(t)) {
-        return Err(bad(
-            "the requirement trackerId must have 1 to 32 letters, digits, _ or -",
-        ));
-    }
-    let issue_key = clean(&x.issue_key, 64).map_err(bad)?;
-    if issue_key.as_deref().is_some_and(|k| !valid_issue_key(k)) {
-        return Err(bad(
-            "the requirement issueKey must have 1 to 64 bytes without spaces",
-        ));
-    }
-    if tracker_id.is_some() && issue_key.is_none() {
-        return Err(bad("the requirement trackerId needs an issueKey"));
-    }
-    Ok(ReqFields {
-        title: title.to_string(),
-        description: x.description.clone(),
-        req_type,
+    let w = RequirementWrite {
+        title: x.title.clone(),
+        description: Some(x.description.clone()),
+        req_type: Some(x.req_type.trim().to_string()).filter(|t| !t.is_empty()),
         status,
-        tracker_id,
-        issue_key,
-        url,
-        external_state: clean(&x.external_state, 200).map_err(bad)?,
+        parent_number: None,
+        tracker_id: opt(&x.tracker_id),
+        issue_key: opt(&x.issue_key),
+        url: opt(&x.url),
+    };
+    let checked = check_write(ctx, &w, RequirementOrigin::Import).map_err(|e| match e {
+        TmError::Invalid { message, .. } | TmError::Conflict { message, .. } => {
+            bad(format!("requirement: {message}"))
+        }
+        other => bad(format!("requirement: {other}")),
+    })?;
+    let external_state = match x.external_state.as_deref().map(str::trim) {
+        None | Some("") => None,
+        Some(s) if s.len() > MAX_STATE_BYTES || s.chars().any(char::is_control) => {
+            return Err(bad(format!(
+                "the requirement externalState must have at most {MAX_STATE_BYTES} bytes without control characters"
+            )));
+        }
+        Some(s) => Some(s.to_string()),
+    };
+    Ok(ReqFields {
+        checked,
+        external_state,
     })
 }
 
@@ -349,7 +315,7 @@ impl Planner {
         for (_, c) in items {
             for r in &c.requirements {
                 let k = r.key.trim();
-                if k.is_empty() || k.len() > MAX_REQUIREMENT_KEY_BYTES {
+                if !valid_issue_key(k) {
                     continue;
                 }
                 if !self.rec.req_by_key.contains_key(k)
@@ -726,7 +692,7 @@ impl Store {
         apply: bool,
     ) -> TmResult<()> {
         self.gate_records(planner, ctx).await?;
-        let f = match check_requirement(ctx.limits, x) {
+        let f = match check_requirement(ctx, x) {
             Ok(f) => f,
             Err(e) => {
                 planner.error(e);
@@ -761,13 +727,16 @@ impl Store {
         x: &ImportedRequirement,
         f: ReqFields,
     ) -> TmResult<()> {
+        // Cases name a requirement of the file by its number there (`REQ-<n>`) or by its issue
+        // key; the number it gets in the project is never a key (with numbers not kept, it can
+        // be another record's number in the file).
+        let issue_key = f.checked.issue_key.clone();
         let remember = |planner: &mut Planner, id: Uuid, number: i64| {
             if let Some(n) = x.number {
-                planner.rec.req_by_number.insert(n, id);
+                planner.rec.req_by_number.insert(n, (id, number));
                 planner.rec.req_by_key.insert(format!("REQ-{n}"), id);
             }
-            planner.rec.req_by_key.insert(format!("REQ-{number}"), id);
-            if let Some(k) = &f.issue_key {
+            if let Some(k) = &issue_key {
                 planner.rec.req_by_key.insert(k.clone(), id);
             }
         };
@@ -776,188 +745,198 @@ impl Store {
             return Ok(());
         }
         let mut tx = self.pool.begin().await?;
-        let existing: Option<(Uuid, i64, String, String, String, String, i64)> =
-            match &f.issue_key {
-                Some(k) => {
+        // Creates and moves of requirements take this lock first (R's order).
+        lock_project(&mut tx, ctx.project_id, "requirements").await?;
+        let existing: Option<(Uuid, i64, bool)> = match &f.checked.issue_key {
+            Some(k) => {
+                sqlx::query_as(
+                    "select id, number, archived_at is not null from requirements \
+                     where project_id = $1 and coalesce(tracker_id, '') = $2 and issue_key = $3",
+                )
+                .bind(ctx.project_id)
+                .bind(f.checked.tracker_id.as_deref().unwrap_or(""))
+                .bind(k)
+                .fetch_optional(&mut *tx)
+                .await?
+            }
+            None => match x.number {
+                Some(n) => {
                     sqlx::query_as(
-                        "select id, number, title, description, type, status, revision from requirements \
-                         where project_id = $1 and coalesce(tracker_id, '') = $2 and issue_key = $3",
+                        "select id, number, false from requirements \
+                         where project_id = $1 and number = $2 and title = $3 and archived_at is null",
                     )
                     .bind(ctx.project_id)
-                    .bind(f.tracker_id.as_deref().unwrap_or(""))
-                    .bind(k)
+                    .bind(n)
+                    .bind(&f.checked.title)
                     .fetch_optional(&mut *tx)
                     .await?
                 }
-                None => match x.number {
-                    Some(n) => {
-                        sqlx::query_as(
-                            "select id, number, title, description, type, status, revision from requirements \
-                             where project_id = $1 and number = $2 and title = $3 and archived_at is null",
-                        )
-                        .bind(ctx.project_id)
-                        .bind(n)
-                        .bind(&f.title)
-                        .fetch_optional(&mut *tx)
-                        .await?
-                    }
-                    None => None,
-                },
-            };
-        let (id, number) = if let Some((id, number, title, desc, ty, st, _)) = existing {
-            if planner.opts.mode == ImportMode::Upsert {
-                let content = title != f.title || desc != f.description;
-                let changed = content || ty != f.req_type || st != f.status.as_str();
-                if changed {
-                    sqlx::query(
-                        "update requirements set title = $2, description = $3, type = $4, status = $5, url = $6, \
-                           external_state = $7, revision = revision + 1, updated_by = $8, updated_at = now(), \
-                           content_changed_at = case when $9 then now() else content_changed_at end \
-                         where id = $1",
-                    )
-                    .bind(id)
-                    .bind(crate::no_nul(&f.title))
-                    .bind(crate::no_nul(&f.description))
-                    .bind(&f.req_type)
-                    .bind(f.status.as_str())
-                    .bind(&f.url)
-                    .bind(&f.external_state)
-                    .bind(crate::no_nul(ctx.by))
-                    .bind(content)
-                    .execute(&mut *tx)
-                    .await?;
-                }
-            }
-            (id, number)
-        } else {
-            let (parent, path, depth) = match x.parent {
-                None => (None, Vec::new(), 0i16),
-                Some(p) => match planner.rec.req_by_number.get(&p).copied() {
-                    Some(pid) => {
-                        let (path, depth): (Vec<Uuid>, i16) = sqlx::query_as(
-                            "select path_ids, depth from requirements where project_id = $1 and id = $2",
-                        )
-                        .bind(ctx.project_id)
-                        .bind(pid)
-                        .fetch_one(&mut *tx)
-                        .await?;
-                        (Some(pid), path, depth)
-                    }
-                    None => {
-                        planner.warn(
-                            x.row,
-                            "parent_not_found",
-                            format!("the parent {p} is not in the file; imported as a root"),
-                        );
-                        (None, Vec::new(), 0)
-                    }
-                },
-            };
-            let depth = depth + 1;
-            if depth as usize > ctx.limits.max_requirement_depth {
-                return Err(TmError::limit(
-                    "maxRequirementDepth",
-                    ctx.limits.max_requirement_depth as u64,
-                ));
-            }
-            if planner.rec.maps.keep_requirement_numbers.is_none() {
-                planner.rec.maps.keep_requirement_numbers = Some(planner.rec.keep_numbers);
-                planner.rec.dirty = true;
-            }
-            let kept = match x.number {
-                Some(n)
-                    if planner.rec.keep_numbers && n > 0 && planner.rec.used_numbers.insert(n) =>
-                {
-                    Some(n)
-                }
-                _ => None,
-            };
-            let number: i64 = match kept {
-                Some(n) => {
-                    sqlx::query("update projects set requirement_seq = greatest(requirement_seq, $2) where id = $1")
-                        .bind(ctx.project_id)
-                        .bind(n)
-                        .execute(&mut *tx)
-                        .await?;
-                    n
-                }
-                None => {
-                    let mut n: i64 = sqlx::query_scalar(
-                        "update projects set requirement_seq = requirement_seq + 1 where id = $1 returning requirement_seq",
-                    )
-                    .bind(ctx.project_id)
-                    .fetch_one(&mut *tx)
-                    .await?;
-                    while planner.rec.keep_numbers && planner.rec.used_numbers.contains(&n) {
-                        n = sqlx::query_scalar(
-                            "update projects set requirement_seq = requirement_seq + 1 where id = $1 returning requirement_seq",
-                        )
-                        .bind(ctx.project_id)
-                        .fetch_one(&mut *tx)
-                        .await?;
-                    }
-                    n
-                }
-            };
-            let seq: i64 = sqlx::query_scalar("select requirement_seq from projects where id = $1")
-                .bind(ctx.project_id)
-                .fetch_one(&mut *tx)
-                .await?;
-            if seq as usize > ctx.limits.max_requirements {
-                let count: i64 =
-                    sqlx::query_scalar("select count(*) from requirements where project_id = $1")
-                        .bind(ctx.project_id)
-                        .fetch_one(&mut *tx)
-                        .await?;
-                if count as usize >= ctx.limits.max_requirements {
-                    return Err(TmError::limit(
-                        "maxRequirements",
-                        ctx.limits.max_requirements as u64,
-                    ));
-                }
-            }
-            let id = Uuid::now_v7();
-            let mut path_ids = path;
-            path_ids.push(id);
-            sqlx::query(
-                "insert into requirements (id, project_id, number, title, description, type, status, parent_id, \
-                   path_ids, depth, tracker_id, issue_key, url, external_state, origin, created_by, updated_by) \
-                 values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'import', $15, $15)",
-            )
-            .bind(id)
-            .bind(ctx.project_id)
-            .bind(number)
-            .bind(crate::no_nul(&f.title))
-            .bind(crate::no_nul(&f.description))
-            .bind(&f.req_type)
-            .bind(f.status.as_str())
-            .bind(parent)
-            .bind(&path_ids)
-            .bind(depth)
-            .bind(&f.tracker_id)
-            .bind(&f.issue_key)
-            .bind(&f.url)
-            .bind(&f.external_state)
-            .bind(crate::no_nul(ctx.by))
-            .execute(&mut *tx)
-            .await?;
-            (id, number)
+                None => None,
+            },
         };
-        let revision: i64 = sqlx::query_scalar("select revision from requirements where id = $1")
-            .bind(id)
-            .fetch_one(&mut *tx)
-            .await?;
-        super::super::cases::case_event(
-            &mut tx,
-            ctx.project_key,
-            "requirement.updated",
-            json!({"number": number, "revision": revision}),
-        )
-        .await?;
+        let (id, number) = match existing {
+            Some((_, number, true)) => {
+                planner.warn(
+                    x.row,
+                    "requirement_archived",
+                    format!(
+                        "REQ-{number} with this issue key is archived; the record was not imported and cases are not linked to it"
+                    ),
+                );
+                return Ok(());
+            }
+            Some((id, number, false)) => {
+                if planner.opts.mode == ImportMode::Upsert {
+                    let cur =
+                        requirements::lock_by_number(&mut tx, ctx.project_id, number, None).await?;
+                    let c = f.checked;
+                    requirements::change_in(
+                        &mut tx,
+                        ctx,
+                        &cur,
+                        Change {
+                            title: Some(c.title),
+                            description: Some(c.description),
+                            req_type: Some(c.req_type),
+                            status: Some(c.status),
+                            parent: None,
+                            tracker: Some((cur.tracker_id.clone(), cur.issue_key.clone(), c.url)),
+                        },
+                    )
+                    .await?;
+                    set_external_state(&mut tx, id, f.external_state.as_deref()).await?;
+                }
+                (id, number)
+            }
+            None => {
+                let parent = match x.parent {
+                    None => None,
+                    Some(p) => match planner.rec.req_by_number.get(&p).copied() {
+                        Some((_, parent_number)) => Some(parent_number),
+                        None => {
+                            planner.warn(
+                                x.row,
+                                "parent_not_found",
+                                format!(
+                                    "the parent {p} is not in the file or was not imported; imported as a root"
+                                ),
+                            );
+                            None
+                        }
+                    },
+                };
+                if planner.rec.maps.keep_requirement_numbers.is_none() {
+                    planner.rec.maps.keep_requirement_numbers = Some(planner.rec.keep_numbers);
+                    planner.rec.dirty = true;
+                }
+                let kept = match x.number {
+                    Some(n)
+                        if planner.rec.keep_numbers
+                            && n > 0
+                            && planner.rec.used_numbers.insert(n) =>
+                    {
+                        Some(n)
+                    }
+                    _ => None,
+                };
+                let row = requirements::create_in(
+                    &mut tx,
+                    ctx,
+                    f.checked,
+                    parent,
+                    kept,
+                    RequirementOrigin::Import,
+                )
+                .await?;
+                set_external_state(&mut tx, row.id, f.external_state.as_deref()).await?;
+                (row.id, row.number)
+            }
+        };
         tx.commit().await?;
         planner.rec.maps.requirements.insert(x.row, (id, number));
         planner.rec.dirty = true;
         remember(planner, id, number);
         Ok(())
+    }
+}
+
+/// The external state of an imported requirement (a tracker's, kept as the file says; it is
+/// not a content change and does not bump the revision, like the tracker's state sync).
+async fn set_external_state(
+    conn: &mut PgConnection,
+    id: Uuid,
+    state: Option<&str>,
+) -> TmResult<()> {
+    sqlx::query(
+        "update requirements set external_state = $2 where id = $1 and external_state is distinct from $2",
+    )
+    .bind(id)
+    .bind(state)
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tm::parameters::valid_column;
+    use fastproof_tm_import::params::unique_names;
+
+    /// The foreign formats' parameter names (Qase, TestOps) are made of `[A-Za-z0-9_]`, start
+    /// with a letter or `_` and have at most 64 bytes: a subset of P's column rule, so a
+    /// sanitized name is always a valid column and its rewritten `${name}` a valid placeholder.
+    #[test]
+    fn sanitized_parameter_names_are_valid_columns() {
+        let names: Vec<String> = [
+            "User role",
+            "9 lives",
+            "",
+            "   ",
+            "café",
+            "a.b-c",
+            "${x}",
+            "-dash",
+            "名前",
+            &"x".repeat(200),
+            "User role",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let out = unique_names(&names);
+        for (n, o) in names.iter().zip(&out) {
+            assert!(valid_column(o), "{n:?} became {o:?}");
+        }
+        let distinct: HashSet<&String> = out.iter().collect();
+        assert_eq!(distinct.len(), out.len(), "{out:?}");
+    }
+
+    #[test]
+    fn imported_rows_get_valid_unique_ids() {
+        let p = ImportedParameters {
+            columns: vec!["a".into()],
+            rows: ["r_keep", "", "bad id", "r_keep", "r_x"]
+                .iter()
+                .map(|id| fastproof_tm_import::ImportedParameterRow {
+                    id: id.to_string(),
+                    values: BTreeMap::from([("a".to_string(), id.to_string())]),
+                    enabled: true,
+                })
+                .collect(),
+            generator: None,
+        };
+        let c = case_parameters(&p);
+        let ids: Vec<&str> = c.rows.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids[0], "r_keep");
+        assert_eq!(ids[4], "r_x");
+        assert!(ids.iter().all(|i| valid_row_id(i)), "{ids:?}");
+        assert_eq!(ids.iter().collect::<HashSet<_>>().len(), 5, "{ids:?}");
+        let enabled: Vec<bool> = c.rows.iter().map(|r| r.enabled).collect();
+        assert_eq!(
+            enabled,
+            vec![true, true, true, false, true],
+            "the second row with the values of the first (r_keep) is switched off"
+        );
     }
 }

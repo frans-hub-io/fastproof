@@ -162,10 +162,42 @@ async fn parameters_of(
     Ok(kept)
 }
 
+/// The iterations a launch stores, those of earlier executions (kept on rerun) included.
+/// [`create_iterations`] and [`check_rerun_room`] keep it within `max_run_iterations`.
+pub async fn stored_iterations(conn: &mut PgConnection, launch_id: Uuid) -> sqlx::Result<i64> {
+    sqlx::query_scalar(
+        "select count(*) from run_iterations it join run_items ri on ri.id = it.run_item_id \
+         where ri.launch_id = $1",
+    )
+    .bind(launch_id)
+    .fetch_one(&mut *conn)
+    .await
+}
+
+/// Refuses (409 `limit_reached`) a rerun of a parameterized item whose copied iterations
+/// would take the iterations the launch stores past `max_run_iterations`: each rerun copies
+/// every iteration of the item, and the earlier executions stay until the launch is deleted.
+pub async fn check_rerun_room(
+    conn: &mut PgConnection,
+    launch_id: Uuid,
+    item_iterations: i32,
+    limits: &TmLimits,
+) -> TmResult<()> {
+    let stored = stored_iterations(conn, launch_id).await?.max(0) as usize;
+    if stored.saturating_add(item_iterations.max(0) as usize) > limits.max_run_iterations {
+        return Err(TmError::limit(
+            "maxRunIterations",
+            limits.max_run_iterations as u64,
+        ));
+    }
+    Ok(())
+}
+
 /// Creates the iterations of newly inserted run items `(item, case, version)` (one per
 /// enabled row of the version), their series, and `run_items.iterations`; returns how many it
-/// created. The iterations of the launch stay within `max_run_iterations` (409
-/// `limit_reached` before anything is written) and one call reads and writes at most
+/// created. The iterations the launch stores (earlier executions included) stay within
+/// `max_run_iterations` (409 `limit_reached` before anything is written) and one call reads
+/// and writes at most
 /// [`MAX_ITERATION_BYTES`] of parameters. Rows whose values give the same Allure parameters
 /// as an earlier row of the item (one series) are left out.
 pub async fn create_iterations(
@@ -178,12 +210,7 @@ pub async fn create_iterations(
     if items.is_empty() {
         return Ok(0);
     }
-    let existing: i64 = sqlx::query_scalar(
-        "select coalesce(sum(iterations), 0)::bigint from run_items where launch_id = $1",
-    )
-    .bind(launch_id)
-    .fetch_one(&mut *conn)
-    .await?;
+    let existing = stored_iterations(conn, launch_id).await?;
     let room = limits
         .max_run_iterations
         .saturating_sub(existing.max(0) as usize);

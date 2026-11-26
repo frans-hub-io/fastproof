@@ -400,7 +400,10 @@ async fn every_status_transition_changes_the_counters_by_its_delta() {
     // replaces the result, and going back shows the earlier execution again.
     let rev = revision(&db.pool, fresh).await;
     let before = counters(&db.pool, launch.id).await;
-    store.rerun_run_item(&p, fresh, rev, "bob").await.unwrap();
+    store
+        .rerun_run_item(&p, fresh, rev, "bob", &TmLimits::default())
+        .await
+        .unwrap();
     assert_eq!(
         diff(&counters(&db.pool, launch.id).await, &before),
         CountDelta::item_change(RunStatus::Failed, RunStatus::Untested)
@@ -597,7 +600,7 @@ async fn execute(
                     .revision;
             }
             2 => {
-                store.rerun_run_item(p, item, rev, "t").await?;
+                store.rerun_run_item(p, item, rev, "t", &lim).await?;
                 rev = store
                     .put_run_step(p, item, "1", &step(StepStatus::Passed), "t", &lim)
                     .await?
@@ -760,7 +763,10 @@ async fn concurrent_testers_ingest_mutes_and_close_keep_counters_exact() {
                 let mut errors = Vec::new();
                 for item in items.iter().skip(t).step_by(TESTERS) {
                     let rev = revision(&pool, *item).await;
-                    match store.rerun_run_item(&p, *item, rev, "t").await {
+                    match store
+                        .rerun_run_item(&p, *item, rev, "t", &TmLimits::default())
+                        .await
+                    {
                         Ok(_) => {}
                         Err(e) if code(&e) == "manual_run_closed" => break,
                         Err(e) => {

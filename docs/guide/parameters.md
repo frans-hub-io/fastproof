@@ -144,9 +144,13 @@ The manual run report lists the iterations of a parameterized case, in the print
 - the CSV report has a last column `iteration` (`#2 browser=chromium · currency=EUR`) and one row per iteration
   after its item, with that iteration's status, executor, times, comment, defect and steps.
 
-When a case is run again, the iterations of the earlier run stay: the **Earlier runs** card of the case lists them
-with values, status and step results (the failed ones open). A page of earlier runs carries at most 100 iterations
-per run, within 1 MiB; `iterationCount` says how many there were.
+Once every iteration is finished, the runner shows the item's status with **Run again**, which starts a new
+execution with every iteration untested. When a case is run again, the iterations of the earlier run stay: the
+**Earlier runs** card of the case lists them with values, status and step results (the failed ones open). A page
+of earlier runs carries at most 100 iterations per run, within 1 MiB; `iterationCount` says how many there were.
+The iterations a launch keeps, those of earlier runs included, count against the same limit of 50 000
+(`FASTPROOF_TM_MAX_RUN_ITERATIONS`): a rerun whose copied iterations would pass it is refused with 409
+`limit_reached` and changes nothing.
 
 ## Results per data set
 

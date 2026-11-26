@@ -741,7 +741,7 @@ async fn runs_pin_expand_refresh_and_rerun() {
         .unwrap();
     let before = store.run_item(p.id, item1).await.unwrap();
     store
-        .rerun_run_item(&p, item1, before.revision, "tess")
+        .rerun_run_item(&p, item1, before.revision, "tess", &open())
         .await
         .unwrap();
     let after = store.run_item(p.id, item1).await.unwrap();

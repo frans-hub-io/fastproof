@@ -138,14 +138,15 @@ pub struct TrackedRequirement {
 // ---------------------------------------------------------------------------------------------
 // Validation
 
-struct Checked {
-    title: String,
-    description: String,
-    req_type: String,
-    status: RequirementStatus,
-    tracker_id: Option<String>,
-    issue_key: Option<String>,
-    url: Option<String>,
+/// A requirement write that passed [`check_write`] (the API's rules; imports use them too).
+pub(crate) struct Checked {
+    pub(crate) title: String,
+    pub(crate) description: String,
+    pub(crate) req_type: String,
+    pub(crate) status: RequirementStatus,
+    pub(crate) tracker_id: Option<String>,
+    pub(crate) issue_key: Option<String>,
+    pub(crate) url: Option<String>,
 }
 
 fn check_type(t: &str) -> TmResult<String> {
@@ -206,7 +207,7 @@ fn opt_text(v: Option<&Option<String>>) -> Option<String> {
         .map(str::to_string)
 }
 
-fn check_write(
+pub(crate) fn check_write(
     ctx: &CaseCtx<'_>,
     w: &RequirementWrite,
     origin: RequirementOrigin,
@@ -305,7 +306,7 @@ async fn event(conn: &mut PgConnection, project_key: &str, row: &RequirementRow)
     Ok(())
 }
 
-async fn lock_by_number(
+pub(crate) async fn lock_by_number(
     conn: &mut PgConnection,
     project_id: Uuid,
     n: i64,
@@ -473,11 +474,15 @@ async fn view_parts(
 // ---------------------------------------------------------------------------------------------
 // Writes
 
-async fn create_in(
+/// Creates a requirement under `parent_number` (`None`: top level) with the next number, or
+/// with `number` (an import that keeps the numbers of its file; the sequence moves past it).
+/// The caller holds the project's `requirements` lock.
+pub(crate) async fn create_in(
     conn: &mut PgConnection,
     ctx: &CaseCtx<'_>,
     c: Checked,
     parent_number: Option<i64>,
+    number: Option<i64>,
     origin: RequirementOrigin,
 ) -> TmResult<RequirementRow> {
     let parent = parent_of(conn, ctx.project_id, parent_number).await?;
@@ -488,12 +493,26 @@ async fn create_in(
             ctx.limits.max_requirement_depth as u64,
         ));
     }
-    let seq: i64 = sqlx::query_scalar(
-        "update projects set requirement_seq = requirement_seq + 1 where id = $1 returning requirement_seq",
-    )
-    .bind(ctx.project_id)
-    .fetch_one(&mut *conn)
-    .await?;
+    let seq: i64 = match number {
+        None => {
+            sqlx::query_scalar(
+                "update projects set requirement_seq = requirement_seq + 1 where id = $1 returning requirement_seq",
+            )
+            .bind(ctx.project_id)
+            .fetch_one(&mut *conn)
+            .await?
+        }
+        Some(n) => {
+            sqlx::query_scalar(
+                "update projects set requirement_seq = greatest(requirement_seq, $2) where id = $1 \
+                 returning requirement_seq",
+            )
+            .bind(ctx.project_id)
+            .bind(n)
+            .fetch_one(&mut *conn)
+            .await?
+        }
+    };
     if seq as usize > ctx.limits.max_requirements {
         let n: i64 = sqlx::query_scalar("select count(*) from requirements where project_id = $1")
             .bind(ctx.project_id)
@@ -519,7 +538,7 @@ async fn create_in(
     )))
     .bind(id)
     .bind(ctx.project_id)
-    .bind(seq)
+    .bind(number.unwrap_or(seq))
     .bind(&c.title)
     .bind(&c.description)
     .bind(&c.req_type)
@@ -606,18 +625,18 @@ async fn move_in(
 }
 
 /// The fields of a write applied to a locked requirement.
-struct Change {
-    title: Option<String>,
-    description: Option<String>,
-    req_type: Option<String>,
-    status: Option<RequirementStatus>,
+pub(crate) struct Change {
+    pub(crate) title: Option<String>,
+    pub(crate) description: Option<String>,
+    pub(crate) req_type: Option<String>,
+    pub(crate) status: Option<RequirementStatus>,
     /// `Some(None)`: top level.
-    parent: Option<Option<i64>>,
+    pub(crate) parent: Option<Option<i64>>,
     /// `Some(..)`: replace tracker id, issue key and URL.
-    tracker: Option<(Option<String>, Option<String>, Option<String>)>,
+    pub(crate) tracker: Option<(Option<String>, Option<String>, Option<String>)>,
 }
 
-async fn change_in(
+pub(crate) async fn change_in(
     conn: &mut PgConnection,
     ctx: &CaseCtx<'_>,
     cur: &RequirementRow,
@@ -1245,7 +1264,7 @@ impl Store {
         let parent = w.parent_number.flatten();
         let mut tx = self.pool.begin().await?;
         lock_project(&mut tx, ctx.project_id, "requirements").await?;
-        let row = create_in(&mut tx, ctx, c, parent, origin).await?;
+        let row = create_in(&mut tx, ctx, c, parent, None, origin).await?;
         tx.commit().await?;
         Ok(row)
     }
@@ -1817,7 +1836,8 @@ impl Store {
                         issue_key: Some(it.issue_key.clone()),
                         url: it.url.clone(),
                     };
-                    match create_in(&mut tx, ctx, c, parent, RequirementOrigin::Tracker).await {
+                    match create_in(&mut tx, ctx, c, parent, None, RequirementOrigin::Tracker).await
+                    {
                         Ok(row) => {
                             sqlx::query(
                                 "update requirements set external_state = $2, synced_at = now() where id = $1",

@@ -118,6 +118,8 @@ export function Iterations({ projectKey, launchId, item, readOnly = false, onAnn
 
   useEffect(() => {
     setLocal(new Map());
+    // A new execution (Run again) starts at its first open iteration.
+    setPos((p) => (p && p.item === item?.id ? null : p));
   }, [item?.id, item?.executionNo]);
 
   useEffect(() => {

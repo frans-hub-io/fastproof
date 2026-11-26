@@ -238,39 +238,33 @@ async fn count(pool: &PgPool, sql: &'static str, project: Uuid) -> i64 {
         .unwrap()
 }
 
-/// Whether the store accepts `CaseBody.parameters` yet (`P` replaces a stub that refuses).
-fn parameters_available() -> bool {
-    let body = fastproof_store::tm::CaseBody {
-        parameters: Some(fastproof_store::tm::CaseParameters {
-            columns: vec!["a".into()],
-            rows: vec![fastproof_store::tm::ParameterRow {
-                id: "r_1".into(),
-                values: [("a".to_string(), "1".to_string())].into(),
-                enabled: true,
-            }],
-            generator: None,
-        }),
-        ..Default::default()
-    };
-    fastproof_store::tm::parameters::validate_parameters(
-        &body,
-        &fastproof_store::tm::TmLimits::default(),
-    )
-    .is_ok()
-}
-
-async fn set_parameters(pool: &PgPool, project: Uuid, number: i64) {
-    sqlx::query(
-        "update cases set body = jsonb_set(body, '{parameters}', \
-         '{\"columns\": [\"card\"], \"rows\": [{\"id\": \"r_one\", \"values\": {\"card\": \"visa\"}, \"enabled\": true}, \
-         {\"id\": \"r_two\", \"values\": {\"card\": \"amex\"}, \"enabled\": false}]}'::jsonb) \
-         where project_id = $1 and number = $2",
-    )
-    .bind(project)
-    .bind(number)
-    .execute(pool)
-    .await
-    .unwrap();
+/// Gives case `number` two parameter rows (one switched off) through the API, so P's
+/// validation and gate apply as for any write.
+async fn set_parameters(s: &Server, key: &str, number: i64) {
+    let (st, c) = s
+        .get(
+            &format!("/api/v1/projects/{key}/cases/{number}"),
+            ADMIN_TOKEN,
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{c}");
+    let mut body = c["body"].clone();
+    body["parameters"] = json!({"columns": ["card"], "rows": [
+        {"id": "r_one", "values": {"card": "visa"}, "enabled": true},
+        {"id": "r_two", "values": {"card": "amex"}, "enabled": false}]});
+    let r = s
+        .req(
+            Method::PUT,
+            &format!("/api/v1/projects/{key}/cases/{number}"),
+            Some(ADMIN_TOKEN),
+        )
+        .header("if-match", format!("\"r{}\"", c["revision"]))
+        .json(&json!({"name": c["name"], "body": body}))
+        .send()
+        .await
+        .unwrap();
+    let st = r.status();
+    assert_eq!(st, StatusCode::OK, "{}", r.text().await.unwrap());
 }
 
 #[tokio::test]
@@ -335,10 +329,7 @@ async fn ndjson_v2_round_trips_into_an_empty_project() {
     )
     .await;
     link(&db.pool, pid, epic, 2, "ai", "proposed").await;
-    let with_parameters = parameters_available();
-    if with_parameters {
-        set_parameters(&db.pool, pid, 1).await;
-    }
+    set_parameters(&s, "src", 1).await;
 
     let nd = export(&s, "src", "ndjson").await;
     let rec = records(&nd);
@@ -481,10 +472,8 @@ async fn ndjson_v2_round_trips_into_an_empty_project() {
     std::io::Read::read_to_string(&mut z.by_name("cases.csv").unwrap(), &mut csv).unwrap();
     assert!(csv.contains("Click out"), "{csv}");
 
-    if with_parameters {
-        assert_eq!(rec[6]["parameters"]["rows"].as_array().unwrap().len(), 2);
-        assert_eq!(a[6], b[6], "parameters round trip");
-    }
+    assert_eq!(rec[6]["parameters"]["rows"].as_array().unwrap().len(), 2);
+    assert_eq!(a[6], b[6], "parameters round trip");
 }
 
 #[tokio::test]
@@ -796,21 +785,13 @@ async fn qase_shared_steps_by_hash_and_parameter_rows() {
         .get(&format!("/api/v1/projects/qa/cases/{number}"), ADMIN_TOKEN)
         .await;
     assert_eq!(other["body"]["steps"][0]["shared"]["number"], 1, "{other}");
-    if parameters_available() {
-        assert_eq!(applied["create"], 2, "{dry} {applied}");
-        let (_, pay) = s.get("/api/v1/projects/qa/cases/1", ADMIN_TOKEN).await;
-        assert_eq!(pay["name"], "Pay");
-        let p = &pay["body"]["parameters"];
-        assert_eq!(p["columns"], json!(["User_role", "browser", "os"]));
-        assert_eq!(p["rows"].as_array().unwrap().len(), 4);
-        assert_eq!(pay["body"]["steps"][2]["action"], "Pay as ${User_role}");
-    } else {
-        assert_eq!(
-            applied["create"], 1,
-            "the case with parameters waits for P: {applied}"
-        );
-        assert_eq!(applied["errors"][0]["code"], "invalid_case");
-    }
+    assert_eq!(applied["create"], 2, "{dry} {applied}");
+    let (_, pay) = s.get("/api/v1/projects/qa/cases/1", ADMIN_TOKEN).await;
+    assert_eq!(pay["name"], "Pay");
+    let p = &pay["body"]["parameters"];
+    assert_eq!(p["columns"], json!(["User_role", "browser", "os"]));
+    assert_eq!(p["rows"].as_array().unwrap().len(), 4);
+    assert_eq!(pay["body"]["steps"][2]["action"], "Pay as ${User_role}");
     let (_, again) = import(
         &s,
         "qa",
@@ -1238,12 +1219,7 @@ async fn testops_shared_steps_parameters_and_issue_links() {
         .await;
     assert_eq!(st, StatusCode::ACCEPTED, "{b}");
     let done = wait_job(&s, "to", &id, &["done"]).await;
-    let with_parameters = parameters_available();
-    assert_eq!(
-        done["report"]["create"],
-        if with_parameters { 2 } else { 1 },
-        "the case with parameters waits for P: {done}"
-    );
+    assert_eq!(done["report"]["create"], 2, "{done}");
     assert_eq!(
         stub::log(&seen)
             .iter()
@@ -1278,13 +1254,88 @@ async fn testops_shared_steps_parameters_and_issue_links() {
             pid
         )
         .await,
-        if with_parameters { 2 } else { 1 },
+        2,
         "SHOP-1 is a requirement"
     );
-    if with_parameters {
-        let (_, c) = s.get("/api/v1/projects/to/cases/601", ADMIN_TOKEN).await;
-        assert_eq!(c["body"]["parameters"]["rows"].as_array().unwrap().len(), 4);
-        assert_eq!(c["body"]["steps"][0]["shared"]["number"], 1);
-        assert_eq!(c["body"]["steps"][1]["action"], "Pay");
+    let (_, c) = s.get("/api/v1/projects/to/cases/601", ADMIN_TOKEN).await;
+    assert_eq!(c["body"]["parameters"]["rows"].as_array().unwrap().len(), 4);
+    assert_eq!(c["body"]["steps"][0]["shared"]["number"], 1);
+    assert_eq!(c["body"]["steps"][1]["action"], "Pay");
+}
+
+/// `REQ-<n>` in a file names the requirement with that number in the file (I's L9): never a
+/// requirement of the project by its number, and never shadowed by the number a record got in
+/// the project when the file's numbers are not kept. Records are created through R's functions
+/// (R's numbering, depth and event), and the importing project already has requirements.
+#[tokio::test]
+async fn requirement_keys_name_the_numbers_of_the_file() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = Server::start(&db).await;
+    s.project("rk").await;
+    for t in ["Old one", "Old two"] {
+        post_ok(&s, "/api/v1/projects/rk/requirements", json!({"title": t})).await;
     }
+    // In the file A is REQ-4 and B REQ-7; here they become REQ-3 and REQ-4.
+    let file = "{\"format\":\"fastproof-cases\",\"version\":2}\n\
+        {\"type\":\"requirement\",\"number\":4,\"title\":\"A\",\"kind\":\"epic\"}\n\
+        {\"type\":\"requirement\",\"number\":7,\"title\":\"B\",\"kind\":\"story\",\"parent\":4,\"externalState\":\"Open\"}\n\
+        {\"type\":\"case\",\"name\":\"Uses A\",\"steps\":[{\"action\":\"a\"}],\"requirements\":[{\"key\":\"REQ-4\"}]}\n\
+        {\"type\":\"case\",\"name\":\"Uses one\",\"steps\":[{\"action\":\"b\"}],\"requirements\":[{\"key\":\"REQ-1\"}]}\n";
+    let (_, done) = import(
+        &s,
+        "rk",
+        file.as_bytes(),
+        "r.ndjson",
+        json!({"format": "fastproof-ndjson"}),
+    )
+    .await;
+    assert_eq!(done["create"], 2, "{done}");
+    let (_, a) = s
+        .get("/api/v1/projects/rk/requirements/3", ADMIN_TOKEN)
+        .await;
+    assert_eq!(a["title"], "A", "{a}");
+    assert_eq!(a["type"], "epic");
+    assert_eq!(a["origin"], "import");
+    assert_eq!(a["depth"], 1);
+    let (_, b) = s
+        .get("/api/v1/projects/rk/requirements/4", ADMIN_TOKEN)
+        .await;
+    assert_eq!(b["title"], "B", "{b}");
+    assert_eq!(b["depth"], 2);
+    assert_eq!(b["path"].as_array().unwrap().len(), 2);
+    assert_eq!(b["parentId"], a["id"]);
+    let (_, cases) = s
+        .get("/api/v1/projects/rk/requirements/3/cases", ADMIN_TOKEN)
+        .await;
+    let names: Vec<&str> = cases["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["name"].as_str().unwrap_or_default())
+        .collect();
+    assert_eq!(names, vec!["Uses A"], "REQ-4 of the file is A: {cases}");
+    for n in [1, 2, 4] {
+        let (_, cs) = s
+            .get(
+                &format!("/api/v1/projects/rk/requirements/{n}/cases"),
+                ADMIN_TOKEN,
+            )
+            .await;
+        assert_eq!(
+            cs["items"].as_array().unwrap().len(),
+            0,
+            "REQ-{n} of the project is not named by the file: {cs}"
+        );
+    }
+    assert_eq!(
+        count(
+            &db.pool,
+            "select count(*) from requirements where project_id = $1 and external_state = 'Open'",
+            project_id(&db.pool, "rk").await
+        )
+        .await,
+        1
+    );
 }

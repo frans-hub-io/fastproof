@@ -11,10 +11,12 @@ use fastproof_model::Parameter;
 use fastproof_model::identity::parameters_hash;
 use fastproof_store::projects::CreateProject;
 use fastproof_store::tm::cases::CaseCtx;
+use fastproof_store::tm::coverage::CoverageScope;
 use fastproof_store::tm::{
-    CaseBody, CaseParameters, CaseRow, CaseStep, CaseWrite, ManualUntestedTo, ParameterRow,
-    RunItemPatch, RunItemsAdd, RunIterationPatch, RunStatus, RunStepWrite, StepStatus, TmError,
-    TmGateMode, TmLimits, UntestedStepsTo,
+    CaseBody, CaseParameters, CaseRow, CaseStep, CaseWrite, CoverageCounts, CoverageStatus,
+    ManualUntestedTo, ParameterRow, RequirementLinkOrigin, RequirementLinksChange,
+    RequirementOrigin, RequirementWrite, RunItemPatch, RunItemsAdd, RunIterationPatch, RunStatus,
+    RunStepWrite, StepStatus, TmError, TmGateMode, TmLimits, UntestedStepsTo,
 };
 use fastproof_store::{Project, Store};
 use serde_json::Value;
@@ -636,7 +638,7 @@ async fn iterations_steps_status_and_projection() {
     counters_agree(&db, launch).await;
 
     let ch = store
-        .rerun_run_item(&p, item, view.revision, "tess")
+        .rerun_run_item(&p, item, view.revision, "tess", &l)
         .await
         .unwrap();
     assert_eq!(ch.new_status, RunStatus::Untested);
@@ -760,8 +762,34 @@ async fn iteration_limit_and_pinned_version() {
         "3 + 4 iterations over a limit of 6 per launch"
     );
 
-    // The item runs the version it was pinned to: an edit after the start changes nothing.
+    // Reruns copy the iterations, and the copies count against the launch's limit too
+    // (security review L5): 3 stored + 3 copied = 6 fits, the next 3 do not.
     let item = item_of(&db, launch, &a).await;
+    let rev = store.run_item(p.id, item).await.unwrap().revision;
+    store
+        .rerun_run_item(&p, item, rev, "tess", &small)
+        .await
+        .unwrap();
+    let rev = store.run_item(p.id, item).await.unwrap().revision;
+    let e = store
+        .rerun_run_item(&p, item, rev, "tess", &small)
+        .await
+        .unwrap_err();
+    assert_eq!(code(&e), "limit_reached", "6 stored + 3 copied over 6");
+    let stored: i64 = sqlx::query_scalar(
+        "select count(*) from run_iterations it join run_items ri on ri.id = it.run_item_id \
+         where ri.launch_id = $1",
+    )
+    .bind(launch)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(stored, 6, "the refused rerun copied nothing");
+    let view = store.run_item(p.id, item).await.unwrap();
+    assert_eq!(view.summary.execution_no, 2);
+    assert_eq!(view.revision, rev, "the refused rerun changed nothing");
+
+    // The item runs the version it was pinned to: an edit after the start changes nothing.
     let mut changed = checkout_body(rows(1));
     if let Some(ps) = changed.parameters.as_mut() {
         ps.rows[0].values.insert("browser".into(), "edge".into());
@@ -785,6 +813,159 @@ async fn iteration_limit_and_pinned_version() {
     let values: Vec<BTreeMap<String, String>> =
         view.iterations.iter().map(|i| i.values.clone()).collect();
     assert_eq!(values[2]["browser"], "b2");
+}
+
+/// Coverage of a parameterized case (contract §7.6): in the launch and window scopes, the
+/// newest result per parameter set, the worst of the sets; an open iteration whose set has no
+/// result in the scope counts as not run, so a half-run case is not `passed`.
+#[tokio::test]
+async fn coverage_takes_the_worst_parameter_set() {
+    let Some((db, store)) = TestDb::migrated().await else {
+        return;
+    };
+    let p = project(&store, "pv").await;
+    let l = limits(TmGateMode::Open);
+    let c = new_case(
+        &store,
+        &p,
+        &l,
+        "Pay",
+        checkout_body(vec![
+            row("r_ff", "firefox", "EUR", true),
+            row("r_cr", "chromium", "USD", true),
+        ]),
+    )
+    .await
+    .unwrap();
+    let req = store
+        .create_requirement(
+            &ctx(&p, &l),
+            &RequirementWrite {
+                title: "Payments".into(),
+                ..Default::default()
+            },
+            RequirementOrigin::Ui,
+        )
+        .await
+        .unwrap();
+    store
+        .change_requirement_links(
+            &ctx(&p, &l),
+            req.number,
+            &RequirementLinksChange {
+                add: Some(vec![c.number]),
+                ..Default::default()
+            },
+            RequirementLinkOrigin::Ui,
+        )
+        .await
+        .unwrap();
+    let launch = open_launch(&db, &p).await;
+    store
+        .add_run_items(
+            &p,
+            launch,
+            &RunItemsAdd {
+                case_numbers: Some(vec![c.number]),
+                ..Default::default()
+            },
+            &l,
+        )
+        .await
+        .unwrap();
+    let item = item_of(&db, launch, &c).await;
+    let launches = CoverageScope {
+        launch_ids: Some(vec![launch]),
+        ..Default::default()
+    };
+    let window = CoverageScope {
+        days: Some(30),
+        ..Default::default()
+    };
+    let coverage = async |scope: &CoverageScope| -> (CoverageStatus, CoverageCounts) {
+        let page = store
+            .requirement_coverage(p.id, scope, None, None, 50)
+            .await
+            .unwrap();
+        assert_eq!(page.items.len(), 1);
+        (page.items[0].coverage, page.items[0].cases)
+    };
+    let set = async |row_id: &str, status: RunStatus| {
+        let rev = store.run_item(p.id, item).await.unwrap().revision;
+        store
+            .patch_run_iteration(
+                &p,
+                item,
+                row_id,
+                rev,
+                &RunIterationPatch {
+                    status: Some(status),
+                    ..Default::default()
+                },
+                "tess",
+                &l,
+            )
+            .await
+            .unwrap();
+    };
+    for scope in [&launches, &window] {
+        assert_eq!(
+            coverage(scope).await.0,
+            CoverageStatus::NotRun,
+            "nothing ran"
+        );
+    }
+
+    set("r_ff", RunStatus::Passed).await;
+    for scope in [&launches, &window] {
+        let (status, counts) = coverage(scope).await;
+        assert_eq!(
+            status,
+            CoverageStatus::NotRun,
+            "one set passed and the other is still open: not passed"
+        );
+        assert_eq!((counts.total, counts.passed, counts.skipped), (1, 0, 1));
+    }
+
+    set("r_cr", RunStatus::Failed).await;
+    for scope in [&launches, &window] {
+        assert_eq!(
+            coverage(scope).await.0,
+            CoverageStatus::Failed,
+            "the worst set"
+        );
+    }
+    let hashes: Vec<String> = sqlx::query_scalar(
+        "select distinct s.parameters_hash from results r join series s on s.id = r.series_id \
+         where r.launch_id = $1",
+    )
+    .bind(launch)
+    .fetch_all(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(hashes.len(), 2, "one series per parameter set");
+
+    set("r_cr", RunStatus::Passed).await;
+    for scope in [&launches, &window] {
+        let (status, counts) = coverage(scope).await;
+        assert_eq!(status, CoverageStatus::Passed, "every set passed");
+        assert_eq!((counts.total, counts.passed), (1, 1));
+    }
+
+    // A rerun opens every set again, but the earlier results stay the newest final ones
+    // until the new execution has its own.
+    let rev = store.run_item(p.id, item).await.unwrap().revision;
+    store
+        .rerun_run_item(&p, item, rev, "tess", &l)
+        .await
+        .unwrap();
+    assert_eq!(coverage(&launches).await.0, CoverageStatus::Passed);
+    set("r_ff", RunStatus::Blocked).await;
+    assert_eq!(
+        coverage(&launches).await.0,
+        CoverageStatus::Failed,
+        "blocked counts as failed"
+    );
 }
 
 /// Security review fixes: projection in bounded rounds, the launch budget checked before the

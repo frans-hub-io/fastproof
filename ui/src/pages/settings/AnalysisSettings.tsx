@@ -175,12 +175,14 @@ function Form({ project, settings, canWrite }: { project: string; settings: Proj
   const [memoryDays, setMemoryDays] = useState<number | string>(a.memoryDays);
   const [resolveAfter, setResolveAfter] = useState<number | string>(a.resolveAfterLaunches);
   const [nightly, setNightly] = useState(a.backtest.nightly);
+  const [hintMinScore, setHintMinScore] = useState<number | string>(a.flaky.hintMinScore);
   const save = useSaveSettings(project);
   const errors = {
     minScore: range(minScore, 0.4, 0.95),
     maxCandidates: range(maxCandidates, 1, 3),
     memoryDays: range(memoryDays, 30, 3650),
     resolveAfter: range(resolveAfter, 1, 100),
+    hintMinScore: range(hintMinScore, 0.05, 1),
   };
   const valid = Object.values(errors).every((e) => e === null);
   const submit = () => {
@@ -193,6 +195,7 @@ function Form({ project, settings, canWrite }: { project: string; settings: Proj
       suggest: { minScore: num(minScore, a.suggest.minScore), maxCandidates: num(maxCandidates, a.suggest.maxCandidates) },
       autoApply: { enabled: auto, bands: ['same'] },
       backtest: { nightly },
+      flaky: { hintMinScore: num(hintMinScore, a.flaky.hintMinScore) },
     };
     save.mutate({ ...settings, analysis: next } as ProjectSettings, {
       onSuccess: () => notifications.show({ color: 'green', message: 'Analysis settings saved' }),
@@ -229,6 +232,25 @@ function Form({ project, settings, canWrite }: { project: string; settings: Proj
                 same
               </Badge>
             </Group>
+          </Section>
+          <Section
+            title="Flaky causes"
+            description="Likely causes of flaky tests (timing, environment, order, retry, infrastructure, time of day) from their recent runs, each with its evidence. A rule-based search with minimum data per cause, not a learned model; a hint never mutes a test by itself."
+          >
+            <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="sm">
+              <NumberInput
+                label="Minimum flakiness score"
+                description="Tests marked flaky, or scoring at least this, get causes (0.05 to 1.00)"
+                min={0.05}
+                max={1}
+                step={0.05}
+                decimalScale={2}
+                value={hintMinScore}
+                onChange={setHintMinScore}
+                error={errors.hintMinScore}
+                data-testid="analysis-hint-min-score"
+              />
+            </SimpleGrid>
           </Section>
           <Section title="Nightly backtest">
             <Switch label="Run a backtest every night when there are new decisions" checked={nightly} onChange={(e) => setNightly(e.currentTarget.checked)} data-testid="analysis-nightly" />

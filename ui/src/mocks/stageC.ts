@@ -24,6 +24,7 @@ import type {
   TriageRequest,
 } from '../api/types-next';
 import { LOG_LEVELS } from '../api/types-next';
+import { flakyHintsFor, type MockRun } from './flakyHints';
 import { clientIdOf, launchDef, launchResults, launchView, NOW, patternsOf, projectLaunches, resultDetail, resultEnv, testKind } from './fixtures';
 
 const MIN = 60_000;
@@ -532,14 +533,15 @@ export function flakyOf(project: string, branch?: string, environment?: string, 
     .filter((d) => d.launch.status !== 'running')
     .filter((d) => (!branch || d.launch.vcs?.branch === branch) && (!environment || d.launch.environment?.key === environment))
     .slice(0, settingsOf(project).flaky.historyDepth * 2);
-  const series = new Map<string, { r: ResultSummary; statuses: ResultStatus[]; flips: number; flakyRuns: number; lastFlakyAt: string | null }>();
+  const series = new Map<string, { r: ResultSummary; statuses: ResultStatus[]; flips: number; flakyRuns: number; lastFlakyAt: string | null; runs: MockRun[] }>();
   for (const d of defs) {
     for (const r of launchResults(d.launch.id)) {
       let s = series.get(r.testCaseId);
       if (!s) {
-        s = { r, statuses: [], flips: 0, flakyRuns: 0, lastFlakyAt: null };
+        s = { r, statuses: [], flips: 0, flakyRuns: 0, lastFlakyAt: null, runs: [] };
         series.set(r.testCaseId, s);
       }
+      s.runs.push({ launchId: d.launch.id, resultId: r.id, at: d.launch.startedAt, status: r.status, flakyInRun: r.flakyInRun });
       const last = s.statuses[s.statuses.length - 1];
       if (last && (last === 'passed') !== (r.status === 'passed') && r.status !== 'skipped' && last !== 'skipped') s.flips++;
       if (r.flakyInRun) {
@@ -555,7 +557,7 @@ export function flakyOf(project: string, branch?: string, environment?: string, 
     if (n < 3) continue;
     const score = Math.min(1, (s.flips + s.flakyRuns * 0.5) / (n - 1));
     if (score < 0.15) continue;
-    out.push({ testCaseId: tc, seriesKey: s.r.seriesKey, name: s.r.name, score: Math.round(score * 100) / 100, lastStatuses: s.statuses.slice(0, 10), lastFlakyAt: s.lastFlakyAt });
+    out.push({ testCaseId: tc, seriesKey: s.r.seriesKey, name: s.r.name, score: Math.round(score * 100) / 100, lastStatuses: s.statuses.slice(0, 10), lastFlakyAt: s.lastFlakyAt, ...flakyHintsFor(project, s.r.seriesKey, s.r.name, s.runs) });
   }
   return out.sort((a, b) => b.score - a.score).slice(0, limit);
 }

@@ -994,6 +994,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{key}/flaky/{seriesId}/hints": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description The likely causes of a flaky test (one series: the test in one environment), most confident first, each with its evidence and the actions it suggests (`mute` with an end, `issue`, `rule`; a hint never mutes by itself): `timing`, `environment`, `order`, `retry`, `infra` and, with ClickHouse, `time`. A hint appears only above its minimum of data. Computed by the analysis role after a launch in which the series changed status and daily; `computedAt` is `null` before the first computation. `infraShare` is the share of the failures with infrastructure evidence (they still count in the flaky score). Needs `launches:read`. */
+        get: operations["analysis_flaky_hints"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{key}/gates/history": {
         parameters: {
             query?: never;
@@ -4811,6 +4828,14 @@ export interface components {
         };
         /** @description A flaky test. */
         FlakyItem: {
+            /** @description Likely causes, most confident first (FastProof Analysis; empty without it). */
+            hints: components["schemas"]["FlakyHintBrief"][];
+            /**
+             * Format: double
+             * @description Share of the failures with infrastructure evidence (signals, bursts, infrastructure
+             *     errors); `null` before the causes are computed or without failures.
+             */
+            infraShare?: number | null;
             /** Format: date-time */
             lastFlakyAt?: string | null;
             /** @description Newest first. */
@@ -4821,6 +4846,11 @@ export interface components {
              * @description Share of status changes over the detection window (0..1).
              */
             score: number;
+            /**
+             * Format: uuid
+             * @description The series (the test in one environment); its causes are at `GET .../flaky/{seriesId}/hints`.
+             */
+            seriesId: string;
             seriesKey: string;
             /** Format: uuid */
             testCaseId: string;
@@ -13370,6 +13400,52 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["FlakyList"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    analysis_flaky_hints: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                seriesId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FlakyHints"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
                 };
             };
             403: {

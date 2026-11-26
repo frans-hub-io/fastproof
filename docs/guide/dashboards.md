@@ -48,6 +48,7 @@ its public documentation as remembered; check it against the current docs when c
 | Unique bugs table | `unique-bugs` | tracker issues and their links ([Issue trackers](issue-trackers.md)) |
 | Activity stream | `activity-stream` | the audit log (needs `audit:read`) |
 | (FastProof) | `pass-rate-trend`, `durations`, `defect-trend`, `launches-per-day` | `series_daily`, `launch_daily` |
+| (FastProof) | `requirement-coverage` | [requirements and coverage](requirements.md#dashboard-widget) (needs `cases:read`) |
 
 ### Cumulative trend
 

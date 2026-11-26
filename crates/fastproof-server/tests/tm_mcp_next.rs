@@ -283,7 +283,7 @@ async fn fpql_in_search_cases_and_validate_query() {
         json!({"project": "ai", "query": "status = active", "entity": "requirements"}),
     )
     .await;
-    assert!(err, "requirement queries are not available yet: {r}");
+    assert!(!err, "requirement queries are available: {r}");
     let (err, r) = tool(
         &s,
         &outsider,

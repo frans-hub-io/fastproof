@@ -280,6 +280,80 @@ pub async fn tick(st: &AppState) -> anyhow::Result<usize> {
     Ok(n)
 }
 
+/// Requirements read per round, at most.
+pub const REQUIREMENT_BATCH: i64 = 100;
+/// The least time between two reads of the issue of one requirement.
+pub const REQUIREMENT_POLL_MIN: Duration = Duration::from_secs(3600);
+
+/// One round of the state sync of requirements imported from or linked to a tracker issue:
+/// claims requirements not read for the poll interval (at least an hour), reads their issues
+/// with one batch call per project and tracker, and stores the state and title (one way).
+/// Issues the tracker does not return keep their last state.
+pub async fn requirements_tick(st: &AppState) -> anyhow::Result<usize> {
+    let every = st.cfg.integrations.tracker_poll.max(REQUIREMENT_POLL_MIN);
+    let due = st
+        .store
+        .claim_requirement_syncs(REQUIREMENT_BATCH, PER_TRACKER, every)
+        .await?;
+    let n = due.len();
+    let mut groups: Vec<(
+        (Uuid, String),
+        Vec<&fastproof_store::tm::requirements::TrackedRequirement>,
+    )> = Vec::new();
+    for r in &due {
+        let k = (r.project_id, r.tracker_id.clone());
+        match groups.iter_mut().find(|(g, _)| *g == k) {
+            Some((_, v)) => v.push(r),
+            None => groups.push((k, vec![r])),
+        }
+    }
+    for ((project, tracker_id), reqs) in groups {
+        let doc = st.store.project_settings_json(project).await?;
+        let settings = IntegrationSettings::parse(&doc).unwrap_or_default();
+        let Some(t) = IssueTracker::connected(&settings.issue_trackers, &tracker_id) else {
+            continue;
+        };
+        let client = match Client::new(st, project, t).await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(tracker = %tracker_id, error = %e, "a tracker connection is not usable");
+                continue;
+            }
+        };
+        for chunk in reqs.chunks(super::trackers::MAX_BATCH) {
+            let asked: Vec<(String, Option<String>)> =
+                chunk.iter().map(|r| (r.issue_key.clone(), None)).collect();
+            let batch = match client.get_many(&asked).await {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::warn!(tracker = %tracker_id, error = %e, "reading requirement issues failed");
+                    break;
+                }
+            };
+            for r in chunk {
+                let Some(key) = parse_key(&t.tracker, &r.issue_key) else {
+                    continue;
+                };
+                if let Some((s, _)) = batch.found.get(&key)
+                    && let Err(e) = st
+                        .store
+                        .record_requirement_state(
+                            r,
+                            &s.title,
+                            &s.state,
+                            Some(&s.url),
+                            st.cfg.tm.max_name_bytes,
+                        )
+                        .await
+                {
+                    tracing::warn!(error = %format!("{e:#}"), "recording a requirement state failed");
+                }
+            }
+        }
+    }
+    Ok(n)
+}
+
 /// Runs until `stop`.
 pub async fn run(st: AppState, stop: CancellationToken) {
     let mut last_sweep: Option<std::time::Instant> = None;
@@ -297,6 +371,9 @@ pub async fn run(st: AppState, stop: CancellationToken) {
                 false
             }
         };
+        if let Err(e) = requirements_tick(&st).await {
+            tracing::warn!(error = %format!("{e:#}"), "requirement state sync round failed");
+        }
         let wait = if busy {
             Duration::from_millis(200)
         } else {

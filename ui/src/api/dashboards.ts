@@ -1,6 +1,7 @@
 import { useDebouncedValue } from '@mantine/hooks';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { projectPath, request } from './client';
+import type { CoverageScopeView, CoverageStatus, RequirementCoverage } from './requirements';
 import { getVersioned, writeVersioned, type Versioned } from './tm';
 import type { Dashboard as TrendData, DefectGroup } from './types-next';
 
@@ -30,6 +31,7 @@ export const WIDGET_TYPES = [
   'cumulative-trend',
   'unique-bugs',
   'activity-stream',
+  'requirement-coverage',
 ] as const;
 export type WidgetType = (typeof WIDGET_TYPES)[number];
 
@@ -165,6 +167,7 @@ export interface ActivityPoint {
 }
 
 export type WidgetData =
+  | { kind: 'requirementCoverage'; scope: CoverageScopeView; total: number; counts: Record<CoverageStatus, number>; items: RequirementCoverage[] }
   | { kind: 'cumulative'; attribute: string; values: CumulativePoint[] }
   | { kind: 'bugs'; items: BugPoint[] }
   | { kind: 'activity'; items: ActivityPoint[] }
@@ -219,6 +222,7 @@ export const WIDGET_CATALOG: Record<WidgetType, WidgetInfo> = {
   'cumulative-trend': { type: 'cumulative-trend', title: 'Cumulative trend', description: 'Results of all launches that share a value of a launch attribute (such as build), one bar per value, oldest first.', w: 6, h: 4, settings: ['attribute', 'days', 'limit', 'branch', 'environment'], group: 'Trends' },
   'unique-bugs': { type: 'unique-bugs', title: 'Unique bugs', description: 'Issues of the project tracker with the tests that point to them: open ones, and closed ones changed in the range.', w: 12, h: 5, settings: ['days', 'limit'], group: 'Failures' },
   'activity-stream': { type: 'activity-stream', title: 'Activity stream', description: 'The latest changes recorded in the audit log of the project. Shown only to people who may read the audit log.', w: 6, h: 5, settings: ['days', 'limit'], group: 'Project' },
+  'requirement-coverage': { type: 'requirement-coverage', title: 'Requirement coverage', description: 'Coverage of the top-level requirements: how many are uncovered, failing, not run, partly or fully passed.', w: 6, h: 4, settings: ['days', 'branch', 'environment', 'limit'], group: 'Project' },
 };
 
 export const PREVIEW_DEBOUNCE_MS = 500;

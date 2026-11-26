@@ -627,16 +627,20 @@ async fn validation_counts_up_to_the_cap() {
         .await
         .unwrap();
     assert_eq!(v.error.unwrap().message, "unknown folder \"x\"");
-    let e = store
+    let v = store
         .validate_query(
             p.id,
             QueryEntity::Requirements,
-            "title ~ \"abc\"",
+            "title ~ \"Log\"",
             &who("alice"),
         )
         .await
-        .unwrap_err();
-    assert!(e.to_string().contains("not available"), "{e}");
+        .unwrap();
+    assert_eq!(
+        (v.ok, v.count),
+        (true, Some(0)),
+        "requirement queries count requirements"
+    );
     let schema = store.query_schema(p.id, QueryEntity::Cases).await.unwrap();
     assert_eq!(schema.attributes.len(), 26);
     let status = schema
@@ -649,11 +653,14 @@ async fn validation_counts_up_to_the_cap() {
         Some(&["draft".to_string(), "active".into(), "outdated".into()][..])
     );
     assert!(schema.keywords.contains(&"and".to_string()));
-    assert!(
+    assert_eq!(
         store
             .query_schema(p.id, QueryEntity::Requirements)
             .await
-            .is_err()
+            .unwrap()
+            .attributes
+            .len(),
+        8
     );
 }
 

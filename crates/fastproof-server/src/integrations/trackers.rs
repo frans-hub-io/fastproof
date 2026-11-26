@@ -1029,6 +1029,174 @@ impl<'a> Client<'a> {
         Ok(out)
     }
 
+    /// Reads the issues a query finds in this tracker's project, for the requirement import:
+    /// JQL (Jira), a label (GitLab, GitHub) or WIQL (Azure DevOps), at most `max` issues in
+    /// pages of 100. Issues of other projects (a JQL or WIQL may reach them) are left out and
+    /// counted in the second part. Each issue comes with its description as plain text or
+    /// Markdown.
+    pub async fn search(
+        &self,
+        query: &str,
+        max: usize,
+    ) -> Result<(Vec<(IssueState, String)>, usize), TrackerError> {
+        const PAGE: usize = 100;
+        let mut out: Vec<(IssueState, String)> = Vec::new();
+        let mut other = 0usize;
+        let pages = max.div_ceil(PAGE) + 1;
+        match self.tracker.tracker.as_str() {
+            "jira" => {
+                let server = self.api.jira_server();
+                let url = if server {
+                    self.jira("/search")
+                } else {
+                    self.jira("/search/jql")
+                };
+                let mut token: Option<String> = None;
+                for page in 0..pages {
+                    let mut body = json!({"jql": query, "maxResults": PAGE,
+                        "fields": ["summary", "status", "resolution", "project", "updated", "description"]});
+                    if server {
+                        body["startAt"] = json!(page * PAGE);
+                    } else if let Some(t) = &token {
+                        body["nextPageToken"] = json!(t);
+                    }
+                    let r = self
+                        .call(Method::POST, &url, Payload::Json(body), None)
+                        .await?;
+                    let v = Self::json(&r)?;
+                    let issues = v
+                        .get("issues")
+                        .and_then(Value::as_array)
+                        .cloned()
+                        .unwrap_or_default();
+                    for i in &issues {
+                        if out.len() >= max {
+                            break;
+                        }
+                        match self.jira_state(i) {
+                            Ok(s) => {
+                                let d = i.pointer("/fields/description");
+                                let text = match d {
+                                    Some(Value::String(t)) => t.clone(),
+                                    Some(adf @ Value::Object(_)) => adf_text(adf),
+                                    _ => String::new(),
+                                };
+                                out.push((s, text));
+                            }
+                            Err(_) => other += 1,
+                        }
+                    }
+                    token = v
+                        .get("nextPageToken")
+                        .and_then(Value::as_str)
+                        .map(str::to_string);
+                    let last = if server {
+                        issues.len() < PAGE
+                    } else {
+                        token.is_none() || v.get("isLast").and_then(Value::as_bool) == Some(true)
+                    };
+                    if last || out.len() >= max || issues.is_empty() {
+                        break;
+                    }
+                }
+            }
+            "gitlab" | "github" => {
+                let gitlab = self.tracker.tracker == "gitlab";
+                for page in 1..=pages {
+                    let url = if gitlab {
+                        self.gitlab(&format!(
+                            "/issues?scope=all&labels={}&per_page={PAGE}&page={page}",
+                            enc(query)
+                        ))
+                    } else {
+                        self.github(&format!(
+                            "/issues?state=all&labels={}&per_page={PAGE}&page={page}",
+                            enc(query)
+                        ))
+                    };
+                    let r = self.call(Method::GET, &url, Payload::Empty, None).await?;
+                    let v = Self::json(&r)?;
+                    let items = v.as_array().cloned().unwrap_or_default();
+                    for i in &items {
+                        if out.len() >= max {
+                            break;
+                        }
+                        if !gitlab && i.get("pull_request").is_some() {
+                            continue;
+                        }
+                        let state = if gitlab {
+                            self.gitlab_state(i)
+                        } else {
+                            self.github_state(i)
+                        };
+                        match state {
+                            Ok(s) => {
+                                let field = if gitlab { "description" } else { "body" };
+                                let text = i.get(field).and_then(Value::as_str).unwrap_or_default();
+                                out.push((s, text.to_string()));
+                            }
+                            Err(_) => other += 1,
+                        }
+                    }
+                    if items.len() < PAGE || out.len() >= max {
+                        break;
+                    }
+                }
+            }
+            _ => {
+                let url = self.azure(&format!("/wit/wiql?$top={max}"));
+                let r = self
+                    .call(
+                        Method::POST,
+                        &url,
+                        Payload::Json(json!({"query": query})),
+                        None,
+                    )
+                    .await?;
+                let v = Self::json(&r)?;
+                let ids: Vec<u64> = v
+                    .get("workItems")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|w| w.get("id").and_then(Value::as_u64))
+                    .take(max)
+                    .collect();
+                for chunk in ids.chunks(200) {
+                    let body = json!({"ids": chunk, "errorPolicy": "Omit",
+                        "fields": ["System.State", "System.Title", "System.TeamProject", "System.Description"]});
+                    let r = self
+                        .call(
+                            Method::POST,
+                            &self.azure("/wit/workitemsbatch"),
+                            Payload::Json(body),
+                            None,
+                        )
+                        .await?;
+                    let v = Self::json(&r)?;
+                    for i in v
+                        .get("value")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                    {
+                        match self.azure_state(i) {
+                            Ok(s) => {
+                                let html = i
+                                    .pointer("/fields/System.Description")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or_default();
+                                out.push((s, html_text(html)));
+                            }
+                            Err(_) => other += 1,
+                        }
+                    }
+                }
+            }
+        }
+        Ok((out, other))
+    }
+
     fn github_graphql(&self) -> String {
         let base = self.base();
         match base.strip_suffix("/api/v3") {
@@ -1261,6 +1429,86 @@ impl<'a> Client<'a> {
             key,
         })
     }
+}
+
+/// The text of an Atlassian document (Jira Cloud descriptions): text nodes, a blank line after
+/// blocks, a line break for `hardBreak`.
+pub fn adf_text(v: &Value) -> String {
+    fn walk(v: &Value, out: &mut String, depth: usize) {
+        if depth > 64 || out.len() > 1 << 20 {
+            return;
+        }
+        let kind = v.get("type").and_then(Value::as_str).unwrap_or_default();
+        if kind == "text" {
+            out.push_str(v.get("text").and_then(Value::as_str).unwrap_or_default());
+            return;
+        }
+        if kind == "hardBreak" {
+            out.push('\n');
+            return;
+        }
+        if kind == "listItem" {
+            out.push_str("- ");
+        }
+        for c in v
+            .get("content")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            walk(c, out, depth + 1);
+        }
+        if matches!(
+            kind,
+            "paragraph" | "heading" | "codeBlock" | "blockquote" | "rule" | "panel"
+        ) {
+            out.push_str("\n\n");
+        } else if kind == "listItem" && !out.ends_with('\n') {
+            out.push('\n');
+        }
+    }
+    let mut out = String::new();
+    walk(v, &mut out, 0);
+    out.trim().to_string()
+}
+
+/// The text of HTML (Azure DevOps descriptions): tags dropped, block ends as line breaks, the
+/// common entities decoded.
+pub fn html_text(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+    while let Some(i) = rest.find('<') {
+        out.push_str(&rest[..i]);
+        let Some(j) = rest[i..].find('>') else {
+            rest = "";
+            break;
+        };
+        let tag = rest[i + 1..i + j]
+            .trim_start_matches('/')
+            .to_ascii_lowercase();
+        let name = tag
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .next()
+            .unwrap_or_default();
+        if matches!(
+            name,
+            "br" | "p" | "div" | "li" | "tr" | "h1" | "h2" | "h3" | "h4"
+        ) {
+            out.push('\n');
+        }
+        rest = &rest[i + j + 1..];
+    }
+    out.push_str(rest);
+    let out = out
+        .replace("&nbsp;", " ")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&amp;", "&");
+    let mut lines: Vec<&str> = out.lines().map(str::trim_end).collect();
+    lines.dedup_by(|a, b| a.is_empty() && b.is_empty());
+    lines.join("\n").trim().to_string()
 }
 
 /// A `multipart/form-data` body with one `file` part.

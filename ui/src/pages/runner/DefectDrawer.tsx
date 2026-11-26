@@ -7,11 +7,35 @@ import { useDefectTypes, useSettings } from '../../api/stageC';
 import { fetchNewIssue, useRunItemDefect, type RunItem } from '../../api/tm';
 import { GROUP_LABEL } from '../../lib/defects';
 import { DEFECT_GROUPS } from '../../api/types-next';
+import type { RunIteration } from '../../api/parameters';
 import { caseLabel } from '../../lib/tm/filters';
+import { newBudget, substitute, valuesLabel } from '../../lib/tm/parameters';
 import { flattenSteps } from '../../lib/tm/steps';
 import type { LocalStep } from './types';
 
-function failingText(item: RunItem, local: ReadonlyMap<string, LocalStep>): string {
+const LISTED_ITERATIONS = 10;
+
+/** The iteration, its values and the first failed or blocked step with the values put in. */
+function iterationText(item: RunItem, it: RunIteration): string {
+  const budget = newBudget(32 * 1024);
+  const head = `Iteration #${String(it.position)}: ${valuesLabel(item.parameterColumns, it.values)} (${it.status})`;
+  const flat = flattenSteps(item.steps);
+  const bad = it.stepResults.find((r) => r.status === 'failed' || r.status === 'blocked');
+  const step = bad ? flat.find((f) => f.path === bad.path) : undefined;
+  if (!bad || !step) return head;
+  return [head, `Step ${bad.path} ${bad.status}: ${substitute(step.step.action, it.values, budget)}`, step.step.expected ? `Expected: ${substitute(step.step.expected, it.values, budget)}` : '', bad.actual ? `Actual: ${bad.actual}` : ''].filter(Boolean).join('\n');
+}
+
+function itemIterationsText(item: RunItem): string {
+  const bad = item.iterations.filter((i) => i.status === 'failed' || i.status === 'blocked');
+  const listed = bad.slice(0, LISTED_ITERATIONS).map((i) => iterationText(item, i));
+  if (bad.length > LISTED_ITERATIONS) listed.push(`… and ${String(bad.length - LISTED_ITERATIONS)} more`);
+  return [`${String(bad.length)} of ${String(item.iterationCount)} iterations not passed`, ...listed].join('\n\n');
+}
+
+function failingText(item: RunItem, local: ReadonlyMap<string, LocalStep>, iteration?: RunIteration): string {
+  if (iteration) return iterationText(item, iteration);
+  if (item.iterationCount > 0) return itemIterationsText(item);
   const flat = flattenSteps(item.steps);
   const bad = flat.find((f) => {
     const s = local.get(f.path)?.status;
@@ -22,12 +46,17 @@ function failingText(item: RunItem, local: ReadonlyMap<string, LocalStep>): stri
   return [`Step ${bad.path} ${r?.status ?? ''}: ${bad.step.action}`, bad.step.expected ? `Expected: ${bad.step.expected}` : '', r?.actual ? `Actual: ${r.actual}` : ''].filter(Boolean).join('\n');
 }
 
-export function DefectDrawer({ project, item, local, opened, onClose, beforeIssue, final = true, finishFailed }: { project: string; item: RunItem; local: ReadonlyMap<string, LocalStep>; opened: boolean; onClose: () => void; beforeIssue?: () => Promise<void>; final?: boolean; finishFailed?: () => Promise<void> }) {
+/**
+ * Creates or links a defect of a run item. For a parameterized item it is about one iteration (`iteration`: its values
+ * and failing step are in the text, and the defect goes to that iteration's result) or, without it, about every failed
+ * or blocked iteration of the item.
+ */
+export function DefectDrawer({ project, item, local, opened, onClose, beforeIssue, final = true, finishFailed, iteration }: { project: string; item: RunItem; local: ReadonlyMap<string, LocalStep>; iteration?: RunIteration; opened: boolean; onClose: () => void; beforeIssue?: () => Promise<void>; final?: boolean; finishFailed?: () => Promise<void> }) {
   const types = useDefectTypes(project);
   const settings = useSettings(project);
   const defect = useRunItemDefect(project, item.id);
   const [typeId, setTypeId] = useState<string | null>(null);
-  const [comment, setComment] = useState(() => failingText(item, local));
+  const [comment, setComment] = useState(() => failingText(item, local, iteration));
   const [issue, setIssue] = useState('');
   const [opening, setOpening] = useState(false);
   const [prefill, setPrefill] = useState<{ url: string; text: string } | null>(null);
@@ -43,7 +72,7 @@ export function DefectDrawer({ project, item, local, opened, onClose, beforeIssu
     setOpening(true);
     try {
       await beforeIssue?.();
-      const r = await fetchNewIssue(project, item.id, tracker?.type);
+      const r = await fetchNewIssue(project, item.id, tracker?.type, iteration?.rowId);
       const url = /^https?:\/\//i.test(r.url) ? r.url : '';
       if (!r.prefilled && r.prefill) setPrefill({ url, text: `${r.prefill.title}\n\n${r.prefill.description}` });
       else if (url) window.open(url, '_blank', 'noopener,noreferrer');
@@ -68,7 +97,7 @@ export function DefectDrawer({ project, item, local, opened, onClose, beforeIssu
   };
   const send = () =>
     defect.mutate(
-      { ...(typeId ? { defectTypeId: typeId } : {}), ...(comment.trim() ? { comment: comment.trim() } : {}), ...(issueText ? { issue: isUrl ? { url: issueText } : { url: tracker ? tracker.urlTemplate.replace('{key}', encodeURIComponent(issueText)) : issueText, key: issueText } } : {}) },
+      { ...(iteration ? { rowId: iteration.rowId } : {}), ...(typeId ? { defectTypeId: typeId } : {}), ...(comment.trim() ? { comment: comment.trim() } : {}), ...(issueText ? { issue: isUrl ? { url: issueText } : { url: tracker ? tracker.urlTemplate.replace('{key}', encodeURIComponent(issueText)) : issueText, key: issueText } } : {}) },
       {
         onSuccess: () => {
           notifications.show({ color: 'green', title: 'Defect saved', message: caseLabel(item.caseNumber) });
@@ -79,7 +108,7 @@ export function DefectDrawer({ project, item, local, opened, onClose, beforeIssu
     );
 
   return (
-    <Drawer opened={opened} onClose={onClose} position="right" size="md" title={`Defect for ${caseLabel(item.caseNumber)}`} attributes={{ content: { 'data-testid': 'defect-drawer' } }}>
+    <Drawer opened={opened} onClose={onClose} closeButtonProps={{ 'aria-label': 'Close' }} position="right" size="md" title={iteration ? `Defect for ${caseLabel(item.caseNumber)}, iteration #${String(iteration.position)}` : item.iterationCount > 0 ? `Defect for ${caseLabel(item.caseNumber)}, failed iterations` : `Defect for ${caseLabel(item.caseNumber)}`} attributes={{ content: { 'data-testid': 'defect-drawer' } }}>
       <Stack gap="sm">
         <Select label="Defect type" data={grouped} value={typeId} onChange={setTypeId} searchable clearable comboboxProps={{ withinPortal: true }} data-testid="defect-type" />
         <Textarea label="Comment" value={comment} onChange={(e) => setComment(e.currentTarget.value)} autosize minRows={4} maxLength={4000} data-autofocus data-testid="defect-comment" />
@@ -108,6 +137,11 @@ export function DefectDrawer({ project, item, local, opened, onClose, beforeIssu
               </Group>
             </Stack>
           </Card>
+        )}
+        {item.iterationCount > 0 && (
+          <Text size="xs" c="dimmed" data-testid="defect-scope">
+            {iteration ? `The defect is set on iteration #${String(iteration.position)} (${valuesLabel(item.parameterColumns, iteration.values)}) only.` : 'The defect is set on every failed or blocked iteration of this case.'}
+          </Text>
         )}
         {!final && (
           <Text size="xs" c="dimmed" data-testid="defect-finish-note">

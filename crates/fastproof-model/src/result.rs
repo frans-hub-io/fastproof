@@ -46,6 +46,7 @@ impl SourceFormat {
 /// How a parameter value may be shown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(as = ParameterDisplayMode))]
 #[serde(rename_all = "lowercase")]
 pub enum ParameterMode {
     #[default]

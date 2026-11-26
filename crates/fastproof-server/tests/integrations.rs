@@ -1524,6 +1524,13 @@ async fn mcp_tools_over_http() {
         "validate_query",
     ];
     want.extend([
+        "list_requirements",
+        "requirement_coverage",
+        "propose_parameters",
+        "propose_requirement_links",
+        "draft_requirements_from_text",
+    ]);
+    want.extend([
         "launch_suggestions",
         "accept_suggestion",
         "reject_suggestion",
@@ -1533,6 +1540,8 @@ async fn mcp_tools_over_http() {
         "triage_history",
         "undo_triage",
         "simulate_gate",
+        "flaky_hints",
+        "failure_analytics",
     ]);
     want.sort_unstable();
     assert_eq!(names, want);

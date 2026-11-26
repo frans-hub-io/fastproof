@@ -42,6 +42,58 @@ This page lists what needs attention per release.
   analysed once after the upgrade. In the Helm chart, `analysis.enabled: true` turns it on; with
   `roles.split: true` the role runs as its own Deployment.
 
+## Next release: shared steps, parameters, requirements and review
+
+Everything in the section below ("test management gate and review") applies too. What else changes:
+
+- **Migrations `0900` to `0911`.** New tables for shared steps (with versions, usages and external keys), review
+  votes, parameterized run items (`run_iterations`, `run_iteration_step_results`), requirements and their links,
+  saved queries, plan dispatches and `replica_levels`; new columns of `cases` (workflow state, approved version,
+  review state, last result), `projects`, `test_plans`, `run_items` and `run_item_executions`. The three indexes
+  on `cases` (review queue, last status, state) are built concurrently, each in its own migration (`0902`,
+  `0904`, `0905`); on a project of 200 000 cases they take seconds to a minute and do not block writes. Migration
+  `0910` replaces the check constraint on the kinds of `tm_jobs` in a short transaction (`lock_timeout` 5 s) and
+  `0911` creates the table the replica gate reads. All of them are additive: the previous version keeps serving
+  while they run.
+- **Background jobs of new kinds.** Backfills and imports of this release are `tm_jobs` of new kinds
+  (`last_status`, `shared_inline`, `workflow_remap`, `requirements`, `coverage_export`), so a replica of the
+  previous version never claims one and runs it wrongly. The `last_status` job per project starts when the gate
+  first opens and may take minutes for a project of hundreds of thousands of cases; case lists, the query
+  language attribute `lastStatus` and the default scope of the coverage page read the filled columns, so cases
+  that did not run since the upgrade show no last result until it is done.
+- **Gated writes.** While a replica of the previous version runs (or less than `FASTPROOF_TM_GATE_SETTLE_SECONDS`
+  have passed since migration `0911`), these answer `409 upgrade_in_progress`: a case or shared step with a
+  `shared` step, case parameters, settings `caseSync.requirementLinkTypes` other than the default,
+  `rerun.variables`, `rerun.refs`, a `caseReviewRequested` notification, a dashboard with a
+  `requirement-coverage` widget, an NDJSON v2 import and a case export job with a query. Plain cases, runs and
+  uploads are not held back.
+- **Do not roll back after the gate opens.** Once data in the new formats exists (shared steps in cases, parameters,
+  requirement links in dashboards, the new settings), a replica of the previous version fails to read it: a case
+  with a `shared` step or `parameters` answers `500`, and an integration document with a new notification event
+  stops loading. Roll back only before the gate has opened, or restore the database backup.
+- **Parameterized cases run as iterations.** A case with parameters becomes one run item with one iteration per
+  enabled row; a launch is refused with `409 limit_reached` (`maxRunIterations`, default 50 000) before anything
+  is written when its iterations would pass the limit. Each iteration projects one result on the same series an
+  automated test with those `@Parameter`s has, so history and flaky detection treat both alike.
+- **Requirements.** `REQ-n` requirements, links (manual, from code, AI proposals) and the coverage page need no
+  switch. Links from code appear with the next trusted launch whose tests carry a label of a type listed in
+  `caseSync.requirementLinkTypes`. The default coverage scope counts the last result of each case, debug
+  and untrusted launches included; use a plan or a window scope for sign-off.
+- **New MCP tools.** `list_requirements`, `requirement_coverage`, `propose_parameters`,
+  `propose_requirement_links` and `draft_requirements_from_text`; `propose_case_update` accepts `parameters`
+  (and no longer drops the parameters of a case when a proposal changes its steps). See
+  [MCP and GitHub Copilot](../guide/mcp-copilot.md#requirements-parameters-and-agents). Agents keep making
+  proposals and drafts only: they cannot confirm links, vote, transition, start CI or write iterations.
+- **New limits.** `FASTPROOF_TM_MAX_SHARED_STEPS`, `_MAX_SHARED_REFS`, `_MAX_SHARED_STEP_STEPS`,
+  `_MAX_SHARED_STEP_BYTES`, `_MAX_PARAMETER_COLUMNS`, `_MAX_PARAMETER_ROWS`, `_MAX_PARAMETER_VALUE_BYTES`,
+  `_MAX_RUN_ITERATIONS`, `_MAX_REQUIREMENTS`, `_MAX_REQUIREMENT_DEPTH`, `_MAX_REQUIREMENT_CASES`,
+  `_MAX_SAVED_QUERIES`, `_MAX_BULK_REVIEW`, and the fixed caps for AI proposals: see
+  [Limits](limits.md#test-management). Defaults suit installations of the size `fastproof bench tm` measures
+  (20 000 cases); raise them for larger ones and measure with `bench tm` first
+  ([Scaling](scaling.md#test-management)).
+- **Case import and export.** Exports of cases in NDJSON now carry shared steps, parameters and requirements
+  (format v2); v1 files still import. The CSV export expands shared steps and parameters into text.
+
 ## Next release: test management gate and review
 
 - **New permission `cases:review`.** The `editor` role gains it. It allows approving test cases and shared steps

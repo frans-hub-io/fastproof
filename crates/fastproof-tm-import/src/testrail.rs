@@ -7,14 +7,16 @@
 //! description; `Priority`, `Type`, `References`, `Estimate` and custom columns become fields.
 //! HTML (WYSIWYG editor, TestRail 9.7+) becomes Markdown.
 
+use std::collections::HashSet;
 use std::io::BufRead;
 
 use crate::csv::{Table, cell};
 use crate::generic::Target;
 use crate::steps::{numbered, rich_items, tree};
 use crate::{
-    ImportError, ImportedCase, ImportedKey, ImportedStep, ImportedValue, ParseOptions, StepsLayout,
-    Visit, emit, emit_error, folder_path, norm_header, rich,
+    ImportError, ImportedCase, ImportedKey, ImportedRequirementRef, ImportedSharedStep,
+    ImportedStep, ImportedValue, ParseOptions, StepsLayout, Visit, emit, emit_error, emit_shared,
+    folder_path, norm_header, rich, split_list,
 };
 
 const SYSTEM: &[&str] = &[
@@ -70,6 +72,7 @@ struct Cols {
     step_expected: Option<usize>,
     step_data: Option<usize>,
     shared: Option<usize>,
+    references: Option<usize>,
     mission: Option<usize>,
     goals: Option<usize>,
     fields: Vec<(usize, String)>,
@@ -80,6 +83,7 @@ struct RawStep {
     action: String,
     expected: String,
     data: String,
+    shared: String,
 }
 
 struct Pending {
@@ -88,13 +92,54 @@ struct Pending {
     rows: Vec<RawStep>,
 }
 
+fn shared_key(id: &str) -> ImportedKey {
+    ImportedKey {
+        kind: "testrail".into(),
+        value: id.to_string(),
+    }
+}
+
+/// Marks the steps `[from..]` as coming from shared step `id`; the first case with a group
+/// defines the shared step (name `Shared step <id>`, the steps of the group).
+fn mark_shared(
+    steps: &mut [ImportedStep],
+    id: &str,
+    seen: &mut HashSet<String>,
+    opts: &ParseOptions,
+    defs: &mut Vec<ImportedSharedStep>,
+    row: u64,
+) {
+    if seen.contains(id) {
+        for s in steps.iter_mut() {
+            s.shared = Some(shared_key(id));
+        }
+        return;
+    }
+    if seen.len() >= opts.limits.max_shared_steps {
+        return;
+    }
+    seen.insert(id.to_string());
+    defs.push(ImportedSharedStep {
+        row,
+        keys: vec![shared_key(id)],
+        name: format!("Shared step {id}"),
+        steps: steps.to_vec(),
+        ..Default::default()
+    });
+    for s in steps.iter_mut() {
+        s.shared = Some(shared_key(id));
+    }
+}
+
 fn finish(
     p: Pending,
     layout: Option<StepsLayout>,
     opts: &ParseOptions,
+    seen: &mut HashSet<String>,
     visit: &mut Visit<'_>,
 ) -> Result<(), ImportError> {
     let mut c = p.case;
+    let mut defs: Vec<ImportedSharedStep> = Vec::new();
     let split = match layout {
         Some(StepsLayout::Rows) => false,
         Some(StepsLayout::Cells) => true,
@@ -105,9 +150,32 @@ fn finish(
         let a = rich_items(numbered(&r.action, false));
         let e = rich_items(numbered(&r.expected, false));
         let d = rich_items(numbered(&r.data, false));
+        let from = c.steps.len();
         c.steps.extend(tree(&a, &e, &d));
+        if !r.shared.is_empty() {
+            mark_shared(
+                &mut c.steps[from..],
+                &r.shared,
+                seen,
+                opts,
+                &mut defs,
+                c.row,
+            );
+        }
     } else {
+        let mut group: Option<(String, usize)> = None;
+        let mut close = |c: &mut ImportedCase, group: &mut Option<(String, usize)>| {
+            if let Some((id, from)) = group.take() {
+                mark_shared(&mut c.steps[from..], &id, seen, opts, &mut defs, c.row);
+            }
+        };
         for r in p.rows {
+            if group.as_ref().is_some_and(|(id, _)| *id != r.shared) {
+                close(&mut c, &mut group);
+            }
+            if group.is_none() && !r.shared.is_empty() {
+                group = Some((r.shared.clone(), c.steps.len()));
+            }
             c.steps.push(ImportedStep {
                 action: rich(&r.action),
                 expected: rich(&r.expected),
@@ -115,6 +183,10 @@ fn finish(
                 ..Default::default()
             });
         }
+        close(&mut c, &mut group);
+    }
+    for d in defs {
+        emit_shared(d, &opts.limits, visit)?;
     }
     emit(c, &opts.limits, visit)
 }
@@ -157,6 +229,7 @@ pub fn parse(
         step_expected: t.col_any(&["Steps (Expected Result)", "Steps (Expected)"]),
         step_data: t.col("Steps (Additional Info)"),
         shared: t.col("Steps (Shared step ID)"),
+        references: t.col("References"),
         mission: t.col("Mission"),
         goals: t.col("Goals"),
         fields,
@@ -167,6 +240,7 @@ pub fn parse(
         ));
     }
     let layout = opts.steps_layout;
+    let mut seen_shared: HashSet<String> = HashSet::new();
     let mut cur: Option<Pending> = None;
     while let Some((row, rec)) = t.reader.next_record()? {
         let rec = match rec {
@@ -183,7 +257,7 @@ pub fn parse(
             .is_some_and(|p| (id.is_empty() && title.is_empty()) || (!id.is_empty() && p.id == id));
         if !continues {
             if let Some(p) = cur.take() {
-                finish(p, layout, opts, visit)?;
+                finish(p, layout, opts, &mut seen_shared, visit)?;
             }
             let mut k = ImportedCase {
                 row,
@@ -215,6 +289,14 @@ pub fn parse(
                 let v = cell(&rec, Some(*i)).trim();
                 if !v.is_empty() {
                     k.fields.insert(name.clone(), ImportedValue::Text(rich(v)));
+                }
+            }
+            for key in split_list(cell(&rec, c.references)) {
+                if !k.requirements.iter().any(|r| r.key == key) {
+                    k.requirements.push(ImportedRequirementRef {
+                        key,
+                        ..Default::default()
+                    });
                 }
             }
             let text = cell(&rec, c.steps_text);
@@ -254,6 +336,7 @@ pub fn parse(
             action: cell(&rec, c.step).to_string(),
             expected: cell(&rec, c.step_expected).to_string(),
             data: cell(&rec, c.step_data).to_string(),
+            shared: cell(&rec, c.shared).trim().to_string(),
         };
         if !(raw.action.trim().is_empty()
             && raw.expected.trim().is_empty()
@@ -264,7 +347,7 @@ pub fn parse(
         }
     }
     if let Some(p) = cur.take() {
-        finish(p, layout, opts, visit)?;
+        finish(p, layout, opts, &mut seen_shared, visit)?;
     }
     Ok(())
 }

@@ -96,6 +96,8 @@ pub enum WidgetType {
     Durations,
     DefectTrend,
     LaunchesPerDay,
+    /// Coverage of the top-level requirements (test management, night 2).
+    RequirementCoverage,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -108,6 +110,7 @@ enum Source {
     Attribute,
     Bugs,
     Activity,
+    Requirements,
 }
 
 impl WidgetType {
@@ -130,6 +133,7 @@ impl WidgetType {
             CumulativeTrend => Source::Attribute,
             UniqueBugs => Source::Bugs,
             ActivityStream => Source::Activity,
+            RequirementCoverage => Source::Requirements,
         }
     }
 }
@@ -350,6 +354,17 @@ pub fn uses_analysis_formats(widgets: &[BoardWidget]) -> bool {
     widgets.iter().any(|w| w.settings.patterns.is_some())
 }
 
+/// Whether a dashboard holds a widget of the test-management formats (`requirement-coverage`),
+/// which older replicas cannot read: its writes wait for the test-management gate.
+pub fn uses_tm_formats(widgets: &[BoardWidget]) -> bool {
+    widgets
+        .iter()
+        .any(|w| w.kind == WidgetType::RequirementCoverage)
+}
+
+/// Requirement coverage widgets a dashboard may hold.
+pub const MAX_COVERAGE_WIDGETS: usize = 2;
+
 /// Distinct trend computations a request may run.
 pub const MAX_TREND_KEYS: usize = 4;
 /// Distinct scans of one launch's results a request may run.
@@ -391,6 +406,15 @@ fn check_computations(widgets: &[BoardWidget]) -> Result<(), String> {
             }
             _ => {}
         }
+    }
+    let coverage = widgets
+        .iter()
+        .filter(|w| w.kind == WidgetType::RequirementCoverage)
+        .count();
+    if coverage > MAX_COVERAGE_WIDGETS {
+        return Err(format!(
+            "a dashboard has at most {MAX_COVERAGE_WIDGETS} requirement coverage widgets"
+        ));
     }
     if attrs.len() > MAX_ATTRIBUTE_SCANS {
         return Err(format!(
@@ -825,6 +849,13 @@ pub enum WidgetData {
     LogPatterns {
         items: Vec<super::types::PatternCount>,
     },
+    /// Coverage of the top-level requirements: counts by status and the first `limit`.
+    RequirementCoverage {
+        scope: crate::tm::CoverageScopeView,
+        total: i64,
+        counts: crate::tm::coverage::CoverageStatusCounts,
+        items: Vec<crate::tm::RequirementCoverage>,
+    },
     #[serde(rename_all = "camelCase")]
     Launch {
         launch: Option<LaunchPoint>,
@@ -1190,6 +1221,25 @@ impl Store {
                 })
             }
             Source::Activity => anyhow::bail!("activity streams are read by the API"),
+            Source::Requirements => {
+                let window = s.days.is_some() || branch.is_some() || env.is_some();
+                let scope = crate::tm::coverage::CoverageScope {
+                    days: window
+                        .then_some(days.min(crate::tm::coverage::MAX_WINDOW_DAYS as u32) as i32),
+                    branch,
+                    environment: env,
+                    ..Default::default()
+                };
+                let c = self
+                    .coverage_summary(project_id, &scope, limit as usize)
+                    .await?;
+                Ok(WidgetData::RequirementCoverage {
+                    scope: c.scope,
+                    total: c.total,
+                    counts: c.counts,
+                    items: c.items,
+                })
+            }
             Source::Attribute => {
                 let attribute = s.attribute.clone().filter(|a| !a.is_empty());
                 let Some(attribute) = attribute else {

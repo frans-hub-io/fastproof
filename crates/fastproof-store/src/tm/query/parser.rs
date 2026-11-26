@@ -817,7 +817,22 @@ mod tests {
     }
 
     #[test]
-    fn requirement_entity_has_no_attributes_yet() {
-        assert!(parse_query(QueryEntity::Requirements, "title ~ \"abc\"").is_err());
+    fn requirement_entity_has_its_own_attributes() {
+        assert!(
+            parse_query(
+                QueryEntity::Requirements,
+                "title ~ \"abc\" and coverage = notrun"
+            )
+            .is_ok()
+        );
+        assert!(
+            parse_query(
+                QueryEntity::Requirements,
+                "parent = REQ-3 or issue is empty"
+            )
+            .is_ok()
+        );
+        assert!(parse_query(QueryEntity::Requirements, "automated = true").is_err());
+        assert!(parse_query(QueryEntity::Cases, "coverage = failed").is_err());
     }
 }

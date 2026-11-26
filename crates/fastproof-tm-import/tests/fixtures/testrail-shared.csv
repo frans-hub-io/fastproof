@@ -1,0 +1,8 @@
+ID,Title,Section Hierarchy,References,Steps (Step),Steps (Expected Result),Steps (Shared step ID)
+C1,Buy,Shop,"SHOP-1, SHOP-2",Open the shop,Shop opens,
+,,,,Log in as a user,Logged in,5
+,,,,Enter the password,Accepted,5
+,,,,Pay,Paid,
+C2,Refund,Shop,SHOP-1,Log in as a user,Logged in (second case),5
+,,,,Enter the password,Accepted,5
+,,,,Refund,Refunded,

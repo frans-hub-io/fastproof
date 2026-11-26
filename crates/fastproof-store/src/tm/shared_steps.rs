@@ -1685,7 +1685,8 @@ impl Store {
             ));
         }
         let started: bool = sqlx::query_scalar(
-            "select exists (select 1 from run_step_results where run_item_id = $1 and execution_no = $2)",
+            "select exists (select 1 from run_step_results where run_item_id = $1 and execution_no = $2) \
+               or exists (select 1 from run_iteration_step_results where run_item_id = $1 and execution_no = $2)",
         )
         .bind(item_id)
         .bind(execution_no)

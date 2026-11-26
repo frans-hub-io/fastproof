@@ -386,12 +386,22 @@ impl Store {
             }
             Err(e) => return Err(e),
         }
-        let mut qb: QueryBuilder<Postgres> =
-            QueryBuilder::new("select count(*) from (select 1 from cases c where c.project_id = ");
-        qb.push_bind(project_id);
-        if !q.mentions("archived") {
-            qb.push(" and c.archived_at is null");
-        }
+        let mut qb: QueryBuilder<Postgres> = if entity == QueryEntity::Requirements {
+            let mut qb = QueryBuilder::new(
+                "select count(*) from (select 1 from requirements r where r.project_id = ",
+            );
+            qb.push_bind(project_id).push(" and r.archived_at is null");
+            qb
+        } else {
+            let mut qb = QueryBuilder::new(
+                "select count(*) from (select 1 from cases c where c.project_id = ",
+            );
+            qb.push_bind(project_id);
+            if !q.mentions("archived") {
+                qb.push(" and c.archived_at is null");
+            }
+            qb
+        };
         compile::push_query(&mut qb, project_id, &q);
         qb.push(" limit ")
             .push_bind(QUERY_COUNT_CAP + 1)

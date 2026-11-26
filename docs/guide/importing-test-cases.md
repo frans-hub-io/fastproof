@@ -49,11 +49,51 @@ Other options:
 | `status` | Optional, `draft` or `active`: every case the import creates gets it. Absent: each created case gets the status its source maps (TestOps, Qase and NDJSON statuses), else `active`. Updated cases keep the source's status, or their own. In the UI: **Status of new cases** |
 
 Formatting from the sources is converted to Markdown: bold, italic, code, code blocks, lists, links, images,
-tables, line breaks and paragraphs; any other HTML becomes plain text. Shared steps of a source are copied into
-each case as ordinary steps with the tag `imported-shared-step`. Parameters of a source are added to the
-description as text.
+tables, line breaks and paragraphs; any other HTML becomes plain text.
+
+Shared steps, parameters and requirement links of a source become the matching FastProof objects (see
+[Shared steps, parameters and requirements](#shared-steps-parameters-and-requirements)): a shared step of the
+source becomes a [shared step](shared-steps.md) that the cases reference, the parameter rows of a case become
+its [parameters](parameters.md), and issue references become links to [requirements](requirements.md) that
+exist. When a source step cannot be matched to a shared step, it is copied into the case as an ordinary step
+with the tag `imported-shared-step`, as before.
 
 One project runs one import at a time (`409 import_busy` otherwise), and an installation at most four.
+
+### Shared steps, parameters and requirements
+
+| Source | Shared steps | Parameters | Requirements |
+|---|---|---|---|
+| TestRail CSV | `Steps (Shared step ID)`: consecutive step rows with the same id become one shared step (key `testrail: <id>`, content from the first case that has them); the cases reference it | not in the export | `References` (`PROJ-1, PROJ-2`): a link to the requirement with that issue key, when one exists |
+| Qase JSON and CSV | `shared_step_hash`: one shared step per hash (key `qase: <hash>`, content from `shared_step_nested_steps`, else from the steps that carry the hash) | `params`: `single` values and `group` rows, every combination becomes a row; `{{name}}` in step texts becomes `${name}` | not in the export |
+| Allure TestOps API | scenario steps with a `sharedStepId`: the shared step is read once from `sharedstep/{id}` (key `testops: <id>`) | test case parameters: every combination of the values becomes a row | issue links: a link to the requirement with that issue key, when one exists |
+| FastProof NDJSON v2 | `sharedStep` records | in the case record | `requirement` records and the links of each case |
+
+- A shared step is found again by its key (`shared_step_keys`), so a repeated import reuses it instead of
+  creating another. With `mode: upsert` its content is updated when the file's differs (a new version of the
+  shared step); with `createOnly` it is left as it is. A shared step with that key that is archived, or an AI
+  draft nobody reviewed yet, is not used: the import warns (`shared_step_archived`, `ai_unreviewed`) and the
+  cases keep those steps inline.
+- A repeated `upsert` replaces steps that an earlier import copied inline (the cases with the tag
+  `imported-shared-step`) with references, once a shared step with that key exists; the tag goes away when
+  every such step became a reference.
+- Parameter names from Qase and TestOps are made safe for `${name}` placeholders: letters, digits and `_`, at
+  most 64 bytes, `_` in place of anything else (always a valid [column name](parameters.md)). A case whose
+  parameters exceed the limits (columns, rows, value size, also counting every combination before the rows are
+  made) is a row error `limit_reached`. Parameters are checked as in the editor: a `${name}` in a step that names
+  no column makes the case a row error `invalid_case`. Of two enabled rows with the same values (a value listed
+  twice in the source), the later one is imported switched off. Row ids that are missing or invalid get new ones.
+- Requirement keys follow the rules of the requirements API: `trackerId` 1 to 32 letters, digits, `_` or `-`
+  (and only with an `issueKey`), `issueKey` 1 to 64 bytes without spaces. Other records are row errors.
+- Issue keys that match no requirement are ignored: an issue link is not a requirement unless one with that
+  `issueKey` exists in the project. Import the requirements first (an NDJSON v2 file, or from a tracker).
+- The dry run checks every shared step and requirement record and reports bad ones as row errors (`row` is
+  the line of the record), and counts a case as an update when its inline steps would become references.
+  Shared steps and requirements the import creates are not counted in the report; the case counts are.
+- Writing shared steps, requirements and links is a new format: while a rolling upgrade has replicas of an
+  older version, an NDJSON v2 import that carries such records stops with `upgrade_in_progress` (see
+  [upgrading](../operations/upgrading.md)); a file of cases alone, without shared steps, parameters or
+  links, imports as before.
 
 ### Unknown columns and custom fields
 
@@ -169,6 +209,11 @@ Each file is at most `FASTPROOF_TM_MAX_ATTACHMENT_BYTES` (50 MiB); HTML and SVG 
 | One cell | 64 KiB |
 | Columns | 500 |
 | JSON nesting | 64 levels |
+| JSON values of one NDJSON line | 250 000 (a larger line is a row error `invalid_row`) |
+| `sharedStep` records of a file | `FASTPROOF_TM_MAX_SHARED_STEPS` (5000), each at most `FASTPROOF_TM_MAX_SHARED_STEP_STEPS` steps (100) over two levels |
+| `requirement` records of a file | `FASTPROOF_TM_MAX_REQUIREMENTS` (50 000), at most `FASTPROOF_TM_MAX_REQUIREMENT_DEPTH` levels (6) |
+| Parameters of a case | `FASTPROOF_TM_MAX_PARAMETER_COLUMNS` (20), `FASTPROOF_TM_MAX_PARAMETER_ROWS` (1000), `FASTPROOF_TM_MAX_PARAMETER_VALUE_BYTES` (1024) |
+| Requirement links | 100 requirements per case in a file; `FASTPROOF_TM_MAX_REQUIREMENT_CASES` (500) cases per requirement (links over it are left out with a warning) |
 
 CSV files may be UTF-8 or UTF-16 with a byte order mark. Formulas in cells are read as text, never evaluated.
 See [Limits](../operations/limits.md#test-management) for the settings.
@@ -191,9 +236,10 @@ WYSIWYG editor is converted to Markdown.
 | `Steps (Step)`, `Steps (Expected Result)`, `Steps (Additional Info)` | steps: action, expected result, data |
 | `Steps` and `Expected Result` (template "Test Case (Text)") | one step |
 | `Mission`, `Goals` (template "Exploratory Session") | the description |
-| `Steps (Shared step ID)` | the tag `imported-shared-step` |
+| `Steps (Shared step ID)` | a [shared step](#shared-steps-parameters-and-requirements) with that id; the first case that has it gives its content |
+| `References` | a field `references` (as below) and links to the requirements with those issue keys |
 | `Priority` | the built-in field `priority` |
-| `Type`, `References`, `Estimate`, `Milestone`, `Automation Type` | fields `type`, `references`, `estimate`, `milestone`, `automation_type`; they are not built in, so they are kept when the fields exist or when `unknownFieldValues: create` creates them (see [Unknown columns](#unknown-columns-and-custom-fields)) |
+| `Type`, `Estimate`, `Milestone`, `Automation Type` | fields `type`, `estimate`, `milestone`, `automation_type`; they are not built in, so they are kept when the fields exist or when `unknownFieldValues: create` creates them (see [Unknown columns](#unknown-columns-and-custom-fields)) |
 | any other column | a field of that name (matched to a case field by key or name), created the same way |
 
 Not imported: `Section Depth`, `Section Description`, `Suite`, `Suite ID`, `Template`, `Created/Updated By/On`,
@@ -221,7 +267,8 @@ folders; the case id (`PROJ-45`) becomes the key. Qase statuses map to case stat
 | `id` (V1) or `v2.id` (V2) | key `qase` |
 | `title` | name |
 | `description`, `preconditions` | description, preconditions |
-| `postconditions`, `parameters` | sections added to the description |
+| `postconditions` | a section added to the description |
+| `parameters` | the parameter rows when the cell is the JSON of `params` (see [below](#shared-steps-parameters-and-requirements)), else a section added to the description |
 | `steps_actions`, `steps_result` (or `steps_results`), `steps_data` | steps: numbered lists (V2: each step in double quotes); sub-steps indented with a tab |
 | `priority`, `severity`, `type`, `behavior`, `automation`, `layer`, `is_flaky`, `milestone` | fields of these names (`undefined` and `not set` are no value) |
 | `status` | `draft`, `actual` → `active`, `deprecated` → `outdated` |
@@ -235,8 +282,9 @@ Suites are rows with `suite_without_cases = 1`, a `suite_id`, a `suite_parent_id
 Qase JSON is read in the shape of the Qase API v1: `{"suites": [{"title", "cases", "suites"}]}`,
 `{"result": {"entities": [...]}}`, `{"cases": [...]}` or an array of cases, each with `id`, `title`,
 `description`, `preconditions`, `postconditions`, `severity`, `priority`, `type`, `layer`, `status` (a slug or
-0/1/2), `tags`, `custom_fields` (`{title|name, value}`), `steps` (`{action, expected_result, data, attachments,
-steps, shared_step_hash}`) and `attachments`. A root `code` (or `project_code`) makes keys `CODE-45`.
+0/1/2), `tags`, `custom_fields` (`{title|name, value}`), `params` (`{"single": {name: [values]}, "group":
+[rows]}` or `{name: [values]}`), `steps` (`{action, expected_result, data, attachments, steps, shared_step_hash,
+shared_step_nested_steps}`) and `attachments`. A root `code` (or `project_code`) makes keys `CODE-45`.
 The file is read as a stream, one case at a time, so its size does not decide the memory an import needs; one
 case may hold at most 8 MiB of JSON (larger ones become a `limit_reached` row error). For that, a root `code`
 must come before the cases it applies to and a flat suite list (`suites_flat`, `suiteList`) before every case,
@@ -247,7 +295,8 @@ longer than the name limit are cut while reading (such cases are then reported a
 name), and a suite path follows parents at most one level past the folder depth limit and stops at a cycle.
 A JSON string counts toward the cell limit with its decoded length (`\u` escapes as 3 bytes).
 
-Not confirmed on real exports: the V2 step encoding beyond the quotes and tabs, the column with a suite's title,
+Not confirmed on real exports: how `shared_step_hash` and `shared_step_nested_steps` appear, the shape of `params`
+(a shape that is not read stays in the description as JSON), the V2 step encoding beyond the quotes and tabs, the column with a suite's title,
 whether case rows name their suite in `suite_id` or `suite_parent_id`, and the JSON export schema (Qase does not
 publish it).
 
@@ -311,10 +360,14 @@ curl -fsS -X POST "$api/imports" -H "$auth" -H 'Content-Type: application/json' 
   (fields of the same name), links and issues, attachments. Workflows are not imported; folders are not read
   from TestOps (its trees are separate objects), so the cases land in the target folder.
 - Paths start with `/api/rs`; when the search answers 404, FastProof uses `/api` (newer versions).
+- Shared steps: a scenario step with a `sharedStepId` makes the case reference a shared step. FastProof reads
+  `sharedstep/{id}` and its `step` (or `scenario`) once per shared step; when TestOps does not have it, the
+  steps stay in the case as they are. Test case parameters (`testcase/{id}/parameter`) become parameter rows
+  and issue links become requirement links, as in the [table above](#shared-steps-parameters-and-requirements).
 
 Not tested against a real TestOps instance yet: the API paths, the search query (`id > 0`), the scenario
-format of each version, and the `/api/rs` and `/api` variants were taken from the official utilities and
-checked only against a test double.
+format of each version, the shared step and parameter endpoints, and the `/api/rs` and `/api` variants were
+taken from the official utilities and the product's documentation and checked only against a test double.
 
 ### Generic CSV
 
@@ -356,25 +409,50 @@ The format of the FastProof [export](#exporting): one JSON object per case with 
 (folders, fields, tags, steps, links, keys). Use it to move cases between projects or servers without losing
 anything.
 
-The first line is a header: `{"format": "fastproof-cases", "version": 1, "project", "exportedAt", "fields":
-[{key, name, type, options, sourceLabel}]}`; then one case per line: `{"keys", "number", "name", "folder":
-[names], "status", "description", "preconditions", "steps": [{id, action, expected, data, attachments, steps}],
-"links", "tags", "fields", "automated", "fullNames", "attachments": [{name, source, oldId}]}`.
+The first line is a header: `{"format": "fastproof-cases", "version": 2, "project", "exportedAt", "fields":
+[{key, name, type, options, sourceLabel}]}`. Every other line is a record with a `type`:
 
-- Into a project **without cases**, cases keep their numbers.
+| `type` | Holds |
+|---|---|
+| `sharedStep` | `number`, `keys`, `name`, `description`, `steps` |
+| `requirement` | `number`, `title`, `description`, `kind` (the requirement type), `status`, `parent` (a number in the file), `trackerId`, `issueKey`, `url`, `externalState` |
+| `case` | `keys`, `number`, `name`, `folder: [names]`, `status`, `description`, `preconditions`, `steps: [{id, action, expected, data, attachments, steps, shared}]`, `links`, `tags`, `fields`, `automated`, `fullNames`, `attachments: [{name, source, oldId}]`, `parameters: {columns, rows: [{id, values, enabled}], generator}`, `requirements: [{key, origin, status}]` |
+
+Shared steps come first, then requirements (parents before children), then cases. A step that references a
+shared step has `shared: {"kind": "number", "value": "<number of the shared step in the file>"}` and no text of
+its own; a requirement link names `REQ-<number in the file>`. A file written by an earlier version (header
+`version: 1`, one case per line without `type`) imports as before.
+
+- Into a project **without cases**, cases keep their numbers; into a project without requirements,
+  requirements keep theirs. Shared steps get the next numbers, in the order of the file.
+- Shared steps are matched by their `keys`, else by number and name; requirements by `trackerId` and
+  `issueKey`, else by number and title. A match is reused (and, with `upsert`, updated), so a file can be
+  imported into the project it came from without doubling its shared steps and requirements. Cases are
+  matched by their keys as before.
+- A requirement whose parent is not in the file becomes a root and is reported as a warning
+  (`parent_not_found`); a requirement over the depth or count limit is a row error. A record whose `trackerId`
+  and `issueKey` match an archived requirement is left out with a warning (`requirement_archived`): restore the
+  requirement first.
+- `REQ-<n>` in a case names the requirement with number `n` **in the file**, whatever number it gets in the
+  project; it never names an existing requirement of the project by its number (a file from another project
+  would mean something else by it). To link to requirements that are already in the project, use their issue
+  keys.
 - With `unknownFieldValues: create`, field definitions of the header that the project lacks are created; the
   report lists them as created.
-- Step ids are kept. Attachments come from a zip given with the import (the `attachments/` entries of a zip
-  export); `attachment:<id>` images are rewritten to the new ids.
+- Step ids and parameter row ids are kept. Attachments come from a zip given with the import (the
+  `attachments/` entries of a zip export); `attachment:<id>` images are rewritten to the new ids.
 - Code identities (`fullNames`) are not recreated: the first upload of the tests links them again through code
   sync.
+
+An export followed by an import into an empty project and another export gives the same records, apart from
+the header.
 
 ## Exporting
 
 | Call | Gives |
 |---|---|
-| `GET $api/cases/export?format=csv` | CSV, streamed, one row per case |
-| `GET $api/cases/export?format=ndjson` | NDJSON, streamed, every detail of every case |
+| `GET $api/cases/export?format=csv` | CSV, streamed, one row per case; shared steps and parameters are written out as text |
+| `GET $api/cases/export?format=ndjson` | NDJSON, streamed, every detail of every case, with its shared steps, requirements, parameters and requirement links as records |
 | `POST $api/cases/exports` `{format: "zip", filter, attachments: true}` | A background job that builds a zip with the cases and their attachments |
 
 Exports take the same filters as the case list (`folder`, `recursive`, `status`, `field`, `tag`, `q`, ...)
@@ -395,9 +473,19 @@ fastproof cases export --format csv --out cases.csv
 
 CSV columns: `Number`, `Key` (`TC-<n>`), `Name`, `Status`, `Automated`, `Folder` (`A / B`), `Description`,
 `Preconditions`, `Steps`, `Expected`, `Data` (numbered lists, sub-steps indented with a tab), `Tags`, `Links`,
-then one column per case field (its key). This CSV imports back as a generic CSV.
+`Parameters`, then one column per case field (its key). A step that references a shared step is replaced by
+the steps of the shared step at its current version, so the CSV reads as the case runs. At most 1 MiB of
+shared step text is written out per case and 256 MiB per export; a reference past that is the one-line step
+`Shared step SS-<n> (not expanded: …)` (the NDJSON keeps every reference). `Parameters` holds the
+enabled rows, one per line: `column=value; column=value`. This CSV imports back as a generic CSV (the
+`Parameters` column is ignored, and the shared steps arrive as ordinary steps); only the NDJSON and zip
+exports keep shared steps, requirements and parameters as such.
 
-The zip contains `cases.ndjson`, `cases.csv` and `attachments/<id>-<file name>`. The answer of
+An export of a filter or query holds the shared steps its cases reference and the requirements they cover
+(with their ancestors); an export of every case holds all shared steps and requirements that are not archived.
+
+The zip contains `cases.ndjson`, `cases.csv` and `attachments/<id>-<file name>`. The shared steps of an export
+are held in memory while it runs, at most 64 MiB of steps (a larger set is `409 limit_reached`). The answer of
 `POST $api/cases/exports` carries `downloadUrl` (only there); poll `GET $api/tm-jobs/{id}` until `"status":
 "done"`, then fetch the link once with the same token:
 

@@ -384,7 +384,13 @@ export default function RunnerPage() {
       localRef.current.set(item.id, new Map());
       publish();
       revRef.current.set(item.id, r.revision);
-      setOverrides((o) => new Map(o).set(item.id, r.status));
+      // A parameterized item's status is derived from its iterations, which update the cached item; an override would hide that.
+      setOverrides((o) => {
+        const n = new Map(o);
+        if (r.iterationCount > 0) n.delete(item.id);
+        else n.set(item.id, r.status);
+        return n;
+      });
       qc.setQueryData(tmk.runItem(key, item.id), v);
       void qc.invalidateQueries({ queryKey: [...tmk.runItem(key, item.id), 'executions'] });
       setStepIdx(0);
@@ -406,6 +412,7 @@ export default function RunnerPage() {
       const a = runnerAction(e, { singleKeys, typing });
       if (!a) return;
       if (document.querySelector('[role="dialog"]')) return;
+      if (item && item.iterationCount > 0 && a.type !== 'nextCase' && a.type !== 'prevCase' && a.type !== 'help') return;
       if (e.target instanceof HTMLElement && !typing && (e.target.tagName === 'BUTTON' || e.target.tagName === 'A') && a.type === 'enter') return;
       const cur = flat[stepIdx];
       e.preventDefault();
@@ -478,7 +485,6 @@ export default function RunnerPage() {
     <>
       <LiveRegion message={announce} />
       <SharedRefresh projectKey={key} launchId={id} />
-      <Iterations projectKey={key} launchId={id} />
       <PageHeader
         crumbs={[{ label: 'Projects', to: '/' }, { label: project.data?.name ?? key, to: `/p/${key}` }, { label: l ? `#${String(l.number)} ${l.name}` : 'Launch', to: `/p/${key}/launches/${id}?tab=manual` }, { label: 'Manual run' }]}
         title="Manual run"
@@ -547,7 +553,7 @@ export default function RunnerPage() {
                             {item.folderPath.join(' / ')}
                           </Text>
                         )}
-                        {item.preconditionsHtml && (
+                        {item.preconditionsHtml && item.iterationCount === 0 && (
                           <Stack gap={2}>
                             <Text size="xs" fw={600} c="dimmed">
                               Preconditions
@@ -557,7 +563,29 @@ export default function RunnerPage() {
                         )}
                       </Stack>
                     </Card>
-                    {mobile && cur ? (
+                    {item.iterationCount > 0 ? (
+                      <>
+                        <Iterations projectKey={key} launchId={id} item={item} readOnly={readOnly} onAnnounce={setAnnounce} />
+                        {FINAL.includes(itemStatus) && (
+                          <Card withBorder radius="lg" padding="sm" data-testid="iterations-finished">
+                            <Group justify="space-between" gap="xs" wrap="wrap">
+                              <Group gap={6}>
+                                <Text size="sm">All iterations finished:</Text>
+                                <RunStatusBadge status={itemStatus} />
+                              </Group>
+                              <Group gap="xs">
+                                <Button size="xs" h={mobile ? 44 : undefined} variant="default" leftSection={<IconRotateClockwise size={14} />} onClick={() => void rerun()} disabled={readOnly} data-testid="rerun">
+                                  Run again
+                                </Button>
+                                <Button size="xs" h={mobile ? 44 : undefined} variant="subtle" leftSection={<IconPlayerTrackNext size={14} />} onClick={() => goto(1)}>
+                                  Next case (n)
+                                </Button>
+                              </Group>
+                            </Group>
+                          </Card>
+                        )}
+                      </>
+                    ) : mobile && cur ? (
                       <Card withBorder radius="lg" padding="md" data-testid="mobile-step" tabIndex={-1} data-path={cur.path} data-status={effective.get(cur.path) ?? 'untested'}>
                         <Stack gap="xs">
                           <Group justify="space-between">
@@ -597,6 +625,7 @@ export default function RunnerPage() {
                     ) : (
                       !mobile && <RunSteps project={key} item={item} flat={flat} effective={effective} local={local} current={stepIdx} onCurrent={setStepIdx} onSet={(p, s) => setStep(p, s, false)} fields={fieldsProps} />
                     )}
+                    {item.iterationCount === 0 && (
                     <Card withBorder radius="lg" padding="sm" className="fp-tm-finish" data-testid="finish-panel">
                       <Stack gap="xs">
                         <Group justify="space-between" gap="xs" wrap="wrap">
@@ -649,8 +678,9 @@ export default function RunnerPage() {
                         </Group>
                       </Stack>
                     </Card>
+                    )}
                     <Executions project={key} itemId={item.id} executionNo={item.executionNo} />
-                    {mobile && cur && (
+                    {mobile && cur && item.iterationCount === 0 && (
                       <div className="fp-tm-sticky-bar" data-testid="sticky-bar">
                         <StatusButtons path={cur.path} current={local.get(cur.path)?.status ?? 'untested'} readOnly={readOnly} onSet={(s) => setStep(cur.path, s)} size="lg" />
                       </div>

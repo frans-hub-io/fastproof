@@ -318,8 +318,8 @@ async fn formats_of_later_areas_are_refused_until_built() {
             json!({"name": "P", "body": {"parameters": {"columns": ["a"], "rows": []}}}),
         )
         .await;
-    assert_eq!(st, StatusCode::BAD_REQUEST, "{b}");
-    assert_eq!(b["code"], "invalid_case");
+    assert_eq!(st, StatusCode::CREATED, "{b}");
+    assert_eq!(b["body"]["parameters"]["columns"], json!(["a"]));
     let (st, b) = s
         .post(
             "/api/v1/projects/later/test-plans",

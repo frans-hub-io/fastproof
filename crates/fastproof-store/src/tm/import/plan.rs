@@ -28,7 +28,8 @@ use super::super::versions::{changed_keys, snapshot_of};
 use super::super::{
     CaseBody, CaseFieldDef, CaseFieldPatch, CaseFieldWrite, CaseKeyKind, CaseLink, CaseLinkType,
     CaseOrigin, CaseRow, CaseStatus, CaseStep, CaseWrite, FieldOption, FieldType, FieldValue,
-    ImportMode, ImportReport, ImportRowError, TmError, TmResult, UnknownFieldValues, VersionSource,
+    ImportMode, ImportReport, ImportRowError, SharedStepRef, TmError, TmResult, UnknownFieldValues,
+    VersionSource,
 };
 use super::MAX_REPORT_ERRORS;
 use crate::Store;
@@ -72,15 +73,21 @@ pub struct Planner {
     pub max_number: Option<i64>,
     existing_cases: i64,
     pub(crate) target_depth: usize,
+    /// Shared steps, requirements and the maps of what the job created.
+    pub rec: super::records::Records,
 }
 
 const NIL: Uuid = Uuid::nil();
+
+/// The tag the foreign parsers put on a case whose steps came from shared steps; the importer
+/// drops it when every such step became a reference.
+pub const INLINED_TAG: &str = "imported-shared-step";
 
 fn norm(s: &str) -> String {
     s.trim().to_lowercase()
 }
 
-fn err_of(row: u64, e: TmError) -> Result<RowError, TmError> {
+pub(super) fn err_of(row: u64, e: TmError) -> Result<RowError, TmError> {
     match e {
         TmError::Invalid { code, message, .. }
         | TmError::Conflict { code, message, .. }
@@ -95,48 +102,90 @@ fn err_of(row: u64, e: TmError) -> Result<RowError, TmError> {
     }
 }
 
+type SharedMap = HashMap<(String, String), (Uuid, i64)>;
+
+/// The steps of a case from imported ones, references resolved through `shared`.
+pub(super) fn steps_with(
+    steps: &[ImportedStep],
+    cur: Option<&[CaseStep]>,
+    shared: &SharedMap,
+) -> Vec<CaseStep> {
+    steps_of(steps, &HashMap::new(), cur, shared, true)
+}
+
 fn steps_of(
     steps: &[ImportedStep],
     attachments: &HashMap<String, Uuid>,
     cur: Option<&[CaseStep]>,
+    shared: &SharedMap,
+    top: bool,
 ) -> Vec<CaseStep> {
-    steps
-        .iter()
-        .enumerate()
-        .map(|(i, s)| {
-            let prev = cur.and_then(|c| c.get(i));
-            let id = if valid_step_id(&s.id) {
-                s.id.clone()
-            } else {
-                prev.map(|p| p.id.clone()).unwrap_or_default()
-            };
-            let empty = s.action.is_empty()
-                && s.expected.is_empty()
-                && s.data.is_empty()
-                && s.attachments.is_empty()
-                && s.steps.is_empty();
-            if let Some(p) = prev
-                && p.shared.is_some()
-                && p.id == id
-                && empty
-            {
-                return p.clone();
+    let mut out: Vec<CaseStep> = Vec::with_capacity(steps.len());
+    let mut i = 0;
+    while i < steps.len() {
+        let s = &steps[i];
+        let prev = cur.and_then(|c| c.get(out.len()));
+        let id = if valid_step_id(&s.id) {
+            s.id.clone()
+        } else {
+            prev.map(|p| p.id.clone()).unwrap_or_default()
+        };
+        if top
+            && let Some(k) = &s.shared
+            && let Some((sid, number)) = shared.get(&(k.kind.clone(), k.value.clone()))
+        {
+            let mut j = i + 1;
+            while j < steps.len() && steps[j].shared.as_ref() == Some(k) {
+                j += 1;
             }
-            CaseStep {
+            out.push(CaseStep {
                 id,
-                action: s.action.clone(),
-                expected: s.expected.clone(),
-                data: s.data.clone(),
-                attachments: s
-                    .attachments
-                    .iter()
-                    .filter_map(|a| attachments.get(a).copied())
-                    .collect(),
-                steps: steps_of(&s.steps, attachments, prev.map(|p| p.steps.as_slice())),
-                shared: None,
-            }
-        })
-        .collect()
+                shared: Some(SharedStepRef {
+                    id: *sid,
+                    number: *number,
+                    version: None,
+                }),
+                ..Default::default()
+            });
+            i = j;
+            continue;
+        }
+        let empty = s.action.is_empty()
+            && s.expected.is_empty()
+            && s.data.is_empty()
+            && s.attachments.is_empty()
+            && s.steps.is_empty();
+        if let Some(p) = prev
+            && p.shared.is_some()
+            && p.id == id
+            && empty
+        {
+            out.push(p.clone());
+            i += 1;
+            continue;
+        }
+        out.push(CaseStep {
+            id,
+            action: s.action.clone(),
+            expected: s.expected.clone(),
+            data: s.data.clone(),
+            attachments: s
+                .attachments
+                .iter()
+                .filter_map(|a| attachments.get(a).copied())
+                .collect(),
+            steps: steps_of(
+                &s.steps,
+                attachments,
+                prev.map(|p| p.steps.as_slice()),
+                shared,
+                false,
+            ),
+            shared: None,
+        });
+        i += 1;
+    }
+    out
 }
 
 /// Rewrites Markdown references to attachments of the import (`(name)`, `(old-id)` and
@@ -186,6 +235,11 @@ impl Planner {
                 .bind(project_id)
                 .fetch_one(&mut *conn)
                 .await?;
+        let existing_requirements: i64 =
+            sqlx::query_scalar("select count(*) from requirements where project_id = $1")
+                .bind(project_id)
+                .fetch_one(&mut *conn)
+                .await?;
         let target_depth: i32 = match opts.target_folder {
             Some(f) => sqlx::query_scalar::<_, i16>(
                 "select depth from case_folders where project_id = $1 and id = $2",
@@ -199,6 +253,7 @@ impl Planner {
         };
         let mut p = Self {
             keep_numbers: opts.numbered_source && existing_cases == 0,
+            rec: super::records::Records::new(existing_requirements, opts.numbered_source),
             opts,
             defs: Vec::new(),
             by_name: HashMap::new(),
@@ -251,6 +306,23 @@ impl Planner {
                 message: e.message.chars().take(500).collect(),
             });
         }
+    }
+
+    /// How many errors and warnings the report holds, to drop what a repeated record adds
+    /// when a job resumes.
+    pub fn report_marks(&self) -> (usize, u64, usize) {
+        (
+            self.report.errors.len(),
+            self.errors_total,
+            self.report.warnings.len(),
+        )
+    }
+
+    /// Drops the errors and warnings added since [`Planner::report_marks`].
+    pub fn restore_marks(&mut self, (errors, total, warnings): (usize, u64, usize)) {
+        self.report.errors.truncate(errors);
+        self.errors_total = total;
+        self.report.warnings.truncate(warnings);
     }
 
     /// Records a row warning (the first [`MAX_REPORT_ERRORS`] are kept).
@@ -567,12 +639,18 @@ impl Planner {
             .collect();
         let mut merged = cur.map(|r| r.fields.clone()).unwrap_or_default();
         merged.extend(fields);
-        let tags: Vec<String> = c
+        let mut tags: Vec<String> = c
             .tags
             .iter()
             .map(|t| t.trim().to_string())
             .filter(|t| !t.is_empty())
             .collect();
+        let mut dropped = false;
+        if self.shared_known(c) == Some(true) {
+            let n = tags.len();
+            tags.retain(|t| t != INLINED_TAG);
+            dropped = tags.len() != n;
+        }
         let status = match (self.opts.status, cur) {
             (Some(s), None) => CaseStatus::parse(s.as_str()),
             _ => c.status.as_deref().and_then(CaseStatus::parse),
@@ -584,15 +662,29 @@ impl Planner {
             body: Some(CaseBody {
                 description: rewrite(&c.description, c, attachments),
                 preconditions: rewrite(&c.preconditions, c, attachments),
-                steps: steps_of(&c.steps, attachments, cur.map(|r| r.body.steps.as_slice())),
+                steps: steps_of(
+                    &c.steps,
+                    attachments,
+                    cur.map(|r| r.body.steps.as_slice()),
+                    &self.rec.shared,
+                    true,
+                ),
                 links,
-                parameters: cur.and_then(|r| r.body.parameters.clone()),
+                parameters: match &c.parameters {
+                    Some(p) => Some(super::records::case_parameters(p)),
+                    None => cur.and_then(|r| r.body.parameters.clone()),
+                },
             }),
             fields: Some(merged),
-            tags: if tags.is_empty() && cur.is_some() {
-                None
-            } else {
-                Some(tags)
+            tags: match cur {
+                Some(r) if tags.is_empty() => dropped.then(|| {
+                    r.tags
+                        .iter()
+                        .filter(|t| *t != INLINED_TAG)
+                        .cloned()
+                        .collect()
+                }),
+                _ => Some(tags),
             },
         }
     }
@@ -648,6 +740,7 @@ impl Planner {
             Some(id) => case_by_id(conn, ctx.project_id, id).await?,
             None => None,
         };
+        self.ensure_shared_refs(conn, ctx.project_id, c).await?;
         let mut w = self.write_of(c, folder, fields, &HashMap::new(), cur.as_ref());
         self.draft_if_required_missing(c, &mut w, cur.as_ref());
         let snap = match prepare_write(conn, ctx, &w, cur.as_ref(), &self.defs).await {
@@ -665,6 +758,9 @@ impl Planner {
             (Some(_), _, ImportMode::Upsert) => self.report.update += 1,
             (None, Some(cur), ImportMode::Upsert) => {
                 let mut s = snap;
+                if let Some(steps) = self.steps_after_apply(c, Some(&cur.body.steps)) {
+                    s.body.steps = steps;
+                }
                 if w.folder_id.is_none() && !c.folder.is_empty() {
                     s.folder_id = Some(NIL);
                 }
@@ -763,6 +859,7 @@ impl Planner {
         numbers: &mut std::ops::Range<i64>,
     ) -> TmResult<()> {
         let folder = self.apply_folder(conn, ctx, c).await?;
+        self.ensure_shared_refs(conn, ctx.project_id, c).await?;
         let existing = self.existing(conn, ctx.project_id, c).await?;
         let row = match existing {
             Some(id) => {
@@ -842,6 +939,9 @@ impl Planner {
             .collect();
         if !ids.is_empty() {
             link_case_attachments(conn, ctx, row.id, &ids).await?;
+        }
+        if !c.requirements.is_empty() {
+            self.link_requirements(conn, ctx, &[(row.id, c)]).await?;
         }
         Ok(())
     }
@@ -1104,16 +1204,25 @@ impl Store {
             planner.used_numbers = snapshot.3;
             return Err(e);
         }
+        let maps = planner
+            .rec
+            .dirty
+            .then(|| serde_json::to_value(&planner.rec.maps))
+            .transpose()?;
         sqlx::query(
-            "update tm_jobs set progress = $2, report = $3, lease_until = now() + make_interval(secs => $4) where id = $1",
+            "update tm_jobs set progress = $2, report = $3, lease_until = now() + make_interval(secs => $4), \
+             params = case when $5::jsonb is null then params else params || jsonb_build_object('importMaps', $5::jsonb) end \
+             where id = $1",
         )
         .bind(job)
         .bind(json!({"done": done, "total": total}))
         .bind(serde_json::to_value(planner.finish_report())?)
         .bind(super::LEASE_SECONDS as f64)
+        .bind(maps)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
+        planner.rec.dirty = false;
         Ok(true)
     }
 
@@ -1175,6 +1284,7 @@ impl Store {
                 continue;
             }
             let folder = planner.apply_folder(tx, ctx, c).await?;
+            planner.ensure_shared_refs(tx, ctx.project_id, c).await?;
             let mut w = planner.write_of(c, folder, fields, attachments, None);
             planner.draft_if_required_missing(c, &mut w, None);
             match prepare_write(tx, ctx, &w, None, &planner.defs).await {
@@ -1237,7 +1347,7 @@ fn check_folder_name(n: &str, max: usize) -> Result<(), ()> {
     Ok(())
 }
 
-fn is_unique(e: &anyhow::Error) -> bool {
+pub(super) fn is_unique(e: &anyhow::Error) -> bool {
     e.chain().any(|c| {
         c.downcast_ref::<sqlx::Error>()
             .and_then(|s| match s {
@@ -1461,6 +1571,21 @@ async fn bulk_create(
         .collect();
     super::super::runs::manual_identities(conn, ctx.project_id, &manual).await?;
     let mut events = Vec::with_capacity(items.len());
+    for (i, (_, snap)) in items.iter().enumerate() {
+        if snap.body.steps.iter().any(|s| s.shared.is_some()) {
+            super::super::shared_steps::sync_usages(conn, ctx.project_id, ids[i], &snap.body)
+                .await?;
+        }
+    }
+    let linked: Vec<(Uuid, &ImportedCase)> = items
+        .iter()
+        .enumerate()
+        .filter(|(_, (c, _))| !c.requirements.is_empty())
+        .map(|(i, (c, _))| (ids[i], *c))
+        .collect();
+    if !linked.is_empty() {
+        planner.link_requirements(conn, ctx, &linked).await?;
+    }
     for (i, (c, snap)) in items.iter().enumerate() {
         if automated[i] {
             for f in c.full_names.iter().take(10) {
@@ -1559,7 +1684,13 @@ mod tests {
                 ..Default::default()
             },
         ];
-        let out = steps_of(&exported, &HashMap::new(), Some(&cur));
+        let out = steps_of(
+            &exported,
+            &HashMap::new(),
+            Some(&cur),
+            &HashMap::new(),
+            true,
+        );
         assert_eq!(out[0].action, "open the page");
         assert_eq!(
             out[1], reference,
@@ -1572,7 +1703,7 @@ mod tests {
             },
             ImportedStep::default(),
         ];
-        let out = steps_of(&csv, &HashMap::new(), Some(&cur));
+        let out = steps_of(&csv, &HashMap::new(), Some(&cur), &HashMap::new(), true);
         assert_eq!(out[1], reference, "rows without ids match by position");
         let filled = vec![
             ImportedStep::default(),
@@ -1582,10 +1713,10 @@ mod tests {
                 ..Default::default()
             },
         ];
-        let out = steps_of(&filled, &HashMap::new(), Some(&cur));
+        let out = steps_of(&filled, &HashMap::new(), Some(&cur), &HashMap::new(), true);
         assert!(out[1].shared.is_none(), "content replaces the reference");
         assert_eq!(out[1].action, "now a step of its own");
-        let out = steps_of(&exported, &HashMap::new(), None);
+        let out = steps_of(&exported, &HashMap::new(), None, &HashMap::new(), true);
         assert!(
             out[1].shared.is_none(),
             "a new case never gains a reference"

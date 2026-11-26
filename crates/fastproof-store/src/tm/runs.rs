@@ -10,7 +10,7 @@
 //! inserts items; closing with `skipped` locks every item before the launch row; ingest locks
 //! the launch row first and never touches manual rows. So no two of them wait in a cycle.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use base64::Engine as _;
 use chrono::{DateTime, Utc};
@@ -110,6 +110,14 @@ pub struct RunItemBrief {
     pub manual_state: Option<ManualState>,
 }
 
+/// An iteration's projected result, the target of a defect.
+#[derive(Clone, Debug)]
+pub struct DefectTarget {
+    pub row_id: String,
+    pub result_id: Uuid,
+    pub executed_by: Option<String>,
+}
+
 /// One step of the manual report.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -138,6 +146,33 @@ pub struct ManualReportItem {
     pub comment: String,
     pub defect: Option<serde_json::Value>,
     pub steps: Vec<ManualReportStep>,
+    /// The parameter columns of a parameterized case, in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parameter_columns: Vec<String>,
+    /// The iterations of a parameterized case (its `steps` stay empty: steps are recorded per
+    /// iteration).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub iterations: Vec<ManualReportIteration>,
+}
+
+/// One iteration of a parameterized item in the manual report.
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ManualReportIteration {
+    pub row_id: String,
+    pub position: i32,
+    pub values: std::collections::BTreeMap<String, String>,
+    pub status: RunStatus,
+    pub comment: String,
+    pub executed_by: Option<String>,
+    pub started_at: Option<DateTime<Utc>>,
+    pub finished_at: Option<DateTime<Utc>>,
+    pub defect: Option<serde_json::Value>,
+    /// The recorded step results of the iteration, with the values put into the step texts.
+    pub steps: Vec<ManualReportStep>,
+    /// `true` when `steps` was left out because the item's report reached its size limit.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub steps_omitted: bool,
 }
 
 /// A step of an executed snapshot with its path (`1`, `1.2`, `1.2.3`).
@@ -381,14 +416,16 @@ pub async fn manual_identities(
     Ok(out)
 }
 
-/// Inserts run items (cases already in the launch are skipped); returns how many were added.
+/// Inserts run items (cases already in the launch are skipped) and the iterations of the
+/// parameterized ones (within `max_run_iterations`); returns how many items were added.
 pub async fn insert_run_items(
     conn: &mut PgConnection,
     project_id: Uuid,
     launch_id: Uuid,
     launch_created_at: DateTime<Utc>,
     items: &[NewRunItem],
-) -> anyhow::Result<u64> {
+    limits: &TmLimits,
+) -> TmResult<u64> {
     if items.is_empty() {
         return Ok(0);
     }
@@ -443,7 +480,8 @@ pub async fn insert_run_items(
     .fetch_all(&mut *conn)
     .await?;
     if !inserted.is_empty() {
-        super::iterations::create_iterations(conn, project_id, launch_id, &inserted).await?;
+        super::iterations::create_iterations(conn, project_id, launch_id, &inserted, limits)
+            .await?;
     }
     Ok(inserted.len() as u64)
 }
@@ -730,7 +768,7 @@ const CLOSE_ATTEMPTS: usize = 5;
 /// Earlier executions of a run item kept at most per read.
 pub const MAX_EXECUTIONS_PAGE: i64 = 100;
 
-fn path_key(p: &str) -> Vec<u32> {
+pub(super) fn path_key(p: &str) -> Vec<u32> {
     p.split('.').filter_map(|x| x.parse().ok()).collect()
 }
 
@@ -774,7 +812,7 @@ pub async fn item_brief(
 /// the manual run is closed. Returns the launch reference. Without `lock`, read it after
 /// locking the item: a close that changed the item has committed by then; a change of the
 /// counters re-checks the state race-free in `apply_launch_changes`.
-async fn open_launch(
+pub(super) async fn open_launch(
     conn: &mut PgConnection,
     project: &Project,
     launch_id: Uuid,
@@ -805,7 +843,11 @@ async fn open_launch(
 /// Applies the launch side of an item change last in its transaction (see
 /// [`super::projection::apply_launch_changes`]); 409 `manual_run_closed` when the manual run
 /// was closed meanwhile.
-async fn finish_launch(conn: &mut PgConnection, launch: &LaunchRef, p: &Projected) -> TmResult<()> {
+pub(super) async fn finish_launch(
+    conn: &mut PgConnection,
+    launch: &LaunchRef,
+    p: &Projected,
+) -> TmResult<()> {
     if super::projection::apply_launch_changes(
         conn,
         launch,
@@ -822,7 +864,17 @@ async fn finish_launch(conn: &mut PgConnection, launch: &LaunchRef, p: &Projecte
     }
 }
 
-fn closed() -> TmError {
+/// 409 `parameterized_item`: steps and status of a parameterized item are written per
+/// iteration.
+fn parameterized() -> TmError {
+    TmError::conflict(
+        "parameterized_item",
+        "this run item has iterations: write the steps and status of an iteration \
+         (/run-items/{itemId}/iterations/{rowId}), or set allIterations to change every iteration",
+    )
+}
+
+pub(super) fn closed() -> TmError {
     TmError::conflict(
         "manual_run_closed",
         "the manual run is closed; reopen it first",
@@ -883,26 +935,28 @@ impl RunnableRule {
 }
 
 /// The current row of a locked item.
-struct LockedItem {
-    case_id: Uuid,
-    case_version: i32,
-    status: RunStatus,
-    revision: i64,
-    executed_by: Option<String>,
-    number: i64,
-    assignee: Option<String>,
-    execution_no: i32,
-    comment: String,
-    started_at: Option<DateTime<Utc>>,
-    finished_at: Option<DateTime<Utc>>,
-    defect: Option<serde_json::Value>,
-    shared_pins: Option<serde_json::Value>,
+pub(super) struct LockedItem {
+    pub(super) case_id: Uuid,
+    pub(super) case_version: i32,
+    pub(super) status: RunStatus,
+    pub(super) revision: i64,
+    pub(super) executed_by: Option<String>,
+    pub(super) number: i64,
+    pub(super) assignee: Option<String>,
+    pub(super) execution_no: i32,
+    pub(super) comment: String,
+    pub(super) started_at: Option<DateTime<Utc>>,
+    pub(super) finished_at: Option<DateTime<Utc>>,
+    pub(super) defect: Option<serde_json::Value>,
+    pub(super) shared_pins: Option<serde_json::Value>,
+    /// Iterations of a parameterized item (0: a plain item).
+    pub(super) iterations: i32,
 }
 
-async fn lock_item(conn: &mut PgConnection, item_id: Uuid) -> TmResult<LockedItem> {
+pub(super) async fn lock_item(conn: &mut PgConnection, item_id: Uuid) -> TmResult<LockedItem> {
     let r = sqlx::query(
         "select ri.case_id, ri.case_version, ri.status, ri.revision, ri.executed_by, ri.assignee, c.number, \
-           ri.execution_no, ri.comment, ri.started_at, ri.finished_at, ri.defect, ri.shared_pins \
+           ri.execution_no, ri.comment, ri.started_at, ri.finished_at, ri.defect, ri.shared_pins, ri.iterations \
          from run_items ri join cases c on c.id = ri.case_id where ri.id = $1 for update of ri",
     )
     .bind(item_id)
@@ -924,6 +978,7 @@ async fn lock_item(conn: &mut PgConnection, item_id: Uuid) -> TmResult<LockedIte
         finished_at: r.try_get("finished_at")?,
         defect: r.try_get("defect")?,
         shared_pins: r.try_get("shared_pins")?,
+        iterations: r.try_get("iterations")?,
     })
 }
 
@@ -945,7 +1000,7 @@ async fn step_statuses(
         .collect())
 }
 
-fn check_text(what: &str, v: Option<&str>, max: usize) -> TmResult<()> {
+pub(super) fn check_text(what: &str, v: Option<&str>, max: usize) -> TmResult<()> {
     if let Some(v) = v
         && v.len() > max
     {
@@ -956,6 +1011,106 @@ fn check_text(what: &str, v: Option<&str>, max: usize) -> TmResult<()> {
         });
     }
     Ok(())
+}
+
+/// [`Store::patch_run_item`] of a parameterized item (locked, revision checked): a status or
+/// `untestedStepsTo` applies to every iteration and only with `allIterations`; the item takes
+/// the derived status; comment and assignee are the item's own.
+#[allow(clippy::too_many_arguments)]
+async fn patch_parameterized(
+    tx: &mut PgConnection,
+    project: &Project,
+    launch: &LaunchRef,
+    item_id: Uuid,
+    item: &LockedItem,
+    p: &RunItemPatch,
+    assignee: Option<Option<String>>,
+    by: &str,
+) -> TmResult<RunItemChange> {
+    if (p.status.is_some() || p.untested_steps_to.is_some()) && p.all_iterations != Some(true) {
+        return Err(parameterized());
+    }
+    let rows: Vec<String> = sqlx::query_scalar(
+        "select row_id from run_iterations where run_item_id = $1 and execution_no = $2 order by position, row_id",
+    )
+    .bind(item_id)
+    .bind(item.execution_no)
+    .fetch_all(&mut *tx)
+    .await?;
+    if p.untested_steps_to == Some(UntestedStepsTo::Skipped) {
+        let snapshot = executed_snapshot(
+            tx,
+            project.id,
+            item.case_id,
+            item.case_version,
+            pins_of(item.shared_pins.clone()).as_ref(),
+        )
+        .await?;
+        let leaves: Vec<String> = step_paths(&snapshot.body.steps)
+            .into_iter()
+            .filter(|p| p.leaf)
+            .map(|p| p.path)
+            .collect();
+        super::iterations::skip_untested_steps(tx, item_id, item.execution_no, &rows, &leaves, by)
+            .await?;
+    }
+    let changed = match p.status {
+        Some(st) => {
+            super::iterations::set_statuses(tx, item_id, item.execution_no, None, st, None, by)
+                .await?
+        }
+        None => Vec::new(),
+    };
+    let (new_status, revision) =
+        super::iterations::apply_derived(tx, item_id, item.execution_no, item.status, by).await?;
+    let assignee_now: Option<String> = sqlx::query_scalar(
+        "update run_items set comment = coalesce($2, comment), \
+           assignee = case when $3 then $4 else assignee end where id = $1 returning assignee",
+    )
+    .bind(item_id)
+    .bind(p.comment.as_deref().map(no_nul))
+    .bind(assignee.is_some())
+    .bind(assignee.clone().flatten())
+    .fetch_one(&mut *tx)
+    .await?;
+    let mut projected = Projected::default();
+    if changed
+        .iter()
+        .any(|(_, a, b)| a != b && (a.is_final() || b.is_final()))
+    {
+        projected = super::projection::project_run_items(tx, launch, &[item_id]).await?;
+    }
+    projected
+        .delta
+        .add(&CountDelta::item_change(item.status, new_status));
+    if new_status != item.status {
+        manual_changed(tx, &project.key, launch.id).await?;
+    }
+    for (row, a, b) in &changed {
+        if a != b {
+            super::iterations::iteration_changed(
+                tx,
+                &project.key,
+                launch.id,
+                item_id,
+                row,
+                *b,
+                revision,
+            )
+            .await?;
+        }
+    }
+    item_changed(tx, &project.key, launch.id, item_id, new_status, revision).await?;
+    finish_launch(tx, launch, &projected).await?;
+    Ok(RunItemChange {
+        launch_id: launch.id,
+        case_number: item.number,
+        old_status: item.status,
+        new_status,
+        assignee_changed: assignee.is_some() && assignee_now != item.assignee,
+        revision,
+        execution_no: item.execution_no,
+    })
 }
 
 impl Store {
@@ -1110,8 +1265,15 @@ impl Store {
                 assignee: wanted.get(&case_id).cloned().flatten(),
             })
             .collect();
-        let added =
-            insert_run_items(&mut tx, project.id, launch_id, launch.created_at, &items).await?;
+        let added = insert_run_items(
+            &mut tx,
+            project.id,
+            launch_id,
+            launch.created_at,
+            &items,
+            limits,
+        )
+        .await?;
         sqlx::query(
             "update launches set manual_state = 'open' where id = $1 and manual_state is null",
         )
@@ -1272,6 +1434,29 @@ impl Store {
             }
             None => Vec::new(),
         };
+        let (iterations, parameter_columns) = if summary.iteration_count > 0 {
+            let mut budget = super::iterations::ITEM_VIEW_STEP_BYTES;
+            (
+                super::iterations::views(
+                    &mut conn,
+                    project_id,
+                    item_id,
+                    summary.execution_no,
+                    super::iterations::ViewScope::Item {
+                        budget: &mut budget,
+                    },
+                )
+                .await?,
+                snapshot
+                    .body
+                    .parameters
+                    .as_ref()
+                    .map(|p| p.columns.clone())
+                    .unwrap_or_default(),
+            )
+        } else {
+            (Vec::new(), Vec::new())
+        };
         let mut steps = step_rows(&mut conn, item_id).await?;
         steps.sort_by_key(|s| path_key(&s.0));
         let att_ids: Vec<Uuid> = steps.iter().flat_map(|s| s.4.iter().copied()).collect();
@@ -1297,8 +1482,8 @@ impl Store {
             finished_at: r.try_get("finished_at")?,
             revision: r.try_get("revision")?,
             shared_pins,
-            iterations: Vec::new(),
-            parameter_columns: Vec::new(),
+            iterations,
+            parameter_columns,
         })
     }
 
@@ -1348,6 +1533,9 @@ impl Store {
         let mut tx = self.pool.begin().await?;
         let item = lock_item(&mut tx, item_id).await?;
         let launch = open_launch(&mut tx, project, brief.launch_id, false).await?;
+        if item.iterations > 0 {
+            return Err(parameterized());
+        }
         let snapshot = executed_snapshot(
             &mut tx,
             project.id,
@@ -1471,6 +1659,13 @@ impl Store {
                 source: Some("ui".into()),
             });
         }
+        if item.iterations > 0 {
+            let change =
+                patch_parameterized(&mut tx, project, &launch, item_id, &item, p, assignee, by)
+                    .await?;
+            tx.commit().await?;
+            return Ok(change);
+        }
         if p.untested_steps_to == Some(UntestedStepsTo::Skipped) {
             let snapshot = executed_snapshot(
                 &mut tx,
@@ -1561,13 +1756,16 @@ impl Store {
     /// no step results. The earlier execution (status, comment, executor, times, defect and its
     /// step results) is kept in `run_item_executions` and `run_step_results` outside the
     /// partitions, so it survives retention; its attempt stays in `attempts` (and its result
-    /// until the new execution gets a final status).
+    /// until the new execution gets a final status). A parameterized item copies its
+    /// iterations as untested; the launch's stored iterations stay within
+    /// `max_run_iterations` (409 `limit_reached`).
     pub async fn rerun_run_item(
         &self,
         project: &Project,
         item_id: Uuid,
         revision: i64,
         by: &str,
+        limits: &TmLimits,
     ) -> TmResult<RunItemChange> {
         let mut conn = self.pool.acquire().await?;
         let brief = item_brief(&mut conn, project.id, item_id)
@@ -1586,6 +1784,10 @@ impl Store {
                 changed_by: item.executed_by.clone(),
                 source: Some("ui".into()),
             });
+        }
+        if item.iterations > 0 {
+            super::iterations::check_rerun_room(&mut tx, launch.id, item.iterations, limits)
+                .await?;
         }
         sqlx::query(
             "insert into run_item_executions (run_item_id, execution_no, status, case_version, comment, executed_by, \
@@ -1615,6 +1817,15 @@ impl Store {
         .bind(item_id)
         .fetch_one(&mut *tx)
         .await?;
+        if item.iterations > 0 {
+            super::iterations::copy_for_rerun(
+                &mut tx,
+                item_id,
+                item.execution_no,
+                item.execution_no + 1,
+            )
+            .await?;
+        }
         manual_changed(&mut tx, &project.key, launch.id).await?;
         item_changed(
             &mut tx,
@@ -1696,8 +1907,57 @@ impl Store {
                 .or_default()
                 .push((p, st, a, c, ids, ub, ua));
         }
+        let counts: HashMap<i32, i64> = sqlx::query_as::<_, (i32, i64)>(
+            "select execution_no, count(*) from run_iterations where run_item_id = $1 \
+               and execution_no = any($2) group by execution_no",
+        )
+        .bind(item_id)
+        .bind(&nos)
+        .fetch_all(&mut *conn)
+        .await?
+        .into_iter()
+        .collect();
+        let mut case_id: Option<Uuid> = None;
+        let mut budget = super::iterations::EXECUTIONS_VIEW_BYTES;
         let mut items = Vec::with_capacity(execs.len());
         for (no, r) in execs {
+            let iteration_count = counts.get(&no).copied().unwrap_or(0) as i32;
+            let (iterations, parameter_columns) = if iteration_count > 0 {
+                let version: i32 = r.try_get("case_version")?;
+                let case_id = match case_id {
+                    Some(c) => c,
+                    None => {
+                        let c: Uuid =
+                            sqlx::query_scalar("select case_id from run_items where id = $1")
+                                .bind(item_id)
+                                .fetch_one(&mut *conn)
+                                .await?;
+                        *case_id.insert(c)
+                    }
+                };
+                let named = case_version_snapshot(&mut conn, case_id, version)
+                    .await?
+                    .and_then(|s| s.body.parameters)
+                    .map(|p| p.columns);
+                let its = super::iterations::views(
+                    &mut conn,
+                    project_id,
+                    item_id,
+                    no,
+                    super::iterations::ViewScope::Page {
+                        budget: &mut budget,
+                    },
+                )
+                .await?;
+                let cols = named.unwrap_or_else(|| {
+                    its.first()
+                        .map(|i| i.values.keys().cloned().collect())
+                        .unwrap_or_default()
+                });
+                (its, cols)
+            } else {
+                (Vec::new(), Vec::new())
+            };
             let mut steps = by_exec.remove(&no).unwrap_or_default();
             steps.sort_by_key(|s| path_key(&s.0));
             let status: String = r.try_get("status")?;
@@ -1716,6 +1976,9 @@ impl Store {
                     .collect(),
                 rerun_by: r.try_get("rerun_by")?,
                 rerun_at: r.try_get("rerun_at")?,
+                iterations,
+                iteration_count,
+                parameter_columns,
             });
         }
         Ok(Page { items, next })
@@ -1744,13 +2007,20 @@ impl Store {
         .await?)
     }
 
-    /// Copies the defect of an item's projected result (set by triage) onto the item.
+    /// Copies the defect of an item's projected result (set by triage) onto the item. A
+    /// parameterized item takes the defect of its first iteration (by position) that has one.
     pub async fn sync_run_item_defect(&self, project: &Project, item_id: Uuid) -> TmResult<i64> {
         let mut tx = self.pool.begin().await?;
         let row: Option<(Uuid, String, i64)> = sqlx::query_as(
-            "update run_items ri set defect = r.defect, revision = ri.revision + 1, updated_at = now() \
-             from results r where ri.project_id = $1 and ri.id = $2 and r.id = ri.result_id \
-               and r.launch_created_at = ri.launch_created_at \
+            "update run_items ri set defect = case when ri.iterations > 0 then \
+               (select r.defect from run_iterations it \
+                  join results r on r.id = it.result_id and r.launch_created_at = ri.launch_created_at \
+                where it.run_item_id = ri.id and it.execution_no = ri.execution_no and r.defect is not null \
+                order by it.position limit 1) \
+               else (select r.defect from results r where r.id = ri.result_id \
+                  and r.launch_created_at = ri.launch_created_at) end, \
+               revision = ri.revision + 1, updated_at = now() \
+             where ri.project_id = $1 and ri.id = $2 \
              returning ri.launch_id, ri.status, ri.revision",
         )
         .bind(project.id)
@@ -1769,6 +2039,57 @@ impl Store {
         .await?;
         tx.commit().await?;
         Ok(revision)
+    }
+
+    /// The projected results a defect of a parameterized item goes to: the iteration `row_id`
+    /// (empty while it has no final status), or without it the failed and blocked iterations
+    /// of the current execution (at most `max`). `None` for a plain item.
+    pub async fn defect_targets(
+        &self,
+        project_id: Uuid,
+        item_id: Uuid,
+        row_id: Option<&str>,
+        max: i64,
+    ) -> TmResult<Option<Vec<DefectTarget>>> {
+        let mut conn = self.pool.acquire().await?;
+        item_brief(&mut conn, project_id, item_id)
+            .await?
+            .ok_or(TmError::NotFound("run item"))?;
+        let (count, exec): (i32, i32) =
+            sqlx::query_as("select iterations, execution_no from run_items where id = $1")
+                .bind(item_id)
+                .fetch_one(&mut *conn)
+                .await?;
+        if count == 0 {
+            return Ok(None);
+        }
+        let rows: Vec<(String, Option<Uuid>, Option<String>)> = sqlx::query_as(
+            "select row_id, result_id, executed_by from run_iterations \
+             where run_item_id = $1 and execution_no = $2 \
+               and (($3::text is not null and row_id = $3) \
+                 or ($3::text is null and status in ('failed', 'blocked'))) \
+             order by position, row_id limit $4",
+        )
+        .bind(item_id)
+        .bind(exec)
+        .bind(row_id)
+        .bind(max)
+        .fetch_all(&mut *conn)
+        .await?;
+        if row_id.is_some() && rows.is_empty() {
+            return Err(TmError::NotFound("iteration"));
+        }
+        Ok(Some(
+            rows.into_iter()
+                .filter_map(|(row_id, result_id, executed_by)| {
+                    result_id.map(|result_id| DefectTarget {
+                        row_id,
+                        result_id,
+                        executed_by,
+                    })
+                })
+                .collect(),
+        ))
     }
 
     /// Closes the manual run of a launch: untested items become `skipped` (and are projected)
@@ -1838,15 +2159,42 @@ impl Store {
             .fetch_all(&mut *tx)
             .await?;
             locked = Some(all.len() as i64);
-            let ids: Vec<Uuid> = sqlx::query_scalar(
-                "update run_items set status = 'skipped', started_at = coalesce(started_at, now()), \
-                   finished_at = now(), revision = revision + 1, updated_at = now() \
-                 where launch_id = $1 and status in ('untested', 'in_progress') returning id",
+            // Every open iteration is skipped, also those of an item that is already `failed`
+            // or `blocked` through another iteration (its derived status stays).
+            let settled: Vec<Uuid> = sqlx::query_scalar(
+                "with sk as (update run_iterations it set status = 'skipped', \
+                   started_at = coalesce(it.started_at, now()), finished_at = now(), updated_at = now() \
+                 from run_items ri where ri.launch_id = $1 and ri.iterations > 0 \
+                   and it.run_item_id = ri.id and it.execution_no = ri.execution_no \
+                   and it.status in ('untested', 'in_progress') returning it.run_item_id) \
+                 select distinct run_item_id from sk",
             )
             .bind(launch_id)
             .fetch_all(&mut *tx)
             .await?;
+            let mut ids: Vec<Uuid> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+                "update run_items ri set status = case when ri.iterations > 0 \
+                   then coalesce({}, 'skipped') else 'skipped' end, \
+                   started_at = coalesce(started_at, now()), \
+                   finished_at = now(), revision = revision + 1, updated_at = now() \
+                 where launch_id = $1 and status in ('untested', 'in_progress') returning id",
+                super::iterations::DERIVED_STATUS_SQL
+            )))
+            .bind(launch_id)
+            .fetch_all(&mut *tx)
+            .await?;
             out.skipped = ids.len() as i64;
+            let open: HashSet<Uuid> = ids.iter().copied().collect();
+            let settled: Vec<Uuid> = settled.into_iter().filter(|i| !open.contains(i)).collect();
+            if !settled.is_empty() {
+                sqlx::query(
+                    "update run_items set revision = revision + 1, updated_at = now() where id = any($1)",
+                )
+                .bind(&settled)
+                .execute(&mut *tx)
+                .await?;
+                ids.extend(settled);
+            }
             for chunk in ids.chunks(1000) {
                 projected
                     .merge(super::projection::project_run_items(&mut tx, &launch, chunk).await?);
@@ -2005,7 +2353,7 @@ impl Store {
         let rows = sqlx::query(
             "select ri.id, ri.case_id, c.number, coalesce(ri.case_name, c.name) as name, ri.case_version, ri.status, \
                ri.execution_no, ri.assignee, ri.executed_by, ri.started_at, ri.finished_at, ri.comment, ri.defect, \
-               ri.shared_pins \
+               ri.shared_pins, ri.iterations, ri.execution_no as cur_exec \
              from run_items ri join cases c on c.id = ri.case_id \
              where ri.project_id = $1 and ri.launch_id = $2 and c.number > $3 order by c.number limit $4",
         )
@@ -2073,6 +2421,39 @@ impl Store {
                 })
                 .collect();
             let status: String = r.try_get("status")?;
+            let iteration_count: i32 = r.try_get("iterations")?;
+            let (report_steps, iterations, parameter_columns) = if iteration_count > 0 {
+                let mut budget = REPORT_ITERATION_BYTES;
+                let its = super::iterations::views(
+                    &mut conn,
+                    project_id,
+                    id,
+                    r.try_get("cur_exec")?,
+                    super::iterations::ViewScope::Item {
+                        budget: &mut budget,
+                    },
+                )
+                .await?;
+                let list: Vec<ManualReportIteration> = its
+                    .into_iter()
+                    .map(|it| report_iteration(&snap.body.steps, it))
+                    .collect();
+                bytes += list
+                    .iter()
+                    .flat_map(|i| i.steps.iter())
+                    .map(|s| s.action.len() + s.expected.len() + s.actual.len() + s.comment.len())
+                    .sum::<usize>()
+                    + list.len() * 128;
+                let cols = snap
+                    .body
+                    .parameters
+                    .as_ref()
+                    .map(|p| p.columns.clone())
+                    .unwrap_or_default();
+                (Vec::new(), list, cols)
+            } else {
+                (report_steps, Vec::new(), Vec::new())
+            };
             bytes += report_steps
                 .iter()
                 .map(|s| {
@@ -2096,9 +2477,51 @@ impl Store {
                 comment: r.try_get("comment")?,
                 defect: r.try_get("defect")?,
                 steps: report_steps,
+                parameter_columns,
+                iterations,
             });
         }
         Ok((out, false))
+    }
+}
+
+/// Bytes of step results one parameterized item carries in the manual report.
+const REPORT_ITERATION_BYTES: usize = 8 * 1024 * 1024;
+/// Bytes the values may add to the step texts of one iteration in the report.
+const REPORT_SUBSTITUTION_BYTES: usize = 64 * 1024;
+
+fn report_iteration(steps: &[CaseStep], it: super::RunIteration) -> ManualReportIteration {
+    let mut budget = REPORT_SUBSTITUTION_BYTES;
+    let report_steps = it
+        .step_results
+        .iter()
+        .map(|r| {
+            let step = step_at(steps, &r.path);
+            let text = |t: Option<&str>, budget: &mut usize| {
+                super::parameters::substitute(t.unwrap_or_default(), &it.values, budget)
+            };
+            ManualReportStep {
+                action: text(step.map(|s| s.action.as_str()), &mut budget),
+                expected: text(step.map(|s| s.expected.as_str()), &mut budget),
+                path: r.path.clone(),
+                status: r.status,
+                actual: r.actual.clone(),
+                comment: r.comment.clone(),
+            }
+        })
+        .collect();
+    ManualReportIteration {
+        row_id: it.row_id,
+        position: it.position,
+        values: it.values,
+        status: it.status,
+        comment: it.comment,
+        executed_by: it.executed_by,
+        started_at: it.started_at,
+        finished_at: it.finished_at,
+        defect: it.defect,
+        steps: report_steps,
+        steps_omitted: it.step_results_omitted,
     }
 }
 

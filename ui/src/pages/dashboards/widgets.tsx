@@ -10,6 +10,7 @@ import { SameName } from '../../components/SameName';
 import { GROUP_COLOR, GROUP_LABEL } from '../../lib/defects';
 import { formatDateTime, formatDuration, isHttpUrl } from '../../lib/format';
 import { sameNameHints } from '../../lib/names';
+import { RequirementCoverageWidget } from './RequirementCoverageWidget';
 
 const STATUS_SERIES = [
   { name: 'passed', label: 'Passed', color: 'var(--fp-status-passed)' },
@@ -552,6 +553,7 @@ export function WidgetBody({ project, widget, data }: { project: string; widget:
         return <Empty text="This widget shows no data of this kind." />;
     }
   }
+  if (data.kind === 'requirementCoverage') return <RequirementCoverageWidget project={project} data={data} />;
   if (data.kind === 'cumulative') return <Cumulative w={widget} d={data} />;
   if (data.kind === 'bugs') return data.items.length === 0 ? <Empty text="No tracked issues in this range." /> : <Bugs items={data.items} />;
   if (data.kind === 'activity') return data.items.length === 0 ? <Empty text="No recorded activity in this range." /> : <Activity items={data.items} />;

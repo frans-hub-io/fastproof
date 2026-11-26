@@ -84,8 +84,9 @@ curl -H "Authorization: Bearer $TOKEN" \
 | `GET /api/v1/analytics/similar` | similar failures in other projects (ClickHouse) |
 
 Every answer carries `window {backend, from, to, partial, reason?}`. These reads are heavy queries and share
-the per-caller limit of other heavy reads (429 with `Retry-After` when exceeded). There is no MCP tool for
-these views yet; agents read them through the REST routes above.
+the per-caller limit of other heavy reads (429 with `Retry-After` when exceeded). The MCP tool `failure_analytics`
+(see [MCP and GitHub Copilot](mcp-copilot.md#analysis-tools)) reads the failure view through the same code, with
+the same permission and heavy limit; the other views are REST only.
 
 ## What ClickHouse keeps for Analysis
 

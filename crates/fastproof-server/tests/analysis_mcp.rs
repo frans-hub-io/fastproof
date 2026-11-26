@@ -42,6 +42,8 @@ const ANALYSIS_TOOLS: &[&str] = &[
     "triage_history",
     "undo_triage",
     "simulate_gate",
+    "flaky_hints",
+    "failure_analytics",
 ];
 
 async fn mcp(s: &Server, token: &str, body: Value) -> (StatusCode, Value) {
@@ -894,8 +896,169 @@ async fn analysis_off_answers_disabled_and_refuses_compute() {
     assert_eq!(h["items"].as_array().map(Vec::len), Some(0), "{h}");
 }
 
-/// Tool names that a later phase adds to the server; the example files may already name them.
-const LATER_TOOLS: &[&str] = &["flaky_hints", "failure_analytics"];
+fn flaky_res(id: &str, status: &str, host: &str) -> Value {
+    let mut v = json!({"id": id, "name": "basket", "fullName": "com.example.Suite#basket", "status": status,
+        "labels": [{"name": "host", "value": host}]});
+    if status == "failed" {
+        v["error"] = json!({"message": "expected the basket to hold 2 items but it held 3",
+            "trace": "java.lang.AssertionError: expected 2 but was 3\n\tat com.example.Suite.basket(Suite.java:42)"});
+    }
+    v
+}
+
+#[tokio::test]
+async fn flaky_hints_and_failure_analytics_through_mcp() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = Server::start_with_paused(&db, ON, ROLE_JOBS).await;
+    s.project("mc").await;
+    s.project("op").await;
+    let viewer = s.token("v", "viewer", &["mc"]).await;
+    let outsider = s.token("out", "editor", &["op"]).await;
+    for i in 0..15 {
+        let host = ["ci-1", "ci-2", "ci-3"][i % 3];
+        let status = if host == "ci-3" && i != 5 {
+            "failed"
+        } else {
+            "passed"
+        };
+        let lid = finished_launch(&s, "mc", vec![flaky_res(&format!("a{i}"), status, host)]).await;
+        analysed(&s, "mc", &lid).await;
+    }
+    let (_, list) = s.get("/api/v1/projects/mc/flaky", &viewer).await;
+    let item = list["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["name"] == "basket")
+        .unwrap_or_else(|| panic!("{list}"))
+        .clone();
+    let series = item["seriesId"].as_str().unwrap().to_string();
+    let case = item["testCaseId"].as_str().unwrap().to_string();
+
+    let h = ok(
+        &s,
+        &viewer,
+        "flaky_hints",
+        json!({"project": "mc", "seriesId": series}),
+    )
+    .await;
+    assert_eq!(h["untrustedContent"], true);
+    assert_eq!(h["hints"][0]["kind"], "environment", "{h}");
+    let (_, rest) = s
+        .get(
+            &format!("/api/v1/projects/mc/flaky/{series}/hints"),
+            &viewer,
+        )
+        .await;
+    assert_eq!(h["hints"], rest["hints"]);
+    assert_eq!(h["failures"], rest["failures"]);
+    let by_case = ok(
+        &s,
+        &viewer,
+        "flaky_hints",
+        json!({"project": "mc", "testCaseId": case}),
+    )
+    .await;
+    assert_eq!(by_case["items"].as_array().unwrap().len(), 1, "{by_case}");
+    assert_eq!(by_case["items"][0]["seriesId"], series.as_str());
+    assert!(by_case["items"][0]["seriesKey"].is_string());
+    assert_eq!(by_case["untrustedContent"], true);
+    for bad in [
+        json!({"project": "mc"}),
+        json!({"project": "mc", "seriesId": series, "testCaseId": case}),
+        json!({"project": "mc", "seriesId": "nope"}),
+        json!({"project": "mc", "seriesId": series, "extra": 1}),
+    ] {
+        let (e, v) = tool(&s, &viewer, "flaky_hints", bad.clone()).await;
+        assert!(e, "{bad}: {v}");
+    }
+    refused(
+        &s,
+        &viewer,
+        "flaky_hints",
+        json!({"project": "mc", "seriesId": uuid_of("")}),
+        "not_found",
+    )
+    .await;
+    refused(
+        &s,
+        &outsider,
+        "flaky_hints",
+        json!({"project": "mc", "seriesId": series}),
+        "forbidden",
+    )
+    .await;
+    refused(
+        &s,
+        &outsider,
+        "flaky_hints",
+        json!({"project": "op", "seriesId": series}),
+        "not_found",
+    )
+    .await;
+    let none = ok(
+        &s,
+        &outsider,
+        "flaky_hints",
+        json!({"project": "op", "testCaseId": case}),
+    )
+    .await;
+    assert_eq!(
+        none["items"].as_array().map(Vec::len),
+        Some(0),
+        "no leak: {none}"
+    );
+
+    let f = ok(
+        &s,
+        &viewer,
+        "failure_analytics",
+        json!({"project": "mc", "groupBy": "fingerprint", "limit": 5}),
+    )
+    .await;
+    assert_eq!(f["untrustedContent"], true);
+    let (_, rest) = s
+        .get(
+            "/api/v1/projects/mc/analytics/failures?groupBy=fingerprint&limit=5",
+            &viewer,
+        )
+        .await;
+    assert_eq!(f["total"], rest["total"], "{f} {rest}");
+    assert_eq!(f["items"], rest["items"]);
+    assert!(f["total"].as_i64().unwrap() >= 4, "{f}");
+    let g = ok(
+        &s,
+        &viewer,
+        "failure_analytics",
+        json!({"project": "mc", "groupBy": "defectGroup", "branch": "main"}),
+    )
+    .await;
+    assert_eq!(g["groupBy"], "defectGroup", "{g}");
+    for bad in [
+        json!({"project": "mc", "groupBy": "colour"}),
+        json!({"project": "mc", "limit": 51}),
+        json!({"project": "mc", "limit": 0}),
+        json!({"project": "mc", "from": "2026-02-01T00:00:00Z", "to": "2026-01-01T00:00:00Z"}),
+        json!({"project": "mc", "from": "yesterday"}),
+        json!({"project": "mc", "branch": "b".repeat(201)}),
+        json!({"project": "mc", "env": "x"}),
+    ] {
+        let (e, v) = tool(&s, &viewer, "failure_analytics", bad.clone()).await;
+        assert!(e, "{bad}: {v}");
+    }
+    refused(
+        &s,
+        &outsider,
+        "failure_analytics",
+        json!({"project": "mc"}),
+        "forbidden",
+    )
+    .await;
+    let theirs = ok(&s, &outsider, "failure_analytics", json!({"project": "op"})).await;
+    assert_eq!(theirs["total"], 0, "no leak: {theirs}");
+}
 
 fn copilot_files() -> Vec<(String, String)> {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -940,10 +1103,7 @@ fn the_copilot_files_name_only_tools_the_server_has() {
     for (file, text) in &files {
         assert!(text.starts_with("---\n"), "{file} has front matter");
         for w in snake_words(text) {
-            assert!(
-                tools.contains(&w) || LATER_TOOLS.contains(&w.as_str()),
-                "{file} names {w}, which is not a tool"
-            );
+            assert!(tools.contains(&w), "{file} names {w}, which is not a tool");
             named.insert(w);
         }
     }

@@ -174,9 +174,21 @@ pub async fn failures(
     P(key): P<String>,
     Q(q): Q<AnalyticsQuery>,
 ) -> ApiResult<Json<FailureAnalytics>> {
-    let (p, fq, w) = start(&s, &auth, &key, &q).await?;
-    let _permit = s.guards.heavy(&auth).await?;
-    if let (Some(ch), Some(w)) = (ch(&s), w) {
+    Ok(Json(failures_of(&s, &auth, &key, &q).await?))
+}
+
+/// The failure analytics of a project for a caller: `launches:read` in the project's scope,
+/// the heavy guard held for the whole read (a dropped read is cancelled in ClickHouse), the
+/// window and filters validated as on the route. Shared by the route and the MCP tool.
+pub(crate) async fn failures_of(
+    s: &AppState,
+    auth: &Auth,
+    key: &str,
+    q: &AnalyticsQuery,
+) -> ApiResult<FailureAnalytics> {
+    let (p, fq, w) = start(s, auth, key, q).await?;
+    let _permit = s.guards.heavy(auth).await?;
+    if let (Some(ch), Some(w)) = (ch(s), w) {
         let aliases = if fq.group_by == FailureGroupBy::Fingerprint {
             s.store.alias_map(p.id, MAX_ALIASES).await?
         } else {
@@ -203,17 +215,17 @@ pub async fn failures(
                     .map(|g| (g.key, g.failures, g.tests, g.launches))
                     .collect();
                 let buckets = Buckets::new(w.from, w.to);
-                return Ok(Json(FailureAnalytics {
+                return Ok(FailureAnalytics {
                     items: failure_groups(fq.group_by, total, counts, &days, &buckets, &labels),
                     window: w,
                     group_by: fq.group_by,
                     total,
-                }));
+                });
             }
             Err(e) => fell_back("failures", e),
         }
     }
-    Ok(Json(s.store.analytics_failures_pg(p.id, &fq).await?))
+    Ok(s.store.analytics_failures_pg(p.id, &fq).await?)
 }
 
 #[utoipa::path(get, path = "/api/v1/projects/{key}/analytics/durations", tag = "analytics",

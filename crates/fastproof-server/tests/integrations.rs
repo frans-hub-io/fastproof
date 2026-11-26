@@ -1533,6 +1533,8 @@ async fn mcp_tools_over_http() {
         "triage_history",
         "undo_triage",
         "simulate_gate",
+        "flaky_hints",
+        "failure_analytics",
     ]);
     want.sort_unstable();
     assert_eq!(names, want);

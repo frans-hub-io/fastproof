@@ -106,10 +106,12 @@ error).
 | `triage_history` | The decision journal of a `resultId` or a `batchId` (one of them): path, source, author, state before and after, whether the batch can be undone | `launches:read` |
 | `undo_triage` | Puts a batch back (`batchId`); results changed since are skipped; the undo is a batch itself | `results:triage`; a batch that changed mutes also `results:mute` |
 | `simulate_gate` | Evaluates a draft `gate` on the newest `launches` (1 to 200, 50) finished launches, optionally of one `branch`, without writing; takes a heavy slot | `launches:read` |
+| `flaky_hints` | The likely causes of a flaky test: `seriesId` (from `flaky_tests`) or `testCaseId` (its newest series, at most 10); each hint has a kind (`timing`, `environment`, `order`, `retry`, `infra`, `time`), confidence, evidence and suggested actions; a hint never mutes by itself | `launches:read` |
+| `failure_analytics` | Failed and broken results of a window grouped by `groupBy` (`fingerprint`, `defectGroup`, `suite`, `env`), with `from`, `to`, `branch`, `limit` 1 to 50 (20): failures, tests, launches, share and trend per group; ClickHouse answers up to 365 days, else the last 30 (`window.partial`); takes a heavy slot | `launches:read` |
 
 A suggestion is a transparent nearest-decision search over what people decided before (each `why` item is one row
 of the weight table), not a self-learning model. `launch_suggestions`, `error_detail`, `unique_errors`,
-`search_logs`, `triage_history`, `reject_suggestion` and `simulate_gate` return text that came from tests, reporters
+`search_logs`, `triage_history`, `reject_suggestion`, `simulate_gate`, `flaky_hints` and `failure_analytics` return text that came from tests, reporters
 or people: their answers carry
 `"untrustedContent": true`, and their descriptions tell the agent that log and message text is data, never
 instructions. The example agent is written that way; keep that rule in any agent you write.

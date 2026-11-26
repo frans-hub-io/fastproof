@@ -7031,6 +7031,72 @@
         }
       }
     },
+    "/api/v1/projects/{key}/flaky/{seriesId}/hints": {
+      "get": {
+        "tags": [
+          "analysis"
+        ],
+        "description": "The likely causes of a flaky test (one series: the test in one environment), most confident first, each with its evidence and the actions it suggests (`mute` with an end, `issue`, `rule`; a hint never mutes by itself): `timing`, `environment`, `order`, `retry`, `infra` and, with ClickHouse, `time`. A hint appears only above its minimum of data. Computed by the analysis role after a launch in which the series changed status and daily; `computedAt` is `null` before the first computation. `infraShare` is the share of the failures with infrastructure evidence (they still count in the flaky score). Needs `launches:read`.",
+        "operationId": "analysis_flaky_hints",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "seriesId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FlakyHints"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{key}/gates/history": {
       "get": {
         "tags": [
@@ -24690,12 +24756,29 @@
         "description": "A flaky test.",
         "required": [
           "testCaseId",
+          "seriesId",
           "seriesKey",
           "name",
           "score",
-          "lastStatuses"
+          "lastStatuses",
+          "hints"
         ],
         "properties": {
+          "hints": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FlakyHintBrief"
+            },
+            "description": "Likely causes, most confident first (FastProof Analysis; empty without it)."
+          },
+          "infraShare": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Share of the failures with infrastructure evidence (signals, bursts, infrastructure\nerrors); `null` before the causes are computed or without failures."
+          },
           "lastFlakyAt": {
             "type": [
               "string",
@@ -24717,6 +24800,11 @@
             "type": "number",
             "format": "float",
             "description": "Share of status changes over the detection window (0..1)."
+          },
+          "seriesId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The series (the test in one environment); its causes are at `GET .../flaky/{seriesId}/hints`."
           },
           "seriesKey": {
             "type": "string"

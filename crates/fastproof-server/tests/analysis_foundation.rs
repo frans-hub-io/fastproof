@@ -630,7 +630,7 @@ async fn the_role_analyses_finished_launches() {
     assert_eq!(st, StatusCode::OK);
     assert_eq!(a["state"], "done", "{a}");
     assert_eq!(a["steps"]["errors"]["status"], "done", "{a}");
-    for step in ["signals", "logRules", "flakyHints"] {
+    for step in ["signals", "logRules"] {
         assert_eq!(a["steps"][step]["status"], "skipped", "{a}");
         let reason = a["steps"][step]["detail"]["reason"]
             .as_str()
@@ -641,6 +641,8 @@ async fn the_role_analyses_finished_launches() {
         );
     }
     assert_eq!(a["steps"]["suggestions"]["status"], "done", "{a}");
+    assert_eq!(a["steps"]["flakyHints"]["status"], "done", "{a}");
+    assert_eq!(a["steps"]["flakyHints"]["detail"]["series"], 0, "{a}");
 
     // A failing step is recorded and the next ones still run.
     let row = AnalysisLaunchRow {

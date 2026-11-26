@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 use super::settings::ProjectSettings;
 use super::stats;
+use super::types::FlakyHintBrief;
 use crate::{Store, no_nul};
 
 /// Launches of a branch that the branch view reads, at most.
@@ -23,6 +24,8 @@ pub const SHOWN_STATUSES: usize = 10;
 #[serde(rename_all = "camelCase")]
 pub struct FlakyItem {
     pub test_case_id: Uuid,
+    /// The series (the test in one environment); its causes are at `GET .../flaky/{seriesId}/hints`.
+    pub series_id: Uuid,
     pub series_key: String,
     pub name: String,
     /// Share of status changes over the detection window (0..1).
@@ -30,6 +33,11 @@ pub struct FlakyItem {
     /// Newest first.
     pub last_statuses: Vec<String>,
     pub last_flaky_at: Option<DateTime<Utc>>,
+    /// Likely causes, most confident first (FastProof Analysis; empty without it).
+    pub hints: Vec<FlakyHintBrief>,
+    /// Share of the failures with infrastructure evidence (signals, bursts, infrastructure
+    /// errors); `null` before the causes are computed or without failures.
+    pub infra_share: Option<f64>,
 }
 
 /// Filters of the flaky list.
@@ -41,6 +49,7 @@ pub struct FlakyFilter {
 }
 
 type StatsRow = (
+    Uuid,
     Uuid,
     String,
     String,
@@ -57,11 +66,28 @@ impl Store {
         f: &FlakyFilter,
     ) -> anyhow::Result<Vec<FlakyItem>> {
         let window = settings.flaky.depth() as usize + 1;
-        if let Some(branch) = &f.branch {
-            return self.flaky_on_branch(project_id, branch, f, window).await;
+        let mut items = match &f.branch {
+            Some(branch) => self.flaky_on_branch(project_id, branch, f, window).await?,
+            None => self.flaky_overall(project_id, f).await?,
+        };
+        let ids: Vec<Uuid> = items.iter().map(|i| i.series_id).collect();
+        let briefs = self.flaky_hint_briefs(project_id, &ids).await?;
+        for i in &mut items {
+            if let Some(b) = briefs.get(&i.series_id) {
+                i.hints = b.hints.clone();
+                i.infra_share = b.infra_share;
+            }
         }
+        Ok(items)
+    }
+
+    async fn flaky_overall(
+        &self,
+        project_id: Uuid,
+        f: &FlakyFilter,
+    ) -> anyhow::Result<Vec<FlakyItem>> {
         let rows: Vec<StatsRow> = sqlx::query_as(
-            "select s.test_case_id, s.series_key, tc.display_name, st.flaky_score, st.last_statuses, st.last_flaky_at \
+            "select s.test_case_id, s.id, s.series_key, tc.display_name, st.flaky_score, st.last_statuses, st.last_flaky_at \
              from series_stats st join series s on s.id = st.series_id join test_cases tc on tc.id = s.test_case_id \
              where st.project_id = $1 and (st.flaky or st.last_flaky_at > now() - interval '30 days') \
                and ($2::text is null or s.env_key = $2) \
@@ -74,11 +100,12 @@ impl Store {
         .await?;
         Ok(rows
             .into_iter()
-            .map(|(tc, key, name, score, statuses, at)| {
+            .map(|(tc, series_id, key, name, score, statuses, at)| {
                 let mut st = stats::decode(&statuses);
                 st.reverse();
                 FlakyItem {
                     test_case_id: tc,
+                    series_id,
                     series_key: key,
                     name,
                     score: score.unwrap_or(0.0),
@@ -88,6 +115,8 @@ impl Store {
                         .map(|s| s.as_str().to_string())
                         .collect(),
                     last_flaky_at: at,
+                    hints: Vec::new(),
+                    infra_share: None,
                 }
             })
             .collect())
@@ -152,6 +181,7 @@ impl Store {
             let last_flaky_at = v.iter().filter(|x| x.2).map(|x| x.0).max();
             items.push(FlakyItem {
                 test_case_id: *tc,
+                series_id: s,
                 series_key: key.clone(),
                 name: name.clone(),
                 score: stats::flaky_score(&statuses, window).unwrap_or(0.0),
@@ -162,6 +192,8 @@ impl Store {
                     .map(|s| s.as_str().to_string())
                     .collect(),
                 last_flaky_at,
+                hints: Vec::new(),
+                infra_share: None,
             });
         }
         items.sort_by(|a, b| {

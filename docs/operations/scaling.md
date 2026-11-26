@@ -340,6 +340,30 @@ rounds each, alternating): without log lines 5,700 results per second with the i
 through the HTTP API (or straight to Kafka), and reports throughput and server-side lag. Run it as a
 Kubernetes Job next to the installation you want to measure.
 
+### Analysis
+
+`fastproof bench analysis` measures FastProof Analysis through the public API with an admin token. Profile
+`s` (the default) uploads synthetic launches, triages them, and times the suggestions of a launch of 5,000
+results in 300 clusters (targets: the `suggestions` step < 5 s, `GET …/suggestions` p95 < 100 ms). Profile
+`m` also times every analytics endpoint over a 90-day window and the portfolio (targets with ClickHouse:
+each endpoint p95 < 1 s, the portfolio p95 < 3 s). Measure profile `m` on a project that already holds the
+target volume (about 100 million results and a billion log lines over 90 days), with the ClickHouse sink on
+and the analysis role running:
+
+```bash
+FASTPROOF_URL=https://fastproof.example.com FASTPROOF_TOKEN_FILE=admin-token \
+  fastproof bench analysis --profile m --analytics-only --analytics-project big-project --analytics-days 90
+```
+
+Without `--analytics-only` the bench first creates its own project and runs profile `s`, then measures the
+analytics of that project (or of `--analytics-project`). The report lists p50 and p95 per endpoint (and a JSON line) and the
+backend that answered; the exit code does not depend on the targets.
+
+| Profile `m` (ClickHouse, 100 M results, 90 days) | Target p95 | Measured |
+|---|---|---|
+| Analytics endpoints of one project | < 1 s | not measured yet |
+| Portfolio | < 3 s | not measured yet |
+
 ### Test management
 
 `fastproof bench tm` loads test management through the public API only, with the same `FASTPROOF_URL` and

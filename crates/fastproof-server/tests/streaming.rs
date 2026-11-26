@@ -55,8 +55,17 @@ async fn post_ndjson(s: &Server, path: &str, lines: &[Value]) -> (StatusCode, Va
     (st, r.json().await.unwrap_or(Value::Null))
 }
 
+/// Log time of the test lines: a minute before the test started, so log search (which looks
+/// back 7 days by default) finds them whatever the date.
+static T0: std::sync::LazyLock<i64> = std::sync::LazyLock::new(|| {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as i64)
+        - 60_000
+});
+
 fn line(result: &str, attempt: u32, seq: u64, level: &str, message: &str) -> Value {
-    json!({"resultId": result, "attempt": attempt, "seq": seq, "ts": 1_795_000_000_000i64 + seq as i64,
+    json!({"resultId": result, "attempt": attempt, "seq": seq, "ts": *T0 + seq as i64,
         "level": level, "stream": "stdout", "message": message})
 }
 

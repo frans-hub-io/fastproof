@@ -44,11 +44,16 @@ async fn clickhouse_schema_is_idempotent() {
         tables.split_whitespace().collect::<Vec<_>>(),
         [
             "attempts",
+            "defect_daily",
+            "fingerprint_daily",
+            "fingerprint_daily_mv",
             "logs",
             "results",
+            "schema_version",
             "series_daily",
             "series_daily_mv",
-            "steps"
+            "steps",
+            "triage"
         ]
     );
     ch.exec(&format!("DROP DATABASE {db}"), &[], None)

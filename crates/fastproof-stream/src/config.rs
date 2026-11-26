@@ -306,7 +306,13 @@ pub struct ClickHouseConfig {
     pub endpoint: HttpEndpoint,
     pub database: String,
     pub raw_ttl_days: u32,
+    /// Days the Analysis aggregates and the triage history are kept
+    /// (`FASTPROOF_CLICKHOUSE_AGG_TTL_DAYS`, 30..=3650, default 730).
+    pub agg_ttl_days: u32,
 }
+
+/// Default of `FASTPROOF_CLICKHOUSE_AGG_TTL_DAYS`.
+pub const DEFAULT_AGG_TTL_DAYS: u32 = 730;
 
 /// OpenSearch sink and search settings.
 #[derive(Clone, Debug)]
@@ -347,6 +353,15 @@ fn ttl(v: &Vars<'_>, k: &str) -> anyhow::Result<u32> {
     Ok(d)
 }
 
+fn agg_ttl(v: &Vars<'_>) -> anyhow::Result<u32> {
+    let k = "FASTPROOF_CLICKHOUSE_AGG_TTL_DAYS";
+    let d: u32 = v.parse(k, DEFAULT_AGG_TTL_DAYS)?;
+    if !(30..=3650).contains(&d) {
+        bail!("{k}: 30..=3650");
+    }
+    Ok(d)
+}
+
 impl ClickHouseConfig {
     pub fn from_vars(v: &Vars<'_>) -> anyhow::Result<Option<Self>> {
         let Some(endpoint) = endpoint(v, "FASTPROOF_CLICKHOUSE")? else {
@@ -367,6 +382,7 @@ impl ClickHouseConfig {
             endpoint,
             database,
             raw_ttl_days: ttl(v, "FASTPROOF_CLICKHOUSE_RAW_TTL_DAYS")?,
+            agg_ttl_days: agg_ttl(v)?,
         }))
     }
 }
@@ -540,7 +556,20 @@ mod tests {
         assert!(ch(&m).is_err());
         m.remove("FASTPROOF_CLICKHOUSE_DATABASE");
         let c = ch(&m).unwrap().unwrap();
-        assert_eq!((c.database.as_str(), c.raw_ttl_days), ("fastproof", 90));
+        assert_eq!(
+            (c.database.as_str(), c.raw_ttl_days, c.agg_ttl_days),
+            ("fastproof", 90, 730)
+        );
+        m.insert("FASTPROOF_CLICKHOUSE_AGG_TTL_DAYS", "29".into());
+        assert!(
+            ch(&m)
+                .unwrap_err()
+                .to_string()
+                .contains("FASTPROOF_CLICKHOUSE_AGG_TTL_DAYS")
+        );
+        m.insert("FASTPROOF_CLICKHOUSE_AGG_TTL_DAYS", "3650".into());
+        assert_eq!(ch(&m).unwrap().unwrap().agg_ttl_days, 3650);
+        m.remove("FASTPROOF_CLICKHOUSE_AGG_TTL_DAYS");
         m.insert(
             "FASTPROOF_OPENSEARCH_URL",
             "http://os.example.com:9200".into(),

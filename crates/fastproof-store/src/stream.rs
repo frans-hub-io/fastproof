@@ -45,6 +45,137 @@ pub struct SinkResult {
     pub branch: Option<String>,
     pub env_key: Option<String>,
     pub updated_at: DateTime<Utc>,
+    /// The defect type of the current triage (none for an undecided result).
+    pub defect_type_id: Option<Uuid>,
+    /// The defect group of the current triage (`""` without one).
+    pub defect_group: String,
+    /// Who set the current triage: `user`, `ai`, `rule`, `auto` (`""` without one).
+    pub defect_source: String,
+    pub muted: bool,
+    /// The fingerprint the result's error is merged into (its own when not merged).
+    pub canonical_fingerprint: Option<String>,
+    /// The suite path joined with ` / ` (`""` without one).
+    pub suite: String,
+}
+
+/// A triage decision for the ClickHouse `triage` table (a `triage_decisions` row with the
+/// result's test case, the launch's branch and environment and the error's catalog message).
+#[derive(Clone, Debug, Serialize)]
+pub struct SinkTriage {
+    pub decision_id: i64,
+    pub project: String,
+    pub project_id: Uuid,
+    pub launch_id: Uuid,
+    pub launch_created_at: DateTime<Utc>,
+    pub result_id: Uuid,
+    pub batch_id: Uuid,
+    pub fingerprint: String,
+    pub via: String,
+    pub source: String,
+    pub by: String,
+    pub at: DateTime<Utc>,
+    pub before_type_id: Option<Uuid>,
+    pub before_group: String,
+    pub after_type_id: Option<Uuid>,
+    pub after_group: String,
+    pub message_norm: String,
+    pub test_case_id: Uuid,
+    pub branch: String,
+    pub env_key: String,
+    /// The batch an undo batch reverts.
+    pub reverts_batch: Option<Uuid>,
+}
+
+/// Where the ClickHouse backfill of Analysis is (`analysis_state` row [`CH_BACKFILL_STATE`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChBackfill {
+    /// The last `triage_decisions` id sent.
+    #[serde(default)]
+    pub decision: i64,
+    /// The newest decision id when the backfill started: decisions after it reach ClickHouse
+    /// through the sink.
+    #[serde(default)]
+    pub until: i64,
+    /// The last launch whose results were re-sent (`created_at`, id).
+    #[serde(default)]
+    pub launch_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub launch_id: Option<Uuid>,
+    #[serde(default)]
+    pub decisions_done: bool,
+    #[serde(default)]
+    pub results_done: bool,
+    #[serde(default)]
+    pub decisions: u64,
+    #[serde(default)]
+    pub results: u64,
+    /// The first rollup after the backfill recomputed `defect_daily` over the raw TTL.
+    #[serde(default)]
+    pub rollup_full: bool,
+}
+
+impl ChBackfill {
+    pub fn done(&self) -> bool {
+        self.decisions_done && self.results_done
+    }
+}
+
+/// The `analysis_state` row of the ClickHouse backfill.
+pub const CH_BACKFILL_STATE: &str = "ch.backfill";
+
+/// An id of a `uuid` text in a JSON path, or null (malformed values never fail a load).
+const UUID_RE: &str =
+    "'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'";
+
+fn uuid_of(path: &str) -> String {
+    format!("case when ({path}) ~ {UUID_RE} then ({path})::uuid end")
+}
+
+/// The columns of a [`SinkTriage`] (`d` is the decision, `p` its project, `l` its launch).
+fn triage_select() -> String {
+    format!(
+        "select d.id, p.key, d.project_id, d.launch_id, d.launch_created_at, d.result_id, d.batch_id, \
+           coalesce(d.fingerprint, '') as fingerprint, d.via, d.source, d.by, d.at, d.reverts_batch, \
+           {} as before_type_id, coalesce(d.before->'defect'->>'group', '') as before_group, \
+           {} as after_type_id, coalesce(d.after->'defect'->>'group', '') as after_group, \
+           coalesce((select f.message from failure_fingerprints f where f.project_id = d.project_id \
+             and f.fingerprint = d.fingerprint), '') as message_norm, \
+           coalesce((select r.test_case_id from results r where r.id = d.result_id \
+             and r.launch_created_at = d.launch_created_at), '00000000-0000-0000-0000-000000000000'::uuid) \
+             as test_case_id, \
+           coalesce(l.branch, '') as branch, coalesce(l.env_key, '') as env_key \
+         from triage_decisions d join projects p on p.id = d.project_id \
+         left join launches l on l.id = d.launch_id",
+        uuid_of("d.before->'defect'->>'typeId'"),
+        uuid_of("d.after->'defect'->>'typeId'"),
+    )
+}
+
+fn triage_row(r: &sqlx::postgres::PgRow) -> anyhow::Result<SinkTriage> {
+    Ok(SinkTriage {
+        decision_id: r.try_get("id")?,
+        project: r.try_get("key")?,
+        project_id: r.try_get("project_id")?,
+        launch_id: r.try_get("launch_id")?,
+        launch_created_at: r.try_get("launch_created_at")?,
+        result_id: r.try_get("result_id")?,
+        batch_id: r.try_get("batch_id")?,
+        fingerprint: r.try_get("fingerprint")?,
+        via: r.try_get("via")?,
+        source: r.try_get("source")?,
+        by: r.try_get("by")?,
+        at: r.try_get("at")?,
+        before_type_id: r.try_get("before_type_id")?,
+        before_group: r.try_get("before_group")?,
+        after_type_id: r.try_get("after_type_id")?,
+        after_group: r.try_get("after_group")?,
+        message_norm: r.try_get("message_norm")?,
+        test_case_id: r.try_get("test_case_id")?,
+        branch: r.try_get("branch")?,
+        env_key: r.try_get("env_key")?,
+        reverts_batch: r.try_get("reverts_batch")?,
+    })
 }
 
 /// An attempt row with its steps for the analytics sinks.
@@ -65,6 +196,10 @@ pub struct SinkAttempt {
     pub message: Option<String>,
     pub trace: Option<String>,
     pub steps: Vec<Step>,
+    pub fingerprint: Option<String>,
+    /// The newest frames of the trace (`fastproof_analysis::frames`).
+    pub frames: Vec<String>,
+    pub trace_id: Option<String>,
 }
 
 /// A similar failure.
@@ -390,13 +525,19 @@ impl Store {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
-        let rows = sqlx::query(
+        let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
             "select r.id, p.key, r.project_id, r.launch_id, l.number, r.launch_created_at, r.series_id, \
                r.test_case_id, r.name, r.full_name, r.status, r.flaky_in_run, r.attempt_count, r.started_at, \
-               r.duration_ms, r.message, r.fingerprint, l.branch, l.env_key, r.updated_at \
+               r.duration_ms, r.message, r.fingerprint, l.branch, l.env_key, r.updated_at, r.muted, \
+               {} as defect_type_id, coalesce(r.defect->>'group', '') as defect_group, \
+               coalesce(r.defect->>'source', '') as defect_source, \
+               array_to_string(r.suite_path, ' / ') as suite, \
+               coalesce((select f.alias_of from failure_fingerprints f where f.project_id = r.project_id \
+                 and f.fingerprint = r.fingerprint), r.fingerprint) as canonical_fingerprint \
              from results r join launches l on l.id = r.launch_id join projects p on p.id = r.project_id \
              where r.id = any($1)",
-        )
+            uuid_of("r.defect->>'typeId'")
+        )))
         .bind(ids)
         .fetch_all(&self.pool)
         .await?;
@@ -423,6 +564,12 @@ impl Store {
                     branch: r.try_get("branch")?,
                     env_key: r.try_get("env_key")?,
                     updated_at: r.try_get("updated_at")?,
+                    defect_type_id: r.try_get("defect_type_id")?,
+                    defect_group: r.try_get("defect_group")?,
+                    defect_source: r.try_get("defect_source")?,
+                    muted: r.try_get("muted")?,
+                    canonical_fingerprint: r.try_get("canonical_fingerprint")?,
+                    suite: r.try_get("suite")?,
                 })
             })
             .collect()
@@ -435,7 +582,8 @@ impl Store {
         }
         let rows = sqlx::query(
             "select a.id, p.key, a.project_id, a.launch_id, a.launch_created_at, a.result_id, a.series_id, \
-               a.client_key, a.seq, a.status, a.started_at, a.duration_ms, a.message, a.trace, a.steps_z \
+               a.client_key, a.seq, a.status, a.started_at, a.duration_ms, a.message, a.trace, a.steps_z, \
+               a.fingerprint, a.trace_id \
              from attempts a join projects p on p.id = a.project_id where a.id = any($1)",
         )
         .bind(ids)
@@ -444,7 +592,14 @@ impl Store {
         let mut out = Vec::with_capacity(rows.len());
         for r in rows {
             let steps_z: Option<Vec<u8>> = r.try_get("steps_z")?;
+            let trace: Option<String> = r.try_get("trace")?;
             out.push(SinkAttempt {
+                frames: trace
+                    .as_deref()
+                    .map(fastproof_analysis::frames::frames)
+                    .unwrap_or_default(),
+                fingerprint: r.try_get("fingerprint")?,
+                trace_id: r.try_get("trace_id")?,
                 id: r.try_get("id")?,
                 project: r.try_get("key")?,
                 project_id: r.try_get("project_id")?,
@@ -458,7 +613,7 @@ impl Store {
                 started_at: r.try_get("started_at")?,
                 duration_ms: r.try_get("duration_ms")?,
                 message: r.try_get("message")?,
-                trace: r.try_get("trace")?,
+                trace,
                 steps: match steps_z {
                     Some(z) => codec::decode(&z).unwrap_or_default(),
                     None => Vec::new(),
@@ -466,6 +621,127 @@ impl Store {
             });
         }
         Ok(out)
+    }
+
+    /// Decisions of the named batches (`triage.decided` events: project key and batch id)
+    /// after decision id `after`, in id order, at most `limit`. Batches of deleted projects
+    /// are skipped.
+    pub async fn sink_triage_rows(
+        &self,
+        batches: &[(String, Uuid)],
+        after: i64,
+        limit: i64,
+    ) -> anyhow::Result<Vec<SinkTriage>> {
+        if batches.is_empty() {
+            return Ok(Vec::new());
+        }
+        let keys: Vec<&str> = batches.iter().map(|b| b.0.as_str()).collect();
+        let ids: Vec<Uuid> = batches.iter().map(|b| b.1).collect();
+        let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "{} where d.project_id in (select id from projects where key = any($1) and deleted_at is null) \
+               and d.batch_id = any($2) and d.id > $3 order by d.id limit $4",
+            triage_select()
+        )))
+        .bind(&keys)
+        .bind(&ids)
+        .bind(after)
+        .bind(limit.clamp(1, 10_000))
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(triage_row).collect()
+    }
+
+    /// Decisions after id `after` up to id `until`, except rule batches (the backfill), in id
+    /// order, at most `limit`.
+    pub async fn sink_triage_after(
+        &self,
+        after: i64,
+        until: i64,
+        limit: i64,
+    ) -> anyhow::Result<Vec<SinkTriage>> {
+        let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "{} where d.id > $1 and d.id <= $2 and d.via <> 'rule' and p.deleted_at is null \
+             order by d.id limit $3",
+            triage_select()
+        )))
+        .bind(after)
+        .bind(until)
+        .bind(limit.clamp(1, 10_000))
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(triage_row).collect()
+    }
+
+    /// The newest `triage_decisions` id (0 without any).
+    pub async fn max_decision_id(&self) -> anyhow::Result<i64> {
+        Ok(
+            sqlx::query_scalar::<_, Option<i64>>("select max(id) from triage_decisions")
+                .fetch_one(&self.pool)
+                .await?
+                .unwrap_or(0),
+        )
+    }
+
+    /// The next launches created since `since` after the cursor `(created_at, id)`, oldest
+    /// first, at most `limit` (the backfill re-sends their results).
+    pub async fn backfill_launches(
+        &self,
+        since: DateTime<Utc>,
+        after: Option<(DateTime<Utc>, Uuid)>,
+        limit: i64,
+    ) -> anyhow::Result<Vec<(DateTime<Utc>, Uuid)>> {
+        let (at, id) = after.unwrap_or((since, Uuid::nil()));
+        Ok(sqlx::query_as(
+            "select l.created_at, l.id from launches l join projects p on p.id = l.project_id \
+             where p.deleted_at is null and l.created_at >= $1 and (l.created_at, l.id) > ($2, $3) \
+             order by l.created_at, l.id limit $4",
+        )
+        .bind(since)
+        .bind(at)
+        .bind(id)
+        .bind(limit.clamp(1, 10_000))
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    /// Results of a launch whose defect columns matter to ClickHouse: failed or broken, muted,
+    /// or triaged.
+    pub async fn backfill_result_ids(
+        &self,
+        launch_id: Uuid,
+        launch_created_at: DateTime<Utc>,
+    ) -> anyhow::Result<Vec<Uuid>> {
+        Ok(sqlx::query_scalar(
+            "select id from results where launch_id = $1 and launch_created_at = $2 \
+               and (status in ('failed', 'broken') or muted or defect is not null) order by id",
+        )
+        .bind(launch_id)
+        .bind(launch_created_at)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    /// The state of the ClickHouse backfill (`None` before it started).
+    pub async fn ch_backfill(&self) -> anyhow::Result<Option<ChBackfill>> {
+        let v: Option<serde_json::Value> =
+            sqlx::query_scalar("select value from analysis_state where name = $1")
+                .bind(CH_BACKFILL_STATE)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(v.and_then(|v| serde_json::from_value(v).ok()))
+    }
+
+    /// Stores the state of the ClickHouse backfill.
+    pub async fn put_ch_backfill(&self, st: &ChBackfill) -> anyhow::Result<()> {
+        sqlx::query(
+            "insert into analysis_state (name, value) values ($1, $2) \
+             on conflict (name) do update set value = excluded.value, updated_at = now()",
+        )
+        .bind(CH_BACKFILL_STATE)
+        .bind(serde_json::to_value(st)?)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     /// The reference failure of a similar-failure lookup.

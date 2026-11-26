@@ -37,6 +37,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/analytics/portfolio": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Health of the projects the caller can read (`launches:read` in each; at most 200, narrowed by `projects`): launches, pass rate of the results that ran, failures, unique errors first seen and regressed in the window, flaky tests and the median time to resolve. A project the caller cannot read never appears or counts. Needs ClickHouse (409 `clickhouse_required`). */
+        get: operations["analytics_portfolio"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/analytics/similar": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Failures like a result of `project` in the other projects the caller can read (`launches:read` there): the same fingerprint (score 1) or a close normalized message, most similar first, with each match's current defect group. Needs `launches:read` on `project` and ClickHouse (409 `clickhouse_required`). */
+        get: operations["analytics_similar"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/audit": {
         parameters: {
             query?: never;
@@ -228,6 +262,108 @@ export interface paths {
         };
         /** @description Log patterns marked by rules (`action.pattern`) in the project, most marked results first. */
         get: operations["analysis_patterns"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/analytics/durations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Tests that became slower: series whose median duration of the 7 days before `to` is at least 1.3 times the median of the 28 days before that, with at least 10 runs in each part (passed, failed or broken runs). Without ClickHouse the comparison covers the 23 days before (`window.partial`). Filters: `branch`, `env`. Needs `launches:read`. */
+        get: operations["analytics_durations"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/analytics/failures": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Failed and broken results of the window grouped by `groupBy`: `fingerprint` (unique errors, merged fingerprints counted in their error), `defectGroup` (the current triage; `toInvestigate` without one), `suite` or `env`. Each group has its failures, tests, launches, share of all failures and a trend of up to 14 buckets of whole days. ClickHouse answers up to 365 days; without it PostgreSQL answers the last 30 days (`window.partial`). Filters: `branch`, `env`. Needs `launches:read`. */
+        get: operations["analytics_failures"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/analytics/flaky-trend": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Flaky results (passed after a retry) and results that ran, per day of the window (UTC). Filters: `branch`, `env`. Needs `launches:read`. */
+        get: operations["analytics_flaky_trend"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/analytics/mttr": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Time to resolve unique errors resolved in the window (from first seen to resolved): the count, the median and the 90th percentile, and cumulative buckets (1 h, 6 h, 1 d, 3 d, 7 d, 30 d, 90 d). It reads the error catalog, so both backends answer the same; the window follows the backend's limit. Needs `launches:read`. */
+        get: operations["analytics_mttr"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/analytics/retries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description What retries cost: the time of attempts that did not become final (every attempt of a result but its last), in total and per suite (most time first), with the retries and the tests that retried. Filters: `branch`, `env`. Needs `launches:read`. */
+        get: operations["analytics_retries"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/analytics/slow-steps": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description The slowest step names of the window by their 95th percentile duration, with the median and the number of runs. Without ClickHouse, PostgreSQL reads the steps of the newest 2000 attempts (`window.partial` when there are more). Needs `launches:read`. */
+        get: operations["analytics_slow_steps"];
         put?: never;
         post?: never;
         delete?: never;
@@ -9251,6 +9387,133 @@ export interface operations {
             };
         };
     };
+    analytics_portfolio: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Comma-separated project keys to show (default: every project the caller can read);
+                 *     keys the caller cannot read are left out.
+                 */
+                projects?: string;
+                /** @description Start of the window (RFC 3339), default 30 days before `to`. */
+                from?: string;
+                /** @description End of the window (RFC 3339, exclusive), default now. */
+                to?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Portfolio"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    analytics_similar: {
+        parameters: {
+            query: {
+                /** @description The project of the result. */
+                project: string;
+                /** @description The failed result to compare. */
+                resultId: string;
+                /** @description 1 to 50, default 10. */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CrossProjectSimilar"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     admin_audit: {
         parameters: {
             query?: {
@@ -9945,6 +10208,402 @@ export interface operations {
                 };
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    analytics_durations: {
+        parameters: {
+            query?: {
+                /** @description `fingerprint` (default), `defectGroup`, `suite` or `env` (failures only). */
+                groupBy?: components["schemas"]["FailureGroupBy"];
+                /** @description Start of the window (RFC 3339), default 30 days before `to`. */
+                from?: string;
+                /** @description End of the window (RFC 3339, exclusive), default now. */
+                to?: string;
+                /** @description Only launches of this branch (`""` for launches without one). */
+                branch?: string;
+                /** @description Only launches of this environment key. */
+                env?: string;
+                /** @description Groups or items, 1 to 100, default 20. */
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DurationRegressions"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    analytics_failures: {
+        parameters: {
+            query?: {
+                /** @description `fingerprint` (default), `defectGroup`, `suite` or `env` (failures only). */
+                groupBy?: components["schemas"]["FailureGroupBy"];
+                /** @description Start of the window (RFC 3339), default 30 days before `to`. */
+                from?: string;
+                /** @description End of the window (RFC 3339, exclusive), default now. */
+                to?: string;
+                /** @description Only launches of this branch (`""` for launches without one). */
+                branch?: string;
+                /** @description Only launches of this environment key. */
+                env?: string;
+                /** @description Groups or items, 1 to 100, default 20. */
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FailureAnalytics"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    analytics_flaky_trend: {
+        parameters: {
+            query?: {
+                /** @description `fingerprint` (default), `defectGroup`, `suite` or `env` (failures only). */
+                groupBy?: components["schemas"]["FailureGroupBy"];
+                /** @description Start of the window (RFC 3339), default 30 days before `to`. */
+                from?: string;
+                /** @description End of the window (RFC 3339, exclusive), default now. */
+                to?: string;
+                /** @description Only launches of this branch (`""` for launches without one). */
+                branch?: string;
+                /** @description Only launches of this environment key. */
+                env?: string;
+                /** @description Groups or items, 1 to 100, default 20. */
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FlakyTrend"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    analytics_mttr: {
+        parameters: {
+            query?: {
+                /** @description `fingerprint` (default), `defectGroup`, `suite` or `env` (failures only). */
+                groupBy?: components["schemas"]["FailureGroupBy"];
+                /** @description Start of the window (RFC 3339), default 30 days before `to`. */
+                from?: string;
+                /** @description End of the window (RFC 3339, exclusive), default now. */
+                to?: string;
+                /** @description Only launches of this branch (`""` for launches without one). */
+                branch?: string;
+                /** @description Only launches of this environment key. */
+                env?: string;
+                /** @description Groups or items, 1 to 100, default 20. */
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MttrStats"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    analytics_retries: {
+        parameters: {
+            query?: {
+                /** @description `fingerprint` (default), `defectGroup`, `suite` or `env` (failures only). */
+                groupBy?: components["schemas"]["FailureGroupBy"];
+                /** @description Start of the window (RFC 3339), default 30 days before `to`. */
+                from?: string;
+                /** @description End of the window (RFC 3339, exclusive), default now. */
+                to?: string;
+                /** @description Only launches of this branch (`""` for launches without one). */
+                branch?: string;
+                /** @description Only launches of this environment key. */
+                env?: string;
+                /** @description Groups or items, 1 to 100, default 20. */
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RetryCosts"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    analytics_slow_steps: {
+        parameters: {
+            query?: {
+                /** @description `fingerprint` (default), `defectGroup`, `suite` or `env` (failures only). */
+                groupBy?: components["schemas"]["FailureGroupBy"];
+                /** @description Start of the window (RFC 3339), default 30 days before `to`. */
+                from?: string;
+                /** @description End of the window (RFC 3339, exclusive), default now. */
+                to?: string;
+                /** @description Only launches of this branch (`""` for launches without one). */
+                branch?: string;
+                /** @description Only launches of this environment key. */
+                env?: string;
+                /** @description Groups or items, 1 to 100, default 20. */
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SlowSteps"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };

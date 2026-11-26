@@ -142,6 +142,7 @@ data:
   FASTPROOF_CLICKHOUSE_CA_FILE: /etc/fastproof/ca/clickhouse.crt
   {{- end }}
   FASTPROOF_CLICKHOUSE_RAW_TTL_DAYS: {{ .Values.sinks.clickhouse.rawTtlDays | quote }}
+  FASTPROOF_CLICKHOUSE_AGG_TTL_DAYS: {{ .Values.sinks.clickhouse.aggTtlDays | quote }}
   {{- end }}
   {{- if .Values.sinks.opensearch.enabled }}
   {{- $c := include "fastproof.opensearchConn" . | fromJson }}

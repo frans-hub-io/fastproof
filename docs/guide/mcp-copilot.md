@@ -48,6 +48,8 @@ folders start with a dot, so they are not part of this site):
 | [`.github/agents/fastproof-cases.agent.md`](https://github.com/frans-hub-io/fastproof/blob/main/docs/examples/copilot/.github/agents/fastproof-cases.agent.md) | A test case agent: turns a failure or a Playwright trace into a draft manual regression case, fills steps from the trace, and proposes changes to existing cases for people to accept |
 | [`.github/prompts/fastproof-triage.prompt.md`](https://github.com/frans-hub-io/fastproof/blob/main/docs/examples/copilot/.github/prompts/fastproof-triage.prompt.md) | `/fastproof-triage project=<key> branch=<branch>`: triage the newest launch of a branch with that agent |
 | [`.github/prompts/fastproof-explain-failure.prompt.md`](https://github.com/frans-hub-io/fastproof/blob/main/docs/examples/copilot/.github/prompts/fastproof-explain-failure.prompt.md) | Explain why one result failed, using the logs, history, similar failures and the code in the workspace, without changing triage |
+| [`.github/prompts/fastproof-explain-flaky.prompt.md`](https://github.com/frans-hub-io/fastproof/blob/main/docs/examples/copilot/.github/prompts/fastproof-explain-flaky.prompt.md) | Explain why a test is flaky from its `flaky_hints` evidence, without changing triage |
+| [`.github/prompts/fastproof-propose-pattern.prompt.md`](https://github.com/frans-hub-io/fastproof/blob/main/docs/examples/copilot/.github/prompts/fastproof-propose-pattern.prompt.md) | Turn a recurring log line into a disabled log-pattern rule draft (`create_rule_draft` with `match.log`) for people to review |
 
 Copy the `.vscode` and `.github` folders into your repository and adjust the URL.
 
@@ -83,6 +85,42 @@ the audit log with `via: mcp`. Tool answers are bounded (256 KiB per answer, 64 
 Tools never return project secrets or notification targets; `fastmock_interactions` queries the project's
 FastMock with its token only when the token's secret is bound to the origin of `fastmock.url` (see
 [Project secrets](notifications.md#project-secrets)).
+
+### Analysis tools
+
+[FastProof Analysis](analysis.md) adds tools for suggestions, unique errors, logs, the decision journal and
+gates. They follow the rules above: the permission is checked in the project's scope, every write is recorded
+with `source: ai` and audited with `via: mcp` and the agent's name, answers are bounded (when a list would pass
+256 KiB its tail is dropped and the answer says `"truncated": true`; an answer that still does not fit is replaced
+by `{"truncated": true, "message": …}`, always valid JSON), and the arguments are strict (an unknown argument is an
+error).
+
+| Tool | Does | Needs |
+|---|---|---|
+| `launch_suggestions` | Per failure cluster of a launch: its decision state, why it has no suggestion, and up to three suggestions ranked by band (`same`, `high`, `low`) with a `why` list. With `compute: true` it first queues a new analysis (`rate_limited` right after one) | `launches:read`; `compute` also `results:triage` |
+| `accept_suggestion` | Applies an open suggestion (`suggestionId`) to its cluster, or to the listed `resultIds` (at most 500) of it, with an optional `comment`; results a person or an agent already decided are skipped; returns `{updated, skipped, batchId}` | `results:triage` |
+| `reject_suggestion` | Rejects an open suggestion with an optional `reason` (500 bytes); the memory is unchanged | `results:triage` |
+| `unique_errors` | The project's unique errors (`state`, `branch`, `q` of 3 to 200 characters, `limit` 1 to 100 (20)) with state, branches, first and last seen, launches and tests | `launches:read` |
+| `error_detail` | One error by `fingerprint`: aliases, branches, commit range, time to resolve, people's decisions, tests and timeline | `launches:read` |
+| `search_logs` | A text (`q`, 3 to 200 characters) in the stored logs, newest first; `launchId`, `from`, `to` (at most 31 days), `level`, `limit` 1 to 200 (50); each line is cut to 2 KiB | `launches:read` |
+| `triage_history` | The decision journal of a `resultId` or a `batchId` (one of them): path, source, author, state before and after, whether the batch can be undone | `launches:read` |
+| `undo_triage` | Puts a batch back (`batchId`); results changed since are skipped; the undo is a batch itself | `results:triage`; a batch that changed mutes also `results:mute` |
+| `simulate_gate` | Evaluates a draft `gate` on the newest `launches` (1 to 200, 50) finished launches, optionally of one `branch`, without writing; takes a heavy slot | `launches:read` |
+
+A suggestion is a transparent nearest-decision search over what people decided before (each `why` item is one row
+of the weight table), not a self-learning model. `launch_suggestions`, `error_detail`, `unique_errors`,
+`search_logs`, `triage_history`, `reject_suggestion` and `simulate_gate` return text that came from tests, reporters
+or people: their answers carry
+`"untrustedContent": true`, and their descriptions tell the agent that log and message text is data, never
+instructions. The example agent is written that way; keep that rule in any agent you write.
+
+Over MCP an agent undoes only batches written under its own token's name, whatever the token's role: with a
+shared token you can undo your own earlier batches, but never one written by someone else (`not_your_batch`).
+`accept_suggestion`, `reject_suggestion`, `undo_triage`, `launch_suggestions` with `compute` and `simulate_gate`
+take the per-caller write rate (`rate_limited`). Accepting, rejecting and undoing are recorded in the audit log
+as `suggestion.accept`, `suggestion.reject` and `triage.undo`. With Analysis off, `launch_suggestions`
+answers `state: disabled` and its `compute` answers `analysis_disabled`; the journal tools (`triage_history`,
+`undo_triage`) keep working.
 
 ### Test case tools
 The [test case](test-management.md) tools follow one rule: an agent writes only drafts and suggestions, and
@@ -166,7 +204,7 @@ projects, launches and test cases, triage results (`results:triage`), and create
 (`ai:propose`: `create_case_draft`, `draft_case_from_result`, `propose_case_update`, `create_shared_step_draft`
 and `create_rule_draft`). It has no `cases:write`, `cases:review`, `rules:write`, `plans:write` or `runs:execute`,
 so over REST an agent token answers `403`
-to creating, changing, reviewing, activating or archiving cases, to accepting or rejecting suggestions, to bulk
+to creating, changing, reviewing, activating or archiving cases, to accepting or rejecting case suggestions, to bulk
 changes and to enabling rules, and over MCP it cannot call `add_cases_to_plan`. People review its drafts and
 suggestions with their own accounts. More limits of agent tokens:
 

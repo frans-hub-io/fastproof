@@ -148,10 +148,10 @@ async fn tm_tools_rules_permissions_and_trace() {
         assert!(names.contains(&t.to_string()), "{t} missing: {names:?}");
     }
     assert!(
-        !names
-            .iter()
-            .any(|n| n.contains("update_case") || n.contains("accept")),
-        "no direct edit or accept tool: {names:?}"
+        !names.iter().any(
+            |n| n.contains("update_case") || (n.contains("accept") && n != "accept_suggestion")
+        ),
+        "no direct edit or case accept tool (accept_suggestion decides failure clusters, not cases): {names:?}"
     );
 
     let (st, c) = s

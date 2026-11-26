@@ -20,12 +20,14 @@ use serde_json::Value;
 
 use crate::csv::{Table, cell};
 use crate::generic::Target;
+use crate::params::{Caps, Over, over_limit};
 use crate::steps::{numbered, rich_items, tree};
 use crate::text::io_error;
 use crate::{
-    ImportError, ImportedAttachment, ImportedCase, ImportedKey, ImportedStep, ImportedValue,
-    MAX_JSON_DEPTH, ParseOptions, RowError, Visit, cap_name, emit, emit_error, map_status,
-    norm_header, rich, split_list,
+    ImportError, ImportedAttachment, ImportedCase, ImportedKey, ImportedParameters,
+    ImportedSharedStep, ImportedStep, ImportedValue, MAX_JSON_DEPTH, ParseLimits, ParseOptions,
+    RowError, Visit, cap_name, emit, emit_error, emit_shared, map_status, norm_header, rich,
+    split_list,
 };
 
 const SYSTEM: &[&str] = &[
@@ -236,11 +238,22 @@ pub fn parse_csv(
                 }
             }
         };
+        let raw_params = cell(&rec, params).trim();
+        let parsed = serde_json::from_str::<Value>(raw_params)
+            .ok()
+            .and_then(|v| qase_params(&v, l));
         c.description = sections(
             rich(cell(&rec, desc)),
             &[
                 ("Postconditions", rich(cell(&rec, post))),
-                ("Parameters", cell(&rec, params).trim().to_string()),
+                (
+                    "Parameters",
+                    if parsed.is_some() {
+                        String::new()
+                    } else {
+                        raw_params.to_string()
+                    },
+                ),
             ],
         );
         c.preconditions = rich(cell(&rec, pre));
@@ -253,6 +266,15 @@ pub fn parse_csv(
         }
         let items = |col: Option<usize>| rich_items(numbered(cell(&rec, col), v2));
         c.steps = tree(&items(actions), &items(results), &items(data));
+        if let Some(p) = parsed {
+            crate::params::rewrite_case(
+                &mut c.description,
+                &mut c.preconditions,
+                &mut c.steps,
+                &p.renames,
+            );
+            c.parameters = Some(p.params);
+        }
         emit(c, &opts.limits, visit)?;
     }
     Ok(())
@@ -266,19 +288,52 @@ fn text(v: &Value, k: &str) -> String {
     }
 }
 
+/// What a case's steps said about shared steps: whether any step came from one, and the
+/// shared steps to define (by hash, once per case).
+#[derive(Default)]
+struct Shares {
+    found: bool,
+    defs: Vec<ImportedSharedStep>,
+}
+
+fn shared_key(hash: &str) -> ImportedKey {
+    ImportedKey {
+        kind: "qase".into(),
+        value: hash.to_string(),
+    }
+}
+
+fn clean_shared(steps: &mut [ImportedStep]) {
+    for s in steps {
+        s.shared = None;
+        s.attachments.clear();
+        s.id.clear();
+        clean_shared(&mut s.steps);
+    }
+}
+
 fn json_steps(
     v: &Value,
     depth: usize,
     attachments: &mut Vec<ImportedAttachment>,
-    shared: &mut bool,
+    shared: &mut Shares,
 ) -> Vec<ImportedStep> {
     let Some(arr) = v.as_array() else {
         return Vec::new();
     };
     let mut out = Vec::new();
+    let mut hashes: Vec<Option<(String, Option<Vec<ImportedStep>>)>> = Vec::new();
     for s in arr.iter().take(10_000) {
+        let hash = s
+            .get("shared_step_hash")
+            .filter(|h| !h.is_null())
+            .map(|h| match h {
+                Value::String(x) => x.clone(),
+                o => o.to_string(),
+            })
+            .filter(|h| !h.is_empty() && h.len() <= 200);
         if s.get("shared_step_hash").is_some_and(|h| !h.is_null()) {
-            *shared = true;
+            shared.found = true;
         }
         let mut step = ImportedStep {
             action: rich(&text(s, "action")),
@@ -302,7 +357,52 @@ fn json_steps(
                 shared,
             );
         }
+        let nested = hash.as_ref().and_then(|_| {
+            let n = s.get("shared_step_nested_steps")?;
+            let mut throwaway = Vec::new();
+            let mut st = json_steps(n, depth + 1, &mut throwaway, &mut Shares::default());
+            (!st.is_empty()).then(|| {
+                clean_shared(&mut st);
+                st
+            })
+        });
+        hashes.push(hash.map(|h| (h, nested)));
         out.push(step);
+    }
+    if depth == 1 {
+        let mut i = 0;
+        while i < out.len() {
+            let Some((hash, nested)) = hashes[i].clone() else {
+                i += 1;
+                continue;
+            };
+            let mut j = i + 1;
+            while j < out.len() && hashes[j].as_ref().is_some_and(|(h, _)| *h == hash) {
+                j += 1;
+            }
+            let mut content = match nested {
+                Some(n) => n,
+                None => out[i..j].to_vec(),
+            };
+            clean_shared(&mut content);
+            let name: String = if content.len() == 1 && !content[0].action.trim().is_empty() {
+                content[0].action.chars().take(120).collect()
+            } else {
+                format!("Shared step {hash}")
+            };
+            if !shared.defs.iter().any(|d| d.keys[0].value == hash) {
+                shared.defs.push(ImportedSharedStep {
+                    keys: vec![shared_key(&hash)],
+                    name,
+                    steps: content,
+                    ..Default::default()
+                });
+            }
+            for st in &mut out[i..j] {
+                st.shared = Some(shared_key(&hash));
+            }
+            i = j;
+        }
     }
     out
 }
@@ -332,7 +432,13 @@ fn custom_value(v: &Value) -> Option<ImportedValue> {
     }
 }
 
-fn json_case(v: &Value, row: u64, folder: &[String], code: Option<&str>) -> ImportedCase {
+fn json_case(
+    v: &Value,
+    row: u64,
+    folder: &[String],
+    code: Option<&str>,
+    limits: &ParseLimits,
+) -> (ImportedCase, Vec<ImportedSharedStep>) {
     let mut c = ImportedCase {
         row,
         name: text(v, "title"),
@@ -353,6 +459,7 @@ fn json_case(v: &Value, row: u64, folder: &[String], code: Option<&str>) -> Impo
     if let Some(p) = v
         .get("params")
         .filter(|p| !p.is_null() && p.as_array().is_none_or(|a| !a.is_empty()))
+        .filter(|p| qase_params(p, limits).is_none())
     {
         params = serde_json::to_string(p).unwrap_or_default();
     }
@@ -400,15 +507,26 @@ fn json_case(v: &Value, row: u64, folder: &[String], code: Option<&str>) -> Impo
             }
         }
     }
-    let mut shared = false;
+    let mut shared = Shares::default();
     c.steps = json_steps(
         v.get("steps").unwrap_or(&Value::Null),
         1,
         &mut c.attachments,
         &mut shared,
     );
-    if shared {
+    if shared.found {
         c.tags.push("imported-shared-step".into());
+    }
+    let parameters = v.get("params").and_then(|p| qase_params(p, limits));
+    if let Some(p) = parameters {
+        let renames: Vec<(String, String)> = p.renames;
+        crate::params::rewrite_case(
+            &mut c.description,
+            &mut c.preconditions,
+            &mut c.steps,
+            &renames,
+        );
+        c.parameters = Some(p.params);
     }
     if let Some(a) = v.get("attachments").and_then(Value::as_array) {
         for x in a.iter().take(1000) {
@@ -417,7 +535,189 @@ fn json_case(v: &Value, row: u64, folder: &[String], code: Option<&str>) -> Impo
             }
         }
     }
-    c
+    (c, shared.defs)
+}
+
+/// Parameters read from a Qase `params` value, with the placeholder renames of their names.
+struct QaseParams {
+    params: ImportedParameters,
+    renames: Vec<(String, String)>,
+}
+
+fn param_values(v: &Value, caps: &Caps) -> Option<Result<Vec<String>, Over>> {
+    let one = |x: &Value| match x {
+        Value::String(s) => Some(s.clone()),
+        Value::Number(n) => Some(n.to_string()),
+        Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    };
+    let values: Vec<String> = match v {
+        Value::Array(a) if a.len() > caps.rows => return Some(Err(Over::Rows)),
+        Value::Array(a) => a.iter().map(one).collect::<Option<_>>()?,
+        x => vec![one(x)?],
+    };
+    if values.iter().any(|s| s.len() > caps.value_bytes) {
+        return Some(Err(Over::Value));
+    }
+    Some(Ok(values))
+}
+
+fn group_row(
+    o: &serde_json::Map<String, Value>,
+    caps: &Caps,
+) -> Option<Result<Vec<(String, String)>, Over>> {
+    if o.len() > caps.columns {
+        return Some(Err(Over::Columns));
+    }
+    let mut out = Vec::with_capacity(o.len());
+    for (k, v) in o {
+        match param_values(v, caps)? {
+            Ok(mut v) if v.len() == 1 => out.push((k.clone(), v.remove(0))),
+            Ok(_) => return None,
+            Err(e) => return Some(Err(e)),
+        }
+    }
+    Some(Ok(out))
+}
+
+/// `params` of a Qase case: `{"single": {name: [values]}, "group": [rows or groups of rows]}`
+/// or the flat `{name: [values]}`. Every combination of the single parameters and one row of
+/// each group is a row. A shape this does not know stays in the description as JSON. Names,
+/// values and rows are checked against the limits while they are read: parameters past them
+/// come back as [`over_limit`] and the case is refused.
+fn qase_params(p: &Value, limits: &ParseLimits) -> Option<QaseParams> {
+    let caps = Caps::from(limits);
+    let over = |o: Over| {
+        Some(QaseParams {
+            params: over_limit(o, &caps),
+            renames: Vec::new(),
+        })
+    };
+    let obj = p.as_object()?;
+    let (single, group) = if obj.contains_key("single") || obj.contains_key("group") {
+        (obj.get("single"), obj.get("group"))
+    } else {
+        (Some(p), None)
+    };
+    let mut names: Vec<String> = Vec::new();
+    let mut singles: Vec<(usize, Vec<String>)> = Vec::new();
+    if let Some(Value::Object(m)) = single {
+        if m.len() > caps.columns {
+            return over(Over::Columns);
+        }
+        for (k, v) in m {
+            match param_values(v, &caps)? {
+                Ok(v) => singles.push((names.len(), v)),
+                Err(o) => return over(o),
+            }
+            names.push(k.clone());
+        }
+    } else if single.is_some_and(|s| !s.is_null()) {
+        return None;
+    }
+    let mut groups: Vec<Vec<Vec<(usize, String)>>> = Vec::new();
+    if let Some(g) = group.filter(|g| !g.is_null()) {
+        let list = g.as_array()?;
+        let sets: Vec<&[Value]> = if list.iter().all(Value::is_array) && !list.is_empty() {
+            list.iter()
+                .filter_map(|x| x.as_array().map(Vec::as_slice))
+                .collect()
+        } else {
+            vec![list.as_slice()]
+        };
+        if sets.len() > caps.columns {
+            return over(Over::Columns);
+        }
+        for rows in sets {
+            if rows.len() > caps.rows {
+                return over(Over::Rows);
+            }
+            let mut alt = Vec::new();
+            for r in rows {
+                let cells = match group_row(r.as_object()?, &caps)? {
+                    Ok(c) => c,
+                    Err(o) => return over(o),
+                };
+                let mut row = Vec::with_capacity(cells.len());
+                for (k, v) in cells {
+                    let i = match names.iter().position(|n| *n == k) {
+                        Some(i) => i,
+                        None => {
+                            if names.len() >= caps.columns {
+                                return over(Over::Columns);
+                            }
+                            names.push(k);
+                            names.len() - 1
+                        }
+                    };
+                    row.push((i, v));
+                }
+                alt.push(row);
+            }
+            if alt.is_empty() {
+                return None;
+            }
+            groups.push(alt);
+        }
+    }
+    if names.is_empty() {
+        return None;
+    }
+    if names.iter().any(|n| n.len() > caps.value_bytes) {
+        return over(Over::Value);
+    }
+    let product = singles
+        .iter()
+        .map(|(_, v)| v.len())
+        .chain(groups.iter().map(Vec::len))
+        .try_fold(1usize, |n, k| n.checked_mul(k))
+        .unwrap_or(usize::MAX);
+    if product > caps.rows {
+        return over(Over::Rows);
+    }
+    let clean = crate::params::unique_names(&names);
+    let mut rows: Vec<Vec<Option<String>>> = vec![vec![None; names.len()]];
+    for (i, values) in &singles {
+        let mut next = Vec::with_capacity(rows.len() * values.len());
+        for r in &rows {
+            for v in values {
+                let mut r = r.clone();
+                r[*i] = Some(v.clone());
+                next.push(r);
+            }
+        }
+        rows = next;
+    }
+    for alts in &groups {
+        let mut next = Vec::with_capacity(rows.len() * alts.len());
+        for r in &rows {
+            for a in alts {
+                let mut r = r.clone();
+                for (i, v) in a {
+                    r[*i] = Some(v.clone());
+                }
+                next.push(r);
+            }
+        }
+        rows = next;
+    }
+    let rows = rows
+        .into_iter()
+        .map(|r| {
+            r.into_iter()
+                .enumerate()
+                .map(|(i, v)| (clean[i].clone(), v.unwrap_or_default()))
+                .collect()
+        })
+        .collect();
+    let params = crate::params::from_rows(rows)?;
+    Some(QaseParams {
+        params: ImportedParameters {
+            columns: clean.clone(),
+            ..params
+        },
+        renames: names.into_iter().zip(clean).collect(),
+    })
 }
 
 /// Bytes of one case of a Qase JSON file, at most (a larger one is a row error).
@@ -801,6 +1101,8 @@ struct Walk<'v, 'a> {
     /// Bytes of [`Deferred`] cases held.
     deferred_bytes: usize,
     flat_seen: bool,
+    /// Hashes of the shared steps handed over.
+    shared_seen: HashSet<String>,
     /// A root case named a `suite_id` before the flat suite list was read.
     early_suite_ids: bool,
     levels: Vec<Level>,
@@ -848,8 +1150,18 @@ impl Walk<'_, '_> {
     }
 
     fn emit_case(&mut self, v: &Value, row: u64, folder: &[String]) -> Result<(), ImportError> {
-        let c = json_case(v, row, folder, self.code());
+        let (c, defs) = json_case(v, row, folder, self.code(), &self.opts.limits);
         self.emitted += 1;
+        for mut d in defs {
+            let hash = d.keys[0].value.clone();
+            if self.shared_seen.len() >= self.opts.limits.max_shared_steps
+                || !self.shared_seen.insert(hash)
+            {
+                continue;
+            }
+            d.row = row;
+            emit_shared(d, &self.opts.limits, self.visit)?;
+        }
         emit(c, &self.opts.limits, self.visit)
     }
 
@@ -1321,6 +1633,7 @@ pub fn parse_json(
         flat_rows: 0,
         deferred_bytes: 0,
         flat_seen: false,
+        shared_seen: HashSet::new(),
         early_suite_ids: false,
         levels: Vec::new(),
         pos,

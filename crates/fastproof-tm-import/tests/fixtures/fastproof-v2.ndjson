@@ -1,0 +1,7 @@
+{"format":"fastproof-cases","version":2,"project":"DEMO","exportedAt":"2026-11-26T10:00:00Z","fields":[]}
+{"type":"sharedStep","number":3,"keys":[{"kind":"qase","value":"abc"}],"name":"Log in","description":"Shared *login*","steps":[{"id":"s_l1","action":"Open the login page"},{"id":"s_l2","action":"Sign in","steps":[{"id":"s_l3","action":"Type the user"}]}]}
+{"type":"requirement","number":1,"title":"Checkout","kind":"epic","status":"active"}
+{"type":"requirement","number":2,"title":"Pay by card","parent":1,"issueKey":"SHOP-9","trackerId":"jira"}
+{"type":"case","number":7,"name":"Pay","folder":["Shop"],"steps":[{"id":"s_ref","shared":{"kind":"number","value":"3"}},{"id":"s_own","action":"Pay with ${card}","expected":"Paid"}],"parameters":{"columns":["card"],"rows":[{"id":"r_1","values":{"card":"visa"},"enabled":true},{"id":"r_2","values":{"card":"mastercard"},"enabled":false}]},"requirements":[{"key":"REQ-2","origin":"ui","status":"active"}]}
+{"type":"nope","name":"x"}
+{"name":"no type"}

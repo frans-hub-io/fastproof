@@ -1,7 +1,68 @@
 //! Writers of case exports: CSV (cells that a spreadsheet would run as a formula get a `'`
-//! prefix) and the FastProof NDJSON format that [`crate::ndjson`] reads back.
+//! prefix; shared steps and parameters are expanded into text) and the FastProof NDJSON
+//! format that [`crate::ndjson`] reads back (shared steps, requirements, parameters and links
+//! stay structured).
 
-use crate::{ImportedCase, ImportedFieldDef, ImportedStep, ImportedValue, ndjson};
+use std::collections::HashMap;
+
+use crate::{
+    ImportedCase, ImportedFieldDef, ImportedParameters, ImportedRequirement, ImportedSharedStep,
+    ImportedStep, ImportedValue, ndjson,
+};
+
+/// Bytes of shared step text one case of a CSV export expands, at most (as a run item).
+pub const MAX_CASE_EXPANDED_BYTES: usize = 1024 * 1024;
+/// Bytes of shared step text one CSV export expands in all, at most.
+pub const MAX_EXPORT_EXPANDED_BYTES: usize = 256 * 1024 * 1024;
+
+/// The steps of shared steps by their number, for the CSV expansion, and what the export may
+/// still expand. A reference past the budget becomes a one-line note, so a few bytes of
+/// references cannot make the export many times larger than the cases.
+#[derive(Clone, Debug)]
+pub struct SharedLookup {
+    steps: HashMap<i64, (Vec<ImportedStep>, usize)>,
+    left: usize,
+}
+
+impl Default for SharedLookup {
+    fn default() -> Self {
+        Self::new(Vec::new())
+    }
+}
+
+fn text_bytes(steps: &[ImportedStep]) -> usize {
+    steps
+        .iter()
+        .map(|s| 16 + s.action.len() + s.expected.len() + s.data.len() + text_bytes(&s.steps))
+        .sum()
+}
+
+impl SharedLookup {
+    /// A lookup of these shared steps (those without a number are left out).
+    pub fn new(shared: Vec<ImportedSharedStep>) -> Self {
+        Self::with_budget(shared, MAX_EXPORT_EXPANDED_BYTES)
+    }
+
+    /// A lookup that expands at most `budget` bytes in all.
+    pub fn with_budget(shared: Vec<ImportedSharedStep>, budget: usize) -> Self {
+        Self {
+            steps: shared
+                .into_iter()
+                .filter_map(|x| {
+                    let n = x.number?;
+                    let bytes = text_bytes(&x.steps);
+                    Some((n, (x.steps, bytes)))
+                })
+                .collect(),
+            left: budget,
+        }
+    }
+
+    /// Bytes the export may still expand.
+    pub fn left(&self) -> usize {
+        self.left
+    }
+}
 
 /// Prefixes a cell that starts with `=`, `+`, `-`, `@`, tab or carriage return with `'`, so
 /// spreadsheets show it as text (formula injection).
@@ -52,6 +113,7 @@ pub const CSV_COLUMNS: &[&str] = &[
     "Data",
     "Tags",
     "Links",
+    "Parameters",
 ];
 
 fn numbered(
@@ -119,6 +181,72 @@ fn value_text(v: &ImportedValue) -> String {
     }
 }
 
+/// The lookup of shared steps by number for [`csv_case`].
+pub fn shared_lookup(shared: &[ImportedSharedStep]) -> SharedLookup {
+    SharedLookup::new(shared.to_vec())
+}
+
+/// Replaces the shared step references of the top level by the steps they stand for; a
+/// reference the lookup does not know is dropped, and one past the budget (of the case and of
+/// the export) becomes a note.
+pub fn expand_shared(steps: &[ImportedStep], lookup: &mut SharedLookup) -> Vec<ImportedStep> {
+    let mut out = Vec::with_capacity(steps.len());
+    let mut case_left = MAX_CASE_EXPANDED_BYTES;
+    for s in steps {
+        match &s.shared {
+            Some(k) if k.kind == "number" => {
+                let Some(n) = k.value.parse::<i64>().ok() else {
+                    continue;
+                };
+                let Some((inner, bytes)) = lookup.steps.get(&n) else {
+                    continue;
+                };
+                if *bytes <= case_left && *bytes <= lookup.left {
+                    case_left -= bytes;
+                    lookup.left -= bytes;
+                    out.extend(inner.iter().cloned().map(|mut x| {
+                        x.id.clear();
+                        x
+                    }));
+                } else {
+                    out.push(ImportedStep {
+                        action: format!(
+                            "Shared step SS-{n} (not expanded: the export size limit for shared steps is reached)"
+                        ),
+                        ..Default::default()
+                    });
+                }
+            }
+            _ => out.push(s.clone()),
+        }
+    }
+    out
+}
+
+/// The enabled rows of the parameters as text: one line per row, `name=value; name=value`.
+pub fn parameters_text(p: &ImportedParameters) -> String {
+    p.rows
+        .iter()
+        .filter(|r| r.enabled)
+        .map(|r| {
+            p.columns
+                .iter()
+                .map(|c| {
+                    format!(
+                        "{c}={}",
+                        r.values
+                            .get(c)
+                            .map_or("", String::as_str)
+                            .replace('\n', " ")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("; ")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// The CSV header for these field keys.
 pub fn csv_header(field_keys: &[String]) -> String {
     csv_line(
@@ -129,9 +257,15 @@ pub fn csv_header(field_keys: &[String]) -> String {
     )
 }
 
-/// One case as a CSV line (`project_key` makes the `Key` column `TC-<n>`).
-pub fn csv_case(c: &ImportedCase, field_keys: &[String]) -> String {
-    let [a, e, d] = steps_cells(&c.steps);
+/// One case as a CSV line (the `Key` column is `TC-<n>`); shared steps are expanded through
+/// `shared`, which counts what it expands.
+pub fn csv_case(c: &ImportedCase, field_keys: &[String], shared: &mut SharedLookup) -> String {
+    let steps = if c.steps.iter().any(|s| s.shared.is_some()) {
+        expand_shared(&c.steps, shared)
+    } else {
+        c.steps.clone()
+    };
+    let [a, e, d] = steps_cells(&steps);
     let number = c.number.map(|n| n.to_string()).unwrap_or_default();
     let key = c.number.map(|n| format!("TC-{n}")).unwrap_or_default();
     let links = c
@@ -160,6 +294,10 @@ pub fn csv_case(c: &ImportedCase, field_keys: &[String]) -> String {
         d,
         c.tags.join(", "),
         links,
+        c.parameters
+            .as_ref()
+            .map(parameters_text)
+            .unwrap_or_default(),
     ];
     for k in field_keys {
         cells.push(c.fields.get(k).map(value_text).unwrap_or_default());
@@ -181,15 +319,30 @@ pub fn ndjson_header(project: &str, exported_at: &str, fields: Vec<ImportedField
     s
 }
 
-/// One case as an NDJSON line (`row` left out).
-pub fn ndjson_case(c: &ImportedCase) -> String {
-    let mut v = serde_json::to_value(c).unwrap_or_default();
+fn line<T: serde::Serialize>(kind: &str, v: &T) -> String {
+    let mut v = serde_json::to_value(v).unwrap_or_default();
     if let Some(o) = v.as_object_mut() {
         o.remove("row");
+        o.insert("type".into(), kind.into());
     }
     let mut s = serde_json::to_string(&v).unwrap_or_default();
     s.push('\n');
     s
+}
+
+/// One case as an NDJSON line (`row` left out).
+pub fn ndjson_case(c: &ImportedCase) -> String {
+    line("case", c)
+}
+
+/// One shared step as an NDJSON line.
+pub fn ndjson_shared_step(s: &ImportedSharedStep) -> String {
+    line("sharedStep", s)
+}
+
+/// One requirement as an NDJSON line.
+pub fn ndjson_requirement(r: &ImportedRequirement) -> String {
+    line("requirement", r)
 }
 
 #[cfg(test)]

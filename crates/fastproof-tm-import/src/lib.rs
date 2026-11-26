@@ -14,6 +14,7 @@ pub mod export;
 pub mod generic;
 pub mod html;
 pub mod ndjson;
+pub mod params;
 pub mod qase;
 pub mod steps;
 pub mod testops;
@@ -119,6 +120,12 @@ pub struct ImportedStep {
     pub attachments: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub steps: Vec<ImportedStep>,
+    /// The shared step this step comes from (top level only). Consecutive steps with the same
+    /// key become one reference when the importer knows the shared step; otherwise the step
+    /// keeps its own text. `kind` is a `shared_step_keys` kind, or `number` (the number the
+    /// shared step had in the exporting FastProof project).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shared: Option<ImportedKey>,
 }
 
 /// A link of a case: `kind` is `link`, `issue` or `tms`.
@@ -155,6 +162,105 @@ pub struct ImportedAttachment {
     pub old_id: Option<String>,
 }
 
+/// A shared step of the source (NDJSON `sharedStep` records, Qase hashes, TestRail ids, TestOps
+/// shared steps). Its steps have no attachments and nest at most two levels.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ImportedSharedStep {
+    #[serde(skip)]
+    pub row: u64,
+    /// The number the shared step had in the exporting FastProof project.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub number: Option<i64>,
+    pub keys: Vec<ImportedKey>,
+    pub name: String,
+    pub description: String,
+    pub steps: Vec<ImportedStep>,
+}
+
+/// A requirement of the source (NDJSON `requirement` records), parents before children.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ImportedRequirement {
+    #[serde(skip)]
+    pub row: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub number: Option<i64>,
+    pub title: String,
+    pub description: String,
+    /// `epic`, `story`, `requirement`, … (`kind`: `type` names the record in NDJSON).
+    #[serde(rename = "kind")]
+    pub req_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    /// The number of the parent in the same file.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tracker_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub issue_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub external_state: Option<String>,
+}
+
+/// A link of a case to a requirement: `key` is `REQ-<n>` (the number in the same file) or an
+/// `issue_key`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ImportedRequirementRef {
+    pub key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+}
+
+/// A row of parameter values.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportedParameterRow {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub id: String,
+    pub values: BTreeMap<String, String>,
+    #[serde(default = "enabled")]
+    pub enabled: bool,
+}
+
+fn enabled() -> bool {
+    true
+}
+
+/// The generator that filled the rows.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportedGenerator {
+    pub mode: String,
+    pub values: BTreeMap<String, Vec<String>>,
+}
+
+/// Parameters of a data-driven case, as `CaseParameters` of the API.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ImportedParameters {
+    pub columns: Vec<String>,
+    pub rows: Vec<ImportedParameterRow>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub generator: Option<ImportedGenerator>,
+}
+
+impl Default for ImportedParameterRow {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            values: BTreeMap::new(),
+            enabled: true,
+        }
+    }
+}
+
 /// A normalised case. Field names are the source's (column header, custom field name or
 /// FastProof field key); the importer maps them to field definitions.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -182,6 +288,12 @@ pub struct ImportedCase {
     /// Full names of code identities (TestOps automated cases, NDJSON).
     pub full_names: Vec<String>,
     pub attachments: Vec<ImportedAttachment>,
+    /// Data-driven rows (Qase `params`, TestOps parameters, FastProof NDJSON v2).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parameters: Option<ImportedParameters>,
+    /// Requirements the case covers (issue links, TestRail `References`, NDJSON v2).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub requirements: Vec<ImportedRequirementRef>,
 }
 
 /// A field definition carried by the source (FastProof NDJSON header).
@@ -222,6 +334,10 @@ pub enum Item {
     Case(Box<ImportedCase>),
     Error(RowError),
     FieldDefs(Vec<ImportedFieldDef>),
+    /// A shared step; a parser hands it over before the first case that uses it.
+    SharedStep(Box<ImportedSharedStep>),
+    /// A requirement (NDJSON v2), parents before children.
+    Requirement(Box<ImportedRequirement>),
 }
 
 fn steps_bytes(s: &[ImportedStep]) -> usize {
@@ -233,9 +349,35 @@ fn steps_bytes(s: &[ImportedStep]) -> usize {
                 + x.expected.len()
                 + x.data.len()
                 + strings_bytes(&x.attachments)
+                + x.shared
+                    .as_ref()
+                    .map_or(0, |k| 48 + k.kind.len() + k.value.len())
                 + steps_bytes(&x.steps)
         })
         .sum()
+}
+
+fn parameters_bytes(p: &ImportedParameters) -> usize {
+    let rows: usize = p
+        .rows
+        .iter()
+        .map(|r| {
+            std::mem::size_of::<ImportedParameterRow>()
+                + r.id.len()
+                + r.values
+                    .iter()
+                    .map(|(k, v)| 64 + k.len() + v.len())
+                    .sum::<usize>()
+        })
+        .sum();
+    let generator = p.generator.as_ref().map_or(0, |g| {
+        g.mode.len()
+            + g.values
+                .iter()
+                .map(|(k, v)| 64 + k.len() + strings_bytes(v))
+                .sum::<usize>()
+    });
+    std::mem::size_of::<ImportedParameters>() + strings_bytes(&p.columns) + rows + generator
 }
 
 fn strings_bytes(v: &[String]) -> usize {
@@ -288,6 +430,41 @@ impl Item {
                                 + a.old_id.as_ref().map_or(0, String::len)
                         })
                         .sum::<usize>()
+                    + c.parameters.as_ref().map_or(0, parameters_bytes)
+                    + c.requirements
+                        .iter()
+                        .map(|r| {
+                            72 + r.key.len()
+                                + r.origin.as_ref().map_or(0, String::len)
+                                + r.status.as_ref().map_or(0, String::len)
+                        })
+                        .sum::<usize>()
+            }
+            Item::SharedStep(x) => {
+                std::mem::size_of::<ImportedSharedStep>()
+                    + x.name.len()
+                    + x.description.len()
+                    + x.keys
+                        .iter()
+                        .map(|k| 48 + k.kind.len() + k.value.len())
+                        .sum::<usize>()
+                    + steps_bytes(&x.steps)
+            }
+            Item::Requirement(r) => {
+                std::mem::size_of::<ImportedRequirement>()
+                    + r.title.len()
+                    + r.description.len()
+                    + r.req_type.len()
+                    + [
+                        &r.status,
+                        &r.tracker_id,
+                        &r.issue_key,
+                        &r.url,
+                        &r.external_state,
+                    ]
+                    .iter()
+                    .map(|o| o.as_ref().map_or(0, String::len))
+                    .sum::<usize>()
             }
             Item::Error(e) => std::mem::size_of::<RowError>() + e.code.len() + e.message.len(),
             Item::FieldDefs(d) => d
@@ -390,7 +567,24 @@ pub struct ParseLimits {
     /// Levels of a folder path. Suite parent chains are followed at most one level past it
     /// (the importer reports deeper paths).
     pub max_folder_depth: usize,
+    /// Shared step records of a file.
+    pub max_shared_steps: usize,
+    /// Steps of one shared step on all levels.
+    pub max_shared_step_steps: usize,
+    /// Requirement records of a file.
+    pub max_requirements: usize,
+    /// Parameter columns of one case.
+    pub max_parameter_columns: usize,
+    /// Parameter rows of one case.
+    pub max_parameter_rows: usize,
+    /// Bytes of one parameter value.
+    pub max_parameter_value_bytes: usize,
 }
+
+/// Requirements one case may reference in a file.
+pub const MAX_CASE_REQUIREMENTS: usize = 100;
+/// Keys of one shared step record.
+pub const MAX_SHARED_KEYS: usize = 10;
 
 impl Default for ParseLimits {
     fn default() -> Self {
@@ -404,6 +598,12 @@ impl Default for ParseLimits {
             max_tags: 50,
             max_name_bytes: 500,
             max_folder_depth: 10,
+            max_shared_steps: 5000,
+            max_shared_step_steps: 100,
+            max_requirements: 50_000,
+            max_parameter_columns: 20,
+            max_parameter_rows: 1000,
+            max_parameter_value_bytes: 1024,
         }
     }
 }
@@ -452,11 +652,41 @@ pub fn parse_all(
         match item {
             Item::Case(c) => cases.push(*c),
             Item::Error(e) => errors.push(e),
-            Item::FieldDefs(_) => {}
+            Item::FieldDefs(_) | Item::SharedStep(_) | Item::Requirement(_) => {}
         }
         true
     })?;
     Ok((cases, errors))
+}
+
+/// Everything a parse hands over (tests and small files).
+#[derive(Clone, Debug, Default)]
+pub struct Parsed {
+    pub cases: Vec<ImportedCase>,
+    pub shared_steps: Vec<ImportedSharedStep>,
+    pub requirements: Vec<ImportedRequirement>,
+    pub field_defs: Vec<ImportedFieldDef>,
+    pub errors: Vec<RowError>,
+}
+
+/// Collects every item of a parse, shared steps and requirements included.
+pub fn parse_full(
+    format: Format,
+    input: impl Read,
+    opts: &ParseOptions,
+) -> Result<Parsed, ImportError> {
+    let mut out = Parsed::default();
+    parse(format, input, opts, &mut |item| {
+        match item {
+            Item::Case(c) => out.cases.push(*c),
+            Item::Error(e) => out.errors.push(e),
+            Item::FieldDefs(d) => out.field_defs = d,
+            Item::SharedStep(s) => out.shared_steps.push(*s),
+            Item::Requirement(r) => out.requirements.push(*r),
+        }
+        true
+    })?;
+    Ok(out)
 }
 
 /// Bounds a case after parsing: steps (count and depth) and tags; the excess becomes a row
@@ -498,6 +728,97 @@ pub fn check_case(c: &ImportedCase, l: &ParseLimits) -> Result<(), RowError> {
     if c.name.trim().is_empty() {
         return Err(RowError::new(c.row, "invalid_case", "the case has no name"));
     }
+    if c.requirements.len() > MAX_CASE_REQUIREMENTS {
+        return Err(RowError::new(
+            c.row,
+            "limit_reached",
+            format!("more than {MAX_CASE_REQUIREMENTS} requirements"),
+        ));
+    }
+    if let Some(p) = &c.parameters {
+        check_parameters(p, l).map_err(|m| RowError::new(c.row, "limit_reached", m))?;
+    }
+    Ok(())
+}
+
+/// Bounds the parameters of a case: columns, rows and the size of every value.
+pub fn check_parameters(p: &ImportedParameters, l: &ParseLimits) -> Result<(), String> {
+    if p.columns.len() > l.max_parameter_columns {
+        return Err(format!(
+            "more than {} parameter columns",
+            l.max_parameter_columns
+        ));
+    }
+    if p.rows.len() > l.max_parameter_rows {
+        return Err(format!("more than {} parameter rows", l.max_parameter_rows));
+    }
+    let long = |s: &String| s.len() > l.max_parameter_value_bytes;
+    let too_big = p.columns.iter().any(long)
+        || p.rows.iter().any(|r| {
+            r.values.len() > l.max_parameter_columns
+                || r.values.iter().any(|(k, v)| long(k) || long(v))
+        })
+        || p.generator.as_ref().is_some_and(|g| {
+            g.values.len() > l.max_parameter_columns
+                || g.values
+                    .iter()
+                    .any(|(k, v)| long(k) || v.len() > l.max_parameter_rows || v.iter().any(long))
+        });
+    if too_big {
+        return Err(format!(
+            "a parameter name or value is longer than {} bytes, or a row has too many values",
+            l.max_parameter_value_bytes
+        ));
+    }
+    Ok(())
+}
+
+/// Bounds a shared step: name, keys, steps (count and two levels).
+pub fn check_shared_step(s: &ImportedSharedStep, l: &ParseLimits) -> Result<(), RowError> {
+    fn walk(steps: &[ImportedStep], depth: usize, count: &mut usize, max: usize) -> bool {
+        for st in steps {
+            *count += 1;
+            if *count > max {
+                return false;
+            }
+            if !st.steps.is_empty() && (depth >= 2 || !walk(&st.steps, depth + 1, count, max)) {
+                return false;
+            }
+        }
+        true
+    }
+    if s.name.trim().is_empty() {
+        return Err(RowError::new(
+            s.row,
+            "invalid_case",
+            "the shared step has no name",
+        ));
+    }
+    if s.keys.len() > MAX_SHARED_KEYS {
+        return Err(RowError::new(
+            s.row,
+            "limit_reached",
+            format!("more than {MAX_SHARED_KEYS} keys"),
+        ));
+    }
+    if s.steps.is_empty() {
+        return Err(RowError::new(
+            s.row,
+            "invalid_case",
+            "the shared step has no steps",
+        ));
+    }
+    let mut count = 0;
+    if !walk(&s.steps, 1, &mut count, l.max_shared_step_steps) {
+        return Err(RowError::new(
+            s.row,
+            "limit_reached",
+            format!(
+                "more than {} steps or deeper than 2 levels in a shared step",
+                l.max_shared_step_steps
+            ),
+        ));
+    }
     Ok(())
 }
 
@@ -509,6 +830,23 @@ pub(crate) fn emit(
 ) -> Result<(), ImportError> {
     let item = match check_case(&c, l) {
         Ok(()) => Item::Case(Box::new(c)),
+        Err(e) => Item::Error(e),
+    };
+    if visit(item) {
+        Ok(())
+    } else {
+        Err(ImportError::Stopped)
+    }
+}
+
+/// Hands a shared step to the visitor after [`check_shared_step`].
+pub(crate) fn emit_shared(
+    s: ImportedSharedStep,
+    l: &ParseLimits,
+    visit: &mut Visit<'_>,
+) -> Result<(), ImportError> {
+    let item = match check_shared_step(&s, l) {
+        Ok(()) => Item::SharedStep(Box::new(s)),
         Err(e) => Item::Error(e),
     };
     if visit(item) {

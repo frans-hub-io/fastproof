@@ -65,7 +65,7 @@ fn qase_counts(doc: &[u8]) -> ((Result<(), ImportError>, usize, usize), usize) {
             match i {
                 Item::Case(_) => cases += 1,
                 Item::Error(_) => errors += 1,
-                Item::FieldDefs(_) => {}
+                Item::FieldDefs(_) | Item::SharedStep(_) | Item::Requirement(_) => {}
             }
             true
         })
@@ -166,7 +166,7 @@ fn qase_json_oversized_case_is_a_row_error() {
                 match i {
                     Item::Case(c) => names.push(c.name.clone()),
                     Item::Error(e) => errors.push((e.row, e.code)),
-                    Item::FieldDefs(_) => {}
+                    Item::FieldDefs(_) | Item::SharedStep(_) | Item::Requirement(_) => {}
                 }
                 true
             },
@@ -319,4 +319,87 @@ fn html_lists_and_tables_stay_linear() {
     let (md, grown) = peak_of(|| rich(&table));
     assert!(md.len() <= 8 * table.len() + 4096, "{} bytes", md.len());
     assert!(grown < 4 * MIB, "{} MiB", grown / MIB);
+}
+
+/// Review H2: a 15 MiB NDJSON line of tiny values (`{}` steps, or an unknown field that the
+/// tagged v2 record buffers) took 1.3 to 1.5 GiB while parsed. The values of a line are
+/// bounded now: such a line is a row error in little memory, and the next line still imports.
+#[test]
+fn ndjson_lines_of_tiny_values_are_row_errors_in_bounded_memory() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    for (v, ty) in [(1, ""), (2, "\"type\":\"case\",")] {
+        for (body, item) in [("\"steps\":[", &b"{},"[..]), ("\"junk\":[", &b"0,"[..])] {
+            let mut doc = format!(
+                "{{\"format\":\"fastproof-cases\",\"version\":{v},\"project\":\"P\",\"exportedAt\":\"x\",\"fields\":[]}}\n{{{ty}\"name\":\"big\",{body}"
+            )
+            .into_bytes();
+            while doc.len() < 15 * MIB {
+                doc.extend_from_slice(item);
+            }
+            doc.extend_from_slice(b"{}]}\n");
+            doc.extend_from_slice(format!("{{{ty}\"name\":\"After\"}}\n").as_bytes());
+            let mut names = Vec::new();
+            let mut errors = Vec::new();
+            let (r, grown) = peak_of(|| {
+                parse(
+                    Format::FastproofNdjson,
+                    &doc[..],
+                    &ParseOptions::default(),
+                    &mut |i| {
+                        match i {
+                            Item::Case(c) => names.push(c.name.clone()),
+                            Item::Error(e) => errors.push(e.code),
+                            _ => {}
+                        }
+                        true
+                    },
+                )
+            });
+            assert!(r.is_ok(), "{r:?}");
+            assert_eq!(names, vec!["After"], "v{v} {body}");
+            assert_eq!(errors, vec!["invalid_row"], "v{v} {body}");
+            assert!(grown < 96 * MIB, "v{v} {body}: {} MiB", grown / MIB);
+        }
+    }
+}
+
+/// Review H1: Qase `params` with many group rows of distinct names (or long values next
+/// to many values) built every row over every name before the limits were checked, which
+/// took gigabytes and minutes. The limits are checked while reading now.
+#[test]
+fn qase_params_past_the_limits_are_refused_in_bounded_memory() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let mut rows = String::new();
+    for r in 0..1000 {
+        if r > 0 {
+            rows.push(',');
+        }
+        rows.push('{');
+        for k in 0..20 {
+            if k > 0 {
+                rows.push(',');
+            }
+            rows.push_str(&format!("\"n{r}_{k}\":\"v\""));
+        }
+        rows.push('}');
+    }
+    let wide = format!("{{\"group\":[{rows}]}}");
+    let many: Vec<String> = (0..1000).map(|i| format!("\"{i}\"")).collect();
+    let long: Vec<String> = (0..19)
+        .map(|i| format!("\"a{i}\":[\"{}\"]", "x".repeat(60 * 1024)))
+        .collect();
+    let huge = format!(
+        "{{\"single\":{{{},\"b\":[{}]}}}}",
+        long.join(","),
+        many.join(",")
+    );
+    for params in [wide, huge] {
+        let doc = format!(
+            "{{\"suites\":[{{\"title\":\"S\",\"cases\":[{{\"title\":\"P\",\"params\":{params}}},{{\"title\":\"After\"}}]}}]}}"
+        );
+        let ((r, cases, errors), grown) = qase_counts(doc.as_bytes());
+        assert!(r.is_ok(), "{r:?}");
+        assert_eq!((cases, errors), (1, 1));
+        assert!(grown < 64 * MIB, "{} MiB", grown / MIB);
+    }
 }

@@ -11,6 +11,7 @@
 //! Imports and exports are claimed by separate workers, so exports never hold imports back.
 
 pub mod plan;
+pub mod records;
 
 use std::collections::BTreeMap;
 
@@ -28,6 +29,7 @@ use super::{
 use crate::{Store, no_nul};
 
 pub use plan::*;
+pub use records::{ImportMaps, case_parameters};
 
 /// Imports in their dry run or running at once in the installation.
 pub const MAX_RUNNING_IMPORTS: i64 = 4;

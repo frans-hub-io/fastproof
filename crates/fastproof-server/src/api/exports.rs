@@ -27,6 +27,9 @@ use super::{ErrorBody, P, Q, tm_error};
 use crate::state::AppState;
 use crate::tm_jobs;
 
+/// Bytes of a streamed export collected before they are sent.
+const SEND_BYTES: usize = 4 * 1024 * 1024;
+
 /// The routes of this module, mounted once by `crate::app::api_router`.
 pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
@@ -119,6 +122,63 @@ pub async fn export_cases(
         if tx.send(Ok(head.into())).await.is_err() {
             return;
         }
+        let shared = match st
+            .store
+            .export_shared_steps(
+                project.id,
+                &src,
+                fastproof_store::tm::export::MAX_EXPORT_SHARED_BYTES,
+            )
+            .await
+        {
+            Ok(x) => x,
+            Err(e) => {
+                tracing::warn!(error = %e, "case export failed");
+                let _ = tx.send(Err(std::io::Error::other("export failed"))).await;
+                return;
+            }
+        };
+        let mut lookup = fastproof_tm_import::export::SharedLookup::default();
+        if format == "csv" {
+            lookup = fastproof_tm_import::export::SharedLookup::new(shared);
+        } else {
+            let mut out = String::new();
+            for x in &shared {
+                out.push_str(&fastproof_tm_import::export::ndjson_shared_step(x));
+            }
+            drop(shared);
+            let mut after = None;
+            loop {
+                let page = match st
+                    .store
+                    .export_requirements(
+                        project.id,
+                        &src,
+                        after,
+                        fastproof_store::tm::export::REQUIREMENT_PAGE,
+                    )
+                    .await
+                {
+                    Ok(p) => p,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "case export failed");
+                        let _ = tx.send(Err(std::io::Error::other("export failed"))).await;
+                        return;
+                    }
+                };
+                let Some((last, _)) = page.last() else { break };
+                after = Some(*last);
+                for (_, r) in &page {
+                    out.push_str(&fastproof_tm_import::export::ndjson_requirement(r));
+                }
+                if tx.send(Ok(std::mem::take(&mut out).into())).await.is_err() {
+                    return;
+                }
+            }
+            if !out.is_empty() && tx.send(Ok(out.into())).await.is_err() {
+                return;
+            }
+        }
         for chunk in src.numbers.chunks(500) {
             let page = match st.store.export_page(project.id, &src, chunk).await {
                 Ok(p) => p,
@@ -131,12 +191,21 @@ pub async fn export_cases(
             let mut out = String::new();
             for (c, _) in page {
                 if format == "csv" {
-                    out.push_str(&fastproof_tm_import::export::csv_case(&c, &keys));
+                    out.push_str(&fastproof_tm_import::export::csv_case(
+                        &c,
+                        &keys,
+                        &mut lookup,
+                    ));
                 } else {
                     out.push_str(&fastproof_tm_import::export::ndjson_case(&c));
                 }
+                if out.len() >= SEND_BYTES
+                    && tx.send(Ok(std::mem::take(&mut out).into())).await.is_err()
+                {
+                    return;
+                }
             }
-            if tx.send(Ok(out.into())).await.is_err() {
+            if !out.is_empty() && tx.send(Ok(out.into())).await.is_err() {
                 return;
             }
         }

@@ -345,7 +345,7 @@ pub async fn download_case_export(
 }
 
 #[utoipa::path(get, path = "/api/v1/projects/{key}/tm-jobs/{id}", tag = "imports", operation_id = "get_tm_job",
-    description = "A test-management job of the project (import, export, backfill): status, progress and report. Export jobs are visible only to their creator, import jobs only with `cases:import`.",
+    description = "A test-management job of the project (import, export, backfill): status, progress and report. Export jobs (cases and coverage) are visible only to their creator, import jobs (cases and requirements) only with `cases:import`.",
     params(("key" = String, Path), ("id" = Uuid, Path)),
     responses((status = 200, body = TmJob), (status = 403, body = ErrorBody), (status = 404, body = ErrorBody)))]
 pub async fn get_tm_job(
@@ -359,13 +359,13 @@ pub async fn get_tm_job(
         .tm_job_with_params(p.id, id)
         .await?
         .ok_or_else(|| ApiError::not_found("job"))?;
-    if job.kind == TmJobKind::Export
+    if matches!(job.kind, TmJobKind::Export | TmJobKind::CoverageExport)
         && s.store.tm_job_owner(p.id, id).await?.as_deref()
             != Some(crate::limits::caller_key(&auth).as_str())
     {
         return Err(ApiError::not_found("job"));
     }
-    if job.kind == TmJobKind::Import
+    if matches!(job.kind, TmJobKind::Import | TmJobKind::Requirements)
         && auth
             .principal
             .denial(&s.perms.cases_import, Some(&p.key))

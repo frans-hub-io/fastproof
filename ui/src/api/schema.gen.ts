@@ -746,6 +746,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{key}/cases/{n}/requirements": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description The requirements (not archived) linked to a case, by number; at most 1000. */
+        get: operations["list_case_requirements"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{key}/cases/{n}/restore": {
         parameters: {
             query?: never;
@@ -891,6 +908,57 @@ export interface paths {
         put?: never;
         /** @description Makes the content of a version current as a new version (`source = restore`); values code owns on an automated case stay. */
         post: operations["restore_case_version"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/coverage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Coverage of the children of `parent` (the top-level requirements without it), each with everything under it. Scope: none (each case's last result), `planId` (its newest launch or `launchId`), `launchIds` (at most 50), or a window (`days`, `branch`, `environment`); kinds cannot be mixed. A case counts with its newest result per parameter set in the scope, and of several parameter sets the worst. A scope other than the default is a heavy read (429 or 503 when the caller or the server runs too many). */
+        get: operations["requirement_coverage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/coverage/exports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Starts a CSV or XLSX export of the coverage of every requirement (each with everything under it) in the scope. The answer's `downloadUrl` (shown only here) is a one-time link for the caller, valid for 24 hours once the job is `done`. A caller has at most 2 and a project at most 4 coverage exports queued or running (409 `export_busy`). */
+        post: operations["create_coverage_export"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/coverage/exports/{id}/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Downloads a finished coverage export once: only its creator, with the token of `downloadUrl`, within 24 hours. */
+        get: operations["download_coverage_export"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -2024,6 +2092,145 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{key}/requirements": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Requirements by number. `parent` lists the ones anywhere under a requirement; `query` is FPQL over requirements (`number, title, type, status, parent, issue, externalState, coverage`). A search (`q` or `query`) is a heavy read (429 or 503 when the caller or the server runs too many) and stops after 5 s. */
+        get: operations["list_requirements"];
+        put?: never;
+        /** @description Creates a requirement `REQ-<n>`, under `parentNumber` when given. Limits: `maxRequirements`, `maxRequirementDepth`; an issue key is unique per tracker (409 `issue_key_taken`). */
+        post: operations["create_requirement"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/requirements/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Starts a dry run of an import of requirements from a configured issue tracker (`trackerId` with `api` settings): `query` is JQL (Jira), a label (GitLab, GitHub) or WIQL (Azure DevOps). The `requirements` job reads at most 1000 issues of the tracker's project, then stops at `ready` with the counts; `POST /requirements/import/{id}/apply` applies it. Issues are matched by tracker and issue key, so a repeated import updates instead of duplicating. Nothing is written to the tracker. */
+        post: operations["import_requirements"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/requirements/import/{id}/apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Applies a requirement import whose dry run is `ready` (409 `job_not_ready` otherwise). */
+        post: operations["apply_requirement_import"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/requirements/tree": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description The direct children of `parent` (the top-level requirements without it) that are not archived, by number. */
+        get: operations["requirement_tree"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/requirements/{n}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_requirement"];
+        /** @description Replaces a requirement (needs `If-Match`); fields left out take their defaults (top level, no tracker issue). Moving it under its own subtree is 409 `requirement_cycle`. */
+        put: operations["update_requirement"];
+        post?: never;
+        /** @description Archives a requirement with everything under it; their links stay. */
+        delete: operations["archive_requirement"];
+        options?: never;
+        head?: never;
+        /** @description Changes the given fields (needs `If-Match`); `parentNumber: null` moves it to the top level. */
+        patch: operations["patch_requirement"];
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/requirements/{n}/cases": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description The cases linked to a requirement (not those of the requirements under it), by case number, with their last result. */
+        get: operations["list_requirement_cases"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/requirements/{n}/links": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Adds, removes and confirms links to cases by case number; `confirm` (or `add`) turns AI-proposed links into active ones. At most `maxRequirementCases` links per requirement (409 `limit_reached`); an unknown case is 404. Links from code come back with the next trusted sync while the code names the requirement. */
+        post: operations["change_requirement_links"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{key}/requirements/{n}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Takes a requirement and what was archived with it out of the archive (409 while its parent is archived). */
+        post: operations["restore_requirement"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{key}/results/{id}": {
         parameters: {
             query?: never;
@@ -2864,7 +3071,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** @description A test-management job of the project (import, export, backfill): status, progress and report. Export jobs are visible only to their creator, import jobs only with `cases:import`. */
+        /** @description A test-management job of the project (import, export, backfill): status, progress and report. Export jobs (cases and coverage) are visible only to their creator, import jobs (cases and requirements) only with `cases:import`. */
         get: operations["get_tm_job"];
         put?: never;
         post?: never;
@@ -4370,6 +4577,19 @@ export interface components {
          * @enum {string}
          */
         CoverageStatus: "uncovered" | "failed" | "notRun" | "partial" | "passed";
+        /** @description Counts of top-level requirements by coverage status (dashboard widget). */
+        CoverageStatusCounts: {
+            /** Format: int64 */
+            failed: number;
+            /** Format: int64 */
+            notRun: number;
+            /** Format: int64 */
+            partial: number;
+            /** Format: int64 */
+            passed: number;
+            /** Format: int64 */
+            uncovered: number;
+        };
         /** @description Body of `POST /tracker-issues`. */
         CreateTrackerIssue: components["schemas"]["IssueFor"] & {
             /** @description Attach screenshots; default from the tracker settings. */
@@ -9314,6 +9534,14 @@ export interface components {
             /** @enum {string} */
             kind: "logPatterns";
         } | {
+            counts: components["schemas"]["CoverageStatusCounts"];
+            items: components["schemas"]["RequirementCoverage"][];
+            /** @enum {string} */
+            kind: "requirementCoverage";
+            scope: components["schemas"]["CoverageScopeView"];
+            /** Format: int64 */
+            total: number;
+        } | {
             components: components["schemas"]["ComponentPoint"][];
             defects: components["schemas"]["DefectCounts"];
             groupBy: string;
@@ -9367,7 +9595,7 @@ export interface components {
             view?: components["schemas"]["WidgetView"] | null;
         };
         /** @enum {string} */
-        WidgetType: "launch-statistics" | "overall-statistics" | "investigated-percentage" | "launches-comparison" | "launches-duration" | "launches-table" | "failed-trend" | "non-passed-trend" | "test-cases-growth" | "passing-rate-per-launch" | "passing-rate-summary" | "flaky-tests" | "most-failing-tests" | "popular-patterns" | "launch-execution" | "component-health" | "cumulative-trend" | "unique-bugs" | "activity-stream" | "pass-rate-trend" | "durations" | "defect-trend" | "launches-per-day";
+        WidgetType: "launch-statistics" | "overall-statistics" | "investigated-percentage" | "launches-comparison" | "launches-duration" | "launches-table" | "failed-trend" | "non-passed-trend" | "test-cases-growth" | "passing-rate-per-launch" | "passing-rate-summary" | "flaky-tests" | "most-failing-tests" | "popular-patterns" | "launch-execution" | "component-health" | "cumulative-trend" | "unique-bugs" | "activity-stream" | "pass-rate-trend" | "durations" | "defect-trend" | "launches-per-day" | "requirement-coverage";
         /** @enum {string} */
         WidgetView: "chart" | "table";
         /**
@@ -12478,6 +12706,45 @@ export interface operations {
             };
         };
     };
+    list_case_requirements: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                /** @description case number */
+                n: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaseRequirement"][];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     restore_case: {
         parameters: {
             query?: never;
@@ -13019,6 +13286,181 @@ export interface operations {
                 };
             };
             428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    requirement_coverage: {
+        parameters: {
+            query?: {
+                /** @description A test plan: its newest launch, or `launchId`. */
+                planId?: string;
+                /** @description A launch of the plan (or alone: that launch). */
+                launchId?: string;
+                /** @description Launch ids separated by commas, at most 50. */
+                launchIds?: string;
+                /** @description Window scope: launches of this branch. */
+                branch?: string;
+                /** @description Window scope: launches of this environment key. */
+                environment?: string;
+                /** @description Window scope: launches of the last 1 to 365 days (30 with only a branch or environment). */
+                days?: number;
+                /** @description A requirement number: its children; the top-level requirements without it. */
+                parent?: string;
+                before?: string;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CoveragePage"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    create_coverage_export: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CoverageExportRequest"];
+            };
+        };
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TmJob"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    download_coverage_export: {
+        parameters: {
+            query: {
+                token: string;
+            };
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description the CSV or XLSX file */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description unknown, not done, used, expired, another caller or a wrong token */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -17651,6 +18093,703 @@ export interface operations {
                 };
             };
             429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    list_requirements: {
+        parameters: {
+            query?: {
+                /** @description `REQ-12`, `12`, or words of the title, description or issue key. */
+                q?: string;
+                /** @description A requirement number: requirements anywhere under it. */
+                parent?: string;
+                status?: components["schemas"]["RequirementStatus"];
+                /** @description A requirement type (`epic`, `story`, ...). */
+                type?: string;
+                /** @description FPQL over requirements. */
+                query?: string;
+                /** @description `true` lists the archived requirements. */
+                archived?: boolean;
+                before?: string;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RequirementList"];
+                };
+            };
+            /** @description `invalid_query` */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    create_requirement: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RequirementWrite"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Requirement"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `limit_reached`, `issue_key_taken` or an archived parent */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    import_requirements: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RequirementImport"];
+            };
+        };
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TmJob"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `import_busy` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    apply_requirement_import: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TmJob"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    requirement_tree: {
+        parameters: {
+            query?: {
+                /** @description A requirement number; top-level requirements when absent. */
+                parent?: string;
+                before?: string;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RequirementList"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    get_requirement: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                /** @description requirement number */
+                n: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    /** @description "r<revision>" */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Requirement"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    update_requirement: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description "r<revision>" */
+                "If-Match": string;
+            };
+            path: {
+                key: string;
+                n: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RequirementWrite"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Requirement"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `requirement_cycle`, `limit_reached`, `issue_key_taken` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    archive_requirement: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                n: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    patch_requirement: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description "r<revision>" */
+                "If-Match": string;
+            };
+            path: {
+                key: string;
+                n: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RequirementPatch"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Requirement"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description `requirement_cycle` or `limit_reached` */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    list_requirement_cases: {
+        parameters: {
+            query?: {
+                /** @description Only active links, or only AI proposals. */
+                linkStatus?: components["schemas"]["RequirementLinkStatus"];
+                before?: string;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                key: string;
+                n: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RequirementLinkList"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    change_requirement_links: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                n: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RequirementLinksChange"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Requirement"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    restore_requirement: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+                n: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Requirement"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

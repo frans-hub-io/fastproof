@@ -113,6 +113,14 @@ pub async fn tick(s: &AppState) -> anyhow::Result<()> {
         }
         s.store.forget_tm_job_blobs(id).await?;
     }
+    for (id, keys) in s.store.expired_coverage_export_blobs(200).await? {
+        for k in keys {
+            if let Ok(key) = BlobKey::parse(&k) {
+                s.blobs.delete(&key).await?;
+            }
+        }
+        s.store.forget_tm_job_blobs(id).await?;
+    }
     for (project, name) in s.store.stale_import_secrets().await? {
         s.store.delete_secret(project, &name).await?;
     }
@@ -151,9 +159,10 @@ async fn run(s: &AppState, job: ClaimedJob, owner: &str) {
             .run_workflow_remap_job(job.id, owner)
             .await
             .map_err(anyhow::Error::from),
-        (TmJobKind::Requirements | TmJobKind::CoverageExport, _) => {
-            Err(ImportError::invalid(format!("{} jobs are not available", job.kind)).into())
+        (TmJobKind::Requirements, _) => {
+            crate::integrations::requirements_import::run(s, &job, owner).await
         }
+        (TmJobKind::CoverageExport, _) => crate::api::coverage::run_export(s, &job, owner).await,
     };
     if let Err(e) = r {
         let (code, message) = match e.downcast_ref::<ImportError>() {

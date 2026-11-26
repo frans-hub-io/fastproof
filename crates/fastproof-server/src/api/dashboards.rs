@@ -47,6 +47,17 @@ pub fn router() -> OpenApiRouter<AppState> {
 /// A dashboard with `settings.patterns` waits for the analysis gate (older replicas refuse the
 /// key).
 async fn patterns_gate(s: &AppState, widgets: &[BoardWidget]) -> ApiResult<()> {
+    if fastproof_store::analysis::boards::uses_tm_formats(widgets) {
+        let mut conn = s
+            .store
+            .pool()
+            .acquire()
+            .await
+            .map_err(anyhow::Error::from)?;
+        fastproof_store::tm::gate::require(&mut conn, &s.cfg.tm, "dashboards.requirement-coverage")
+            .await
+            .map_err(super::tm_error)?;
+    }
     if !fastproof_store::analysis::boards::uses_analysis_formats(widgets) {
         return Ok(());
     }
@@ -483,9 +494,19 @@ pub async fn board_data(
     Ok(Json(out))
 }
 
+/// Widgets answered per caller (activity streams; requirement coverage, which needs
+/// `cases:read`), so shared data is never returned as it is.
 fn has_activity(widgets: &[BoardWidget]) -> bool {
-    widgets.iter().any(|w| w.kind == WidgetType::ActivityStream)
+    widgets.iter().any(|w| {
+        matches!(
+            w.kind,
+            WidgetType::ActivityStream | WidgetType::RequirementCoverage
+        )
+    })
 }
+
+const COVERAGE_NEEDS_CASES: &str =
+    "Requirement coverage is shown to people who may read test cases (cases:read).";
 
 const ACTIVITY_NEEDS_AUDIT: &str =
     "The activity stream is shown to people who may read the audit log (audit:read).";
@@ -499,6 +520,19 @@ async fn fill_activity(
     widgets: &[BoardWidget],
     out: &mut BoardData,
 ) {
+    if !auth.allowed(&s.perms.cases_read, Some(&p.key)) {
+        for w in widgets
+            .iter()
+            .filter(|w| w.kind == WidgetType::RequirementCoverage)
+        {
+            out.widgets.insert(
+                w.id.clone(),
+                WidgetResult::Error {
+                    message: COVERAGE_NEEDS_CASES.into(),
+                },
+            );
+        }
+    }
     let holder = auth.allowed(&s.perms.audit_read, Some(&p.key));
     let mut done: std::collections::HashMap<(Option<u32>, Option<u32>), WidgetResult> =
         std::collections::HashMap::new();

@@ -3,6 +3,7 @@ import { GRID_COLUMNS, MAX_WIDGETS, WIDGET_CATALOG, WIDGET_TYPES } from '../api/
 import type { DefectGroup } from '../api/types-next';
 import { DEFECT_GROUPS } from '../api/types-next';
 import { launchResults, launchView, NOW, projectLaunches } from './fixtures';
+import { requirementCoverageData } from './requirements';
 import { dashboard, flakyOf } from './stageC';
 
 const DAY = 86_400_000;
@@ -215,6 +216,8 @@ function dataOf(project: string, w: DashboardWidget): WidgetData {
           { id: 'b3', trackerId: 'jira', trackerType: 'jira', key: 'OPS-77', url: 'https://issues.example.com/browse/OPS-77', title: 'Flaky runner clock', state: 'Done', closed: true, links: 1, tests: 1, createdAt: new Date(NOW - 20 * DAY).toISOString() },
         ].slice(0, s.limit ?? 10),
       };
+    case 'requirement-coverage':
+      return requirementCoverageData(project, s);
     case 'activity-stream':
       return {
         kind: 'activity',

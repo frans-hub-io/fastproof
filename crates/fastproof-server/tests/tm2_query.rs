@@ -133,9 +133,11 @@ async fn query_routes_check_callers_and_queries() {
         )
         .await;
     assert_eq!(
-        (st, b["code"].as_str()),
-        (StatusCode::BAD_REQUEST, Some("invalid_query"))
+        st,
+        StatusCode::OK,
+        "requirement queries exist since night 2: {b}"
     );
+    assert_eq!(b["entity"], "requirements");
     let (st, b) = s
         .get("/api/v1/projects/qa/query/schema?entity=launches", &viewer)
         .await;

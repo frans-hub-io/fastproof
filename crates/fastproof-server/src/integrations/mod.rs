@@ -12,6 +12,7 @@ pub mod issue_template;
 pub mod issues;
 pub mod notify;
 pub mod quality;
+pub mod requirements_import;
 pub mod rerun;
 pub mod secrets;
 pub mod settings;

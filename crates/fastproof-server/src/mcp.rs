@@ -145,10 +145,10 @@ struct TriageArgs {
 struct RuleDraftArgs {
     project: String,
     name: String,
-    /// `{messageRegex?, traceRegex?, testCaseId?, fingerprint?, environment?, statuses?}`.
+    /// `{messageRegex?, traceRegex?, testCaseId?, fingerprint?, environment?, statuses?, log?: {contains | regex, levels?, streams?, lastBytes?}, signals?}`; at least one condition besides `statuses`.
     #[serde(rename = "match")]
     matcher: Value,
-    /// `{defectTypeId?, comment?, issue?, mute?: {days?}, accept?}`; `defectTypeId` is an id
+    /// `{defectTypeId?, comment?, issue?, mute?: {days?}, accept?, pattern?}`; `defectTypeId` is an id
     /// from `list_defect_types` or a group name such as `productBug`.
     action: Value,
 }
@@ -278,7 +278,7 @@ const TOOLS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "create_rule_draft",
-        description: "Create a disabled triage rule for people to review and enable (a way to propose a mute); audited as AI-created. Needs rules:write or ai:propose (the agent role); at most 20 disabled rules per author.",
+        description: "Create a disabled triage rule for people to review and enable (a way to propose a mute). match: messageRegex, traceRegex, testCaseId, fingerprint, environment, statuses, log ({contains or regex, levels, streams, lastBytes}: runs after the launch on the logs of failed attempts) and signals; action: defectTypeId, comment, issue, mute, accept, pattern (marks results with a named log pattern). Audited as AI-created. Needs rules:write or ai:propose (the agent role); at most 20 disabled rules per author.",
         schema: schema::<RuleDraftArgs>,
         write: true,
     },

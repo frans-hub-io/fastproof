@@ -217,6 +217,7 @@ Used when `FASTPROOF_SINKS` contains `clickhouse` or `FASTPROOF_SEARCH_BACKEND=c
 | `FASTPROOF_CLICKHOUSE_PASSWORD_FILE` | none | File with the password |
 | `FASTPROOF_CLICKHOUSE_CA_FILE` | none | CA bundle for an `https://` URL |
 | `FASTPROOF_CLICKHOUSE_RAW_TTL_DAYS` | `90` | Days raw rows (results, attempts, steps, logs) are kept; daily aggregates stay |
+| `FASTPROOF_CLICKHOUSE_AGG_TTL_DAYS` | `730` | Days the Analysis tables are kept: triage history, `fingerprint_daily`, `defect_daily` (30 to 3650) |
 
 FastProof uses only the HTTP interface. The user needs all privileges on its database and nothing else; keep
 the native port 9000 closed.

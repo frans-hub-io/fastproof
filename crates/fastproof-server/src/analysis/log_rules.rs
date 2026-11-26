@@ -81,6 +81,7 @@ pub async fn run_retro_task(s: &AppState, task: &ClaimedTask) -> anyhow::Result<
             &project,
             &rule,
             since,
+            &p.launch_ids,
             RETRO_CLICKHOUSE_MATCHES,
         )
         .await?

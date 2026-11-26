@@ -1,5 +1,5 @@
-//! Analytics sinks: outbox events (`result.updated`, `attempt.stored`, `log.chunk` and
-//! `log.chunks`) are read in
+//! Analytics sinks: outbox events (`result.updated`, `attempt.stored`, `log.chunk`,
+//! `log.chunks` and, for sinks that keep the triage history, `triage.decided`) are read in
 //! batches from PostgreSQL (direct mode) or the `events` topic (Kafka mode), the rows they name
 //! are loaded from PostgreSQL and written to ClickHouse or OpenSearch with retries, and the
 //! position is committed after each successful batch (at least once; the writes are
@@ -14,7 +14,7 @@ use fastproof_model::Step;
 use fastproof_store::Store;
 use fastproof_store::logs::{LOG_CHUNK_EVENT, LOG_CHUNKS_EVENT, LogChunk, LogHits, LogSearch};
 use fastproof_store::stream::{
-    SimilarResult, SimilarSource, SinkAttempt, SinkResult, message_hash,
+    SimilarResult, SimilarSource, SinkAttempt, SinkResult, SinkTriage, message_hash,
 };
 use rskafka::record::RecordAndOffset;
 use sha2::Digest;
@@ -38,11 +38,16 @@ pub struct SinkBatch {
     pub results: Vec<SinkResult>,
     pub attempts: Vec<SinkAttempt>,
     pub logs: Vec<LogChunk>,
+    /// Triage decisions (sinks whose [`Sink::wants_triage`] is true).
+    pub triage: Vec<SinkTriage>,
 }
 
 impl SinkBatch {
     pub fn is_empty(&self) -> bool {
-        self.results.is_empty() && self.attempts.is_empty() && self.logs.is_empty()
+        self.results.is_empty()
+            && self.attempts.is_empty()
+            && self.logs.is_empty()
+            && self.triage.is_empty()
     }
 
     /// A content hash used as the idempotency token of the batch.
@@ -58,6 +63,9 @@ impl SinkBatch {
         }
         for c in &self.logs {
             h.update(c.id.to_be_bytes());
+        }
+        for t in &self.triage {
+            h.update(t.decision_id.to_be_bytes());
         }
         hex::encode(&h.finalize()[..16])
     }
@@ -89,6 +97,11 @@ pub trait Sink: Send + Sync + 'static {
     /// Drops the rows of deleted launches and projects (idempotent).
     async fn delete(&self, _d: &Deletions) -> anyhow::Result<()> {
         Ok(())
+    }
+    /// Whether the sink keeps the triage history: `triage.decided` events then load the
+    /// batch's decisions and write its results again with their new defect.
+    fn wants_triage(&self) -> bool {
+        false
     }
 }
 
@@ -169,10 +182,23 @@ pub fn chunk_count(e: &EventRecord) -> usize {
     }
 }
 
-fn ids_of(events: &[EventRecord]) -> (Vec<Uuid>, Vec<Uuid>, Vec<i64>) {
+/// What a batch of events names: result ids, attempt ids, log chunk ids and triage batches
+/// (`(project key, batch id)` of `triage.decided`).
+struct Named {
+    results: Vec<Uuid>,
+    attempts: Vec<Uuid>,
+    chunks: Vec<i64>,
+    triage: Vec<(String, Uuid)>,
+}
+
+/// Decisions loaded and written at once, at most (with the results they name).
+pub const SINK_TRIAGE: i64 = 1000;
+
+fn ids_of(events: &[EventRecord]) -> Named {
     let mut results = BTreeSet::new();
     let mut attempts = BTreeSet::new();
     let mut chunks = BTreeSet::new();
+    let mut triage = BTreeSet::new();
     for e in events {
         let id = e.payload.get("id");
         match e.kind.as_str() {
@@ -196,14 +222,26 @@ fn ids_of(events: &[EventRecord]) -> (Vec<Uuid>, Vec<Uuid>, Vec<i64>) {
                     chunks.extend(list.iter().filter_map(|c| c.get("id")?.as_i64()));
                 }
             }
+            "triage.decided" => {
+                if let (Some(p), Some(b)) = (
+                    e.project.clone(),
+                    e.payload
+                        .get("batchId")
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| s.parse::<Uuid>().ok()),
+                ) {
+                    triage.insert((p, b));
+                }
+            }
             _ => {}
         }
     }
-    (
-        results.into_iter().collect(),
-        attempts.into_iter().collect(),
-        chunks.into_iter().collect(),
-    )
+    Named {
+        results: results.into_iter().collect(),
+        attempts: attempts.into_iter().collect(),
+        chunks: chunks.into_iter().collect(),
+        triage: triage.into_iter().collect(),
+    }
 }
 
 /// The deletions the events name, checked against PostgreSQL: a launch must be gone and a
@@ -273,11 +311,12 @@ pub async fn load_deletions(store: &Store, events: &[EventRecord]) -> anyhow::Re
 
 /// Loads the rows the events name (rows deleted since are skipped).
 pub async fn load_batch(store: &Store, events: &[EventRecord]) -> anyhow::Result<SinkBatch> {
-    let (results, attempts, chunks) = ids_of(events);
+    let n = ids_of(events);
     Ok(SinkBatch {
-        results: store.sink_results(&results).await?,
-        attempts: store.sink_attempts(&attempts).await?,
-        logs: store.log_chunks(&chunks).await?,
+        results: store.sink_results(&n.results).await?,
+        attempts: store.sink_attempts(&n.attempts).await?,
+        logs: store.log_chunks(&n.chunks).await?,
+        triage: store.sink_triage_rows(&n.triage, 0, 10_000).await?,
     })
 }
 
@@ -313,6 +352,7 @@ struct Written {
     results: u64,
     attempts: u64,
     lines: u64,
+    decisions: u64,
 }
 
 /// Loads and writes the rows of `events` in parts bounded in rows and bytes, then applies the
@@ -322,7 +362,12 @@ async fn write_parts(
     sink: &dyn Sink,
     events: &[EventRecord],
 ) -> anyhow::Result<Written> {
-    let (results, attempts, chunks) = ids_of(events);
+    let Named {
+        results,
+        attempts,
+        chunks,
+        triage,
+    } = ids_of(events);
     let mut w = Written::default();
     for ids in results.chunks(SINK_RESULTS) {
         let b = SinkBatch {
@@ -355,6 +400,23 @@ async fn write_parts(
             w.lines += b.logs.iter().map(|c| c.lines.len() as u64).sum::<u64>();
         }
     }
+    if sink.wants_triage() {
+        for batches in triage.chunks(100) {
+            let mut after = 0;
+            loop {
+                let rows = store.sink_triage_rows(batches, after, SINK_TRIAGE).await?;
+                let Some(last) = rows.last().map(|r| r.decision_id) else {
+                    break;
+                };
+                let full = rows.len() as i64 == SINK_TRIAGE;
+                after = last;
+                w.decisions += write_triage(store, sink, rows).await?;
+                if !full {
+                    break;
+                }
+            }
+        }
+    }
     let deletions = load_deletions(store, events).await?;
     if !deletions.is_empty() {
         sink.delete(&deletions).await?;
@@ -362,6 +424,31 @@ async fn write_parts(
             .increment((deletions.launches.len() + deletions.projects.len()) as u64);
     }
     Ok(w)
+}
+
+/// Writes decisions with the current rows of the results they name (their defect columns
+/// changed); returns the decisions written.
+pub async fn write_triage(
+    store: &Store,
+    sink: &dyn Sink,
+    rows: Vec<SinkTriage>,
+) -> anyhow::Result<u64> {
+    let ids: Vec<Uuid> = rows
+        .iter()
+        .map(|r| r.result_id)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let n = rows.len() as u64;
+    let b = SinkBatch {
+        results: store.sink_results(&ids).await?,
+        triage: rows,
+        ..SinkBatch::default()
+    };
+    if !b.is_empty() {
+        sink.write(&b, &b.token()).await?;
+    }
+    Ok(n)
 }
 
 /// Loads and writes a batch, retrying with backoff. Rows are loaded and written in parts of
@@ -386,6 +473,8 @@ pub async fn write_batch(
                     .increment(w.attempts);
                 metrics::counter!("fastproof_sink_rows_total", "sink" => name, "kind" => "log_lines")
                     .increment(w.lines);
+                metrics::counter!("fastproof_sink_rows_total", "sink" => name, "kind" => "triage")
+                    .increment(w.decisions);
                 metrics::counter!("fastproof_sink_events_total", "sink" => name)
                     .increment(events.len() as u64);
                 metrics::histogram!("fastproof_sink_batch_seconds", "sink" => name)
@@ -611,6 +700,23 @@ impl PartitionRunner for OutboxRelay {
 mod tests {
     use super::*;
     use fastproof_model::Status;
+
+    #[test]
+    fn every_triage_batch_of_an_event_batch_is_written() {
+        let events: Vec<EventRecord> = (0..2500)
+            .map(|i| EventRecord {
+                v: 1,
+                id: i,
+                kind: "triage.decided".into(),
+                project: Some(if i % 2 == 0 { "a" } else { "b" }.into()),
+                payload: serde_json::json!({"batchId": Uuid::now_v7(), "via": "undo"}),
+                created_at: chrono::Utc::now(),
+            })
+            .collect();
+        let n = ids_of(&events);
+        assert_eq!(n.triage.len(), 2500);
+        assert_eq!(n.triage.iter().filter(|t| t.0 == "b").count(), 1250);
+    }
 
     #[test]
     fn steps_flatten_depth_first() {

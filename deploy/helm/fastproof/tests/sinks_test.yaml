@@ -119,6 +119,9 @@ tests:
       - equal:
           path: data.FASTPROOF_CLICKHOUSE_RAW_TTL_DAYS
           value: "30"
+      - equal:
+          path: data.FASTPROOF_CLICKHOUSE_AGG_TTL_DAYS
+          value: "730"
       - notExists:
           path: data.FASTPROOF_CLICKHOUSE_CA_FILE
 

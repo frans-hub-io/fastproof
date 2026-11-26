@@ -55,6 +55,51 @@ pub struct AnalysisBenchArgs {
     /// How long to wait for the server's analysis, in seconds.
     #[arg(long, default_value_t = 300)]
     pub timeout: u64,
+    /// `s`: suggestions on PostgreSQL; `m`: also the analytics endpoints and the portfolio
+    /// (with ClickHouse, contract §14: each < 1 s, the portfolio < 3 s).
+    #[arg(long, default_value = "s", value_parser = ["s", "m"])]
+    pub profile: String,
+    /// Profile m: an existing, filled project whose analytics are measured (default: the
+    /// bench's own project).
+    #[arg(long)]
+    pub analytics_project: Option<String>,
+    /// Profile m: days the analytics windows cover.
+    #[arg(long, default_value_t = 90)]
+    pub analytics_days: u32,
+    /// Profile m: requests per analytics endpoint.
+    #[arg(long, default_value_t = 10)]
+    pub analytics_repeat: usize,
+    /// Profile m: measure only the analytics of `--analytics-project` (no upload, no
+    /// suggestions).
+    #[arg(long)]
+    pub analytics_only: bool,
+}
+
+/// The analytics endpoints profile m measures (path under the project, query).
+pub const ANALYTICS_ENDPOINTS: [(&str, &str); 9] = [
+    ("failures", "groupBy=fingerprint"),
+    ("failures", "groupBy=defectGroup"),
+    ("failures", "groupBy=suite"),
+    ("durations", ""),
+    ("retries", ""),
+    ("flaky-trend", ""),
+    ("mttr", ""),
+    ("slow-steps", ""),
+    ("timeline", ""),
+];
+
+/// What profile m measured.
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnalyticsBench {
+    pub project: String,
+    pub days: u32,
+    /// `clickhouse` or `postgres` (as the answers said).
+    pub backend: String,
+    pub endpoints: BTreeMap<String, OpStats>,
+    pub portfolio: OpStats,
+    /// Every endpoint p95 < 1000 ms and the portfolio p95 < 3000 ms, on ClickHouse.
+    pub targets_met: bool,
 }
 
 /// Latencies of one operation.
@@ -105,6 +150,9 @@ pub struct AnalysisBenchReport {
     /// `suggestions` step < 5000 ms and `GET …/suggestions` p95 < 100 ms.
     pub targets_met: bool,
     pub errors: usize,
+    /// Profile m.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub analytics: Option<AnalyticsBench>,
 }
 
 struct Ctx {
@@ -259,7 +307,106 @@ async fn wait_analysis(
     }
 }
 
+/// Profile m: times every analytics endpoint of `project` over `days` days, and the portfolio.
+async fn measure_analytics(
+    x: &mut Ctx,
+    project: &str,
+    days: u32,
+    repeat: usize,
+) -> anyhow::Result<AnalyticsBench> {
+    let to = chrono::Utc::now();
+    let from = to - chrono::Duration::days(i64::from(days.clamp(1, 365)));
+    let window = format!(
+        "from={}&to={}",
+        from.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        to.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+    );
+    let base = format!("api/v1/projects/{project}");
+    let (_, top) = x
+        .call(
+            Method::GET,
+            &format!("{base}/analytics/failures?{window}&limit=1"),
+            None,
+        )
+        .await
+        .context("reading the analytics of the project")?;
+    let backend = top["window"]["backend"].as_str().unwrap_or("?").to_string();
+    let fingerprint = top["items"][0]["key"].as_str().map(str::to_string);
+    let mut endpoints = BTreeMap::new();
+    for (ep, q) in ANALYTICS_ENDPOINTS {
+        let path = if ep == "timeline" {
+            let Some(f) = &fingerprint else {
+                continue;
+            };
+            format!("{base}/errors/{f}/timeline?{window}")
+        } else {
+            format!("{base}/analytics/{ep}?{window}&{q}")
+        };
+        let mut v = Vec::new();
+        for _ in 0..repeat.max(1) {
+            if let Some((ms, _)) = x.call(Method::GET, &path, None).await {
+                v.push(ms);
+            }
+        }
+        let name = if q.is_empty() {
+            ep.to_string()
+        } else {
+            format!("{ep}?{q}")
+        };
+        endpoints.insert(name, stats(v));
+    }
+    let mut v = Vec::new();
+    for _ in 0..repeat.max(1) {
+        if let Some((ms, _)) = x
+            .call(
+                Method::GET,
+                &format!("api/v1/analytics/portfolio?{window}"),
+                None,
+            )
+            .await
+        {
+            v.push(ms);
+        }
+    }
+    let portfolio = stats(v);
+    let targets_met = backend == "clickhouse"
+        && portfolio.count > 0
+        && portfolio.p95_ms < 3000.0
+        && endpoints.values().all(|s| s.count > 0 && s.p95_ms < 1000.0);
+    Ok(AnalyticsBench {
+        project: project.to_string(),
+        days,
+        backend,
+        endpoints,
+        portfolio,
+        targets_met,
+    })
+}
+
 pub async fn run(a: AnalysisBenchArgs) -> anyhow::Result<AnalysisBenchReport> {
+    if a.analytics_only {
+        let Some(project) = a.analytics_project.clone() else {
+            bail!("--analytics-only needs --analytics-project");
+        };
+        let token = match &a.token_file {
+            Some(f) => {
+                std::fs::read_to_string(f).with_context(|| format!("reading {}", f.display()))?
+            }
+            None => std::env::var("FASTPROOF_TOKEN").unwrap_or_default(),
+        };
+        let mut x = Ctx {
+            c: Client::new(&a.url, token.trim())?,
+            key: project.clone(),
+            errors: 0,
+        };
+        let m = measure_analytics(&mut x, &project, a.analytics_days, a.analytics_repeat).await?;
+        return Ok(AnalysisBenchReport {
+            project,
+            errors: x.errors,
+            analytics: Some(m),
+            ..AnalysisBenchReport::default()
+        });
+    }
     if a.clusters == 0 || a.clusters > 5000 || a.results == 0 || a.results > 50_000 {
         bail!("--clusters must be 1..=5000 and --results 1..=50000");
     }
@@ -401,6 +548,12 @@ pub async fn run(a: AnalysisBenchArgs) -> anyhow::Result<AnalysisBenchReport> {
     }
     let get_suggestions = stats(gets);
     let targets_met = step_ms > 0 && step_ms < 5000 && get_suggestions.p95_ms < 100.0;
+    let analytics = if a.profile == "m" {
+        let project = a.analytics_project.clone().unwrap_or_else(|| key.clone());
+        Some(measure_analytics(&mut x, &project, a.analytics_days, a.analytics_repeat).await?)
+    } else {
+        None
+    };
     Ok(AnalysisBenchReport {
         project: key,
         clusters: a.clusters,
@@ -416,10 +569,28 @@ pub async fn run(a: AnalysisBenchArgs) -> anyhow::Result<AnalysisBenchReport> {
         triage: stats(triage),
         targets_met,
         errors: x.errors,
+        analytics,
     })
 }
 
 pub fn print(r: &AnalysisBenchReport) -> anyhow::Result<()> {
+    if let Some(m) = &r.analytics {
+        println!(
+            "analytics of {} over {} days on {}: portfolio p95 {:.1} ms; targets {}",
+            m.project,
+            m.days,
+            m.backend,
+            m.portfolio.p95_ms,
+            if m.targets_met { "met" } else { "missed" }
+        );
+        for (name, s) in &m.endpoints {
+            println!("  {name}: p50 {:.1} ms, p95 {:.1} ms", s.p50_ms, s.p95_ms);
+        }
+        if r.clusters == 0 {
+            println!("{}", serde_json::to_string(r)?);
+            return Ok(());
+        }
+    }
     println!(
         "{} clusters, {} results, {} decisions learned; suggestions step {} ms ({:.1} s after finish, settle \
          included); {} clusters suggested {:?}",
